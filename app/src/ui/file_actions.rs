@@ -118,6 +118,8 @@ pub(crate) const LANGUAGES: [&str; 101] = [
     "zsh",
 ];
 
+pub(super) const DOWNLOAD_KEY_PREFIX: &str = "attachment-download:";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FileMenuKind {
     Language,
@@ -181,14 +183,32 @@ impl Root {
         cx.notify();
     }
 
-    /// Saves the attachment into Downloads, under its own name (a number added when the name is taken).
+    /// Saves the attachment into Downloads, under its own name (a number added when the name is taken),
+    /// showing a progress toast and a completion or error toast when the write finishes.
     pub(super) fn download_attachment(&mut self, attachment: &Attachment, cx: &mut Context<Self>) {
+        let filename = attachment.filename.clone();
+        self.put_app_toast(format!("Downloading {filename}..."), false, cx);
         let _ = self.requests.send(crate::net::Request::Download {
             url: attachment.url.clone(),
-            filename: attachment.filename.clone(),
-            done: None,
+            done: Some(format!("{DOWNLOAD_KEY_PREFIX}{filename}")),
+            filename,
         });
         cx.notify();
+    }
+
+    pub(super) fn attachment_downloaded(
+        &mut self,
+        key: &str,
+        body: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let fallback = key.strip_prefix(DOWNLOAD_KEY_PREFIX).unwrap_or("file");
+        if body["ok"].as_bool() == Some(true) {
+            let saved = body["filename"].as_str().unwrap_or(fallback);
+            self.show_success_toast(format!("Saved {saved} to Downloads"), cx);
+        } else {
+            self.put_app_toast(format!("Unable to download {fallback}"), false, cx);
+        }
     }
 
     pub(super) fn file_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

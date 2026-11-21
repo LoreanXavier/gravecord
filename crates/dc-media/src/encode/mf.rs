@@ -115,10 +115,24 @@ impl Encoder {
         let candidates = unsafe { hardware_encoders()? };
         let mut last = Error::unavailable("no hardware H.264 encoder");
         for (index, activate) in candidates.into_iter().enumerate() {
+            let name = unsafe { friendly_name(&activate) };
             match Self::open(config, activate) {
-                Ok(encoder) => return Ok(encoder),
+                Ok(encoder) => {
+                    tracing::debug!(
+                        index,
+                        name = name.as_deref().unwrap_or("unknown"),
+                        bitrate = config.bitrate,
+                        width = config.width,
+                        height = config.height,
+                        fps = config.fps,
+                        "hardware H.264 encoder opened"
+                    );
+                    return Ok(encoder);
+                }
                 Err(error) => {
                     tracing::debug!(
+                        index,
+                        name = name.as_deref().unwrap_or("unknown"),
                         "hardware H.264 encoder {index} refused the configuration: {error}"
                     );
                     last = error;
@@ -167,6 +181,10 @@ impl Encoder {
             let _ = codec.SetValue(
                 &CODECAPI_AVEncCommonMeanBitRate,
                 &VARIANT::from(config.bitrate),
+            );
+            let _ = codec.SetValue(
+                &CODECAPI_AVEncCommonMaxBitRate,
+                &VARIANT::from(max_bitrate_headroom(config.bitrate)),
             );
             let _ = codec.SetValue(
                 &CODECAPI_AVEncMPVDefaultBPictureCount,
@@ -256,6 +274,10 @@ impl Encoder {
     pub(super) fn set_bitrate(&mut self, bitrate: u32) -> Result<()> {
         // SAFETY: dynamic codec control stays on the encoder's owning thread.
         unsafe {
+            let _ = self.codec.SetValue(
+                &CODECAPI_AVEncCommonMaxBitRate,
+                &VARIANT::from(max_bitrate_headroom(bitrate)),
+            );
             self.codec
                 .SetValue(&CODECAPI_AVEncCommonMeanBitRate, &VARIANT::from(bitrate))
                 .map_err(|e| failed("set bitrate", e))
@@ -571,6 +593,32 @@ enum OutputStep {
 enum SampleRead {
     Bytes(Vec<u8>),
     Oversized,
+}
+
+fn max_bitrate_headroom(bitrate: u32) -> u32 {
+    bitrate.saturating_add(bitrate / 4)
+}
+
+unsafe fn friendly_name(activate: &IMFActivate) -> Option<String> {
+    // SAFETY: `GetStringLength` and `GetString` read `MFT_FRIENDLY_NAME_Attribute` into a UTF-16 buffer.
+    unsafe {
+        let len = activate
+            .GetStringLength(&MFT_FRIENDLY_NAME_Attribute)
+            .ok()? as usize;
+        if len == 0 || len > 512 {
+            return None;
+        }
+        let mut wide = vec![0u16; len + 1];
+        let mut written = 0u32;
+        activate
+            .GetString(&MFT_FRIENDLY_NAME_Attribute, &mut wide, Some(&mut written))
+            .ok()?;
+        let end = (written as usize).min(wide.len());
+        let text = String::from_utf16_lossy(&wide[..end])
+            .trim_end_matches('\0')
+            .to_owned();
+        (!text.is_empty()).then_some(text)
+    }
 }
 
 fn force_keyframe_value() -> VARIANT {

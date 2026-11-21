@@ -252,6 +252,21 @@ impl Capture {
             share.source.hold(held);
         }
     }
+    fn encoder_name(&self) -> &'static str {
+        match self {
+            Self::Screen(worker) => {
+                #[cfg(windows)]
+                if worker.backend() == Some(dc_media::Backend::Hardware) {
+                    return "MediaFoundation";
+                }
+                let _ = worker;
+                "OpenH264"
+            }
+            Self::Synthetic(..) => "OpenH264",
+            #[cfg(feature = "sim")]
+            Self::Sim(_) => "Simulated",
+        }
+    }
     /// The owner's own tile shows what the encoder takes, every picture, as the native engine's local video sink does
     /// (the self stream tile of module 555148 renders the stream's own video). Only the test pattern keeps the timed
     /// preview of `LOCAL_PREVIEW_INTERVAL`.
@@ -319,6 +334,17 @@ impl Capture {
 /// Starts the capture on a blocking thread. Frames and system audio go to the loop through bounded channels and are
 /// dropped when it is behind; a dropped picture sets `dropped`, so the loop asks for a keyframe (the pictures after it
 /// predict from one the viewers never got).
+/// Starting bitrate for a Go Live stream: high-tier shares (> 720p or > 30 fps, 9 Mb/s cap) open at 2 Mb/s so the
+/// hardware encoder's initial frames stay crisp at 60 fps without choking the pacer and the first exponential probe pair
+/// reaches 9 Mb/s in one round; standard shares start at `CALL_START_BITRATE`.
+fn stream_start_bitrate(max_bitrate: u32) -> u32 {
+    if max_bitrate > screen::BITRATE_STANDARD {
+        2_000_000.min(max_bitrate)
+    } else {
+        CALL_START_BITRATE.min(max_bitrate)
+    }
+}
+
 fn start_capture(
     source: StreamSource,
     frames: mpsc::Sender<EncodedFrame>,
@@ -342,16 +368,14 @@ fn start_capture(
     };
     match source {
         StreamSource::Screen(settings) => {
-            // The encoder opens where the estimation starts (`desktopBitrate.target`, 600 kb/s, is what the official
-            // client hands as `encodingVideoBitRate`), so its first keyframe is sized for that; the sender's target
-            // raises it as probes find room.
+            let start = stream_start_bitrate(settings.bitrate);
             #[cfg(windows)]
-            let worker = screen::Worker::start_at(settings, CALL_START_BITRATE, video, sound);
+            let worker = screen::Worker::start_at(settings, start, video, sound);
             #[cfg(not(windows))]
             let worker = screen::Worker::start(settings, video, sound);
             worker
                 .map(|worker| {
-                    worker.set_bitrate(CALL_START_BITRATE);
+                    worker.set_bitrate(start);
                     Capture::Screen(worker)
                 })
                 .map_err(|_| SCREEN_CAPTURE_FAILED)
@@ -733,6 +757,9 @@ pub(crate) async fn run(
             },
             frame = frames.recv(), if sender.as_ref().is_some_and(|sender| sender.accepts(Instant::now())) => {
                 let Some(frame) = frame else { return Err(SCREEN_CAPTURE_ENDED) };
+                if let Some(capture) = &capture {
+                    capture.hold(frames.len() >= HOLD_AT);
+                }
                 let secure = announced && dave.ready && dave.session.is_ready() && !dave.transitioning() && transport.is_some() && !discovering && !controls.borrow().paused;
                 if !secure {
                     let was_awaiting = awaiting_keyframe;
@@ -899,7 +926,8 @@ pub(crate) async fn run(
                     // Announce the source once, as soon as both ends are ready for it.
                     if !announced && capture.is_some() && ws.is_some() && transport.is_some() && !discovering && !resuming && let Some(source) = source {
                         let bitrate = source.limits().bitrate;
-                        let mut video = VideoSender::new(video_ssrc, rtx_ssrc, STREAM_MIN_BITRATE, CALL_START_BITRATE, bitrate);
+                        let start = stream_start_bitrate(bitrate);
+                        let mut video = VideoSender::new(video_ssrc, rtx_ssrc, STREAM_MIN_BITRATE, start, bitrate);
                         video.set_keyframe_interval(keyframe_interval);
                         video.set_screen_share(true);
                         video.set_framerate(source.limits().framerate);
@@ -1239,7 +1267,12 @@ pub(crate) async fn run(
                                 nacks: vs.nacks,
                                 plis: vs.plis,
                                 firs: 0,
-                                encoder_implementation_name: Some("OpenH264".into()),
+                                encoder_implementation_name: Some(
+                                    capture
+                                        .as_ref()
+                                        .map_or("OpenH264", Capture::encoder_name)
+                                        .into(),
+                                ),
                                 average_encode_time_ms: 0.0,
                                 encrypt_success_count: vs.frames_encoded,
                                 encrypt_failure_count: 0,

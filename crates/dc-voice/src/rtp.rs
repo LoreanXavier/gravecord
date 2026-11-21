@@ -252,7 +252,7 @@ pub(crate) fn feedback(mut remaining: &[u8], video_ssrc: u32) -> Option<Feedback
         let mut content = &remaining[..size];
         if content[0] & 0x20 != 0 {
             let padding = usize::from(content[size - 1]);
-            if size != remaining.len() || padding == 0 || padding > size - 4 {
+            if padding == 0 || padding > size - 4 {
                 return None;
             }
             content = &content[..size - padding];
@@ -273,12 +273,14 @@ pub(crate) fn feedback(mut remaining: &[u8], video_ssrc: u32) -> Option<Feedback
                 }
             }
             kind @ (205 | 206) => {
-                if content.len() < 12 || !content.len().is_multiple_of(4) {
+                if content.len() < 12 {
                     return None;
                 }
                 let matching = content[8..12] == video_ssrc.to_be_bytes();
                 match (kind, count) {
                     (205, 15) => {
+                        // Transport-wide feedback carries byte-granular small deltas, so after stripping RFC 3550
+                        // padding (`P = 1`, 1..=3 bytes) `content.len()` is legitimately not a multiple of 4.
                         // A block this parser refuses is skipped alone: the keyframe requests and repairs beside
                         // it in the compound still count.
                         if feedback.transport.len() < 16
@@ -294,7 +296,7 @@ pub(crate) fn feedback(mut remaining: &[u8], video_ssrc: u32) -> Option<Feedback
                         feedback.keyframe |= matching;
                     }
                     (205, 1) => {
-                        if content.len() == 12 {
+                        if content.len() == 12 || !content.len().is_multiple_of(4) {
                             return None;
                         }
                         if matching {
@@ -315,7 +317,9 @@ pub(crate) fn feedback(mut remaining: &[u8], video_ssrc: u32) -> Option<Feedback
                         }
                     }
                     (206, 15) if content.get(12..16) == Some(b"REMB") => {
-                        if content.len() < 20 || content.len() != 20 + usize::from(content[16]) * 4
+                        if content.len() < 20
+                            || !content.len().is_multiple_of(4)
+                            || content.len() != 20 + usize::from(content[16]) * 4
                         {
                             return None;
                         }
@@ -1123,6 +1127,53 @@ mod tests {
         assert!(found.keyframe);
         assert_eq!(found.transport.len(), 1);
         assert_eq!(found.transport[0].arrivals, [Some(1000)]);
+    }
+
+    #[test]
+    fn padded_transport_cc_feedback_parses_standalone_and_in_compound_rtcp() {
+        // Discord's SFU pads Transport-CC packets (PT 205, FMT 15) with RFC 3550 P=1 (0xaf) whenever
+        // the unpadded 1-byte-delta payload does not land on a 4-byte boundary (1, 2, or 3 padding bytes).
+        for (deltas, expected_pad) in [
+            (&[4u8][..], 1usize),            // 20 + 2 + 1 = 23 -> +1 = 24
+            (&[4u8, 8, 12, 16][..], 2usize), // 20 + 2 + 4 = 26 -> +2 = 28
+            (&[4u8, 8, 12][..], 3usize),     // 20 + 2 + 3 = 25 -> +3 = 28
+        ] {
+            let count = deltas.len() as u16;
+            let unpadded = 20 + 2 + deltas.len();
+            let actual_pad = (4 - (unpadded % 4)) % 4;
+            assert_eq!(actual_pad, expected_pad);
+            let total = unpadded + actual_pad;
+            let words = (total / 4 - 1) as u16;
+            let mut pkt = vec![0xaf, 205];
+            pkt.extend(words.to_be_bytes());
+            pkt.extend(1u32.to_be_bytes()); // sender SSRC
+            pkt.extend(99u32.to_be_bytes()); // media SSRC
+            pkt.extend(42u16.to_be_bytes()); // base seq
+            pkt.extend(count.to_be_bytes()); // status count
+            pkt.extend([0, 0, 1, 7]); // ref time = 1, fb count = 7
+            // Run-length chunk: symbol 1 (small delta) * count.
+            pkt.extend((0x2000u16 | count).to_be_bytes());
+            pkt.extend_from_slice(deltas);
+            pkt.extend(std::iter::repeat_n(0u8, actual_pad - 1));
+            pkt.push(actual_pad as u8);
+            assert_eq!(pkt.len(), total);
+
+            // Standalone padded TWCC packet.
+            let parsed = feedback(&pkt, 10).expect("standalone padded TWCC must parse");
+            assert_eq!(parsed.transport.len(), 1);
+            assert_eq!(parsed.transport[0].base, 42);
+            assert_eq!(parsed.transport[0].arrivals.len(), deltas.len());
+
+            // Compound RTCP: padded TWCC followed by a PLI for our video SSRC.
+            let mut compound = pkt.clone();
+            let (pli_hdr, pli_body) = pli(1, 10);
+            compound.extend(pli_hdr);
+            compound.extend(pli_body);
+            let parsed = feedback(&compound, 10).expect("compound padded TWCC + PLI must parse");
+            assert!(parsed.keyframe);
+            assert_eq!(parsed.transport.len(), 1);
+            assert_eq!(parsed.transport[0].arrivals.len(), deltas.len());
+        }
     }
 
     #[test]

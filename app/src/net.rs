@@ -2456,7 +2456,10 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     if let Some(key) = done {
                         let _ = updates.send(Update::Fetched {
                             key,
-                            body: json!({"ok": saved}),
+                            body: json!({
+                                "ok": saved.is_some(),
+                                "filename": saved,
+                            }),
                         });
                     }
                 });
@@ -3425,32 +3428,41 @@ pub fn is_fetch_failure(body: &Value) -> bool {
     body["fetch_failed"] == true
 }
 
-/// Fetches `url` and writes it into the Downloads folder under a free name; whether it was saved.
-async fn save_download(url: &str, filename: &str) -> bool {
-    let Some(folder) = std::env::var_os("USERPROFILE")
-        .map(|home| std::path::PathBuf::from(home).join("Downloads"))
-    else {
-        return false;
-    };
-    let bytes = match reqwest::get(url).await {
-        Ok(response) => match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                warn!("download failed: {error}");
-                return false;
-            }
-        },
+/// Fetches `url` and writes it into the Downloads folder under a free name; returns the saved file name on success.
+async fn save_download(url: &str, filename: &str) -> Option<String> {
+    let folder = std::env::var_os("USERPROFILE")
+        .map(|home| std::path::PathBuf::from(home).join("Downloads"))?;
+    let _ = std::fs::create_dir_all(&folder);
+    let response = match reqwest::get(url).await {
+        Ok(response) => response,
         Err(error) => {
             warn!("download failed: {error}");
-            return false;
+            return None;
+        }
+    };
+    if !response.status().is_success() {
+        warn!("download failed: HTTP {}", response.status());
+        return None;
+    }
+    let bytes = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            warn!("download failed: {error}");
+            return None;
         }
     };
     let target = free_name(&folder, filename, |path| path.exists());
     match std::fs::write(&target, &bytes) {
-        Ok(()) => true,
+        Ok(()) => {
+            let name = target
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| filename.to_owned());
+            Some(name)
+        }
         Err(error) => {
             warn!("download not saved: {error}");
-            false
+            None
         }
     }
 }

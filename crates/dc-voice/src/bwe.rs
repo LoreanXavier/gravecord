@@ -1640,8 +1640,13 @@ impl Prober {
             self.clusters.pop_front();
             if self.clusters.is_empty() {
                 self.active = false;
+                self.next = None;
+                self.activated = None;
                 return None;
             }
+            // Start the queued successor cleanly at `now` instead of inheriting the expired cluster's `next`.
+            self.next = None;
+            self.activated = Some(now);
         }
         self.clusters.front().map(|cluster| cluster.tag)
     }
@@ -2024,11 +2029,20 @@ mod tests {
         }
         assert_eq!(prober.next_probe_time(), None, "the cluster was sent");
         assert_eq!(prober.sent, 1);
-        // A burst more than 10 ms late drops its cluster.
+        // A burst more than 10 ms late drops its cluster, and a queued successor starts cleanly at `now`.
         prober.create(&ProbeCluster { id: 8, ..config }, at);
+        prober.create(&ProbeCluster { id: 9, ..config }, at);
         prober.incoming(1200, at);
         prober.probe_sent(at, 2000);
-        assert!(prober.current(at + Duration::from_millis(13)).is_none());
+        let late = at + Duration::from_millis(13);
+        let next_tag = prober
+            .current(late)
+            .expect("queued successor survives drop");
+        assert_eq!(next_tag.id, 9);
+        assert_eq!(prober.dropped, 1);
+        assert_eq!(prober.next_probe_time(), Some(late));
+        // Calling `current` again right after must not re-drop the successor on cluster 8's stale deadline.
+        assert_eq!(prober.current(late).map(|tag| tag.id), Some(9));
         assert_eq!(prober.dropped, 1);
     }
 }

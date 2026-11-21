@@ -2843,6 +2843,10 @@ impl Root {
                     self.lightbox_saved(&body, cx);
                     return;
                 }
+                if key.starts_with(file_actions::DOWNLOAD_KEY_PREFIX) {
+                    self.attachment_downloaded(&key, &body, cx);
+                    return;
+                }
                 if key == "voice-logs-upload" {
                     self.voice_logs_uploaded(&body, cx);
                     return;

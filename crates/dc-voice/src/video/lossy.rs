@@ -393,6 +393,8 @@ const SYSTEM_TICK_US: u64 = 15_625;
 pub(crate) enum Returned {
     /// Everything the receiver makes: transport-wide feedback, receiver reports, NACK, PLI.
     All,
+    /// Like `All`, with RFC 3550 padding (`P=1`, 1..=3 bytes) on Transport-CC packets as Discord's SFU emits them.
+    AllPaddedTwcc,
     /// Nothing at all.
     Nothing,
     /// Receiver reports only, one every five seconds.
@@ -694,9 +696,9 @@ pub(crate) fn run_capacity(phases: &[(u64, u32)], setup: Setup) -> LinkRun {
                 shown_at.push(now_ms);
             }
         }
-        for (header, body) in receivers.feedback(OWN, now) {
+        for (mut header, mut body) in receivers.feedback(OWN, now) {
             let keep = match setup.returned {
-                Returned::All => true,
+                Returned::All | Returned::AllPaddedTwcc => true,
                 Returned::Nothing => false,
                 Returned::ReportsEvery5s => {
                     header[1] == 201 && last_report.is_none_or(|last| now_ms >= last + 5000)
@@ -704,6 +706,17 @@ pub(crate) fn run_capacity(phases: &[(u64, u32)], setup: Setup) -> LinkRun {
             };
             if !keep {
                 continue;
+            }
+            if setup.returned == Returned::AllPaddedTwcc
+                && header[1] == 205
+                && (header[0] & 0x1f) == 15
+            {
+                // Rotate RFC 3550 padding counts 1, 2, 3 so stripped content lengths hit mod 4 == 3, 2, 1.
+                let pad = (back.len() % 3 + 1) as u8;
+                body.extend_from_slice(&[0, 0, 0, pad]);
+                header[0] |= 0x20;
+                let words = u16::from_be_bytes([header[2], header[3]]) + 1;
+                header[2..4].copy_from_slice(&words.to_be_bytes());
             }
             if header[1] == 201 {
                 last_report = Some(now_ms);
@@ -1089,6 +1102,29 @@ fn from_the_call_start_rate_probing_reaches_the_link_rate_with_any_feedback() {
         assert!(first(run).is_some_and(|ms| ms <= 2_500), "{:?}", first(run));
     }
     assert!(!now.estimation.fallback);
+}
+
+#[test]
+fn padded_transport_cc_feedback_ramps_1440p60_to_link_rate_within_half_a_second() {
+    let phases = [(20, 8_000_000)];
+    let level = 8_000_000 * 85 / 100;
+    let run = run_capacity(
+        &phases,
+        Setup {
+            returned: Returned::AllPaddedTwcc,
+            ..NOW
+        },
+    );
+    let first = reached(&run.samples, level, 0, 0);
+    assert!(
+        first.is_some_and(|ms| ms <= 500),
+        "padded TWCC must probe to 85% of 8 Mb/s within 500 ms, got {first:?}: {:?}",
+        run.estimation
+    );
+    assert!(run.estimation.probe_results > 0, "{:?}", run.estimation);
+    assert_eq!(run.estimation.probe_refused, 0, "{:?}", run.estimation);
+    assert!(!run.estimation.fallback, "{:?}", run.estimation);
+    assert!(run.seconds.iter().all(|s| s.dropped == 0));
 }
 
 #[test]
