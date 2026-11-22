@@ -1254,6 +1254,11 @@ impl Root {
                         ),
                     ))
                     .child(div().h(px(57.)).flex_none())
+                    // Module 647474: sticky promotion notice banner & live countdown when game carries active promo.
+                    .children(
+                        game.as_ref()
+                            .and_then(|g| self.game_profile_promo_banner(g)),
+                    )
                     // `tH` is its own scroller under the top bar: the hero belongs to the Overview.
                     .when(tab == Tab::Overview, |this| this.child(hero))
                     .when(tab == Tab::Communities, |this| {
@@ -1364,6 +1369,204 @@ impl Root {
         };
         self.request_image(url.clone(), url);
     }
+
+    /// Module 647474 — Game Profile / Game Shop Sticky Promotion Notice Banner (`A`) & Countdown (`S`).
+    /// Extracts promotion metadata (`promotion.text` / `promo_text`, `promotion.ends_at`, `promotion.flavor`)
+    /// from the game record and renders the sticky notice strip when active.
+    fn game_profile_promo_banner(&self, game: &Value) -> Option<AnyElement> {
+        let promo = &game["promotion"];
+        let text = promo["text"]
+            .as_str()
+            .or_else(|| game["promo_text"].as_str())
+            .filter(|s| !s.is_empty())?;
+        let flavor = promo["flavor"]
+            .as_str()
+            .or_else(|| promo["color"].as_str())
+            .unwrap_or("brand");
+        let ends_at_ms = promo["ends_at"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.timestamp_millis())
+            .or_else(|| promo["ends_at_ms"].as_i64());
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        Some(render_promo_notice_banner(
+            text,
+            PromoBannerTheme::parse(flavor),
+            ends_at_ms.and_then(|end| compute_promo_countdown(end, now_ms)),
+        ))
+    }
+}
+
+/// Module 647474 banner theme (`"nitro-pink"`, custom `#RRGGBB` hex, or default Brand).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PromoBannerTheme {
+    Brand,
+    NitroPink,
+    Hex { rgb: u32, light_text: bool },
+}
+
+impl PromoBannerTheme {
+    pub(super) fn parse(spec: &str) -> Self {
+        let s = spec.trim();
+        if s.eq_ignore_ascii_case("nitro-pink") {
+            return Self::NitroPink;
+        }
+        if let Some(hex) = s.strip_prefix('#')
+            && hex.len() == 6
+            && let Ok(rgb) = u32::from_str_radix(hex, 16)
+        {
+            let r = ((rgb >> 16) & 0xff) as f32 / 255.;
+            let g = ((rgb >> 8) & 0xff) as f32 / 255.;
+            let b = (rgb & 0xff) as f32 / 255.;
+            let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            return Self::Hex {
+                rgb,
+                light_text: luma <= 0.5,
+            };
+        }
+        Self::Brand
+    }
+}
+
+/// Module 647474 live countdown (`S`): `Days(d)` when `days > 0`, else boxed `HH:MM:SS` digits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PromoCountdown {
+    Days(u64),
+    Hms { hours: u64, mins: u64, secs: u64 },
+}
+
+pub(super) fn compute_promo_countdown(ends_at_ms: i64, now_ms: i64) -> Option<PromoCountdown> {
+    let rem_ms = ends_at_ms - now_ms;
+    if rem_ms <= 0 {
+        return None;
+    }
+    let total_secs = (rem_ms / 1000) as u64;
+    let days = total_secs / 86_400;
+    if days > 0 {
+        Some(PromoCountdown::Days(days))
+    } else {
+        Some(PromoCountdown::Hms {
+            hours: (total_secs % 86_400) / 3600,
+            mins: (total_secs % 3600) / 60,
+            secs: total_secs % 60,
+        })
+    }
+}
+
+/// Module 647474 sticky promotion notice banner (`bannerContainer_ikb72w`, `10px 24px` padding)
+/// with live countdown (`N` clock + `BXpdIg` `"{days}d left"` or `k` boxed `HH:MM:SS` digits).
+pub(super) fn render_promo_notice_banner(
+    text: &str,
+    theme: PromoBannerTheme,
+    countdown: Option<PromoCountdown>,
+) -> AnyElement {
+    let text_color = match theme {
+        PromoBannerTheme::Hex {
+            light_text: false, ..
+        } => color("--black"),
+        _ => color("--white"),
+    };
+    let mut bar = div()
+        .id("promo-notice-banner")
+        .w_full()
+        .px(px(24.))
+        .py(px(10.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(10.));
+    bar = match theme {
+        PromoBannerTheme::NitroPink => bar.bg(gpui::linear_gradient(
+            90.,
+            gpui::linear_color_stop(gpui::rgba(0xeb459eff), 0.),
+            gpui::linear_color_stop(gpui::rgba(0x5865f2ff), 1.),
+        )),
+        PromoBannerTheme::Hex { rgb: hex, .. } => bar.bg(rgb(hex)),
+        PromoBannerTheme::Brand => bar.bg(color("--brand-500")),
+    };
+    bar = bar.child(
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .font_weight(FontWeight(600.))
+            .text_color(text_color)
+            .child(text.to_owned()),
+    );
+    if let Some(cd) = countdown {
+        let right = match cd {
+            PromoCountdown::Days(days) => {
+                let copy = dc_intl::format("BXpdIg", &[("days", (days as f64).into())]);
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(icon(
+                        "user_clock",
+                        16.,
+                        match theme {
+                            PromoBannerTheme::Hex {
+                                light_text: false, ..
+                            } => "--black",
+                            _ => "--white",
+                        },
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(text_color)
+                            .child(copy),
+                    )
+                    .into_any_element()
+            }
+            PromoCountdown::Hms { hours, mins, secs } => {
+                let digit_box = |d: char, fixed: bool| {
+                    div()
+                        .when(fixed, |el| el.w(px(16.)).py(px(4.)))
+                        .when(!fixed, |el| el.p(px(4.)))
+                        .rounded(px(4.))
+                        .bg(color("--background-base-lowest"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(12.))
+                        .line_height(px(14.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--white"))
+                        .child(d.to_string())
+                };
+                let colon = || {
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--background-base-lowest"))
+                        .child(":")
+                };
+                let h = format!("{hours:02}");
+                let m = format!("{mins:02}");
+                let s = format!("{secs:02}");
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .children(h.chars().map(|c| digit_box(c, false)))
+                    .child(colon())
+                    .children(m.chars().map(|c| digit_box(c, false)))
+                    .child(colon())
+                    .children(s.chars().map(|c| digit_box(c, true)))
+                    .into_any_element()
+            }
+        };
+        bar = bar.child(right);
+    }
+    bar.into_any_element()
 }
 
 #[cfg(test)]
@@ -1464,5 +1667,42 @@ mod tests {
             rating_texts(reviews[0].2, reviews[0].3),
             ("4.6 / 5".to_owned(), "(421,571)".to_owned())
         );
+    }
+
+    #[test]
+    fn promo_banner_647474_theme_and_countdown() {
+        assert!(dc_intl::has_key("BXpdIg"));
+        assert_eq!(
+            super::PromoBannerTheme::parse("nitro-pink"),
+            super::PromoBannerTheme::NitroPink
+        );
+        assert_eq!(
+            super::PromoBannerTheme::parse("#FFFFFF"),
+            super::PromoBannerTheme::Hex {
+                rgb: 0xffffff,
+                light_text: false
+            }
+        );
+        assert_eq!(
+            super::PromoBannerTheme::parse("#101020"),
+            super::PromoBannerTheme::Hex {
+                rgb: 0x101020,
+                light_text: true
+            }
+        );
+        let now = 1_700_000_000_000i64;
+        assert_eq!(
+            super::compute_promo_countdown(now + 3 * 86_400_000 + 10_000, now),
+            Some(super::PromoCountdown::Days(3))
+        );
+        assert_eq!(
+            super::compute_promo_countdown(now + (2 * 3600 + 15 * 60 + 9) * 1000, now),
+            Some(super::PromoCountdown::Hms {
+                hours: 2,
+                mins: 15,
+                secs: 9
+            })
+        );
+        assert_eq!(super::compute_promo_countdown(now - 1000, now), None);
     }
 }

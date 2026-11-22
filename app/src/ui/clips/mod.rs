@@ -15,8 +15,8 @@ mod widgets;
 use super::*;
 pub(in crate::ui) use actions::ShareClip;
 pub(in crate::ui) use gallery::Facet;
-pub(in crate::ui) use reminder::clip_session_key;
 use gpui::deferred;
+pub(in crate::ui) use reminder::clip_session_key;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,6 +44,53 @@ pub(in crate::ui) struct State {
     pub menu: actions::Menu,
     /// The reminder panel store (module 468550).
     pub reminder: Option<reminder::Reminder>,
+    /// Module 633906 — Clips Expressive / Mode Picker Coachmark Modal.
+    pub coachmark: Option<ClipsCoachmarkState>,
+}
+
+/// Module 633906 modal variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(in crate::ui) enum ClipsCoachmarkVariant {
+    ModePicker,
+    ExpressiveNonNitro,
+    ExpressiveNitro,
+}
+
+/// Module 633906 / 818349 capture mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ui) enum ClipsCaptureMode {
+    Off,
+    Manual,
+    Auto,
+}
+
+impl ClipsCaptureMode {
+    pub(in crate::ui) fn from_settings(clips_enabled: bool, enable_autoclipping: bool) -> Self {
+        if !clips_enabled {
+            Self::Off
+        } else if enable_autoclipping {
+            Self::Auto
+        } else {
+            Self::Manual
+        }
+    }
+
+    pub(in crate::ui) fn to_settings(self) -> (bool, bool) {
+        match self {
+            Self::Off => (false, false),
+            Self::Manual => (true, false),
+            Self::Auto => (true, true),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(in crate::ui) struct ClipsCoachmarkState {
+    pub variant: ClipsCoachmarkVariant,
+    pub mode: ClipsCaptureMode,
+    pub keybind_label: String,
+    pub save_error: bool,
 }
 
 /// The gallery modal: the editor panel slides over the gallery grid. Opened straight into the editor (the Quick Bar's
@@ -347,6 +394,516 @@ impl Root {
             .into_any_element(),
         )
     }
+
+    /// Module 633906 — Clips Expressive / Mode Picker Coachmark Modal:
+    /// supports `"mode_picker"` (3-option capture mode radio cards: Off / Manual / Auto with Nitro
+    /// gradient accent), `"expressive_non_nitro"`, and `"expressive_nitro"` (2-column feature cards).
+    #[allow(dead_code)]
+    pub(in crate::ui) fn open_clips_coachmark(
+        &mut self,
+        variant: ClipsCoachmarkVariant,
+        cx: &mut Context<Self>,
+    ) {
+        let (enabled, auto) = self.clips.clips_capture_mode();
+        let mode = ClipsCaptureMode::from_settings(enabled, auto);
+        let art_url = "https://discord.com/assets/cc9b98ec3d958835.svg";
+        self.request_image(art_url.to_owned(), art_url.to_owned());
+        self.clips.engine.ui.coachmark = Some(ClipsCoachmarkState {
+            variant,
+            mode,
+            keybind_label: "Alt+C".to_owned(),
+            save_error: false,
+        });
+        cx.notify();
+    }
+
+    pub(in crate::ui) fn clips_coachmark_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let state = self.clips.engine.ui.coachmark.as_ref()?;
+        let variant = state.variant;
+        let mode = state.mode;
+        let is_picker = variant == ClipsCoachmarkVariant::ModePicker;
+        let heading = if variant == ClipsCoachmarkVariant::ExpressiveNitro
+            || (is_picker && mode == ClipsCaptureMode::Auto)
+        {
+            clips_coach_intl("O9OeEg", "When your squad loses it, Auto Clips saves it.")
+        } else {
+            clips_coach_intl("Ggh4C0", "When your squad loses it, Clips saves it.")
+        };
+        let subtitle = match variant {
+            ClipsCoachmarkVariant::ModePicker => clips_coach_intl(
+                "BtyRCT",
+                "Save the clutch plays and the chaos while you game with friends. As a Nitro member, you get Auto Clips first.",
+            ),
+            ClipsCoachmarkVariant::ExpressiveNonNitro => clips_coach_intl(
+                "kWigdu",
+                "Get early access to Clips & Auto Clips with Nitro. Save the clutch plays and the chaos while you game with friends, no extra software needed.",
+            ),
+            ClipsCoachmarkVariant::ExpressiveNitro => clips_coach_intl(
+                "M8rOjI",
+                "You're in early: Auto Clips are on for you with Nitro. We'll clip the clutch plays and the chaos while you game with friends, no keybinds required.",
+            ),
+        };
+        let art_url = "https://discord.com/assets/cc9b98ec3d958835.svg";
+        let art = self.images.get(art_url).cloned();
+        let manual_desc = if state.keybind_label.is_empty() {
+            clips_coach_intl(
+                "VfTZ7q",
+                "Set a keybind to save a Clip. Keybind can be customized anytime.",
+            )
+        } else if dc_intl::has_key("qYS+JH") {
+            dc_intl::format(
+                "qYS+JH",
+                &[("keybind", state.keybind_label.as_str().into())],
+            )
+        } else {
+            format!(
+                "Press {} to save a Clip. Keybind can be customized anytime.",
+                state.keybind_label
+            )
+        };
+        let mode_card = |id: &'static str,
+                         target: ClipsCaptureMode,
+                         glyph: &'static str,
+                         title: String,
+                         desc: String,
+                         nitro_accent: bool| {
+            let selected = mode == target;
+            div()
+                .id(id)
+                .flex_1()
+                .min_w(px(0.))
+                .p(px(16.))
+                .rounded(px(12.))
+                .border_2()
+                .border_color(if selected {
+                    if nitro_accent {
+                        rgba(0xeb459eff)
+                    } else {
+                        color("--control-primary-background-default")
+                    }
+                } else {
+                    color("--border-subtle")
+                })
+                .bg(if selected && nitro_accent {
+                    gpui::linear_gradient(
+                        135.,
+                        gpui::linear_color_stop(rgba(0xeb459e33), 0.),
+                        gpui::linear_color_stop(rgba(0x5865f233), 1.),
+                    )
+                } else {
+                    color("--background-surface-high").into()
+                })
+                .cursor_pointer()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(c) = this.clips.engine.ui.coachmark.as_mut() {
+                        c.mode = target;
+                        c.save_error = false;
+                    }
+                    cx.notify();
+                }))
+                .child(icon(
+                    glyph,
+                    22.,
+                    if selected { "--white" } else { "--icon-muted" },
+                ))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--text-strong"))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(color("--text-subtle"))
+                        .child(desc),
+                )
+        };
+
+        let body_section: AnyElement = if is_picker {
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_size(px(13.))
+                        .text_color(color("--text-subtle"))
+                        .child(clips_coach_intl("utyPWV", "You can change this anytime in"))
+                        .child(
+                            div()
+                                .id("clips-coachmark-open-settings")
+                                .cursor_pointer()
+                                .text_color(color("--text-link"))
+                                .hover(|s| s.underline())
+                                .child(clips_coach_intl("7kGdh5", "Clips Settings"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.clips.engine.ui.coachmark = None;
+                                    this.open_settings_page("clips", cx);
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .gap(px(12.))
+                        .child(mode_card(
+                            "clips-mode-off",
+                            ClipsCaptureMode::Off,
+                            "close",
+                            clips_coach_intl("uO/2T5", "Clips Off"),
+                            clips_coach_intl("l/u5Cq", "No Clips get saved."),
+                            false,
+                        ))
+                        .child(mode_card(
+                            "clips-mode-manual",
+                            ClipsCaptureMode::Manual,
+                            "clips_clips",
+                            clips_coach_intl("2Uh8Zr", "Manual Clips Only"),
+                            manual_desc,
+                            false,
+                        ))
+                        .child(mode_card(
+                            "clips-mode-auto",
+                            ClipsCaptureMode::Auto,
+                            "clips_auto",
+                            clips_coach_intl("uEs0uv", "Auto & Manual"),
+                            clips_coach_intl(
+                                "MRWtw9",
+                                "Saves your best moments using in-game events and voice activity. You can also use your keybind.",
+                            ),
+                            true,
+                        )),
+                )
+                .when(state.save_error, |col| {
+                    col.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(color("--text-feedback-critical"))
+                            .child(clips_coach_intl(
+                                "YXeYlM",
+                                "We couldn't save your capture mode. Please try again.",
+                            )),
+                    )
+                })
+                .child(
+                    div()
+                        .text_center()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(color("--text-muted"))
+                        .child(format!(
+                            "{} {}",
+                            clips_coach_intl(
+                                "03CMAJ",
+                                "Clips runs on your device to help you capture your gaming moments. They stay on your computer until you share them."
+                            ),
+                            dc_intl::t("hvVgAZ")
+                        )),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .w_full()
+                .flex()
+                .gap(px(16.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .p(px(16.))
+                        .rounded(px(8.))
+                        .bg(color("--background-mod-muted"))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(icon("clips_auto", 20., "--brand-500"))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                .child(clips_coach_intl("pGoNG5", "Clips now clip themselves")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-subtle"))
+                                .child(clips_coach_intl(
+                                    "4Ta12C",
+                                    "Auto Clips run on your PC, using in-game events and voice activity to save your best moments.",
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .p(px(16.))
+                        .rounded(px(8.))
+                        .bg(color("--background-mod-muted"))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(icon("activity_game", 20., "--brand-500"))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                .child(clips_coach_intl("L0RzNn", "Works on thousands of PC games")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-subtle"))
+                                .child(clips_coach_intl(
+                                    "vngMNi",
+                                    "Jump into your favorite multiplayer games and let Auto Clips handle the rest.",
+                                )),
+                        ),
+                )
+                .into_any_element()
+        };
+
+        let cta_label = if is_picker {
+            clips_coach_intl("liWTC0", "Done")
+        } else {
+            clips_coach_intl("n9r54F", "Check It Out")
+        };
+        let is_expressive = variant == ClipsCoachmarkVariant::ExpressiveNonNitro;
+        let pose = crate::ui::motion::modal_pose("clips-coachmark-modal");
+        Some(
+            deferred(
+                div()
+                    .id("clips-coachmark-layer")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(pose.dim(rgba(0x000000b8)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.clips.engine.ui.coachmark = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("clips-coachmark-modal")
+                            .occlude()
+                            .relative()
+                            .w(px(640.))
+                            .rounded(px(12.))
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .shadow(vec![gpui::BoxShadow {
+                                color: gpui::hsla(0., 0., 0., 0.32),
+                                offset: gpui::point(px(0.), px(12.)),
+                                blur_radius: px(28.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            }])
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .flex()
+                            .flex_col()
+                            .child(
+                                // Art banner (`art__vwHFq`, compact 168px)
+                                div()
+                                    .relative()
+                                    .w_full()
+                                    .h(px(168.))
+                                    .bg(gpui::linear_gradient(
+                                        135.,
+                                        gpui::linear_color_stop(rgba(0x23253aff), 0.),
+                                        gpui::linear_color_stop(rgba(0x47285eff), 1.),
+                                    ))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(match art {
+                                        Some(pic) => gpui::img(pic)
+                                            .h(px(132.))
+                                            .object_fit(gpui::ObjectFit::Contain)
+                                            .into_any_element(),
+                                        None => {
+                                            icon("clips_auto", 52., "--white").into_any_element()
+                                        }
+                                    })
+                                    .child(
+                                        div()
+                                            .id("clips-coachmark-close")
+                                            .absolute()
+                                            .top(px(10.))
+                                            .right(px(10.))
+                                            .size(px(32.))
+                                            .rounded_full()
+                                            .bg(rgba(0x00000066))
+                                            .hover(|s| s.bg(rgba(0x00000099)))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon("close", 18., "--white"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.clips.engine.ui.coachmark = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(32.))
+                                    .pt(px(20.))
+                                    .pb(px(28.))
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(14.))
+                                    .child(
+                                        div()
+                                            .text_center()
+                                            .text_size(px(22.))
+                                            .line_height(px(28.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(heading),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_center()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-subtle"))
+                                            .child(subtitle),
+                                    )
+                                    .child(body_section)
+                                    .when(variant == ClipsCoachmarkVariant::ExpressiveNitro, |col| {
+                                        col.child(
+                                            div()
+                                                .text_center()
+                                                .text_size(px(12.))
+                                                .text_color(color("--text-muted"))
+                                                .child(clips_coach_intl(
+                                                    "22Z9fP",
+                                                    "Auto Clips is already on for you. You can change it to Keybind Only, or turn it off in Clips settings.",
+                                                )),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .id("clips-coachmark-cta")
+                                            .mt(px(4.))
+                                            .w(px(360.))
+                                            .h(px(40.))
+                                            .rounded(px(8.))
+                                            .bg(if is_expressive {
+                                                gpui::linear_gradient(
+                                                    90.,
+                                                    gpui::linear_color_stop(rgba(0xeb459eff), 0.),
+                                                    gpui::linear_color_stop(rgba(0x5865f2ff), 1.),
+                                                )
+                                            } else {
+                                                color("--brand-500").into()
+                                            })
+                                            .hover(|s| s.opacity(0.92))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(cta_label)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if is_picker {
+                                                    let (enabled, auto) = mode.to_settings();
+                                                    this.clips
+                                                        .set_clips_capture_mode(enabled, auto);
+                                                    this.clips.engine.ui.coachmark = None;
+                                                } else if is_expressive {
+                                                    this.clips.engine.ui.coachmark = None;
+                                                    this.open_purchase(false, cx);
+                                                } else {
+                                                    this.clips.engine.ui.coachmark = None;
+                                                }
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .when(is_expressive, |col| {
+                                        col.child(
+                                            div()
+                                                .text_center()
+                                                .text_size(px(12.))
+                                                .text_color(color("--text-muted"))
+                                                .child(clips_coach_intl(
+                                                    "pMWdGA",
+                                                    "Once you join Nitro, you can choose your capture mode in Clips settings.",
+                                                )),
+                                        )
+                                    }),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_clips_coachmark(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "close" => {
+                self.clips.engine.ui.coachmark = None;
+                cx.notify();
+                "clips-coachmark: closed".to_owned()
+            }
+            "non-nitro" => {
+                self.open_clips_coachmark(ClipsCoachmarkVariant::ExpressiveNonNitro, cx);
+                "clips-coachmark: non-nitro".to_owned()
+            }
+            "nitro" => {
+                self.open_clips_coachmark(ClipsCoachmarkVariant::ExpressiveNitro, cx);
+                "clips-coachmark: nitro".to_owned()
+            }
+            _ => {
+                self.open_clips_coachmark(ClipsCoachmarkVariant::ModePicker, cx);
+                if let Some(c) = self.clips.engine.ui.coachmark.as_mut() {
+                    c.mode = ClipsCaptureMode::Auto;
+                }
+                cx.notify();
+                "clips-coachmark: mode-picker".to_owned()
+            }
+        }
+    }
+}
+
+fn clips_coach_intl(key: &str, fallback: &str) -> String {
+    if dc_intl::has_key(key) {
+        dc_intl::t(key).to_owned()
+    } else {
+        fallback.to_owned()
+    }
 }
 
 /// The modal's width, height and whether it is full-bleed (stylesheet F9ieB: `--custom-viewport-padding` 40 px a
@@ -373,5 +930,25 @@ mod tests {
         assert_eq!(modal_size((1280., 720.)), (1200., 640., false));
         assert_eq!(modal_size((2000., 1200.)), (1400., 1120., false));
         assert_eq!(modal_size((1000., 700.)), (1000., 700., true));
+    }
+
+    #[test]
+    fn clips_coachmark_633906_mode_roundtrip() {
+        assert_eq!(
+            ClipsCaptureMode::from_settings(false, false),
+            ClipsCaptureMode::Off
+        );
+        assert_eq!(
+            ClipsCaptureMode::from_settings(true, false),
+            ClipsCaptureMode::Manual
+        );
+        assert_eq!(
+            ClipsCaptureMode::from_settings(true, true),
+            ClipsCaptureMode::Auto
+        );
+        assert_eq!(ClipsCaptureMode::Off.to_settings(), (false, false));
+        assert_eq!(ClipsCaptureMode::Manual.to_settings(), (true, false));
+        assert_eq!(ClipsCaptureMode::Auto.to_settings(), (true, true));
+        assert!(dc_intl::has_key("hvVgAZ"));
     }
 }

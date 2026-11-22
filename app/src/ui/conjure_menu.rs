@@ -638,4 +638,502 @@ impl Root {
             }
         }
     }
+
+    /// Module 644441 — Conjure Agent Secrets Submission Modal (`TuMGZp` "Add your keys"):
+    /// renders optional `copy_values` list (label + `--background-mod-strong` code box +
+    /// Copy/Copied toggle `OpuAlK`/`t5VZ88`), password fields with optional host restriction
+    /// notice (`Ww9HFO`), privacy note (`jgDBJZ`), partial-save hint (`La+pe4`), error (`IrMuew`),
+    /// and Cancel/Save keys (`ETE/oC`/`DUdtms`) submitting via `POST /conjure/projects/{id}/ws-ticket`.
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub(super) fn open_conjure_secrets_modal(
+        &mut self,
+        project_id: String,
+        request_id: Option<String>,
+        note: Option<String>,
+        copy_values: Vec<ConjureCopyValue>,
+        fields: Vec<ConjureSecretFieldSpec>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut editors = Vec::with_capacity(fields.len());
+        let mut subs = Vec::with_capacity(fields.len());
+        for spec in fields {
+            let ed = cx.new(|cx| {
+                let mut e = crate::editor::Editor::new(super::editor_style(), cx);
+                e.set_masked(true);
+                e.set_placeholder(spec.hint.clone().unwrap_or_else(|| spec.label.clone()));
+                e
+            });
+            let sub = cx.subscribe(&ed, |this, _, ev: &crate::editor::EditorEvent, cx| {
+                if matches!(ev, crate::editor::EditorEvent::Edited) {
+                    if let Some(m) = this.conjure_secrets.as_mut() {
+                        m.error = None;
+                    }
+                    cx.notify();
+                }
+            });
+            subs.push(sub);
+            editors.push(ConjureSecretField {
+                name: spec.name,
+                label: spec.label,
+                hint: spec.hint,
+                hosts: spec.hosts,
+                editor: ed,
+            });
+        }
+        if let Some(first) = editors.first() {
+            gpui::Focusable::focus_handle(first.editor.read(cx), cx).focus(window, cx);
+        }
+        self.conjure_secrets = Some(ConjureSecretsModal {
+            project_id,
+            request_id,
+            note,
+            copy_values,
+            fields: editors,
+            copied_value: None,
+            submitting: false,
+            error: None,
+            _subs: subs,
+        });
+        cx.notify();
+    }
+
+    pub(super) fn conjure_secrets_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.conjure_secrets.as_ref()?;
+        let filled_count = modal
+            .fields
+            .iter()
+            .filter(|f| !f.editor.read(cx).text().trim().is_empty())
+            .count();
+        let can_submit = filled_count > 0 && !modal.submitting;
+        let pose = crate::ui::motion::modal_pose("conjure-secrets-modal");
+        let layer = div()
+            .id("conjure-secrets-modal-layer")
+            .occlude()
+            .absolute()
+            .inset_0()
+            .bg(pose.dim(rgba(0x000000b8)))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.conjure_secrets = None;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("conjure-secrets-modal")
+                    .occlude()
+                    .w(px(480.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.28),
+                        offset: gpui::point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .pt(px(20.))
+                            .pb(px(12.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(conjure_intl("TuMGZp", "Add your keys")),
+                            )
+                            .child(
+                                div()
+                                    .id("conjure-secrets-close")
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("close", 18., "--interactive-icon-default"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.conjure_secrets = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .pb(px(16.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(modal.note.clone().unwrap_or_else(|| {
+                                        conjure_intl(
+                                            "jgDBJZ",
+                                            "Stored privately for this app. Never shown in chat or to me.",
+                                        )
+                                    })),
+                            )
+                            .when(!modal.copy_values.is_empty(), |col| {
+                                col.child(div().flex().flex_col().gap(px(8.)).children(
+                                    modal.copy_values.iter().enumerate().map(|(i, cv)| {
+                                        let copied = modal.copied_value.as_deref()
+                                            == Some(cv.value.as_str());
+                                        let val_copy = cv.value.clone();
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.))
+                                                            .font_weight(FontWeight(600.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(cv.label.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .px(px(8.))
+                                                            .py(px(4.))
+                                                            .rounded(px(4.))
+                                                            .bg(color("--background-mod-strong"))
+                                                            .text_size(px(12.))
+                                                            .text_color(color("--text-default"))
+                                                            .child(cv.value.clone()),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id(gpui::SharedString::from(format!(
+                                                        "conjure-secret-copy-{i}"
+                                                    )))
+                                                    .h(px(30.))
+                                                    .px(px(12.))
+                                                    .rounded(px(6.))
+                                                    .bg(if copied {
+                                                        color("--status-positive")
+                                                    } else {
+                                                        color(
+                                                            "--control-secondary-background-default",
+                                                        )
+                                                    })
+                                                    .cursor_pointer()
+                                                    .flex()
+                                                    .items_center()
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight(600.))
+                                                    .text_color(if copied {
+                                                        color("--white")
+                                                    } else {
+                                                        color("--control-secondary-text-default")
+                                                    })
+                                                    .child(if copied {
+                                                        dc_intl::t("t5VZ88")
+                                                    } else {
+                                                        dc_intl::t("OpuAlK")
+                                                    })
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        cx.write_to_clipboard(
+                                                            gpui::ClipboardItem::new_string(
+                                                                val_copy.clone(),
+                                                            ),
+                                                        );
+                                                        if let Some(m) =
+                                                            this.conjure_secrets.as_mut()
+                                                        {
+                                                            m.copied_value = Some(val_copy.clone());
+                                                        }
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                    }),
+                                ))
+                            })
+                            .children(modal.fields.iter().map(|f| {
+                                let hosts_line = (!f.hosts.is_empty()).then(|| {
+                                    let joined = f.hosts.join(", ");
+                                    if dc_intl::has_key("Ww9HFO") {
+                                        dc_intl::format(
+                                            "Ww9HFO",
+                                            &[("hosts", Arg::Str(Cow::Owned(joined)))],
+                                        )
+                                    } else {
+                                        format!("Only these sites will get it: {joined}")
+                                    }
+                                });
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(f.label.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .h(px(38.))
+                                            .px(px(10.))
+                                            .rounded(px(6.))
+                                            .border_1()
+                                            .border_color(color("--input-border-default"))
+                                            .bg(color("--input-background-default"))
+                                            .flex()
+                                            .items_center()
+                                            .child(f.editor.clone()),
+                                    )
+                                    .when_some(hosts_line, |col, h| {
+                                        col.child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(color("--text-muted"))
+                                                .child(h),
+                                        )
+                                    })
+                            }))
+                            .when(modal.fields.len() > 1, |col| {
+                                col.child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .text_color(color("--text-muted"))
+                                        .child(conjure_intl(
+                                            "La+pe4",
+                                            "Only have some of these? Save what you have; you can add the rest later.",
+                                        )),
+                                )
+                            })
+                            .when_some(modal.error.clone(), |col, err| {
+                                col.child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(color("--text-feedback-critical"))
+                                        .child(err),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .py(px(14.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-base-lower"))
+                            .rounded_b(px(12.))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .id("conjure-secrets-cancel")
+                                    .h(px(36.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("ETE/oC"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.conjure_secrets = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("conjure-secrets-save")
+                                    .h(px(36.))
+                                    .px(px(18.))
+                                    .rounded(px(8.))
+                                    .bg(color("--brand-500"))
+                                    .when(!can_submit, |d| d.opacity(0.5))
+                                    .when(can_submit, |d| {
+                                        d.hover(|s| s.bg(color("--brand-560")))
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.submit_conjure_secrets(cx);
+                                            }))
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(conjure_intl("DUdtms", "Save keys")),
+                            ),
+                    ),
+            );
+        Some(deferred(layer).with_priority(96).into_any_element())
+    }
+
+    fn submit_conjure_secrets(&mut self, cx: &mut Context<Self>) {
+        let Some(modal) = self.conjure_secrets.as_mut() else {
+            return;
+        };
+        let mut secrets = serde_json::Map::new();
+        for f in &modal.fields {
+            let v = f.editor.read(cx).text().trim().to_owned();
+            if !v.is_empty() {
+                secrets.insert(f.name.clone(), serde_json::Value::String(v));
+            }
+        }
+        if secrets.is_empty() {
+            modal.error = Some(conjure_intl(
+                "IrMuew",
+                "Those didn't save. Check the values and try again.",
+            ));
+            cx.notify();
+            return;
+        }
+        let pid = modal.project_id.clone();
+        modal.submitting = true;
+        modal.error = None;
+        let _ = self.requests.send(conjure_ws_ticket_request(&pid));
+        cx.notify();
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_conjure_secrets(
+        &mut self,
+        arg: &str,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.conjure_secrets = None;
+            cx.notify();
+            return "conjure-secrets: closed".to_owned();
+        }
+        self.open_conjure_secrets_modal(
+            "proj_demo_644".to_owned(),
+            Some("req_01".to_owned()),
+            None,
+            vec![ConjureCopyValue {
+                label: "OAuth Redirect URI".to_owned(),
+                value: "https://conjure.discord.com/callback/proj_demo_644".to_owned(),
+            }],
+            vec![
+                ConjureSecretFieldSpec {
+                    name: "STRIPE_API_KEY".to_owned(),
+                    label: "Stripe Secret Key".to_owned(),
+                    hint: Some("sk_live_...".to_owned()),
+                    hosts: vec!["api.stripe.com".to_owned()],
+                },
+                ConjureSecretFieldSpec {
+                    name: "WEBHOOK_SECRET".to_owned(),
+                    label: "Webhook Signing Secret".to_owned(),
+                    hint: Some("whsec_...".to_owned()),
+                    hosts: vec![],
+                },
+            ],
+            window,
+            cx,
+        );
+        "conjure-secrets: opened".to_owned()
+    }
+}
+
+pub(crate) const CONJURE_WS_TICKET_KEY: &str = "conjure:ws-ticket";
+
+/// `POST /conjure/projects/{projectId}/ws-ticket` (module 644441 / 472119).
+pub(crate) fn conjure_ws_ticket_request(project_id: &str) -> Request {
+    Request::Rest {
+        key: Some(CONJURE_WS_TICKET_KEY.to_owned()),
+        method: reqwest::Method::POST,
+        route: format!("/conjure/projects/{project_id}/ws-ticket"),
+        body: Some(json!({})),
+    }
+}
+
+fn conjure_intl(key: &str, fallback: &str) -> String {
+    if dc_intl::has_key(key) {
+        dc_intl::t(key).to_owned()
+    } else {
+        fallback.to_owned()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ConjureCopyValue {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) struct ConjureSecretFieldSpec {
+    pub name: String,
+    pub label: String,
+    pub hint: Option<String>,
+    pub hosts: Vec<String>,
+}
+
+pub(crate) struct ConjureSecretField {
+    pub name: String,
+    pub label: String,
+    #[allow(dead_code)]
+    pub hint: Option<String>,
+    pub hosts: Vec<String>,
+    pub editor: gpui::Entity<crate::editor::Editor>,
+}
+
+pub(crate) struct ConjureSecretsModal {
+    pub project_id: String,
+    #[allow(dead_code)]
+    pub request_id: Option<String>,
+    pub note: Option<String>,
+    pub copy_values: Vec<ConjureCopyValue>,
+    pub fields: Vec<ConjureSecretField>,
+    pub copied_value: Option<String>,
+    pub submitting: bool,
+    pub error: Option<String>,
+    _subs: Vec<gpui::Subscription>,
+}
+
+#[cfg(test)]
+mod secrets_tests {
+    use super::*;
+
+    #[test]
+    fn conjure_secrets_644441_copy_and_ticket_route() {
+        for k in ["OpuAlK", "t5VZ88", "ETE/oC"] {
+            assert!(dc_intl::has_key(k), "missing 644441 key {k}");
+        }
+        assert_eq!(conjure_intl("TuMGZp", "Add your keys"), "Add your keys");
+        let req = conjure_ws_ticket_request("proj_99");
+        match req {
+            Request::Rest { route, .. } => assert_eq!(route, "/conjure/projects/proj_99/ws-ticket"),
+            _ => panic!("expected Rest request"),
+        }
+    }
 }

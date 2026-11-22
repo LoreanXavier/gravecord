@@ -72,6 +72,8 @@ pub(super) enum Target {
     Dm(Id),
     /// A `#channel` mention in a message (`channel-mention-context`, module 223998).
     ChannelMention(Id),
+    /// A `<@$gameId>` game mention in a message (`game-context`, module 654255 / 641290).
+    GameMention(Id),
     /// An attachment chip in a message (`attachment-link-context`, module 740024); its address and file name are kept
     /// in `State::attachment_link`.
     AttachmentLink,
@@ -2100,6 +2102,7 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::GdmCleanupSort => Some(dc_intl::t("yySzqH")),
         Target::OverlayModReportChannel(_) => Some(dc_intl::t("zp+z/E")),
         Target::OverlayUser { .. } => Some(dc_intl::t("ogxXGq")),
+        Target::GameMention(_) => Some(dc_intl::t("Hf9fuS")),
         Target::Image => Some(dc_intl::t("Zow2V5")),
         _ => None,
     }
@@ -4362,6 +4365,7 @@ impl Root {
             Target::RtcChannel { guild, channel } => self.rtc_channel_items(guild, channel),
             Target::Favorites => favorites_items(),
             Target::ChannelMention(_) => channel_mention_items(developer),
+            Target::GameMention(_) => game_mention_items(developer),
             Target::AttachmentLink => attachment_link_items(),
             Target::ForumTag(_) => forum_tag_items(),
             Target::RoleChip(_) => role_chip_items(),
@@ -6018,6 +6022,7 @@ impl Root {
                     | Target::OverlayModReportChannel(id)
                     | Target::FavoriteCategory(id)
                     | Target::ChannelMention(id)
+                    | Target::GameMention(id)
                     | Target::AuditChannel(id) => id,
                     Target::User { user, .. }
                     | Target::OverlayUser { user, .. }
@@ -6515,6 +6520,14 @@ impl Root {
                     ),
                 };
                 let _ = self.requests.send(request);
+            }
+            (Act::Mention, Target::GameMention(game_id)) => {
+                let text = format!("{}<@${game_id}> ", self.composer.read(cx).text());
+                self.composer.update(cx, |ed, _| ed.set_text(&text));
+                cx.notify();
+            }
+            (Act::ViewGameProfile, Target::GameMention(game_id)) => {
+                self.open_game_profile(game_id.to_string(), cx);
             }
             (Act::Mention, Target::User { user, .. }) => {
                 let text = format!(
@@ -8370,6 +8383,22 @@ pub(super) fn menu_check_box(on: bool) -> gpui::Div {
         })
 }
 
+/// Module 654255 / 641290 (`game-context`): Game Profile (`f7aVGn`), Mention (`P8tvKG`), Copy Game ID (`SHQGPj`).
+pub(super) fn game_mention_items(developer: bool) -> Vec<Entry> {
+    let mut out = Vec::new();
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::ViewGameProfile, dc_intl::t("f7aVGn")),
+            Row::new(Act::Mention, dc_intl::t("P8tvKG")),
+        ],
+    );
+    if developer {
+        group(&mut out, vec![Row::new(Act::CopyId, dc_intl::t("SHQGPj"))]);
+    }
+    tidy(out)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -9728,5 +9757,24 @@ mod tests {
         assert!(self_rows.contains(&"Mute".to_owned()));
         assert!(self_rows.contains(&"Deafen".to_owned()));
         assert!(!self_rows.contains(&dc_intl::t("m7TNdF").to_owned()));
+    }
+
+    #[test]
+    fn game_mention_context_654255_items_and_aria() {
+        for k in [
+            "Hf9fuS", "f7aVGn", "P8tvKG", "SHQGPj", "11pdXZ", "C5biF4", "3Dy1Rh", "BddRzS",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 654255 key {k}");
+        }
+        assert_eq!(
+            menu_aria_label(Target::GameMention(42)),
+            Some(dc_intl::t("Hf9fuS"))
+        );
+        let dev = labels(&game_mention_items(true));
+        assert!(dev.contains(&dc_intl::t("f7aVGn").to_owned()));
+        assert!(dev.contains(&dc_intl::t("P8tvKG").to_owned()));
+        assert!(dev.contains(&dc_intl::t("SHQGPj").to_owned()));
+        let non_dev = labels(&game_mention_items(false));
+        assert!(!non_dev.contains(&dc_intl::t("SHQGPj").to_owned()));
     }
 }

@@ -263,13 +263,14 @@ pub(super) enum Mark {
 /// another server without Nitro is held back and the first such one ends the list, locked. The rest is filled with the
 /// call's server's available sounds, then the defaults, each by sound id. GAP: frequently used sounds (`frequently_used`
 /// with the clock and "Frequently Used") come between favourites and the server's sounds; play counts are not kept.
-pub(super) fn quick_access(
+/// Returns `(sounds, has_locked)` for the quick access popout (module 662080 / 453997 `A`).
+pub(super) fn quick_access_with_lock(
     ctx: &Ctx,
     order: &[Id],
     sounds: &HashMap<Id, Vec<Sound>>,
     defaults: &[Sound],
     favorites: &[String],
-) -> Vec<(Sound, Mark)> {
+) -> (Vec<(Sound, Mark)>, bool) {
     let mut lists: Vec<&[Sound]> = Vec::new();
     if let Some(current) = ctx.current {
         lists.extend(sounds.get(&current).map(Vec::as_slice));
@@ -308,7 +309,8 @@ pub(super) fn quick_access(
             break;
         }
     }
-    let limit = if held.is_empty() { 6 } else { 5 };
+    let has_locked = !held.is_empty();
+    let limit = if has_locked { 5 } else { 6 };
     let by_id = |list: &[Sound]| {
         let mut list: Vec<Sound> = list.to_vec();
         list.sort_by_key(|sound| sound.id.parse::<u64>().unwrap_or(0));
@@ -339,7 +341,17 @@ pub(super) fn quick_access(
     if let Some(first) = held.into_iter().next() {
         open.push((first, Mark::Favorite));
     }
-    open
+    (open, has_locked)
+}
+
+pub(super) fn quick_access(
+    ctx: &Ctx,
+    order: &[Id],
+    sounds: &HashMap<Id, Vec<Sound>>,
+    defaults: &[Sound],
+    favorites: &[String],
+) -> Vec<(Sound, Mark)> {
+    quick_access_with_lock(ctx, order, sounds, defaults, favorites).0
 }
 
 /// The picker's sections: Favorites, the call's server, Discord Sounds (last for Nitro users), then the servers whose
@@ -1204,11 +1216,12 @@ impl Root {
     }
 
     /// Suggested Sounds (the hover popup over the bar's soundboard button, module 662080): six sounds of
-    /// [`quick_access`] in a 3x2 grid with See All. Measured in `design/dom/popouts/stream-stopped-darker-cozy.json`: 494x152, centred over the
-    /// button, padding 16, tiles 148x40 with an 8px gap.
+    /// [`quick_access_with_lock`] in a 3x2 grid with See All (`1a/hIV` / `hmBVph`), loading skeleton `H`,
+    /// and locked-sound Nitro upsell row `V` (`tw/SSq` + `pj0XBN`) when a cross-guild favorite is locked.
     pub(super) fn soundboard_suggest(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         const WIDTH: f32 = 494.;
-        const HEIGHT: f32 = 152.;
+        const BASE_HEIGHT: f32 = 152.;
+        const UPSELL_HEIGHT: f32 = 56.;
         if !self.vv.suggest
             || self.panel.popout == Some(Popout::Soundboard)
             || self.soundboard_disabled().is_some()
@@ -1225,39 +1238,186 @@ impl Root {
         };
         let ctx = self.soundboard_ctx();
         let order: Vec<Id> = self.stores.guilds.iter().map(|guild| guild.id).collect();
-        let sounds = quick_access(
+        let (sounds, has_locked) = quick_access_with_lock(
             &ctx,
             &order,
             &self.soundboard.guilds,
             &self.soundboard.defaults,
             &self.soundboard.favorites,
         );
-        if sounds.is_empty() {
+        let loading = sounds.is_empty()
+            && self.soundboard.defaults_requested
+            && self.soundboard.defaults.is_empty();
+        if sounds.is_empty() && !loading {
             return Vec::new();
         }
+        let total_height = BASE_HEIGHT + if has_locked { UPSELL_HEIGHT } else { 0. };
         let left = f32::from(anchor.left()) + f32::from(anchor.size.width) / 2.
             - WIDTH / 2.
             - self.combined_sidebar_width();
-        let top = f32::from(anchor.top()) - 17. - HEIGHT - 32.;
-        let rows: Vec<AnyElement> = sounds
-            .chunks(3)
-            .enumerate()
-            .map(|(row, chunk)| {
-                div()
-                    .flex()
-                    .gap(px(8.))
-                    .children(chunk.iter().map(|(sound, mark)| {
-                        self.soundboard_button(
-                            &format!("suggest{row}"),
-                            sound,
-                            &ctx,
-                            ButtonPlace::Quick(*mark),
-                            cx,
-                        )
-                    }))
-                    .into_any_element()
+        let top = f32::from(anchor.top()) - 17. - total_height - 32.;
+        let rows: Vec<AnyElement> = if loading {
+            // Module 662080 `H`: 6-item 148x40 loading shimmer skeleton in 2 rows of 3.
+            (0..2)
+                .map(|row| {
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .children((0..3).map(|col| {
+                            div()
+                                .id(SharedString::from(format!(
+                                    "soundboard-skeleton-{row}-{col}"
+                                )))
+                                .w(px(148.))
+                                .h(px(40.))
+                                .rounded(px(8.))
+                                .bg(color("--background-mod-subtle"))
+                        }))
+                        .into_any_element()
+                })
+                .collect()
+        } else {
+            sounds
+                .chunks(3)
+                .enumerate()
+                .map(|(row, chunk)| {
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .children(chunk.iter().map(|(sound, mark)| {
+                            self.soundboard_button(
+                                &format!("suggest{row}"),
+                                sound,
+                                &ctx,
+                                ButtonPlace::Quick(*mark),
+                                cx,
+                            )
+                        }))
+                        .into_any_element()
+                })
+                .collect()
+        };
+        let card = div()
+            .w(px(WIDTH))
+            .min_h(px(BASE_HEIGHT))
+            .p(px(16.))
+            .when(has_locked, |d| {
+                d.rounded_t(px(12.)).border_t_1().border_l_1().border_r_1()
             })
-            .collect();
+            .when(!has_locked, |d| d.rounded(px(12.)).border_1())
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .occlude()
+            // The card occludes its parent's hitbox, so it reports the pointer itself.
+            .id("soundboard-suggest-card")
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                this.soundboard_hover(*inside, cx);
+            }))
+            .child(
+                div()
+                    .h(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(icon("voice_soundboard", 16., "--text-default"))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-default"))
+                                    .child(dc_intl::t("1a/hIV")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("soundboard-see-all")
+                            .cursor_pointer()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-link"))
+                            .hover(|style| style.underline())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.vv.suggest = false;
+                                this.vv.suggest_timer += 1;
+                                this.toggle_soundboard(window, cx);
+                            }))
+                            .child(dc_intl::t("hmBVph")),
+                    ),
+            )
+            .children(rows);
+
+        // Module 662080 `V`: locked-sound Nitro upsell banner (`tw/SSq` + `pj0XBN`).
+        let upsell_row = has_locked.then(|| {
+            let copy = dc_intl::format("tw/SSq", &[("nitroTierName", dc_intl::t("lG6a5x").into())]);
+            div()
+                .id("soundboard-suggest-upsell")
+                .occlude()
+                .w(px(WIDTH))
+                .min_h(px(UPSELL_HEIGHT))
+                .px(px(16.))
+                .py(px(12.))
+                .rounded_b(px(12.))
+                .border_b_1()
+                .border_l_1()
+                .border_r_1()
+                .border_color(color("--border-subtle"))
+                .bg(gpui::linear_gradient(
+                    90.,
+                    gpui::linear_color_stop(gpui::rgba(0x8c3297a6), 0.),
+                    gpui::linear_color_stop(gpui::rgba(0x19175ca6), 1.),
+                ))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                    this.soundboard_hover(*inside, cx);
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--white"))
+                        .child(copy),
+                )
+                .child(
+                    div()
+                        .id("soundboard-suggest-get-nitro")
+                        .flex_none()
+                        .h(px(32.))
+                        .px(px(14.))
+                        .rounded(px(8.))
+                        .bg(color("--white"))
+                        .hover(|s| s.opacity(0.92))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--black"))
+                        .child(icon("nitro_wheel", 16., "--black"))
+                        .child(dc_intl::t("pj0XBN"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.vv.suggest = false;
+                            this.open_purchase(false, cx);
+                            cx.notify();
+                        })),
+                )
+        });
         vec![
             deferred(
                 // The padding below bridges the gap to the button so the pointer can cross it.
@@ -1270,62 +1430,7 @@ impl Root {
                     .on_hover(cx.listener(|this, inside: &bool, _, cx| {
                         this.soundboard_hover(*inside, cx);
                     }))
-                    .child(
-                        div()
-                            .w(px(WIDTH))
-                            .h(px(HEIGHT))
-                            .p(px(16.))
-                            .rounded(px(12.))
-                            .bg(color("--background-base-lower"))
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.))
-                            .occlude()
-                            // The card occludes its parent's hitbox, so it reports the pointer itself.
-                            .id("soundboard-suggest-card")
-                            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
-                                this.soundboard_hover(*inside, cx);
-                            }))
-                            .child(
-                                div()
-                                    .h(px(24.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(8.))
-                                            .child(icon("voice_soundboard", 16., "--text-default"))
-                                            .child(
-                                                div()
-                                                    .text_size(px(14.))
-                                                    .line_height(px(18.))
-                                                    .font_weight(FontWeight(500.))
-                                                    .text_color(color("--text-default"))
-                                                    .child("Suggested Sounds"),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("soundboard-see-all")
-                                            .cursor_pointer()
-                                            .text_size(px(14.))
-                                            .line_height(px(18.))
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--text-link"))
-                                            .hover(|style| style.underline())
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.vv.suggest = false;
-                                                this.vv.suggest_timer += 1;
-                                                this.toggle_soundboard(window, cx);
-                                            }))
-                                            .child("See All"),
-                                    ),
-                            )
-                            .children(rows),
-                    ),
+                    .child(div().flex().flex_col().child(card).children(upsell_row)),
             )
             .with_priority(1)
             .into_any_element(),

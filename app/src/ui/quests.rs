@@ -982,32 +982,38 @@ impl Root {
         let reward_visual = if enrolled {
             progress_badge(76., pct_int, completed)
         } else {
-            div()
-                .flex_none()
-                .size(px(80.))
-                .rounded(px(10.))
-                .overflow_hidden()
-                .bg(color("--background-base-lowest"))
-                .border_1()
-                .border_color(color("--border-subtle"))
-                .flex()
-                .items_center()
-                .justify_center()
-                .children(
-                    reward_img.map(|im| img(im).size_full().object_fit(gpui::ObjectFit::Cover)),
-                )
-                .when(
-                    quest.config.assets_reward_tile.is_none()
-                        && quest.config.assets_game_tile.is_none(),
-                    |el| {
-                        el.child(icon(
-                            if is_orbs { "pm_orbs" } else { "home_quests" },
-                            32.,
-                            "--text-brand",
-                        ))
-                    },
-                )
-                .into_any_element()
+            let reward_is_nitro = quest
+                .config
+                .has_reward(dc_state::quests::reward::FRACTIONAL_PREMIUM);
+            let is_nitro = self.premium() == dc_state::premium::PremiumType::Nitro;
+            let orb_amt = quest
+                .user_status
+                .as_ref()
+                .and_then(|s| s.orb_quantity_claimed)
+                .or_else(|| quest.config.orb_quantity(is_nitro))
+                .unwrap_or(0);
+            let primary_name = quest.config.primary_reward_name(false);
+            let tile_label = quest_reward_tile_label(
+                is_orbs,
+                claimed,
+                orb_amt,
+                (!primary_name.is_empty()).then_some(primary_name.as_str()),
+            );
+            self.quest_reward_tile(
+                QuestRewardTileProps {
+                    id: format!("quest-reward-tile-{}", quest.id),
+                    image: reward_img,
+                    size_px: Some(80.),
+                    is_orbs,
+                    is_nitro: reward_is_nitro,
+                    learn_more: Some(QuestRewardLearnMore::Text),
+                    alt_label: tile_label,
+                },
+                Some(Box::new(move |this, cx| {
+                    this.open_quests(cx);
+                })),
+                cx,
+            )
         };
 
         let body = div()
@@ -3200,12 +3206,34 @@ impl Root {
             completed,
         );
         let footer_left: AnyElement = if is_bounty {
+            let bounty_link = modal.cta_link.clone();
+            let bounty_details = self.quest_advertiser_details(
+                "bounty-quest-advertiser",
+                modal.title.clone(),
+                dc_intl::t("o6FLcF").to_owned(),
+                if modal.cta_subtitle.is_empty() {
+                    None
+                } else {
+                    Some(modal.cta_subtitle.clone())
+                },
+                None,
+                true,
+                Box::new(move |this, cx| {
+                    if !bounty_link.is_empty() {
+                        this.follow_link(&bounty_link, "", cx);
+                    }
+                }),
+                cx,
+            );
             div()
+                .flex_1()
+                .min_w_0()
                 .flex()
                 .items_center()
                 .gap(px(10.))
                 .child(
                     div()
+                        .flex_none()
                         .size(px(36.))
                         .rounded(px(8.))
                         .bg(rgba(0x5865f233))
@@ -3214,24 +3242,7 @@ impl Root {
                         .justify_center()
                         .child(icon("home_quests", 18., "--white")),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(gpui::FontWeight(600.))
-                                .text_color(color("--text-strong"))
-                                .child(modal.title.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(color("--text-muted"))
-                                .child(dc_intl::t("o6FLcF")),
-                        ),
-                )
+                .child(bounty_details)
                 .into_any_element()
         } else {
             let reward_tip =
@@ -3310,54 +3321,25 @@ impl Root {
                 "EQa7os",
                 &[("questName", dc_intl::Arg::Str(modal.title.as_str().into()))],
             );
-            let adv_sub = if modal.publisher.is_empty() {
-                modal.cta_subtitle.clone()
+            let (adv_sub, adv_cta) = if modal.publisher.is_empty() {
+                (modal.cta_subtitle.clone(), None)
             } else if modal.cta_subtitle.is_empty() {
-                modal.publisher.clone()
+                (modal.publisher.clone(), None)
             } else {
-                format!("{} \u{00b7} {}", modal.publisher, modal.cta_subtitle)
+                (modal.publisher.clone(), Some(modal.cta_subtitle.clone()))
             };
-            let advertiser = self.with_tip(
-                "video-quest-advertiser-tip".to_owned(),
-                super::tooltip::Tip::text(dc_intl::t("EuHF34"), super::tooltip::Side::Top),
-                div()
-                    .id("video-quest-advertiser")
-                    .min_w_0()
-                    .cursor_pointer()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        if !adv_link.is_empty() {
-                            this.follow_link(&adv_link, "", cx);
-                        }
-                    }))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(gpui::FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child(adv_title),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .child(icon("circle_check", 16., "--icon-muted"))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .font_weight(gpui::FontWeight(500.))
-                                    .text_color(color("--text-subtle"))
-                                    .child(adv_sub),
-                            ),
-                    ),
+            let advertiser = self.quest_advertiser_details(
+                "video-quest-advertiser",
+                adv_title,
+                adv_sub,
+                adv_cta,
+                Some("circle_check"),
+                false,
+                Box::new(move |this, cx| {
+                    if !adv_link.is_empty() {
+                        this.follow_link(&adv_link, "", cx);
+                    }
+                }),
                 cx,
             );
             div()
@@ -3530,6 +3512,259 @@ impl Root {
             }
         }
     }
+
+    /// Module 637691 — Video Quest / Bounty Advertiser Header Details CTA (`Check it out!`).
+    /// Hover surface `--background-mod-subtle` (`10px` radius, `4px 10px 4px 8px` padding, flush
+    /// `-4px -10px -4px -8px`), `EuHF34` tooltip, optional prefix icon, and 4x4px `--border-strong`
+    /// circular dot spacer between `subtitle` and `subtitle_cta`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn quest_advertiser_details(
+        &self,
+        id: &'static str,
+        title: String,
+        subtitle: String,
+        subtitle_cta: Option<String>,
+        prefix_icon: Option<&'static str>,
+        is_flush: bool,
+        on_click: QuestClick,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let box_el = div()
+            .id(id)
+            .min_w_0()
+            .when(is_flush, |d| {
+                d.mt(px(-4.)).mr(px(-10.)).mb(px(-4.)).ml(px(-8.))
+            })
+            .pt(px(4.))
+            .pr(px(10.))
+            .pb(px(4.))
+            .pl(px(8.))
+            .rounded(px(10.))
+            .hover(|s| s.bg(color("--background-mod-subtle")))
+            .cursor_pointer()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                on_click(this, cx);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .truncate()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(gpui::FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child(title),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .when_some(prefix_icon, |row, glyph| {
+                        row.child(icon(glyph, 14., "--icon-muted"))
+                    })
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(gpui::FontWeight(500.))
+                            .text_color(color("--text-subtle"))
+                            .child(subtitle),
+                    )
+                    .when_some(subtitle_cta.filter(|s| !s.is_empty()), |row, cta| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .mx(px(2.))
+                                .size(px(4.))
+                                .rounded_full()
+                                .bg(color("--border-strong")),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(gpui::FontWeight(500.))
+                                .text_color(color("--text-subtle"))
+                                .child(cta),
+                        )
+                    }),
+            );
+        self.with_tip(
+            format!("{id}-tip"),
+            super::tooltip::Tip::text(dc_intl::t("EuHF34"), super::tooltip::Side::Top),
+            box_el,
+            cx,
+        )
+        .into_any_element()
+    }
+
+    /// Module 639701 — Shared `QuestRewardTile`: `64x64` default (or custom/full-width),
+    /// `6px 12px 32px rgba(0,0,0,.24)` drop shadow, `1px rgba(255,255,255,.16)` highlight rim,
+    /// Nitro fractional visual variant, and optional `learnMoreStyle` (`Text` `DYAleT` or `Icon`)
+    /// hover overlay.
+    pub(super) fn quest_reward_tile(
+        &self,
+        props: QuestRewardTileProps,
+        on_click: Option<QuestClick>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let size = props.size_px.unwrap_or(64.);
+        let id_str = props.id.clone();
+        let has_learn = props.learn_more.is_some();
+        let has_image = props.image.is_some();
+        let tile = div()
+            .id(SharedString::from(id_str))
+            .group("quest-reward-tile")
+            .relative()
+            .flex_none()
+            .size(px(size))
+            .rounded(px(if has_learn { 8. } else { 4. }))
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgba(0xffffff29))
+            .bg(if props.is_nitro {
+                gpui::linear_gradient(
+                    135.,
+                    gpui::linear_color_stop(rgba(0x5865f2ff), 0.),
+                    gpui::linear_color_stop(rgba(0xeb459eff), 1.),
+                )
+            } else {
+                color("--background-base-lowest").into()
+            })
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::hsla(0., 0., 0., 0.24),
+                offset: gpui::point(px(6.), px(12.)),
+                blur_radius: px(32.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .flex()
+            .items_center()
+            .justify_center()
+            .when_some(on_click, |d, handler| {
+                d.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        handler(this, cx);
+                        cx.notify();
+                    }))
+            })
+            .children(
+                props
+                    .image
+                    .map(|im| img(im).size_full().object_fit(gpui::ObjectFit::Cover)),
+            )
+            .when(!has_image, |d| {
+                d.child(icon(
+                    if props.is_nitro {
+                        "nitro_wheel"
+                    } else if props.is_orbs {
+                        "pm_orbs"
+                    } else {
+                        "home_quests"
+                    },
+                    (size * 0.42).clamp(20., 40.),
+                    if props.is_nitro {
+                        "--white"
+                    } else {
+                        "--text-brand"
+                    },
+                ))
+            })
+            .when_some(props.learn_more, |d, style| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x00000080))
+                        .opacity(0.)
+                        .group_hover("quest-reward-tile", |s| s.opacity(1.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .child(match style {
+                            QuestRewardLearnMore::Text => div()
+                                .text_center()
+                                .text_size(px(11.))
+                                .line_height(px(13.))
+                                .font_weight(gpui::FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(quest_reward_learn_more_text())
+                                .into_any_element(),
+                            QuestRewardLearnMore::Icon => {
+                                icon("info_circle", 16., "--white").into_any_element()
+                            }
+                        }),
+                )
+            });
+        self.with_tip(
+            format!("{}-alt-tip", props.id),
+            super::tooltip::Tip::body(
+                super::tooltip::Body::Text(SharedString::from(props.alt_label)),
+                super::tooltip::Side::Top,
+            ),
+            tile,
+            cx,
+        )
+        .into_any_element()
+    }
+}
+
+type QuestClick = Box<dyn Fn(&mut Root, &mut Context<Root>)>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) enum QuestRewardLearnMore {
+    Text,
+    Icon,
+}
+
+pub(super) struct QuestRewardTileProps {
+    pub id: String,
+    pub image: Option<std::sync::Arc<gpui::Image>>,
+    pub size_px: Option<f32>,
+    pub is_orbs: bool,
+    pub is_nitro: bool,
+    pub learn_more: Option<QuestRewardLearnMore>,
+    pub alt_label: String,
+}
+
+/// Module 639701: resolves `QuestRewardTile` alt label (`nLXlh+` `"{orbAmount} Orbs"` for claimed
+/// virtual currency quests, else reward name or `UMclVN` `"Quest reward"`).
+pub(super) fn quest_reward_tile_label(
+    is_orbs: bool,
+    claimed: bool,
+    orb_amount: u64,
+    reward_name: Option<&str>,
+) -> String {
+    if is_orbs && claimed {
+        return dc_intl::format("nLXlh+", &[("orbAmount", (orb_amount as f64).into())]);
+    }
+    reward_name
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| dc_intl::t("UMclVN").to_owned())
+}
+
+/// Module 639701: `DYAleT` `"Learn\nMore"` hover overlay copy.
+pub(super) fn quest_reward_learn_more_text() -> String {
+    let raw = dc_intl::t("DYAleT");
+    if raw.trim().is_empty() {
+        "Learn\nMore".to_owned()
+    } else {
+        raw.replace("<p>", "")
+            .replace("</p>", "\n")
+            .trim()
+            .to_owned()
+    }
 }
 
 fn quest_asset(quest: &str, asset: &str) -> String {
@@ -3620,5 +3855,17 @@ mod tests {
             video_quest_reward_tooltip(true, true, "Orb Crown"),
             dc_intl::format("12IWP2", &[("rewardName", "Orb Crown".into())])
         );
+    }
+
+    #[test]
+    fn quest_advertiser_637691_and_reward_tile_639701_copy() {
+        for k in ["EuHF34", "nLXlh+", "UMclVN", "DYAleT"] {
+            assert!(dc_intl::has_key(k), "missing 637691/639701 key {k}");
+        }
+        let orbs = quest_reward_tile_label(true, true, 500, Some("Orbs"));
+        assert!(orbs.contains("500"), "got {orbs}");
+        let fallback = quest_reward_tile_label(false, false, 0, None);
+        assert_eq!(fallback, dc_intl::t("UMclVN"));
+        assert!(!quest_reward_learn_more_text().is_empty());
     }
 }

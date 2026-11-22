@@ -22,6 +22,8 @@ pub enum Kind {
     /// drawn as a link chip with the attachment icon (module 862316).
     AttachmentLink(String),
     User(u64),
+    /// `<@$123>` (`gameMention`, module 654255 / 827669).
+    Game(u64),
     Role(u64),
     Channel(u64),
     /// `@everyone` or `@here`, kept as written.
@@ -298,6 +300,9 @@ fn angle_token(rest: &str, mentions: bool) -> Option<(usize, Kind, String)> {
             .flatten()
     };
     if mentions {
+        if let Some(id) = inner.strip_prefix("@$").and_then(whole_number) {
+            return Some((consumed, Kind::Game(id), raw));
+        }
         if let Some(id) = inner.strip_prefix("@&").and_then(whole_number) {
             return Some((consumed, Kind::Role(id), raw));
         }
@@ -824,6 +829,7 @@ mod tests {
         assert_eq!(kinds("<@!12>"), [Kind::User(12)]);
         assert_eq!(kinds("<@&34>"), [Kind::Role(34)]);
         assert_eq!(kinds("<#56>"), [Kind::Channel(56)]);
+        assert_eq!(kinds("<@$789>"), [Kind::Game(789)]);
         assert_eq!(kinds("hi @everyone-free"), [Kind::Everyone]);
         assert_eq!(kinds("@here"), [Kind::Everyone]);
     }

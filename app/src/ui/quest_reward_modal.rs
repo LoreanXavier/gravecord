@@ -97,6 +97,10 @@ pub(crate) enum QuestRewardModalState {
         /// Module 529398 In-Game Reward Claimed panel (`0/Yz+Y`, `v1u/zq`, `OD6Tvf`, `loyTil`).
         is_in_game_reward: bool,
         reward_asset_url: Option<String>,
+        /// Module 651663 Quest Collectible Avatar Decoration Reward Claim Modal (`0/Yz+Y`, `MAS7uK`, `hjaYYn`).
+        collectible_sku_id: Option<String>,
+        collectible_applied: bool,
+        collectible_expiry_copy: Option<String>,
     },
 }
 
@@ -200,10 +204,36 @@ impl Root {
                 .unwrap_or_else(|| "Quest Reward".to_owned());
             let _ = self.requests.send(claim_quest_reward_request(&quest.id));
             let is_in_game_reward = quest.config.has_reward(dc_state::quests::reward::IN_GAME);
+            let collectible_reward = quest
+                .config
+                .rewards
+                .iter()
+                .find(|r| r.kind == dc_state::quests::reward::COLLECTIBLE);
+            let collectible_sku_id = collectible_reward.and_then(|r| {
+                r.sku_id
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| Some(quest.id.clone()))
+            });
+            if let Some(sku_id) = collectible_sku_id.as_deref() {
+                let _ = self.requests.send(Request::Fetch {
+                    key: format!("collectible-product:{sku_id}"),
+                    route: format!("/collectibles-products/{sku_id}"),
+                });
+            }
+            let collectible_expiry_copy = collectible_sku_id.as_ref().map(|_| {
+                collectible_reward_expiry_copy(
+                    &reward_name,
+                    premium == dc_state::premium::PremiumType::Nitro,
+                    None,
+                )
+            });
             let needs_code = quest
                 .config
                 .has_reward(dc_state::quests::reward::REWARD_CODE)
-                || (!is_in_game_reward && !quest.config.has_virtual_currency_reward());
+                || (!is_in_game_reward
+                    && collectible_sku_id.is_none()
+                    && !quest.config.has_virtual_currency_reward());
             if needs_code {
                 let _ = self
                     .requests
@@ -237,6 +267,9 @@ impl Root {
                 orbs_balance,
                 is_in_game_reward,
                 reward_asset_url,
+                collectible_sku_id,
+                collectible_applied: false,
+                collectible_expiry_copy,
             });
         } else {
             self.quest_reward_modal = Some(QuestRewardModalState::Error {
@@ -595,6 +628,9 @@ impl Root {
                 orbs_balance,
                 is_in_game_reward,
                 reward_asset_url,
+                collectible_sku_id,
+                collectible_applied,
+                collectible_expiry_copy,
             } => {
                 let heading = dc_intl::format(
                     "EAYZAr",
@@ -842,6 +878,154 @@ impl Root {
                                                 this.quest_reward_modal = None;
                                                 this.quests_open_orbs_shop(cx);
                                             })),
+                                    )
+                                    .into_any_element()
+                            } else if let Some(sku_id) = collectible_sku_id.clone() {
+                                // Module 651663: Quest Collectible Avatar Decoration Reward Claim Modal
+                                // (`loyTil`, 152px avatar decoration preview, `0/Yz+Y` "Congratulations!",
+                                // duration/Nitro retention copy `l9uXL8`/`o97tNn`/`PkyRZo`, and `MAS7uK`
+                                // "Use Now" / disabled `hjaYYn` "Decoration Applied").
+                                let reward_header = format!(
+                                    "{} | {}",
+                                    dc_intl::t("loyTil").trim(),
+                                    reward_name
+                                );
+                                let applied = *collectible_applied;
+                                let expiry_text = collectible_expiry_copy
+                                    .clone()
+                                    .unwrap_or_else(|| {
+                                        collectible_reward_expiry_copy(
+                                            reward_name,
+                                            self.premium()
+                                                == dc_state::premium::PremiumType::Nitro,
+                                            None,
+                                        )
+                                    });
+                                let me_avatar = self
+                                    .stores
+                                    .current_user
+                                    .as_ref()
+                                    .and_then(|u| self.images.get(&super::avatar_source(u).0))
+                                    .cloned();
+                                let deco_img = reward_asset_url
+                                    .as_deref()
+                                    .and_then(|u| self.images.get(u).cloned());
+                                div()
+                                    .id("quest-collectible-reward-panel")
+                                    .flex_1()
+                                    .min_w_0()
+                                    .p(px(24.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(16.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-muted"))
+                                            .truncate()
+                                            .child(reward_header),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .justify_center()
+                                            .gap(px(16.))
+                                            .child(
+                                                // 152px avatar + avatar decoration ring preview (`SIZE_152`)
+                                                div()
+                                                    .relative()
+                                                    .size(px(152.))
+                                                    .rounded_full()
+                                                    .border_2()
+                                                    .border_color(color("--brand-500"))
+                                                    .bg(linear_gradient(
+                                                        135.,
+                                                        linear_color_stop(rgba(0x5865f244), 0.),
+                                                        linear_color_stop(rgba(0xeb459e44), 1.),
+                                                    ))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(match me_avatar {
+                                                        Some(pic) => gpui::img(pic)
+                                                            .size(px(124.))
+                                                            .rounded_full()
+                                                            .object_fit(gpui::ObjectFit::Cover)
+                                                            .into_any_element(),
+                                                        None => icon("nitro_wheel", 52., "--white")
+                                                            .into_any_element(),
+                                                    })
+                                                    .children(deco_img.map(|pic| {
+                                                        gpui::img(pic)
+                                                            .absolute()
+                                                            .inset_0()
+                                                            .size(px(152.))
+                                                            .object_fit(gpui::ObjectFit::Contain)
+                                                    })),
+                                            )
+                                            .child(
+                                                div()
+                                                    .mb(px(8.))
+                                                    .flex()
+                                                    .flex_col()
+                                                    .items_center()
+                                                    .gap(px(4.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(22.))
+                                                            .line_height(px(28.))
+                                                            .font_weight(FontWeight(600.))
+                                                            .text_color(color("--text-strong"))
+                                                            .text_center()
+                                                            .child(dc_intl::t("0/Yz+Y")),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(14.))
+                                                            .line_height(px(20.))
+                                                            .font_weight(FontWeight(500.))
+                                                            .text_color(color("--text-subtle"))
+                                                            .text_center()
+                                                            .child(expiry_text),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("quest-collectible-apply-btn")
+                                            .w_full()
+                                            .h(px(36.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-secondary-background-default"))
+                                            .when(applied, |d| d.opacity(0.6))
+                                            .when(!applied, |d| {
+                                                d.hover(|s| {
+                                                    s.bg(color(
+                                                        "--control-secondary-background-hover",
+                                                    ))
+                                                })
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.apply_quest_collectible_decoration(
+                                                        &sku_id, cx,
+                                                    );
+                                                }))
+                                            })
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--control-secondary-text-default"))
+                                            .child(if applied {
+                                                dc_intl::t("hjaYYn")
+                                            } else {
+                                                dc_intl::t("MAS7uK")
+                                            }),
                                     )
                                     .into_any_element()
                             } else if *is_in_game_reward {
@@ -1442,6 +1626,33 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> String {
         match arg.trim() {
+            "collectible" => {
+                self.member_quest_popout = None;
+                self.quest_reward_modal = Some(QuestRewardModalState::Claimed {
+                    quest_id: "quest_collectible_651663".to_owned(),
+                    quest_name: "Starfall Odyssey".to_owned(),
+                    game_title: "Starfall Odyssey".to_owned(),
+                    publisher: "Nebula Studios".to_owned(),
+                    reward_name: "Starfall Halo".to_owned(),
+                    reward_code: None,
+                    is_game_quest: true,
+                    cta_label: "Launch Game".to_owned(),
+                    cta_url: "https://discord.com/quests".to_owned(),
+                    orbs_earned: None,
+                    orbs_balance: None,
+                    is_in_game_reward: false,
+                    reward_asset_url: None,
+                    collectible_sku_id: Some("123456789012345678".to_owned()),
+                    collectible_applied: false,
+                    collectible_expiry_copy: Some(collectible_reward_expiry_copy(
+                        "Starfall Halo",
+                        true,
+                        None,
+                    )),
+                });
+                cx.notify();
+                "quest-reward-modal: collectible".to_owned()
+            }
             "in-game" => {
                 self.member_quest_popout = None;
                 self.quest_reward_modal = Some(QuestRewardModalState::Claimed {
@@ -1458,6 +1669,9 @@ impl Root {
                     orbs_balance: None,
                     is_in_game_reward: true,
                     reward_asset_url: None,
+                    collectible_sku_id: None,
+                    collectible_applied: false,
+                    collectible_expiry_copy: None,
                 });
                 cx.notify();
                 "quest-reward-modal: in-game".to_owned()
@@ -1478,6 +1692,9 @@ impl Root {
                     orbs_balance: Some(1450),
                     is_in_game_reward: false,
                     reward_asset_url: None,
+                    collectible_sku_id: None,
+                    collectible_applied: false,
+                    collectible_expiry_copy: None,
                 });
                 cx.notify();
                 "quest-reward-modal: orbs".to_owned()
@@ -1498,6 +1715,9 @@ impl Root {
                     orbs_balance: None,
                     is_in_game_reward: false,
                     reward_asset_url: None,
+                    collectible_sku_id: None,
+                    collectible_applied: false,
+                    collectible_expiry_copy: None,
                 });
                 cx.notify();
                 "quest-reward-modal: claimed".to_owned()
@@ -1579,11 +1799,68 @@ impl Root {
             other => format!("quest-reward-modal: unknown {other}"),
         }
     }
+
+    /// Module 651663: applies the claimed Quest avatar decoration (`PATCH /users/@me` with
+    /// `{ avatar_decoration_sku_id }`) and flips the button state to `"Decoration Applied"` (`hjaYYn`).
+    fn apply_quest_collectible_decoration(&mut self, sku_id: &str, cx: &mut Context<Self>) {
+        let _ = self.requests.send(Request::Rest {
+            key: Some("quest-apply-avatar-decoration".to_owned()),
+            method: reqwest::Method::PATCH,
+            route: "/users/@me".to_owned(),
+            body: Some(serde_json::json!({ "avatar_decoration_sku_id": sku_id })),
+        });
+        if let Some(QuestRewardModalState::Claimed {
+            collectible_applied,
+            ..
+        }) = self.quest_reward_modal.as_mut()
+        {
+            *collectible_applied = true;
+        }
+        cx.notify();
+    }
+}
+
+/// Module 651663 / 61387.FA: resolves retention/expiry copy for a claimed avatar decoration reward.
+pub(super) fn collectible_reward_expiry_copy(
+    reward_name: &str,
+    has_nitro: bool,
+    expiration_date: Option<&str>,
+) -> String {
+    match (has_nitro, expiration_date) {
+        (true, Some(exp)) => dc_intl::format(
+            "PkyRZo",
+            &[
+                ("rewardName", Arg::Str(Cow::Borrowed(reward_name))),
+                ("expirationDate", Arg::Str(Cow::Borrowed(exp))),
+            ],
+        ),
+        (true, None) => dc_intl::format(
+            "o97tNn",
+            &[("rewardName", Arg::Str(Cow::Borrowed(reward_name)))],
+        ),
+        (false, _) => dc_intl::format(
+            "l9uXL8",
+            &[("decorationName", Arg::Str(Cow::Borrowed(reward_name)))],
+        ),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quest_collectible_651663_copy_and_keys() {
+        for k in ["0/Yz+Y", "hjaYYn", "MAS7uK", "l9uXL8", "o97tNn", "PkyRZo"] {
+            assert!(dc_intl::has_key(k), "missing 651663 key {k}");
+        }
+        let nitro_perm = collectible_reward_expiry_copy("Starfall Halo", true, None);
+        assert!(nitro_perm.contains("Starfall Halo") && nitro_perm.contains("Nitro"));
+        let nitro_exp = collectible_reward_expiry_copy("Starfall Halo", true, Some("Dec 31"));
+        assert!(nitro_exp.contains("Dec 31"));
+        let forever = collectible_reward_expiry_copy("Starfall Halo", false, None);
+        assert!(forever.contains("Starfall Halo"));
+    }
 
     #[test]
     fn member_quest_popout_formats_intl_labels() {

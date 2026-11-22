@@ -3015,6 +3015,20 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_stage_preview(cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["clips-coachmark", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_clips_coachmark(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["conjure-secrets", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_conjure_secrets(&arg, window, cx))
+                    })
+                    .unwrap_or_else(|_| "conjure-secrets: window closed".to_owned());
+                let _ = writeln!(output, "{msg}");
+            }
             ["content-warning", mode] => {
                 let msg = root.update(cx, |root, cx| root.script_content_warning(mode, cx));
                 let _ = writeln!(output, "{msg}");

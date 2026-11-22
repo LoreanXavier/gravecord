@@ -695,6 +695,19 @@ impl ClipsState {
 
 /// The tests' view of the state, without a window.
 impl ClipsState {
+    pub(in crate::ui) fn clips_capture_mode(&self) -> (bool, bool) {
+        (
+            self.store.settings.clips_enabled,
+            self.store.settings.enable_autoclipping.unwrap_or(false),
+        )
+    }
+
+    pub(in crate::ui) fn set_clips_capture_mode(&mut self, enabled: bool, auto: bool) {
+        self.store.set_enabled(enabled);
+        self.store.settings.enable_autoclipping = Some(auto);
+        self.save();
+    }
+
     #[cfg(test)]
     fn detached(store: ClipsStore) -> Self {
         Self {
@@ -1650,24 +1663,20 @@ impl Root {
                 ButtonKind::Secondary,
             ));
         let gallery = (!storage::is_capture_run()).then(|| {
-            div()
-                .pt(px(8.))
-                .flex()
-                .items_start()
-                .child(
-                    div()
-                        .id("clips-open-gallery")
-                        .flex_none()
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.clips_open_gallery(crate::ui::clips::Facet::All, cx);
-                        }))
-                        .child(button(
-                            "clips-open-gallery-button",
-                            "Open Clips Gallery",
-                            ButtonKind::Secondary,
-                        )),
-                )
+            div().pt(px(8.)).flex().items_start().child(
+                div()
+                    .id("clips-open-gallery")
+                    .flex_none()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.clips_open_gallery(crate::ui::clips::Facet::All, cx);
+                    }))
+                    .child(button(
+                        "clips-open-gallery-button",
+                        "Open Clips Gallery",
+                        ButtonKind::Secondary,
+                    )),
+            )
         });
         div()
             .flex()

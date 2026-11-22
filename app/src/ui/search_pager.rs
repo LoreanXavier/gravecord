@@ -56,9 +56,22 @@ pub(super) enum Item {
     Next { disabled: bool },
 }
 
-/// `getNeighborBounds` and `getPageList` of module 662203 (`hideMaxPage` false): Previous, page 1 and a gap when
-/// the window of `visible` pages leaves it out, the window, a gap and the last page, Next.
+/// `getNeighborBounds` and `getPageList` of module 662203: Previous, page 1 and a gap when
+/// the window of `visible` pages leaves it out, the window, optional gap and last page (unless
+/// `hide_max_page`), Next.
 pub(super) fn page_list(total_pages: u64, selected: u64, visible: u64) -> Vec<Item> {
+    page_list_opts(total_pages, selected, visible, false)
+}
+
+pub(super) fn page_list_opts(
+    total_pages: u64,
+    selected: u64,
+    visible: u64,
+    hide_max_page: bool,
+) -> Vec<Item> {
+    if total_pages <= 1 {
+        return Vec::new();
+    }
     let up = visible.div_ceil(2);
     let down = visible / 2;
     let (low, high) = if selected <= up {
@@ -82,12 +95,17 @@ pub(super) fn page_list(total_pages: u64, selected: u64, visible: u64) -> Vec<It
         low += 2;
     }
     if high < total_pages as i64 {
-        right.push(Item::Gap { left: false });
-        right.push(Item::Page {
-            page: total_pages,
-            selected: false,
-        });
-        high -= 2;
+        if !hide_max_page {
+            right.push(Item::Gap { left: false });
+            right.push(Item::Page {
+                page: total_pages,
+                selected: false,
+            });
+            high -= 2;
+        } else {
+            right.push(Item::Gap { left: false });
+            high -= 1;
+        }
     }
     items.extend((low..=high).map(|page| Item::Page {
         page: page as u64,
@@ -98,6 +116,12 @@ pub(super) fn page_list(total_pages: u64, selected: u64, visible: u64) -> Vec<It
         disabled: selected == total_pages,
     });
     items
+}
+
+/// Accessible label for a page button per module 662203 (`IGMs8S`: `"Page {pageNumber}"`).
+#[allow(dead_code)]
+pub(super) fn page_aria_label(page: u64) -> String {
+    dc_intl::format("IGMs8S", &[("pageNumber", (page as f64).into())])
 }
 
 /// The page whose number field is open, and the field.
@@ -144,7 +168,7 @@ impl Root {
             style.line_height = 20.;
             Editor::new(style, cx)
         });
-        let events = cx.subscribe(&field, |this, _, event: &EditorEvent, cx| {
+        let events = cx.subscribe(&field, |this, ed, event: &EditorEvent, cx| {
             match event {
                 EditorEvent::Submit(text) => {
                     let pages = this.search_total_pages();
@@ -159,7 +183,14 @@ impl Root {
                         search.jump = None;
                     }
                 }
-                EditorEvent::Edited => {}
+                EditorEvent::Edited => {
+                    let raw = ed.read(cx).text().to_owned();
+                    let digits: String =
+                        raw.chars().filter(|c| c.is_ascii_digit()).take(4).collect();
+                    if digits != raw {
+                        ed.update(cx, |editor, _| editor.set_text(&digits));
+                    }
+                }
             }
             cx.notify();
         });
@@ -341,9 +372,10 @@ impl Root {
                     Some(jump) => nav.child(
                         div()
                             .w(px(50.))
-                            .h(px(40.))
-                            .mx(px(4.))
-                            .px(px(12.))
+                            .h(px(36.))
+                            .ml(px(6.))
+                            .mr(px(10.))
+                            .px(px(10.))
                             .rounded(px(8.))
                             .border_1()
                             .border_color(color("--input-border-default"))
@@ -360,10 +392,18 @@ impl Root {
                                 "search-page-gap-right"
                             })
                             .w(px(ROUND))
+                            .h(px(ROUND))
                             .mx(px(4.))
-                            .my(px(8.))
+                            .my(px(4.))
+                            .rounded(px(14.))
                             .cursor_pointer()
+                            .hover(|style| {
+                                style
+                                    .bg(color("--background-mod-normal"))
+                                    .text_color(color("--interactive-text-hover"))
+                            })
                             .flex()
+                            .items_center()
                             .justify_center()
                             .text_size(px(14.))
                             .line_height(px(18.))
@@ -445,5 +485,16 @@ mod tests {
         assert!(limits(25_000, 399 * 25).warning);
         // Exactly 10,000 is not limited: page 400 is the real last page.
         assert!(!limits(10_000, 399 * 25).warning);
+    }
+
+    #[test]
+    fn paginator_662203_aria_label_and_hide_max_page() {
+        assert!(dc_intl::has_key("IGMs8S"));
+        let lbl = super::page_aria_label(7);
+        assert!(lbl.contains('7'), "got {lbl}");
+        assert!(super::page_list_opts(1, 1, 9, false).is_empty());
+        let hidden = pages(&super::page_list_opts(20, 1, 5, true));
+        assert!(!hidden.contains(&"20".to_owned()), "got {hidden:?}");
+        assert!(hidden.contains(&"...".to_owned()));
     }
 }

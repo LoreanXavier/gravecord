@@ -842,6 +842,10 @@ pub struct Root {
     guild_theme_nux_modal: Option<guild_theme_nux::GuildThemeNuxModal>,
     /// Conjure Project Actions Menu & confirmation modal (module 753329).
     conjure_actions: Option<conjure_menu::ConjureActionsState>,
+    /// Conjure Agent Secrets Submission Modal (module 644441, `conjure_menu::ConjureSecretsModal`).
+    conjure_secrets: Option<conjure_menu::ConjureSecretsModal>,
+    /// "Game could not be found" fallback modal when clicking an unknown `<@$gameId>` (module 654255 / 188841).
+    game_not_found_modal: bool,
     /// NUF server-ready celebration modal guild name (module 109766).
     nuf_complete_guild: Option<String>,
     /// E2EE User Verification modal (module 730713).
@@ -1515,6 +1519,8 @@ impl Root {
             research_survey_modal: None,
             guild_theme_nux_modal: None,
             conjure_actions: None,
+            conjure_secrets: None,
+            game_not_found_modal: false,
             nuf_complete_guild: None,
             e2ee_verify_modal: None,
             e2ee_verified_users: std::collections::HashSet::new(),
@@ -5373,9 +5379,11 @@ impl Root {
                 Piece {
                     // The reply preview shows a mention as its resolved `@name`, never the raw `<@id>`.
                     text: match span.kind {
-                        Kind::User(_) | Kind::Role(_) | Kind::Channel(_) | Kind::Command { .. } => {
-                            self.span_label(span)
-                        }
+                        Kind::User(_)
+                        | Kind::Game(_)
+                        | Kind::Role(_)
+                        | Kind::Channel(_)
+                        | Kind::Command { .. } => self.span_label(span),
                         _ => span.text.clone(),
                     },
                     font: run_font,
@@ -8215,6 +8223,107 @@ impl Root {
             )
     }
 
+    /// Module 654255: resolves `<@$gameId>` display name from fetched game profiles (`game-profile:{id}`)
+    /// or detectable game / application records.
+    fn game_mention_name(&self, id: u64) -> Option<String> {
+        let key = format!("game-profile:{id}");
+        if let Some(rec) = self.fetched.get(&key)
+            && let Some(name) = rec["name"].as_str().filter(|s| !s.is_empty())
+        {
+            return Some(name.to_owned());
+        }
+        let id_str = id.to_string();
+        if let Some(apps) = self
+            .fetched
+            .get("applications:detectable")
+            .and_then(|v| v.as_array())
+            && let Some(name) = apps
+                .iter()
+                .find(|a| a["id"].as_str() == Some(id_str.as_str()))
+                .and_then(|a| a["name"].as_str())
+                .filter(|s| !s.is_empty())
+        {
+            return Some(name.to_owned());
+        }
+        None
+    }
+
+    /// Module 654255 / 188841: "Game could not be found" fallback modal (`C5biF4`/`3Dy1Rh`/`BddRzS`).
+    fn game_not_found_modal_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.game_not_found_modal {
+            return None;
+        }
+        Some(
+            gpui::deferred(
+                div()
+                    .id("game-not-found-layer")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.game_not_found_modal = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("game-not-found-modal")
+                            .occlude()
+                            .w(px(440.))
+                            .p(px(24.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("C5biF4")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(dc_intl::t("3Dy1Rh")),
+                            )
+                            .child(
+                                div().pt(px(8.)).flex().justify_end().child(
+                                    div()
+                                        .id("game-not-found-ok")
+                                        .h(px(36.))
+                                        .px(px(20.))
+                                        .rounded(px(8.))
+                                        .bg(color("--brand-500"))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(dc_intl::t("BddRzS"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.game_not_found_modal = false;
+                                            cx.notify();
+                                        })),
+                                ),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
     /// What a mention or stamp shows, resolved against the stores.
     fn span_label(&self, span: &Span) -> String {
         match &span.kind {
@@ -8238,6 +8347,9 @@ impl Root {
                 .current_guild()
                 .and_then(|guild| guild.channels.iter().find(|channel| channel.id == *id))
                 .map_or_else(|| "unknown".to_owned(), |channel| channel.name.clone()),
+            Kind::Game(id) => self
+                .game_mention_name(*id)
+                .unwrap_or_else(|| dc_intl::t("11pdXZ").to_owned()),
             Kind::Emoji { name, .. } => format!(":{name}:"),
             Kind::Timestamp { unix, format } => format_timestamp(*unix, *format),
             // Module 990474 `E`: "/" and the command's name, as a link or as plain text.
@@ -8256,8 +8368,10 @@ impl Root {
             span.kind,
             Kind::Role(id) if self.current_guild().is_none_or(|guild| !guild.roles.contains_key(&id))
         );
-        let mention = matches!(span.kind, Kind::User(_) | Kind::Channel(_) | Kind::Everyone)
-            || (matches!(span.kind, Kind::Role(_)) && !deleted_role)
+        let mention = matches!(
+            span.kind,
+            Kind::User(_) | Kind::Game(_) | Kind::Channel(_) | Kind::Everyone
+        ) || (matches!(span.kind, Kind::Role(_)) && !deleted_role)
             || matches!(&span.kind, Kind::Command { name, id } if self.command_mention_usable(name, *id));
         let mut run_font: Font = font(if style.code { MONO } else { SANS });
         run_font.features = kerning();
@@ -8318,6 +8432,11 @@ impl Root {
             let mut channel = pill(2., 3., "--mention-background");
             channel.icon = Some(("icons/text_channel.svg".into(), px(16.), px(20.)));
             Some(channel)
+        } else if matches!(span.kind, Kind::Game(_)) {
+            // Module 654255: `<@$gameId>` inline chip with 1em game icon (`.icon_lXrdH_`).
+            let mut game = pill(2., 3., "--mention-background");
+            game.icon = Some(("icons/activity_game.svg".into(), px(size), px(size + 3.)));
+            Some(game)
         } else if mention {
             let mut mention_box = pill(2., 3., "--mention-background");
             if let Some((color, _)) = role_look {
@@ -8584,11 +8703,20 @@ impl Root {
                 _ => None,
             })
             .collect();
+        let game_mentions: Vec<Option<u64>> = spans
+            .iter()
+            .map(|span| match span.kind {
+                Kind::Game(id) => Some(id),
+                _ => None,
+            })
+            .collect();
         if emoji.iter().any(Option::is_some)
             || user_mentions.iter().any(Option::is_some)
             || role_mentions.iter().any(Option::is_some)
+            || game_mentions.iter().any(Option::is_some)
         {
             let root = self.weak.clone();
+            let games_click = game_mentions.clone();
             element = element.on_piece_click_at(move |piece, bounds, _, cx| {
                 if let Some(Some(kind)) = emoji.get(piece).cloned() {
                     let _ = root.update(cx, |this, cx| this.open_emoji_popout(kind, bounds, cx));
@@ -8598,6 +8726,15 @@ impl Root {
                     let _ = root.update(cx, |this, cx| {
                         this.close_emoji_popout(cx);
                         this.open_role_popout(role, bounds, cx)
+                    });
+                } else if let Some(Some(game_id)) = games_click.get(piece).copied() {
+                    let _ = root.update(cx, |this, cx| {
+                        if this.game_mention_name(game_id).is_some() {
+                            this.open_game_profile(game_id.to_string(), cx);
+                        } else {
+                            this.game_not_found_modal = true;
+                            cx.notify();
+                        }
                     });
                 }
             });
@@ -8613,15 +8750,29 @@ impl Root {
         if links.iter().any(Option::is_some)
             || emoji_keys.iter().any(Option::is_some)
             || channels.iter().any(Option::is_some)
+            || game_mentions.iter().any(Option::is_some)
         {
             let root = self.weak.clone();
             let runs = links.clone();
             let mentions = channels.clone();
+            let games_ctx = game_mentions.clone();
             let chips: Vec<bool> = spans
                 .iter()
                 .map(|span| matches!(span.kind, Kind::AttachmentLink(_)))
                 .collect();
             element = element.on_piece_context(move |piece, at, _, cx| {
+                if let Some(Some(game_id)) = games_ctx.get(piece).copied() {
+                    let _ = root.update(cx, |this, cx| {
+                        if this.game_mention_name(game_id).is_some() {
+                            this.open_context_menu(
+                                context_menu::Target::GameMention(game_id),
+                                at,
+                                cx,
+                            );
+                        }
+                    });
+                    return;
+                }
                 // A channel mention opens its own menu (module 223998) instead of the message's.
                 if let Some(Some(channel)) = mentions.get(piece).copied() {
                     let _ = root.update(cx, |this, _| {
@@ -11987,6 +12138,9 @@ impl Render for Root {
                         || this.research_survey_modal.is_some()
                         || this.guild_theme_nux_modal.is_some()
                         || this.conjure_actions.is_some()
+                        || this.conjure_secrets.is_some()
+                        || this.game_not_found_modal
+                        || this.clips.engine.ui.coachmark.is_some()
                         || this.nuf_complete_guild.is_some()
                         || this.e2ee_verify_modal.is_some()
                         || this.quest_connection_helper.is_some()
@@ -12094,6 +12248,9 @@ impl Render for Root {
                     this.research_survey_modal = None;
                     this.guild_theme_nux_modal = None;
                     this.conjure_actions = None;
+                    this.conjure_secrets = None;
+                    this.game_not_found_modal = false;
+                    this.clips.engine.ui.coachmark = None;
                     this.nuf_complete_guild = None;
                     this.e2ee_verify_modal = None;
                     this.quest_connection_helper = None;
@@ -13354,6 +13511,9 @@ impl Render for Root {
             .children(self.research_survey_layer(cx))
             .children(self.guild_theme_nux_layer(cx))
             .children(self.conjure_actions_layer(cx))
+            .children(self.conjure_secrets_layer(cx))
+            .children(self.clips_coachmark_layer(cx))
+            .children(self.game_not_found_modal_layer(cx))
             .children(self.nuf_complete_layer(cx))
             .children(self.e2ee_verify_layer(cx))
             .children(self.quest_connection_helper_layer(cx))

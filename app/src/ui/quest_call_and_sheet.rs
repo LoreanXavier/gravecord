@@ -365,10 +365,11 @@ impl Root {
                 error,
             } => {
                 if *error {
-                    // Module 659309: "Game Sheet Error"
+                    // Module 659309: "Game Sheet Error" (Mana Modal size="sm", 440px, top-right close X)
                     div()
                         .id("sponsored-quest-sheet-error")
-                        .w(px(420.))
+                        .relative()
+                        .w(px(440.))
                         .rounded(px(12.))
                         .bg(color("--background-surface-high"))
                         .border_1()
@@ -380,26 +381,51 @@ impl Root {
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .child(
                             div()
-                                .text_size(px(18.))
-                                .font_weight(FontWeight(700.))
-                                .text_color(color("--text-strong"))
-                                .child(dc_intl::t("iE/uSw")),
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .text_size(px(20.))
+                                        .line_height(px(24.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("iE/uSw")),
+                                )
+                                .child(
+                                    div()
+                                        .id("sponsored-sheet-err-x")
+                                        .size(px(28.))
+                                        .rounded(px(6.))
+                                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.quest_call_sheet_overlay = None;
+                                            cx.notify();
+                                        }))
+                                        .child(icon("close", 18., "--interactive-icon-default")),
+                                ),
                         )
                         .child(
                             div()
                                 .text_size(px(14.))
                                 .line_height(px(20.))
-                                .text_color(color("--text-muted"))
+                                .text_color(color("--text-subtle"))
                                 .child(dc_intl::t("G6SnvT")),
                         )
                         .child(
-                            div().flex().justify_end().child(
+                            div().pt(px(4.)).flex().justify_end().child(
                                 div()
                                     .id("sponsored-sheet-err-close")
-                                    .h(px(36.))
-                                    .px(px(18.))
+                                    .h(px(38.))
+                                    .px(px(20.))
                                     .rounded(px(8.))
                                     .bg(color("--control-primary-background-default"))
+                                    .hover(|s| s.bg(color("--control-primary-background-hover")))
                                     .cursor_pointer()
                                     .flex()
                                     .items_center()
