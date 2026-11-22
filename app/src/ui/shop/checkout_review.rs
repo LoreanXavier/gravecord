@@ -113,6 +113,181 @@ fn intl_or(key: &'static str, fallback: &'static str) -> &'static str {
     }
 }
 
+/// Module 708791 (`StripeExpressCheckout`): express checkout lifecycle states (`705822.i`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ExpressCheckoutState {
+    Initializing,
+    Submitting,
+    Ready,
+    Unavailable,
+}
+
+/// Module 708791 (`en`): one line item passed to Apple Pay / Google Pay Express Checkout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExpressLineItem {
+    pub name: String,
+    pub amount_cents: i64,
+}
+
+/// Module 708791 (`en`): builds Apple Pay / Google Pay Express Checkout line items: base item
+/// (`taxInclusive ? total - tax : subtotal`), optional `bdF0KJ` ("Gift Card Adjustment", negative),
+/// and optional `jiRvC7` ("Tax"). Returns empty when `vault_only` or `amount_due <= 0`.
+pub(crate) fn build_express_checkout_line_items(
+    product_name: &str,
+    subtotal_cents: i64,
+    tax_cents: i64,
+    gift_card_cents: i64,
+    tax_inclusive: bool,
+    vault_only: bool,
+) -> Vec<ExpressLineItem> {
+    let total = subtotal_cents + if tax_inclusive { 0 } else { tax_cents };
+    let amount_due = total - gift_card_cents;
+    if vault_only || amount_due <= 0 {
+        return Vec::new();
+    }
+    let base = if tax_inclusive {
+        (total - tax_cents).max(0)
+    } else {
+        subtotal_cents
+    };
+    let mut items = vec![ExpressLineItem {
+        name: product_name.to_owned(),
+        amount_cents: base,
+    }];
+    if gift_card_cents > 0 {
+        items.push(ExpressLineItem {
+            name: intl_or("bdF0KJ", "Gift Card Adjustment").to_owned(),
+            amount_cents: -gift_card_cents,
+        });
+    }
+    if tax_cents > 0 {
+        items.push(ExpressLineItem {
+            name: dc_intl::t("jiRvC7").to_owned(),
+            amount_cents: tax_cents,
+        });
+    }
+    items
+}
+
+/// Module 708791 (`rI` + `Zr` + `w`): Stripe Express Checkout button bar (40px, 8px radius),
+/// optional `— or —` (`N4EAHm`) divider, and centered footer note (`BMVyQO` / `gVM8va`).
+pub(crate) fn render_express_checkout_block(
+    product_name: &str,
+    subtotal_cents: i64,
+    remaining_amount: Option<&str>,
+    show_divider_below: bool,
+) -> AnyElement {
+    let _line_items =
+        build_express_checkout_line_items(product_name, subtotal_cents, 0, 0, false, false);
+    let _toast_keys = (
+        intl_or("cxwOJN", "Your total has been updated"),
+        intl_or("302Ck/", "Your payment method has been saved"),
+        intl_or(
+            "6zCzw1",
+            "There was a problem adding this payment method. Try again or use a different payment method.",
+        ),
+    );
+    let footer_note = match remaining_amount {
+        Some(amount) if dc_intl::has_key("BMVyQO") => dc_intl::format(
+            "BMVyQO",
+            &[(
+                "amount",
+                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(amount)),
+            )],
+        ),
+        Some(amount) => format!(
+            "Pay the remaining {amount} in one step. We'll save your payment method for next time."
+        ),
+        None => intl_or("gVM8va", "Pay in one step. We'll save it for next time.").to_owned(),
+    };
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .child(
+            div()
+                .w_full()
+                .min_h(px(40.))
+                .flex()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h(px(40.))
+                        .rounded(px(8.))
+                        .bg(gpui::rgba(0x000000ff))
+                        .border_1()
+                        .border_color(gpui::rgba(0xffffff22))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child("Apple Pay"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h(px(40.))
+                        .rounded(px(8.))
+                        .bg(gpui::rgba(0x1f1f1fff))
+                        .border_1()
+                        .border_color(gpui::rgba(0xffffff22))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child("Google Pay"),
+                ),
+        )
+        .child(
+            div()
+                .text_center()
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .text_color(color("--text-muted"))
+                .child(footer_note),
+        )
+        .when(show_divider_below, |col| {
+            col.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(div().flex_1().h(px(1.)).bg(color("--border-subtle")))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(color("--text-muted"))
+                            .child(intl_or("N4EAHm", "or")),
+                    )
+                    .child(div().flex_1().h(px(1.)).bg(color("--border-subtle"))),
+            )
+        })
+        .into_any_element()
+}
+
+/// Module 708791 (`781300.IC`): validates a billing address before saving a Stripe Express payment source.
+#[allow(dead_code)]
+pub(crate) fn validate_billing_address_request(
+    billing_address: serde_json::Value,
+) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some("billing:validate-address".to_owned()),
+        method: reqwest::Method::POST,
+        route: "/users/@me/billing/payment-sources/validate-billing-address".to_owned(),
+        body: Some(serde_json::json!({ "billing_address": billing_address })),
+    }
+}
+
 /// Renders module 596034 purchase legal fine print: optional EU immediate delivery waiver
 /// (`5dmUS+` / `XBtSMa`), transaction-type legal notice, and payment-source disclaimers
 /// (`kj9VLI` Paysafecard non-refundable / `UYy1/h` Sofort SEPA debit).
@@ -578,6 +753,14 @@ impl Root {
                                     ))),
                             )
                     })
+                    .when(modal.orb_cost.is_none(), |col| {
+                        col.child(render_express_checkout_block(
+                            &modal.product_name,
+                            599,
+                            None,
+                            true,
+                        ))
+                    })
                     .child(render_purchase_legal_fine_print(
                         if modal.orb_cost.is_some() {
                             LegalFinePrintVariant::OrbsRedemption
@@ -648,8 +831,8 @@ impl Root {
                 CheckoutMethod::Card
             },
             orb_balance: 1200,
-            orb_cost: Some(2500),
-            picker_open: arg != "closed",
+            orb_cost: if arg == "express" { None } else { Some(2500) },
+            picker_open: arg != "closed" && arg != "express",
         });
         cx.notify();
         format!("shop-checkout-review: {arg}")
@@ -671,5 +854,18 @@ mod tests {
         ] {
             assert!(!dc_intl::t(key).is_empty(), "empty key {key}");
         }
+    }
+
+    #[test]
+    fn express_checkout_708791_line_items_and_keys() {
+        let items = build_express_checkout_line_items("Avatar Frame", 599, 50, 200, false, false);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].amount_cents, 599);
+        assert_eq!(items[1].amount_cents, -200);
+        assert_eq!(items[2].name, dc_intl::t("jiRvC7"));
+        assert_eq!(items[2].amount_cents, 50);
+        assert!(build_express_checkout_line_items("Frame", 599, 0, 599, false, false).is_empty());
+        assert!(build_express_checkout_line_items("Frame", 599, 0, 0, false, true).is_empty());
+        assert_eq!(dc_intl::t("jiRvC7"), "Tax");
     }
 }

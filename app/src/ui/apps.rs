@@ -762,15 +762,35 @@ impl Root {
             }
         }
 
-        // Module 700210 footer: for bot user targets when user has MANAGE_GUILD on current guild.
-        if let AppTarget::User {
-            user,
-            guild: Some(guild_id),
-        } = target
-        {
-            let is_bot = self.stores.users.get(&user).is_some_and(|known| known.bot);
-            if is_bot && self.my_permission(guild_id, None, MANAGE_GUILD) {
+        // Module 700210 footer: "Manage Server Integration" (`IuSJT8`) when user has MANAGE_GUILD
+        // on the current guild, and "Manage App" (`V8ruvz`) when the user has an authorized OAuth2
+        // token for this bot/app (opening User Settings > Connected Apps with search prefilled).
+        if let AppTarget::User { user, guild } = target {
+            let known_user = self.stores.users.get(&user);
+            let is_bot = known_user.is_some_and(|known| known.bot);
+            let bot_name = known_user.map(|u| u.username.clone()).unwrap_or_default();
+            let show_guild_integration =
+                is_bot && guild.is_some_and(|gid| self.my_permission(gid, None, MANAGE_GUILD));
+            let user_str = user.to_string();
+            let has_user_token = is_bot
+                && self.settings_extra.tokens.as_ref().is_some_and(|tokens| {
+                    tokens.iter().any(|tok| {
+                        tok["application"]["id"].as_str() == Some(user_str.as_str())
+                            || tok["application"]["bot"]["id"].as_str() == Some(user_str.as_str())
+                    })
+                });
+            let (show_server, show_user) = app_management_items(
+                is_bot,
+                false,
+                true,
+                show_guild_integration,
+                true,
+                has_user_token,
+            );
+            if show_server || show_user {
                 rows.push(Self::apps_separator());
+            }
+            if show_server && let Some(guild_id) = guild {
                 rows.push(
                     div()
                         .id("apps-manage-server-integration")
@@ -794,6 +814,32 @@ impl Root {
                                 super::server_settings::Page::Integrations,
                                 cx,
                             );
+                        }))
+                        .into_any_element(),
+                );
+            }
+            if show_user {
+                let query = bot_name.clone();
+                rows.push(
+                    div()
+                        .id("apps-manage-authorized-app")
+                        .h(px(34.))
+                        .px(px(8.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(color("--interactive-background-hover")))
+                        .flex()
+                        .items_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("V8ruvz"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.close_context_menu(cx);
+                            this.clear_apps_submenu_state(cx);
+                            this.settings_extra.authorized_apps_query = query.clone();
+                            this.open_settings_section("Connected Apps", cx);
                         }))
                         .into_any_element(),
                 );
@@ -890,6 +936,25 @@ impl Root {
     }
 }
 
+/// Module 700210 (`AppContextMenuManagementItems`): returns `(show_manage_server_integration,
+/// show_manage_authorized_app)` — returns `(false, false)` inside popout windows or for non-bots.
+pub(crate) fn app_management_items(
+    is_bot_or_app: bool,
+    is_popout: bool,
+    is_guild_app: bool,
+    can_manage_guild: bool,
+    is_user_app: bool,
+    has_user_token: bool,
+) -> (bool, bool) {
+    if !is_bot_or_app || is_popout {
+        return (false, false);
+    }
+    (
+        is_guild_app && can_manage_guild,
+        is_user_app && has_user_token,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,5 +1004,27 @@ mod tests {
         assert!(!dc_intl::t("PHjkRE").is_empty());
         assert!(!dc_intl::t("YSNlV2").is_empty());
         assert!(!dc_intl::t("IuSJT8").is_empty());
+        assert_eq!(dc_intl::t("IuSJT8"), "Manage Server Integration");
+        assert_eq!(dc_intl::t("V8ruvz"), "Manage App");
+        assert_eq!(
+            app_management_items(true, true, true, true, true, true),
+            (false, false)
+        );
+        assert_eq!(
+            app_management_items(false, false, true, true, true, true),
+            (false, false)
+        );
+        assert_eq!(
+            app_management_items(true, false, true, true, true, false),
+            (true, false)
+        );
+        assert_eq!(
+            app_management_items(true, false, false, false, true, true),
+            (false, true)
+        );
+        assert_eq!(
+            app_management_items(true, false, true, true, true, true),
+            (true, true)
+        );
     }
 }

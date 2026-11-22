@@ -1277,6 +1277,8 @@ pub struct Root {
     voice_hover: voice_badge::VoiceHover,
     /// Module 687340 (`ChannelTabsStore`): open channel tabs (max 25, pin/unpin, active focus).
     channel_tabs: context_menu::ChannelTabsState,
+    /// Module 698405 (`LurkerJoinPopout`): join-server CTA popout for lurked guilds.
+    lurker_popout: Option<blocked::LurkerPopout>,
     /// Code blocks whose copy button was pressed (`code_copy`).
     copied_code: HashSet<(u64, u32)>,
     pub ready: bool,
@@ -1805,6 +1807,7 @@ impl Root {
             header_popout: None,
             voice_hover: Default::default(),
             channel_tabs: context_menu::ChannelTabsState::default(),
+            lurker_popout: None,
             copied_code: HashSet::new(),
             ready: false,
             hydrated_from_cache: false,
@@ -12170,6 +12173,9 @@ impl Render for Root {
                         || this.quests.video_modal.is_some()
                         || this.quests.split_modal.is_some()
                         || this.quests.enrollment_blocked_modal.is_some()
+                        || this.quests.access_suspended_modal
+                        || this.lurker_popout.is_some()
+                        || this.autocomplete.legacy_explanation_modal
                         || this.quests.promoted_preview_quest.is_some()
                         || this.quests.menus.menu.is_some()
                         || this.quests.menus.disclosure.is_some()
@@ -12280,6 +12286,9 @@ impl Render for Root {
                     this.quests.video_modal = None;
                     this.quests.split_modal = None;
                     this.quests.enrollment_blocked_modal = None;
+                    this.quests.access_suspended_modal = false;
+                    this.lurker_popout = None;
+                    this.autocomplete.legacy_explanation_modal = false;
                     this.quests.promoted_preview_quest = None;
                     this.quests.menus.menu = None;
                     this.quests.menus.disclosure = None;
@@ -13542,6 +13551,8 @@ impl Render for Root {
             .children(self.video_quest_modal_layer(cx))
             .children(self.quest_split_modal_layer(cx))
             .children(self.quest_promoted_overlay_layer(cx))
+            .children(self.lurker_popout_layer(cx))
+            .children(self.legacy_chat_input_explanation_layer(cx))
             .children(self.quest_disclosure_and_alert_layer(cx))
             .children(self.quest_menu_layer(cx))
             .children(self.composer_ai_modal(cx))

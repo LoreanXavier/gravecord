@@ -11,10 +11,34 @@ use gpui::{
 };
 use std::path::{Path, PathBuf};
 
-/// The More menu is open (the "More Options" button of the editor's header).
+/// The More menu is open (the "More Options" button of the editor's header), or the Clips capture
+/// mode context menu (`clips-capture-mode`, module 707116) is open.
 #[derive(Default)]
 pub(in crate::ui) struct Menu {
     pub open: bool,
+    pub capture_mode_open: bool,
+    pub allow_voice_in_others_clips: bool,
+}
+
+/// Module 707116 (`clips-capture-mode`): formats the Manual Clips subtext (`QWyKXz` with keybind,
+/// `Sb+V+3` without) and Auto Clips subtext (`BvKcH9` with keybind, `VWJbxP` without).
+pub(crate) fn clips_mode_subtexts(keybind: Option<&str>) -> (String, String) {
+    match keybind.filter(|k| !k.trim().is_empty()) {
+        Some(kb) => (
+            dc_intl::format(
+                "QWyKXz",
+                &[("keybind", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(kb)))],
+            ),
+            dc_intl::format(
+                "BvKcH9",
+                &[("keybind", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(kb)))],
+            ),
+        ),
+        None => (
+            dc_intl::t("Sb+V+3").to_owned(),
+            dc_intl::t("VWJbxP").to_owned(),
+        ),
+    }
 }
 
 /// How far the exported video's front can be before the handle: the copy starts at the keyframe at or before the
@@ -324,6 +348,9 @@ impl Root {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        if self.clips.engine.ui.menu.capture_mode_open {
+            return Some(self.render_clips_capture_mode_menu(cx));
+        }
         if !self.clips.engine.ui.menu.open || self.clips_open_editor_ref().is_none() {
             return None;
         }
@@ -599,6 +626,268 @@ impl Root {
             )
             .into_any_element()
     }
+
+    /// Module 707116 (`clips-capture-mode`): 3-group context menu:
+    /// 1. `"Clips capture mode"` (`eIX9be`): Off (`uO/2T5`), Manual (`bBlUzK` + `QWyKXz`/`Sb+V+3`),
+    ///    Manual + Auto (`4gzBi+` + `BvKcH9`/`VWJbxP`) radios backed by `clips_capture_mode()`.
+    /// 2. Voice checkbox (`IxZyA+` "Use my voice in others' Clips", subtext `t23RLK`).
+    /// 3. `"Clips Settings"` (`J1hsY2`) with gear icon opening User Settings > Clips.
+    fn render_clips_capture_mode_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (enabled, auto) = self.clips.clips_capture_mode();
+        let mode: u8 = if !enabled {
+            0
+        } else if !auto {
+            1
+        } else {
+            2
+        };
+        let voice_on = self.clips.engine.ui.menu.allow_voice_in_others_clips;
+        let (manual_sub, auto_sub) = clips_mode_subtexts(Some("Alt+C"));
+
+        let radio_row = |id: &'static str,
+                         title: &'static str,
+                         sub: Option<String>,
+                         selected: bool,
+                         next_enabled: bool,
+                         next_auto: bool| {
+            div()
+                .id(id)
+                .px(px(8.))
+                .py(px(8.))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .hover(|s| s.bg(color("--interactive-background-hover")))
+                .flex()
+                .items_start()
+                .justify_between()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(title),
+                        )
+                        .when_some(sub, |col, text| {
+                            col.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--text-muted"))
+                                    .child(text),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .mt(px(2.))
+                        .size(px(18.))
+                        .flex_none()
+                        .rounded_full()
+                        .border_2()
+                        .border_color(color(if selected {
+                            "--background-brand"
+                        } else {
+                            "--interactive-icon-default"
+                        }))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(selected, |dot| {
+                            dot.child(
+                                div()
+                                    .size(px(8.))
+                                    .rounded_full()
+                                    .bg(color("--background-brand")),
+                            )
+                        }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.clips.set_clips_capture_mode(next_enabled, next_auto);
+                    cx.notify();
+                }))
+        };
+
+        let card = div()
+            .id("clips-capture-mode")
+            .occlude()
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .w(px(300.))
+            .p(px(8.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-higher"))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(
+                div()
+                    .px(px(8.))
+                    .py(px(4.))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-muted"))
+                    .child(dc_intl::t("eIX9be")),
+            )
+            .child(radio_row(
+                "clips-capture-mode-off",
+                dc_intl::t("uO/2T5"),
+                None,
+                mode == 0,
+                false,
+                false,
+            ))
+            .child(radio_row(
+                "clips-capture-mode-manual",
+                dc_intl::t("bBlUzK"),
+                Some(manual_sub),
+                mode == 1,
+                true,
+                false,
+            ))
+            .child(radio_row(
+                "clips-capture-mode-auto",
+                dc_intl::t("4gzBi+"),
+                Some(auto_sub),
+                mode == 2,
+                true,
+                true,
+            ))
+            .child(div().my(px(4.)).h(px(1.)).bg(color("--border-subtle")))
+            .child(
+                div()
+                    .id("clips-capture-mode-voice")
+                    .px(px(8.))
+                    .py(px(8.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(color("--interactive-background-hover")))
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("IxZyA+")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::t("t23RLK")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .mt(px(2.))
+                            .size(px(18.))
+                            .flex_none()
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(color(if voice_on {
+                                "--background-brand"
+                            } else {
+                                "--interactive-icon-default"
+                            }))
+                            .when(voice_on, |b| {
+                                b.bg(color("--background-brand"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("circle_check", 14., "--white"))
+                            }),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.clips.engine.ui.menu.allow_voice_in_others_clips =
+                            !this.clips.engine.ui.menu.allow_voice_in_others_clips;
+                        cx.notify();
+                    })),
+            )
+            .child(div().my(px(4.)).h(px(1.)).bg(color("--border-subtle")))
+            .child(
+                div()
+                    .id("clips-capture-mode-settings")
+                    .h(px(36.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(color("--interactive-background-hover")))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon("settings", 18., "--interactive-text-default"))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("J1hsY2")),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.clips.engine.ui.menu.capture_mode_open = false;
+                        this.open_settings_section("Clips", cx);
+                    })),
+            );
+
+        deferred(
+            div()
+                .id("clips-capture-mode-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(gpui::rgba(0x00000044))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.clips.engine.ui.menu.capture_mode_open = false;
+                    cx.notify();
+                }))
+                .child(card),
+        )
+        .with_priority(4)
+        .into_any_element()
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_clips_capture_mode(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        self.clips.engine.ui.menu.capture_mode_open = !arg.eq_ignore_ascii_case("close");
+        if arg.eq_ignore_ascii_case("auto") {
+            self.clips.set_clips_capture_mode(true, true);
+            self.clips.engine.ui.menu.allow_voice_in_others_clips = true;
+        }
+        cx.notify();
+        format!(
+            "clips-capture-mode: open={}",
+            self.clips.engine.ui.menu.capture_mode_open
+        )
+    }
 }
 
 #[cfg(test)]
@@ -621,5 +910,20 @@ mod tests {
             folder.join("a (2).mp4")
         );
         assert_eq!(free_path(folder, "b", |_| false), folder.join("b.mp4"));
+    }
+
+    #[test]
+    fn clips_capture_mode_menu_707116_strings() {
+        let (manual, auto) = clips_mode_subtexts(Some("Alt+C"));
+        assert!(manual.contains("Alt+C"));
+        assert!(auto.contains("Alt+C"));
+        let (manual_none, auto_none) = clips_mode_subtexts(None);
+        assert!(!manual_none.is_empty());
+        assert!(!auto_none.is_empty());
+        for k in [
+            "J1hsY2", "eIX9be", "uO/2T5", "bBlUzK", "4gzBi+", "IxZyA+", "t23RLK",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 707116 key {k}");
+        }
     }
 }

@@ -173,6 +173,8 @@ pub(super) struct State {
     pub split_modal: Option<SplitQuestModalState>,
     /// Enrollment-blocked ("You've been busy!", module 124232) countdown modal.
     pub enrollment_blocked_modal: Option<EnrollmentBlockedModal>,
+    /// Quests access suspended modal (module 700085: `WfwodX` / `I27WXW` / `hvVgAZ`).
+    pub access_suspended_modal: bool,
     /// Capture-only promoted card preview quest id (module 107543).
     pub promoted_preview_quest: Option<String>,
     /// Activity Panel Quest Card (module 834615).
@@ -202,6 +204,7 @@ impl Default for State {
             menus: QuestMenuState::default(),
             split_modal: None,
             enrollment_blocked_modal: None,
+            access_suspended_modal: false,
             promoted_preview_quest: None,
             activity_panel_card: None,
             video_modal: None,
@@ -2567,6 +2570,18 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         let found = self.quests.store.quests.iter().find(|q| q.id == quest_id);
+        let completed = found.is_some_and(|q| {
+            q.user_status
+                .as_ref()
+                .is_some_and(|s| s.completed_at.is_some())
+        });
+        // Module 700085 (`321538.es`): opening an uncompleted video quest while quest access is
+        // suspended opens the Quests access suspended modal instead of starting the quest.
+        if self.quests.store.is_quest_access_suspended() && !completed {
+            self.quests.access_suspended_modal = true;
+            cx.notify();
+            return;
+        }
         let reward_name = found
             .and_then(|q| q.config.rewards.first())
             .map(|r| r.name.clone())

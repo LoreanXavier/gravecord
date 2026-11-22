@@ -83,6 +83,8 @@ pub(super) struct State {
     scheduled: Option<String>,
     /// The mention query the list is built for now.
     query: Option<String>,
+    /// Module 717020 (`LegacyChatInputExplanationModal`): `"You're using the legacy chat input"` (`G9HG5O`).
+    pub(super) legacy_explanation_modal: bool,
 }
 
 /// One line of the popup: a title, a rule or a row (an index into `entries`).
@@ -971,6 +973,169 @@ impl Root {
                 .into_any_element(),
         )
     }
+
+    /// Module 717020 (`LegacyChatInputExplanationModal`): 480px modal opened from legacy `/`
+    /// autocomplete header link (`8a0P0y`). Title `G9HG5O`, subtitle `ZtUieE` with clickable
+    /// `"User Settings > Accessibility"` link, primary `"Turn It Off"` (`VdzwlA`) disabling
+    /// `enable_legacy_chat_input`.
+    pub(super) fn legacy_chat_input_explanation_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.autocomplete.legacy_explanation_modal {
+            return None;
+        }
+        let _trigger_link = dc_intl::t("8a0P0y");
+        let subtitle_runs = dc_intl::format_runs("ZtUieE", &[]);
+        let mut lead_text = String::new();
+        let mut link_text = String::new();
+        let mut tail_text = String::new();
+        let mut saw_link = false;
+        for (chunk, hook) in subtitle_runs {
+            if hook.as_deref() == Some("openSettingsHook") {
+                link_text.push_str(&chunk);
+                saw_link = true;
+            } else if !saw_link {
+                lead_text.push_str(&chunk);
+            } else {
+                tail_text.push_str(&chunk);
+            }
+        }
+        let subtitle_row = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .text_size(px(14.))
+            .line_height(px(20.))
+            .text_color(color("--text-default"))
+            .child(div().w_full().child(lead_text))
+            .when(!link_text.is_empty(), |col| {
+                col.child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .child(
+                            div()
+                                .id("legacy-chat-settings-link")
+                                .cursor_pointer()
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-link"))
+                                .hover(|s| s.underline())
+                                .child(link_text)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.autocomplete.legacy_explanation_modal = false;
+                                    this.open_settings_section("Accessibility", cx);
+                                })),
+                        )
+                        .when(!tail_text.is_empty(), |row| row.child(tail_text)),
+                )
+            });
+        Some(
+            gpui::deferred(
+                div()
+                    .id("legacy-chat-modal-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.autocomplete.legacy_explanation_modal = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("legacy-chat-explanation-modal")
+                            .occlude()
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .w(px(480.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .shadow_lg()
+                            .p(px(24.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(14.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("G9HG5O")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("legacy-chat-modal-close")
+                                            .size(px(24.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .cursor_pointer()
+                                            .child(icon("lb_close", 20., "--text-muted"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.autocomplete.legacy_explanation_modal = false;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(subtitle_row)
+                            .child(
+                                div().mt(px(8.)).flex().justify_end().child(
+                                    div()
+                                        .id("legacy-chat-turn-off")
+                                        .h(px(38.))
+                                        .px(px(20.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-primary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-primary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(dc_intl::t("VdzwlA"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.setting_choices.insert(
+                                                "enable_legacy_chat_input",
+                                                super::settings::Choice::On(false),
+                                            );
+                                            this.autocomplete.legacy_explanation_modal = false;
+                                            cx.notify();
+                                        })),
+                                ),
+                            ),
+                    ),
+            )
+            .with_priority(6)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_legacy_chat_modal(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        self.autocomplete.legacy_explanation_modal = !arg.eq_ignore_ascii_case("close");
+        cx.notify();
+        format!(
+            "legacy-chat-modal: open={}",
+            self.autocomplete.legacy_explanation_modal
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1054,5 +1219,13 @@ mod tests {
             secondary: String::new(),
         };
         assert_eq!(channel.markup(), "<#5>");
+    }
+
+    #[test]
+    fn legacy_chat_input_modal_717020_strings() {
+        assert_eq!(dc_intl::t("G9HG5O"), "You're using the legacy chat input");
+        assert_eq!(dc_intl::t("VdzwlA"), "Turn It Off");
+        assert!(dc_intl::has_key("ZtUieE"));
+        assert!(dc_intl::has_key("8a0P0y"));
     }
 }

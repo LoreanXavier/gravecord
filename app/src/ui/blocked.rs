@@ -604,7 +604,208 @@ impl Root {
     }
 }
 
+/// Module 698405 (`LurkerJoinPopout`): CHAT (`0`) vs REACTIONS (`1`) CTA popout kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum LurkerPopoutKind {
+    Chat,
+    Reactions,
+}
+
+/// Module 698405: state for the Lurker Join-Server CTA popout (`Xiwf1Q`/`GXvlU9`, `d7b1p6`,
+/// `9VLmlZ`, `2m+Sqk`, `PUT /guilds/{guildId}/members/@me?lurker=false`).
+#[derive(Clone, Debug)]
+pub(crate) struct LurkerPopout {
+    pub guild_id: Id,
+    pub kind: LurkerPopoutKind,
+    pub submitting: bool,
+}
+
+pub(crate) fn lurker_popout_title(kind: LurkerPopoutKind) -> &'static str {
+    match kind {
+        LurkerPopoutKind::Chat => dc_intl::t("Xiwf1Q"),
+        LurkerPopoutKind::Reactions => dc_intl::t("GXvlU9"),
+    }
+}
+
+pub(crate) fn join_lurked_guild_request(guild_id: Id) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("lurker:join:{guild_id}")),
+        method: reqwest::Method::PUT,
+        route: format!("/guilds/{guild_id}/members/@me?lurker=false"),
+        body: Some(serde_json::json!({})),
+    }
+}
+
 impl Root {
+    /// Module 698405 (`.container_Kou47m`): 64x64 illustration + content column (`max-w: 320px`)
+    /// with heading (`Xiwf1Q` / `GXvlU9`), body (`d7b1p6`), primary `"Join this server"` (`9VLmlZ`)
+    /// and blank `"I'm not ready yet"` (`2m+Sqk`) buttons.
+    pub(super) fn lurker_popout_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let pop = self.lurker_popout.as_ref()?;
+        let guild_id = pop.guild_id;
+        let submitting = pop.submitting;
+        let title = lurker_popout_title(pop.kind);
+        Some(
+            gpui::deferred(
+                div()
+                    .id("lurker-popout-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x00000066))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.lurker_popout = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("lurker-popout-card")
+                            .occlude()
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .p(px(16.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .shadow_lg()
+                            .flex()
+                            .items_start()
+                            .gap(px(24.))
+                            .child(
+                                div()
+                                    .size(px(64.))
+                                    .flex_none()
+                                    .rounded(px(16.))
+                                    .bg(color("--background-brand"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("guild_menu_invite_people", 32., "--white")),
+                            )
+                            .child(
+                                div()
+                                    .max_w(px(320.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(title),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(18.))
+                                            .text_color(color("--text-default"))
+                                            .child(dc_intl::t("d7b1p6")),
+                                    )
+                                    .child(
+                                        div()
+                                            .mt(px(10.))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(24.))
+                                            .child(
+                                                div()
+                                                    .id("lurker-popout-join")
+                                                    .h(px(36.))
+                                                    .px(px(16.))
+                                                    .rounded(px(8.))
+                                                    .bg(color("--control-primary-background-default"))
+                                                    .when(!submitting, |b| {
+                                                        b.hover(|s| {
+                                                            s.bg(color(
+                                                                "--control-primary-background-hover",
+                                                            ))
+                                                        })
+                                                        .cursor_pointer()
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                if let Some(p) =
+                                                                    this.lurker_popout.as_mut()
+                                                                {
+                                                                    p.submitting = true;
+                                                                }
+                                                                let _ = this.requests.send(
+                                                                    join_lurked_guild_request(
+                                                                        guild_id,
+                                                                    ),
+                                                                );
+                                                                this.lurker_popout = None;
+                                                                cx.notify();
+                                                            },
+                                                        ))
+                                                    })
+                                                    .when(submitting, |b| b.opacity(0.6))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(600.))
+                                                    .text_color(color("--white"))
+                                                    .child(dc_intl::t("9VLmlZ")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("lurker-popout-cancel")
+                                                    .cursor_pointer()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(500.))
+                                                    .text_color(color("--interactive-text-default"))
+                                                    .hover(|s| {
+                                                        s.text_color(color(
+                                                            "--interactive-text-hover",
+                                                        ))
+                                                        .underline()
+                                                    })
+                                                    .child(dc_intl::t("2m+Sqk"))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.lurker_popout = None;
+                                                        cx.notify();
+                                                    })),
+                                            ),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(4)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_lurker_popout(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.eq_ignore_ascii_case("close") {
+            self.lurker_popout = None;
+            cx.notify();
+            return "lurker-popout: closed".to_owned();
+        }
+        let kind = if arg.eq_ignore_ascii_case("reactions") {
+            LurkerPopoutKind::Reactions
+        } else {
+            LurkerPopoutKind::Chat
+        };
+        let guild_id = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id))
+            .unwrap_or(1);
+        self.lurker_popout = Some(LurkerPopout {
+            guild_id,
+            kind,
+            submitting: false,
+        });
+        cx.notify();
+        format!("lurker-popout: open {:?}", kind)
+    }
+
     /// `j0.updateSetting(true)`: the settings-proto PATCH, kept locally at once, and this profile shown.
     fn disable_ignore_speedbump(&mut self, user: Id) {
         // Built from the account's whole safety message; nothing is sent before the settings have arrived.
@@ -632,5 +833,30 @@ mod tests {
     fn counts_read_like_the_string() {
         assert_eq!(blocked_count(1), "1 blocked message");
         assert_eq!(blocked_count(3), "3 blocked messages");
+    }
+
+    #[test]
+    fn lurker_popout_698405_copy_and_join_request() {
+        assert_eq!(
+            lurker_popout_title(LurkerPopoutKind::Chat),
+            "You can't talk here yet!"
+        );
+        assert_eq!(
+            lurker_popout_title(LurkerPopoutKind::Reactions),
+            "You can't react until you join!"
+        );
+        assert_eq!(
+            dc_intl::t("d7b1p6"),
+            "You have to join the community first before you can interact."
+        );
+        assert_eq!(dc_intl::t("9VLmlZ"), "Join this server");
+        assert_eq!(dc_intl::t("2m+Sqk"), "I'm not ready yet");
+        match join_lurked_guild_request(42) {
+            crate::net::Request::Rest { method, route, .. } => {
+                assert_eq!(method, reqwest::Method::PUT);
+                assert_eq!(route, "/guilds/42/members/@me?lurker=false");
+            }
+            _ => panic!("expected Rest request"),
+        }
     }
 }

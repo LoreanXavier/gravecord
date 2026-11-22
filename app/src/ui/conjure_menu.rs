@@ -32,6 +32,73 @@ pub(crate) enum ConjureConfirmKind {
     Unpublish,
 }
 
+/// Module 719593 (`722701.getSafetyRecheck`): Conjure project safety hold / recheck status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ConjureSafetyStatus {
+    Idle,
+    Pending,
+    Held(String),
+    Limited { daily: bool },
+    Unavailable,
+    Cleared,
+}
+
+/// Module 719593 (`x`): derived Publish button variant, label, and indicator.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct ConjurePublishButtonState {
+    pub is_secondary: bool,
+    pub label: String,
+    pub indicator: Option<&'static str>,
+}
+
+/// Module 719593 (`x` / `isPublishedAndUpToDate`): computes Publish button state.
+#[allow(dead_code)]
+pub(crate) fn compute_conjure_publish_button_state(
+    up_to_date: bool,
+    awaiting_approval: bool,
+    publishing: bool,
+    confirmation: Option<&str>,
+    custom_label: Option<&str>,
+) -> ConjurePublishButtonState {
+    let published_current = up_to_date && !awaiting_approval;
+    let label = if let Some(conf) = confirmation.filter(|_| !publishing) {
+        conf.to_owned()
+    } else if published_current && !publishing {
+        conjure_intl("kAfbEN", "Published")
+    } else if let Some(lbl) = custom_label {
+        lbl.to_owned()
+    } else {
+        conjure_intl("120EFN", "Publish")
+    };
+    let indicator = if publishing {
+        Some("publishing")
+    } else if !published_current {
+        Some("unpublished")
+    } else {
+        None
+    };
+    ConjurePublishButtonState {
+        is_secondary: published_current,
+        label,
+        indicator,
+    }
+}
+
+/// Module 719593: publish destination modal or safety hold/recheck modal.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) enum ConjurePublishModal {
+    DestinationPicker {
+        destinations: Vec<(String, String)>,
+        selected_id: String,
+    },
+    SafetyHold {
+        status: ConjureSafetyStatus,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ConjureActionsState {
     pub project_id: String,
@@ -44,6 +111,8 @@ pub(crate) struct ConjureActionsState {
     pub muted: bool,
     pub connection_label: Option<String>,
     pub confirm: Option<ConjureConfirmKind>,
+    /// Module 719593: Publish destination picker or Safety hold/recheck modal.
+    pub publish_modal: Option<ConjurePublishModal>,
 }
 
 /// `DELETE /conjure/projects/{id}` (module 753329 / 233470).
@@ -70,10 +139,343 @@ impl Root {
     /// Renders the Conjure Project Actions Menu & confirmation dialog layer (`753329`).
     pub(super) fn conjure_actions_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.conjure_actions.as_ref()?;
+        if let Some(modal) = state.publish_modal.as_ref() {
+            return Some(self.render_conjure_publish_modal(state, modal, cx));
+        }
         if let Some(kind) = state.confirm {
             return Some(self.render_conjure_confirm_modal(state, kind, cx));
         }
         Some(self.render_conjure_menu(state, cx))
+    }
+
+    /// Module 719593 (`b` destination picker + `v` safety hold/recheck modal).
+    fn render_conjure_publish_modal(
+        &self,
+        _state: &ConjureActionsState,
+        modal: &ConjurePublishModal,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let card = match modal {
+            ConjurePublishModal::DestinationPicker {
+                destinations,
+                selected_id,
+            } => {
+                let rows: Vec<AnyElement> = destinations
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, (id, label))| {
+                        let active = id == selected_id;
+                        let target_id = id.clone();
+                        div()
+                            .id(("conjure-pub-dest", idx))
+                            .w_full()
+                            .px(px(12.))
+                            .py(px(10.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color(if active {
+                                "--background-brand"
+                            } else {
+                                "--border-subtle"
+                            }))
+                            .bg(color(if active {
+                                "--background-mod-subtle"
+                            } else {
+                                "--background-base-lower"
+                            }))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(label.clone()),
+                            )
+                            .when(active, |r| {
+                                r.child(icon("circle_check", 16., "--background-brand"))
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(ConjurePublishModal::DestinationPicker {
+                                    selected_id,
+                                    ..
+                                }) = this
+                                    .conjure_actions
+                                    .as_mut()
+                                    .and_then(|s| s.publish_modal.as_mut())
+                                {
+                                    *selected_id = target_id.clone();
+                                }
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    })
+                    .collect();
+                div()
+                    .id("conjure-publish-dest-modal")
+                    .occlude()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .w(px(440.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .shadow_lg()
+                    .p(px(24.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(conjure_intl("lJrOGW", "Run this app on")),
+                    )
+                    .child(div().flex().flex_col().gap(px(8.)).children(rows))
+                    .child(
+                        div()
+                            .mt(px(4.))
+                            .flex()
+                            .justify_end()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .id("conjure-pub-dest-cancel")
+                                    .h(px(38.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-default"))
+                                    .child(conjure_intl("y83r6D", "Cancel"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.conjure_actions = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("conjure-pub-dest-continue")
+                                    .h(px(38.))
+                                    .px(px(18.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(conjure_intl("zh1Izp", "Continue"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.conjure_actions = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+            }
+            ConjurePublishModal::SafetyHold { status } => {
+                let cleared = matches!(status, ConjureSafetyStatus::Cleared);
+                let pending = matches!(status, ConjureSafetyStatus::Pending);
+                let title = if cleared {
+                    conjure_intl("vVnbEq", "Your app passed review")
+                } else {
+                    conjure_intl("ebqlWe", "This app can't be published")
+                };
+                let subtitle = if cleared {
+                    conjure_intl(
+                        "qY/RLI",
+                        "It's no longer on hold, so you can publish it again.",
+                    )
+                } else {
+                    conjure_intl(
+                        "UOr0cK",
+                        "It breaks Discord's rules, so it can't be published, previewed or remixed. Remove what breaks the rules, then request a review.",
+                    )
+                };
+                let notice: Option<(u32, &'static str, String)> = match status {
+                    ConjureSafetyStatus::Pending => Some((
+                        0x5865f222,
+                        "--text-default",
+                        conjure_intl("HsOGKK", "Reviewing your app. This can take a minute."),
+                    )),
+                    ConjureSafetyStatus::Held(reason) => {
+                        let msg = if dc_intl::has_key("t8GlRz") {
+                            dc_intl::format(
+                                "t8GlRz",
+                                &[("reason", Arg::Str(Cow::Borrowed(reason)))],
+                            )
+                        } else {
+                            format!("Your app is still on hold: {reason}")
+                        };
+                        Some((0xda373c22, "--text-feedback-critical", msg))
+                    }
+                    ConjureSafetyStatus::Limited { daily } => Some((
+                        0xf0b23222,
+                        "--text-feedback-warning",
+                        if *daily {
+                            conjure_intl(
+                                "TtE+rz",
+                                "This app has used all of today's reviews. Try again tomorrow.",
+                            )
+                        } else {
+                            conjure_intl(
+                                "ikIoxj",
+                                "A review just ran. Wait a couple of minutes before requesting another.",
+                            )
+                        },
+                    )),
+                    ConjureSafetyStatus::Unavailable => Some((
+                        0xf0b23222,
+                        "--text-feedback-warning",
+                        conjure_intl(
+                            "FxilA2",
+                            "The review couldn't run right now. Try again in a bit.",
+                        ),
+                    )),
+                    ConjureSafetyStatus::Idle | ConjureSafetyStatus::Cleared => None,
+                };
+                div()
+                    .id("conjure-safety-hold-modal")
+                    .occlude()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .w(px(460.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .shadow_lg()
+                    .p(px(24.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(subtitle),
+                    )
+                    .when_some(notice, |col, (bg_rgba, ink, msg)| {
+                        col.child(
+                            div()
+                                .p(px(12.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(rgba(bg_rgba))
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color(ink))
+                                .child(msg),
+                        )
+                    })
+                    .child(
+                        div()
+                            .mt(px(8.))
+                            .flex()
+                            .justify_end()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .id("conjure-safety-okay")
+                                    .h(px(38.))
+                                    .px(px(18.))
+                                    .rounded(px(8.))
+                                    .bg(if cleared {
+                                        color("--control-primary-background-default")
+                                    } else {
+                                        color("--control-secondary-background-default")
+                                    })
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(if cleared {
+                                        color("--white")
+                                    } else {
+                                        color("--control-secondary-text-default")
+                                    })
+                                    .child(dc_intl::t("BddRzS"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.conjure_actions = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .when(!cleared, |row| {
+                                row.child(
+                                    div()
+                                        .id("conjure-safety-recheck")
+                                        .h(px(38.))
+                                        .px(px(18.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-primary-background-default"))
+                                        .when(!pending, |b| {
+                                            b.hover(|s| {
+                                                s.bg(color("--control-primary-background-hover"))
+                                            })
+                                            .cursor_pointer()
+                                            .on_click(
+                                                cx.listener(|this, _, _, cx| {
+                                                    if let Some(ConjurePublishModal::SafetyHold {
+                                                        status,
+                                                    }) = this
+                                                        .conjure_actions
+                                                        .as_mut()
+                                                        .and_then(|s| s.publish_modal.as_mut())
+                                                    {
+                                                        *status = ConjureSafetyStatus::Pending;
+                                                    }
+                                                    cx.notify();
+                                                }),
+                                            )
+                                        })
+                                        .when(pending, |b| b.opacity(0.6))
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(conjure_intl("nmwy0/", "Request review")),
+                                )
+                            }),
+                    )
+            }
+        };
+        deferred(
+            div()
+                .id("conjure-publish-modal-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x000000b3))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.conjure_actions = None;
+                    cx.notify();
+                }))
+                .child(card),
+        )
+        .with_priority(6)
+        .into_any_element()
     }
 
     fn render_conjure_menu(
@@ -600,6 +1002,7 @@ impl Root {
             muted: false,
             connection_label: Some("GitHub".to_owned()),
             confirm: None,
+            publish_modal: None,
         };
         match arg.trim() {
             "close" => {
@@ -630,6 +1033,32 @@ impl Root {
                 });
                 cx.notify();
                 "conjure-menu: remove".to_owned()
+            }
+            "publish-dest" => {
+                self.conjure_actions = Some(ConjureActionsState {
+                    publish_modal: Some(ConjurePublishModal::DestinationPicker {
+                        destinations: vec![
+                            ("1".to_owned(), "gravecord fixture".to_owned()),
+                            ("2".to_owned(), "My Personal Sandbox".to_owned()),
+                        ],
+                        selected_id: "1".to_owned(),
+                    }),
+                    ..base
+                });
+                cx.notify();
+                "conjure-menu: publish-dest".to_owned()
+            }
+            "safety-hold" => {
+                self.conjure_actions = Some(ConjureActionsState {
+                    publish_modal: Some(ConjurePublishModal::SafetyHold {
+                        status: ConjureSafetyStatus::Held(
+                            "Prohibited external redirect detected.".to_owned(),
+                        ),
+                    }),
+                    ..base
+                });
+                cx.notify();
+                "conjure-menu: safety-hold".to_owned()
             }
             _ => {
                 self.conjure_actions = Some(base);
@@ -1135,5 +1564,30 @@ mod secrets_tests {
             Request::Rest { route, .. } => assert_eq!(route, "/conjure/projects/proj_99/ws-ticket"),
             _ => panic!("expected Rest request"),
         }
+    }
+
+    #[test]
+    fn conjure_publish_719593_button_state_and_keys() {
+        let up_to_date = compute_conjure_publish_button_state(true, false, false, None, None);
+        assert!(up_to_date.is_secondary);
+        assert_eq!(up_to_date.label, "Published");
+        assert_eq!(up_to_date.indicator, None);
+
+        let draft = compute_conjure_publish_button_state(false, false, false, None, None);
+        assert!(!draft.is_secondary);
+        assert_eq!(draft.label, "Publish");
+        assert_eq!(draft.indicator, Some("unpublished"));
+
+        let busy = compute_conjure_publish_button_state(
+            false,
+            false,
+            true,
+            Some("Saved!"),
+            Some("Building..."),
+        );
+        assert_eq!(busy.label, "Building...");
+        assert_eq!(busy.indicator, Some("publishing"));
+
+        assert_eq!(dc_intl::t("BddRzS"), "Okay");
     }
 }

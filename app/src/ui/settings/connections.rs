@@ -667,7 +667,15 @@ impl Root {
         let Some(list) = self.settings_extra.tokens.as_ref() else {
             return div().h(px(216.)).into_any_element();
         };
-        let apps = apps_of(list);
+        let query = self
+            .settings_extra
+            .authorized_apps_query
+            .trim()
+            .to_lowercase();
+        let apps: Vec<App> = apps_of(list)
+            .into_iter()
+            .filter(|app| query.is_empty() || app.name.to_lowercase().contains(&query))
+            .collect();
         if apps.is_empty() {
             return empty_state(
                 dc_intl::tr("No Authorized Apps"),

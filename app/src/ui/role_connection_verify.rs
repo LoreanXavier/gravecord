@@ -21,6 +21,17 @@ use std::collections::BTreeMap;
 
 pub(super) const ROLE_CONN_ELIGIBILITY_PREFIX: &str = "role-conn:eligibility:";
 pub(super) const ROLE_CONN_ASSIGN_PREFIX: &str = "role-conn:assign:";
+pub(super) const ROLE_CONN_UNASSIGN_PREFIX: &str = "role-conn:unassign:";
+
+/// Module 699896 (`unassignGuildRoleConnection`): `POST /guilds/{guildId}/roles/{roleId}/connections/unassign`.
+pub(crate) fn unassign_guild_role_connection_request(guild_id: Id, role_id: Id) -> Request {
+    Request::Rest {
+        key: Some(format!("{ROLE_CONN_UNASSIGN_PREFIX}{guild_id}:{role_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/guilds/{guild_id}/roles/{role_id}/connections/unassign"),
+        body: Some(json!({})),
+    }
+}
 
 /// `so` of module 783419: comparison operators for role connection metadata rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +103,8 @@ pub(crate) struct RoleConnectionVerify {
     pub groups: Vec<Vec<EligibilityCheck>>,
     pub attempted: BTreeMap<String, bool>,
     pub connected: Option<ConnectedPrivacy>,
+    /// Module 699896 (`guild-role-connections-context`): `"Leave Linked Role"` (`vytvJF`) menu open.
+    pub leave_menu_open: bool,
     focus: FocusHandle,
 }
 
@@ -264,6 +277,7 @@ impl Root {
             groups: Vec::new(),
             attempted: BTreeMap::new(),
             connected: None,
+            leave_menu_open: false,
             focus: cx.focus_handle(),
         });
         let _ = self.requests.send(Request::Fetch {
@@ -392,6 +406,7 @@ impl Root {
                 supports_activity: true,
                 supports_friend_sync: true,
             }),
+            leave_menu_open: arg.contains("leave-menu"),
             focus: cx.focus_handle(),
         });
         cx.notify();
@@ -1019,20 +1034,95 @@ impl Root {
                                 )
                                 .child(
                                     div()
-                                        .id("role-verify-close")
-                                        .size(px(32.))
-                                        .rounded(px(8.))
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(color("--background-mod-subtle")))
                                         .flex()
                                         .items_center()
-                                        .justify_center()
-                                        .child(icon("modal_close", 18., "--interactive-icon-default"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.close_role_connection_verify(cx)
-                                        })),
+                                        .gap(px(4.))
+                                        .child(
+                                            div()
+                                                .id("role-verify-more-menu")
+                                                .size(px(32.))
+                                                .rounded(px(8.))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon(
+                                                    "more_horizontal",
+                                                    18.,
+                                                    "--interactive-icon-default",
+                                                ))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    if let Some(m) = this.role_verify.as_mut() {
+                                                        m.leave_menu_open = !m.leave_menu_open;
+                                                    }
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("role-verify-close")
+                                                .size(px(32.))
+                                                .rounded(px(8.))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon(
+                                                    "modal_close",
+                                                    18.,
+                                                    "--interactive-icon-default",
+                                                ))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.close_role_connection_verify(cx)
+                                                })),
+                                        ),
                                 ),
                         )
+                        // Module 699896 (`guild-role-connections-context`): danger "Leave Linked Role" (`vytvJF`).
+                        .when(modal.leave_menu_open, |card| {
+                            card.child(
+                                div()
+                                    .id("guild-role-connections-context")
+                                    .occlude()
+                                    .absolute()
+                                    .top(px(52.))
+                                    .right(px(52.))
+                                    .w(px(196.))
+                                    .p(px(6.))
+                                    .rounded(px(6.))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-surface-higher"))
+                                    .shadow_lg()
+                                    .child(
+                                        div()
+                                            .id("guild-role-connections-leave-role")
+                                            .h(px(34.))
+                                            .px(px(8.))
+                                            .rounded(px(4.))
+                                            .cursor_pointer()
+                                            .hover(|s| {
+                                                s.bg(color("--background-feedback-critical"))
+                                            })
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-feedback-critical"))
+                                            .child(dc_intl::t("vytvJF"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                let _ = this.requests.send(
+                                                    unassign_guild_role_connection_request(
+                                                        guild_id, role_id,
+                                                    ),
+                                                );
+                                                this.close_role_connection_verify(cx);
+                                            })),
+                                    ),
+                            )
+                        })
                         .child(div().px(px(24.)).pb(px(20.)).child(body))
                         .child(
                             div()
@@ -1183,5 +1273,13 @@ mod tests {
         assert!(dc_intl::t!("yQvgBO", platformName = "Steam").contains("Steam"));
         assert!(dc_intl::t!("Rzz1Xs", platformName = "X").contains("X"));
         assert!(dc_intl::t!("6u6J0q", platform = "Steam").contains("Steam"));
+        assert_eq!(dc_intl::t("vytvJF"), "Leave Linked Role");
+        match unassign_guild_role_connection_request(10, 20) {
+            Request::Rest { method, route, .. } => {
+                assert_eq!(method, reqwest::Method::POST);
+                assert_eq!(route, "/guilds/10/roles/20/connections/unassign");
+            }
+            _ => panic!("expected Rest request"),
+        }
     }
 }

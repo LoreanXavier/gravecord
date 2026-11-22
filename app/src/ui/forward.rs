@@ -120,6 +120,38 @@ pub(super) fn activity_share_media_summary(
     }
 }
 
+/// Module 714892 (`SocialLayerStorefrontShareModal`): one in-game item SKU in the share preview.
+#[derive(Clone, Debug)]
+pub(crate) struct ShareStorefrontItem {
+    pub sku_id: String,
+    pub name: String,
+    pub image_url: Option<String>,
+}
+
+/// Module 714892: in-game item (`SOCIAL_LAYER_STOREFRONT`) share payload wrapped in `ForwardModal`.
+#[derive(Clone, Debug)]
+pub(crate) struct ShareStorefront {
+    pub application_id: String,
+    pub application_name: String,
+    pub guild_id: Option<Id>,
+    pub items: Vec<ShareStorefrontItem>,
+}
+
+/// Module 714892 (`871123.aU`): builds the official Game Shop share URL for one or more SKUs.
+pub(crate) fn build_storefront_share_url(
+    application_id: &str,
+    guild_id: Option<Id>,
+    sku_ids: &[&str],
+) -> String {
+    let joined = sku_ids.join(",");
+    match guild_id {
+        Some(gid) => format!("https://discord.com/channels/{gid}/game-shop?skuIds={joined}"),
+        None => format!(
+            "https://discord.com/shop?tab=game-shops&applicationId={application_id}&skuIds={joined}"
+        ),
+    }
+}
+
 pub(crate) struct Forward {
     /// The forwarded message; none when a profile is shared.
     pub message: Option<Message>,
@@ -129,6 +161,8 @@ pub(crate) struct Forward {
     pub(super) clip: Option<super::clips::ShareClip>,
     /// Share Activity / Frame (`SHARE_LINK` & `SHARE_CONTENT`, module 529999).
     pub(super) activity: Option<ShareActivity>,
+    /// Module 714892: Share in-game item (`SOCIAL_LAYER_STOREFRONT`, up to 6 SKUs).
+    pub(super) storefront: Option<ShareStorefront>,
     pub(super) search: Entity<Editor>,
     pub(super) note: Entity<Editor>,
     _events: [Subscription; 2],
@@ -236,6 +270,7 @@ impl Root {
             profile: None,
             clip: None,
             activity: Some(share),
+            storefront: None,
             search,
             note,
             _events: [search_events, note_events],
@@ -312,6 +347,7 @@ impl Root {
             profile,
             clip: None,
             activity: None,
+            storefront: None,
             search,
             note,
             _events: [search_events, note_events],
@@ -896,6 +932,151 @@ impl Root {
             .into_any_element()
     }
 
+    /// Module 714892 (`.forwardPreview_IHYJU0`): in-game item share preview with 4px vertical
+    /// `--border-subtle` bar, SKU title (`j7Go5A` "{count} Items" when > 1), `CqpEC+`
+    /// "{applicationName} - In-game item" subtitle with link icon, and 40x40 overlapping thumbnail
+    /// stack (`-12px` overlap).
+    fn storefront_share_preview(&self, sf: &ShareStorefront) -> AnyElement {
+        let _toast_keys = (
+            dc_intl::t("kwmYkt"),
+            dc_intl::t("iufib1"),
+            dc_intl::t("L/PwZf"),
+        );
+        let link_title = if sf.items.len() > 1 {
+            dc_intl::format(
+                "j7Go5A",
+                &[("count", dc_intl::Arg::Num(sf.items.len() as f64))],
+            )
+        } else {
+            sf.items
+                .first()
+                .map(|i| i.name.clone())
+                .unwrap_or_else(|| sf.application_name.clone())
+        };
+        let app_sub = dc_intl::format(
+            "CqpEC+",
+            &[(
+                "applicationName",
+                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&sf.application_name)),
+            )],
+        );
+        let thumbs: Vec<AnyElement> = sf
+            .items
+            .iter()
+            .take(6)
+            .enumerate()
+            .map(|(i, item)| {
+                let pic = item
+                    .image_url
+                    .as_deref()
+                    .and_then(|u| self.images.get(u).cloned());
+                div()
+                    .size(px(40.))
+                    .flex_none()
+                    .when(i > 0, |d| d.ml(px(-12.)))
+                    .rounded(px(8.))
+                    .border_2()
+                    .border_color(color("--background-surface-high"))
+                    .bg(color("--background-mod-subtle"))
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .children(pic.map(|p| img(p).size_full().object_fit(gpui::ObjectFit::Cover)))
+                    .when(
+                        item.image_url
+                            .as_deref()
+                            .and_then(|u| self.images.get(u))
+                            .is_none(),
+                        |d| d.child(super::icon("activity_game", 20., "--text-muted")),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(12.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-link"))
+                            .child(link_title),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(super::icon("member_invite_link", 14., "--text-muted"))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-muted"))
+                                    .child(app_sub),
+                            ),
+                    ),
+            )
+            .child(div().flex().flex_none().children(thumbs))
+            .into_any_element()
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_storefront_share(
+        &mut self,
+        arg: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.eq_ignore_ascii_case("close") {
+            self.forward = None;
+            cx.notify();
+            return "storefront-share: closed".to_owned();
+        }
+        self.open_forward_with(None, None, window, cx);
+        if let Some(f) = self.forward.as_mut() {
+            f.storefront = Some(ShareStorefront {
+                application_id: "1234567890".to_owned(),
+                application_name: "Starlight Odyssey".to_owned(),
+                guild_id: self.guild,
+                items: vec![
+                    ShareStorefrontItem {
+                        sku_id: "sku-1".to_owned(),
+                        name: "Astral Blade Skin".to_owned(),
+                        image_url: None,
+                    },
+                    ShareStorefrontItem {
+                        sku_id: "sku-2".to_owned(),
+                        name: "Nebula Cape".to_owned(),
+                        image_url: None,
+                    },
+                    ShareStorefrontItem {
+                        sku_id: "sku-3".to_owned(),
+                        name: "Void Helm".to_owned(),
+                        image_url: None,
+                    },
+                ],
+            });
+        }
+        cx.notify();
+        "storefront-share: open".to_owned()
+    }
+
     pub(super) fn forward_modal(
         &self,
         window: &Window,
@@ -935,10 +1116,11 @@ impl Root {
                 .preview_text(&super::first_spans(&message.content), false)
                 .into_any_element(),
             (None, Some(user)) => self.profile_preview(user, cx),
-            (None, None) => match (&forward.clip, &forward.activity) {
-                (Some(clip), _) => self.clips_share_preview(clip),
-                (None, Some(act)) => self.activity_share_preview(act),
-                (None, None) => div().into_any_element(),
+            (None, None) => match (&forward.clip, &forward.activity, &forward.storefront) {
+                (Some(clip), _, _) => self.clips_share_preview(clip),
+                (None, Some(act), _) => self.activity_share_preview(act),
+                (None, None, Some(sf)) => self.storefront_share_preview(sf),
+                (None, None, None) => div().into_any_element(),
             },
         };
         let attached = forward
@@ -955,7 +1137,13 @@ impl Root {
             .activity
             .as_ref()
             .map(|act| act.share_url.clone())
-            .filter(|u| !u.is_empty());
+            .filter(|u| !u.is_empty())
+            .or_else(|| {
+                forward.storefront.as_ref().map(|sf| {
+                    let ids: Vec<&str> = sf.items.iter().map(|i| i.sku_id.as_str()).collect();
+                    build_storefront_share_url(&sf.application_id, sf.guild_id, &ids)
+                })
+            });
         let send_label = if count <= 1 {
             "Send".to_owned()
         } else {
@@ -1044,6 +1232,8 @@ impl Root {
                             .text_color(color("--text-muted"))
                             .child(if full {
                                 format!("Maximum {MAX_DESTINATIONS} places at once.")
+                            } else if forward.storefront.is_some() {
+                                dc_intl::t("yiaXeN").to_owned()
                             } else if forward.clip.is_some() {
                                 // `Ey7mOU`.
                                 "Share your clip to a channel or directly with friends!".to_owned()
@@ -1777,5 +1967,20 @@ mod tests {
             ..check()
         };
         assert_eq!(destination_unavailable(&file, &dm, |_| false), None);
+    }
+
+    #[test]
+    fn storefront_share_714892_urls_and_intl() {
+        assert_eq!(
+            build_storefront_share_url("100", Some(42), &["a", "b"]),
+            "https://discord.com/channels/42/game-shop?skuIds=a,b"
+        );
+        assert_eq!(
+            build_storefront_share_url("100", None, &["a"]),
+            "https://discord.com/shop?tab=game-shops&applicationId=100&skuIds=a"
+        );
+        for k in ["yiaXeN", "j7Go5A", "CqpEC+", "kwmYkt", "iufib1", "L/PwZf"] {
+            assert!(dc_intl::has_key(k), "missing 714892 key {k}");
+        }
     }
 }

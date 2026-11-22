@@ -3052,6 +3052,32 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_game_platform_picker(&arg, cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["lurker-popout", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_lurker_popout(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["legacy-chat-modal", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_legacy_chat_modal(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["clips-capture-mode", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_clips_capture_mode(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["storefront-share", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| {
+                            root.script_storefront_share(&arg, window, cx)
+                        })
+                    })
+                    .unwrap_or_else(|_| "storefront-share: window closed".to_owned());
+                let _ = writeln!(output, "{msg}");
+            }
             ["rail-overflow"] => {
                 let msg = root.update(cx, |root, cx| root.script_rail_overflow(cx));
                 let _ = writeln!(output, "{msg}");

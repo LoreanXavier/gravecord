@@ -159,6 +159,8 @@ pub(in crate::ui) struct State {
     pub(in crate::ui) conn_joining: std::collections::HashMap<String, Option<String>>,
     /// The Gift Inventory code box and its accept dialog (`gift_redeem.rs`).
     pub(in crate::ui) gift: super::gift_redeem::State,
+    /// Module 700210 (`361328.iU`): optional prefilled search filter for Authorized Apps.
+    pub(in crate::ui) authorized_apps_query: String,
 }
 
 impl State {

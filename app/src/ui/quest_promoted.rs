@@ -779,6 +779,105 @@ impl Root {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        // Module 700085 (`QuestsAccessSuspendedModal`): `WfwodX` "Quests access suspended",
+        // `I27WXW` suspension policy copy, single primary `hvVgAZ` "Learn More" -> Account Standing.
+        if self.quests.access_suspended_modal {
+            return Some(
+                gpui::deferred(
+                    div()
+                        .id("quest-suspended-backdrop")
+                        .occlude()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .bg(gpui::rgba(0x000000b3))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.quests.access_suspended_modal = false;
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .id("quest-suspended-modal")
+                                .w(px(440.))
+                                .rounded(px(12.))
+                                .bg(color("--background-surface-high"))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .p(px(24.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(12.))
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .text_size(px(20.))
+                                                .line_height(px(24.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::t("WfwodX")),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("quest-suspended-close-x")
+                                                .size(px(24.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_pointer()
+                                                .child(icon("lb_close", 20., "--text-muted"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.quests.access_suspended_modal = false;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(20.))
+                                        .text_color(color("--text-default"))
+                                        .child(dc_intl::t("I27WXW")),
+                                )
+                                .child(
+                                    div().mt(px(8.)).flex().justify_end().child(
+                                        div()
+                                            .id("quest-suspended-learn-more")
+                                            .h(px(38.))
+                                            .px(px(20.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .hover(|s| {
+                                                s.bg(color("--control-primary-background-hover"))
+                                            })
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.quests.access_suspended_modal = false;
+                                                this.open_settings(cx);
+                                            }))
+                                            .child(dc_intl::t("hvVgAZ")),
+                                    ),
+                                ),
+                        ),
+                )
+                .with_priority(7)
+                .into_any_element(),
+            );
+        }
         if let Some(blocked) = self.quests.enrollment_blocked_modal.as_ref() {
             let now_ms = chrono::Utc::now().timestamp_millis();
             let countdown = format_blocked_countdown(&blocked.blocked_until, now_ms);
@@ -924,9 +1023,17 @@ impl Root {
                 cx.notify();
                 "quest-promoted: blocked modal".into()
             }
+            "suspended" => {
+                self.quests.promoted_preview_quest = None;
+                self.quests.enrollment_blocked_modal = None;
+                self.quests.access_suspended_modal = true;
+                cx.notify();
+                "quest-promoted: suspended modal".into()
+            }
             "close" => {
                 self.quests.promoted_preview_quest = None;
                 self.quests.enrollment_blocked_modal = None;
+                self.quests.access_suspended_modal = false;
                 cx.notify();
                 "quest-promoted: closed".into()
             }
@@ -979,5 +1086,8 @@ mod tests {
         assert!(headline.contains("700"));
         let cd = format_blocked_countdown("2026-01-01T03:05:09Z", 1_767_225_600_000);
         assert_eq!(cd, "03:05:09");
+        assert_eq!(dc_intl::t("WfwodX"), "Quests access suspended");
+        assert_eq!(dc_intl::t("hvVgAZ"), "Learn More");
+        assert!(!dc_intl::t("I27WXW").is_empty());
     }
 }

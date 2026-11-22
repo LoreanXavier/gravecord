@@ -123,7 +123,56 @@ impl PowerupPerkModal {
     }
 }
 
-/// Builds `POST` or `DELETE /guilds/{guildId}/skus/{skuId}` (`GUILD_POWERUP_TOGGLE`, module 945942 / 533993).
+/// Module 722523 (`GuildPowerupCardActionFooter`): action CTA shown at the bottom of a guild
+/// powerup / boost perk card for admin vs non-admin viewers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PowerupCardAction {
+    /// Active configurable perk for admin (`g5Ds69` "Configure" -> SKU-specific Server Settings page).
+    Configure,
+    /// Level card or active non-configurable perk (`0Q61kF` "View Perks").
+    ViewPerks,
+    /// Non-admin non-level perk card (`Xa11Ep` "View Perk").
+    ViewPerk,
+    /// Inactive toggleable perk for admin (`439156` boost activate toggle).
+    ToggleBoost,
+    None,
+}
+
+/// Module 722523 (`Ay` / `f` / `v`): exact admin vs non-admin CTA selection for a powerup card.
+pub(crate) fn powerup_card_action(
+    is_admin: bool,
+    is_active: bool,
+    is_configurable: bool,
+    show_toggle: bool,
+    is_level: bool,
+) -> PowerupCardAction {
+    if is_admin {
+        if is_active && is_configurable {
+            PowerupCardAction::Configure
+        } else if is_active {
+            PowerupCardAction::ViewPerks
+        } else if show_toggle {
+            PowerupCardAction::ToggleBoost
+        } else {
+            PowerupCardAction::None
+        }
+    } else if is_level {
+        PowerupCardAction::ViewPerks
+    } else {
+        PowerupCardAction::ViewPerk
+    }
+}
+
+/// Module 722523 / 689906: maps a configurable powerup SKU to its Server Settings destination page.
+pub(crate) fn powerup_settings_page_for_sku(sku_id: &str) -> super::server_settings::Page {
+    match sku_id {
+        SKU_SERVER_TAG => super::server_settings::Page::Tag,
+        SKU_ROLE_STYLES => super::server_settings::Page::Roles,
+        _ => super::server_settings::Page::BoostPerks,
+    }
+}
+
+/// Builds `POST` or `DELETE /guilds/{guildId}/skus/{skuId}` (`GUILD_POWERUP_TOGGLE`, module 945942 / 533993 / 722523).
 pub(super) fn toggle_guild_powerup_request(guild_id: Id, sku_id: &str, enable: bool) -> Request {
     Request::Rest {
         key: Some(format!("guild-powerup-toggle:{guild_id}:{sku_id}")),
@@ -1073,6 +1122,80 @@ impl Root {
                                                     .child("Active"),
                                                 ),
                                         )
+                                    })
+                                    .children({
+                                        let guild_id = self.guild.unwrap_or(1);
+                                        let is_admin = self.my_permission(
+                                            guild_id,
+                                            None,
+                                            dc_state::permissions::ADMINISTRATOR,
+                                        );
+                                        let action = powerup_card_action(
+                                            is_admin,
+                                            perk_active,
+                                            true,
+                                            true,
+                                            false,
+                                        );
+                                        let label = match action {
+                                            PowerupCardAction::Configure => {
+                                                Some(dc_intl::t("g5Ds69"))
+                                            }
+                                            PowerupCardAction::ViewPerks => {
+                                                Some(dc_intl::t("0Q61kF"))
+                                            }
+                                            PowerupCardAction::ViewPerk => {
+                                                Some(dc_intl::t("Xa11Ep"))
+                                            }
+                                            PowerupCardAction::ToggleBoost => {
+                                                Some(dc_intl::t("Xa11Ep"))
+                                            }
+                                            PowerupCardAction::None => None,
+                                        };
+                                        label.map(|cta| {
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "powerup-card-cta-{id}"
+                                                )))
+                                                .h(px(32.))
+                                                .px(px(14.))
+                                                .rounded(px(8.))
+                                                .bg(color("--control-primary-background-default"))
+                                                .hover(|s| {
+                                                    s.bg(color(
+                                                        "--control-primary-background-hover",
+                                                    ))
+                                                })
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(13.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--white"))
+                                                .child(cta)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    if action == PowerupCardAction::Configure {
+                                                        this.open_server_settings_at(
+                                                            guild_id,
+                                                            powerup_settings_page_for_sku(sku_id),
+                                                            cx,
+                                                        );
+                                                    } else {
+                                                        let can_manage = this.my_permission(
+                                                            guild_id,
+                                                            None,
+                                                            dc_state::permissions::MANAGE_GUILD,
+                                                        );
+                                                        this.powerup_perk_modal =
+                                                            Some(PowerupPerkModal::for_sku(
+                                                                guild_id, sku_id, can_manage,
+                                                            ));
+                                                        cx.notify();
+                                                    }
+                                                }))
+                                        })
                                     }),
                             )
                     }),
@@ -2610,7 +2733,11 @@ impl Root {
                                     .child(dc_intl::t("g5Ds69"))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.powerup_perk_modal = None;
-                                        this.open_server_settings(guild_id, cx);
+                                        this.open_server_settings_at(
+                                            guild_id,
+                                            powerup_settings_page_for_sku(sku_id),
+                                            cx,
+                                        );
                                     })),
                             )
                         }),
@@ -2738,5 +2865,40 @@ mod tests {
         );
         // The far bottom-right pixel is almost clear.
         assert!(frame[(3 * 4 + 3) * 4 + 3] < 40);
+    }
+
+    #[test]
+    fn powerup_card_footer_722523_actions_and_routing() {
+        assert_eq!(
+            powerup_card_action(true, true, true, true, false),
+            PowerupCardAction::Configure
+        );
+        assert_eq!(
+            powerup_card_action(true, true, false, true, false),
+            PowerupCardAction::ViewPerks
+        );
+        assert_eq!(
+            powerup_card_action(true, false, true, true, false),
+            PowerupCardAction::ToggleBoost
+        );
+        assert_eq!(
+            powerup_card_action(false, false, true, true, true),
+            PowerupCardAction::ViewPerks
+        );
+        assert_eq!(
+            powerup_card_action(false, false, true, true, false),
+            PowerupCardAction::ViewPerk
+        );
+        assert_eq!(dc_intl::t("g5Ds69"), "Configure");
+        assert_eq!(dc_intl::t("0Q61kF"), "View Perks");
+        assert_eq!(dc_intl::t("Xa11Ep"), "View Perk");
+        assert_eq!(
+            powerup_settings_page_for_sku(SKU_SERVER_TAG),
+            crate::ui::server_settings::Page::Tag
+        );
+        assert_eq!(
+            powerup_settings_page_for_sku(SKU_ROLE_STYLES),
+            crate::ui::server_settings::Page::Roles
+        );
     }
 }
