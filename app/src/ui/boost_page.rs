@@ -123,6 +123,162 @@ impl PowerupPerkModal {
     }
 }
 
+/// Module 784140 (`GuildPowerupLevelModal`): Boost Level 1/2/3 detail modal state.
+#[derive(Clone, Debug)]
+pub(super) struct PowerupLevelModal {
+    pub guild_id: Id,
+    pub sku_id: String,
+    pub tier: u8,
+    pub is_active: bool,
+    pub is_tier_override: bool,
+    pub can_manage: bool,
+    pub disabled_reason: Option<String>,
+    pub error: Option<String>,
+    pub confirm_disable: bool,
+}
+
+/// Module 784140: required boost subscriptions per Boost Level (`M2T`: 2 / 7 / 14).
+pub(super) fn powerup_level_boost_count(tier: u8) -> u32 {
+    match tier {
+        1 => 2,
+        2 => 7,
+        _ => 14,
+    }
+}
+
+/// Module 784140: `pob/cL` (`"{subscriptions} Boosts"`) subtitle for a level modal.
+pub(super) fn powerup_level_subtitle(tier: u8) -> String {
+    dc_intl::format(
+        "pob/cL",
+        &[(
+            "subscriptions",
+            dc_intl::Arg::Num(f64::from(powerup_level_boost_count(tier))),
+        )],
+    )
+}
+
+/// Module 784140: `5HQUzD` (`"Get {boostCount} Boost(s) back."`) disable button tooltip.
+pub(super) fn powerup_level_disable_tooltip(boost_count: u32) -> String {
+    dc_intl::format(
+        "5HQUzD",
+        &[("boostCount", dc_intl::Arg::Num(f64::from(boost_count)))],
+    )
+}
+
+impl PowerupLevelModal {
+    pub(super) fn for_tier(guild_id: Id, tier: u8, is_active: bool, can_manage: bool) -> Self {
+        let clamped = tier.clamp(1, 3);
+        Self {
+            guild_id,
+            sku_id: format!("guild-level-{clamped}"),
+            tier: clamped,
+            is_active,
+            is_tier_override: false,
+            can_manage,
+            disabled_reason: None,
+            error: None,
+            confirm_disable: false,
+        }
+    }
+
+    pub(super) fn can_show_action(&self) -> bool {
+        !self.is_tier_override && self.can_manage
+    }
+}
+
+/// Status of an individual card inside `PowerupMultiPerkModal` (module 789267).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MultiPerkStatus {
+    Inactive,
+    Active,
+    Expiring,
+    #[allow(dead_code)]
+    Removing,
+}
+
+/// Single perk card entry inside `GuildPowerupsMultiPerkModal` (module 789267).
+#[derive(Clone, Debug)]
+pub(super) struct MultiPerkItem {
+    pub sku_id: String,
+    pub title: String,
+    pub description: String,
+    pub cost: u32,
+    pub is_new: bool,
+    pub status: MultiPerkStatus,
+    pub accent: u32,
+}
+
+/// Module 789267 (`GuildPowerupsMultiPerkModal`): wrapping 220px perk-group cards modal.
+#[derive(Clone, Debug)]
+pub(super) struct PowerupMultiPerkModal {
+    pub guild_id: Id,
+    pub title: String,
+    pub subtitle: String,
+    pub can_manage: bool,
+    pub perks: Vec<MultiPerkItem>,
+    pub footer_info: Option<String>,
+    pub footer_action_label: Option<String>,
+}
+
+/// Module 789267: `t2Wbo1` (`"{required} Boosts"`) boost-cost pill label.
+pub(super) fn multi_perk_cost_label(required: u32) -> String {
+    dc_intl::format(
+        "t2Wbo1",
+        &[
+            ("required", dc_intl::Arg::Num(f64::from(required))),
+            ("decorator", "".into()),
+        ],
+    )
+}
+
+impl PowerupMultiPerkModal {
+    pub(super) fn badge_packs(guild_id: Id, can_manage: bool) -> Self {
+        Self {
+            guild_id,
+            title: "Server Tag Badge Packs".to_owned(),
+            subtitle: "Unlock themed icon packs for your server's members to wear everywhere."
+                .to_owned(),
+            can_manage,
+            perks: vec![
+                MultiPerkItem {
+                    sku_id: "1351706802684952641".to_owned(),
+                    title: "Fantasy Badge Pack".to_owned(),
+                    description: "Swords, shields, crowns, and arcane sigils for guild tags."
+                        .to_owned(),
+                    cost: 3,
+                    is_new: false,
+                    status: MultiPerkStatus::Active,
+                    accent: 0x5865f2,
+                },
+                MultiPerkItem {
+                    sku_id: "1351706802684952642".to_owned(),
+                    title: "Cyber Badge Pack".to_owned(),
+                    description: "Neon glyphs and retro-futuristic emblems for your server tag."
+                        .to_owned(),
+                    cost: 3,
+                    is_new: true,
+                    status: MultiPerkStatus::Inactive,
+                    accent: 0xb845c1,
+                },
+                MultiPerkItem {
+                    sku_id: "1351706802684952643".to_owned(),
+                    title: "Cozy Badge Pack".to_owned(),
+                    description: "Teacups, plants, stars, and warm icons for community tags."
+                        .to_owned(),
+                    cost: 3,
+                    is_new: false,
+                    status: MultiPerkStatus::Expiring,
+                    accent: 0x2d7d46,
+                },
+            ],
+            footer_info: Some(
+                "Disabling a pack removes its badges from your Server Tag picker.".to_owned(),
+            ),
+            footer_action_label: Some(dc_intl::t("g5Ds69").to_owned()),
+        }
+    }
+}
+
 /// Module 722523 (`GuildPowerupCardActionFooter`): action CTA shown at the bottom of a guild
 /// powerup / boost perk card for admin vs non-admin viewers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -925,7 +1081,7 @@ impl Root {
                                     ),
                             ),
                     )
-                    .child(self.boost_tier_cards()),
+                    .child(self.boost_tier_cards(cx)),
             );
 
         // The middle: additional perks (Enhanced Role Styles, Server Tag).
@@ -1463,7 +1619,7 @@ impl Root {
     }
 
     /// `wrapper_xZJtlG`: the three level cards.
-    fn boost_tier_cards(&self) -> AnyElement {
+    fn boost_tier_cards(&self, cx: &mut Context<Self>) -> AnyElement {
         let boosts = self
             .current_guild()
             .map_or(0, |guild| guild.premium_subscription_count);
@@ -1479,6 +1635,7 @@ impl Root {
                     .enumerate()
                     .map(|(level, (title, count, perks))| {
                         let active = boosts >= needed[level];
+                        let tier_num = (level + 1) as u8;
                         let start = level == 0;
                         let end = level == 2;
                         // `.progressBarActive`: `linear-gradient(90deg, #ff4ebb, rgba(255,78,187,.4))`;
@@ -1500,6 +1657,8 @@ impl Root {
                             [0x202024ff, 0x211e40ff, 0x201d3dff][level]
                         };
                         div()
+                            .id(SharedString::from(format!("boost-tier-card-{tier_num}")))
+                            .cursor_pointer()
                             .flex_1()
                             .min_w(px(0.))
                             .h(px(306.))
@@ -1511,7 +1670,20 @@ impl Root {
                                 super::hsla("--border-subtle")
                             })
                             .bg(color("--background-mod-subtle"))
+                            .hover(|s| s.border_color(color("--border-strong")))
                             .overflow_hidden()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let guild_id = this.guild.unwrap_or(1);
+                                let can_manage = this.my_permission(
+                                    guild_id,
+                                    None,
+                                    dc_state::permissions::MANAGE_GUILD,
+                                );
+                                this.powerup_level_modal = Some(PowerupLevelModal::for_tier(
+                                    guild_id, tier_num, active, can_manage,
+                                ));
+                                cx.notify();
+                            }))
                             .child(
                                 div()
                                     .relative()
@@ -2803,6 +2975,717 @@ impl Root {
             .into_any_element(),
         )
     }
+
+    /// Capture-harness opener for module 784140 (`powerup-level 1|2|3|active|close`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_powerup_level(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let mode = arg.trim();
+        if mode == "close" {
+            self.powerup_level_modal = None;
+            cx.notify();
+            return "powerup-level: closed".to_owned();
+        }
+        let guild_id = self.guild.unwrap_or(1);
+        let (tier, active) = match mode {
+            "1" => (1, false),
+            "2" => (2, false),
+            "3" => (3, false),
+            "active" => (2, true),
+            _ => (2, false),
+        };
+        let mut modal = PowerupLevelModal::for_tier(guild_id, tier, active, true);
+        if mode == "disabled" {
+            modal.disabled_reason =
+                Some("This server needs more available Boosts to enable this level.".to_owned());
+        }
+        self.powerup_level_modal = Some(modal);
+        cx.notify();
+        format!("powerup-level: {mode}")
+    }
+
+    /// Renders `GuildPowerupLevelModal` (module 784140): tier header (`pob/cL`), 2-col perk grid
+    /// (`container_Yo0T3x`, `gap: 12px`, `20px` icon `--text-subtle` + `body-sm`), disabled info notice,
+    /// critical error, Enable (`AOQgki`) + `boost_gem` / Disable (`PYPdl4`) + `5HQUzD` tooltip.
+    pub(super) fn powerup_level_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.powerup_level_modal.as_ref()?;
+        let guild_id = modal.guild_id;
+        let sku_id = modal.sku_id.clone();
+        let tier = modal.tier.clamp(1, 3);
+        let tier_idx = (tier - 1) as usize;
+        let (tier_title, _, perks) = TIERS[tier_idx];
+        let boost_count = powerup_level_boost_count(tier);
+        let subtitle = powerup_level_subtitle(tier);
+        let is_active = modal.is_active;
+        let can_show_action = modal.can_show_action();
+        let disabled_reason = modal.disabled_reason.clone();
+        let error = modal.error.clone();
+        let confirm_disable = modal.confirm_disable;
+
+        let perk_grid = div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .gap(px(12.))
+            .children(perks.iter().map(|(ico, label)| {
+                div()
+                    .w(px(204.))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .p(px(10.))
+                    .rounded(px(8.))
+                    .bg(color("--background-base-lower"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .child(icon(ico, 20., "--text-subtle"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(*label),
+                    )
+            }));
+
+        let action_btn = can_show_action.then(|| {
+            if is_active {
+                let tip_text = powerup_level_disable_tooltip(boost_count);
+                let btn = div()
+                    .id("powerup-level-disable")
+                    .h(px(38.))
+                    .px(px(16.))
+                    .rounded(px(8.))
+                    .bg(if confirm_disable {
+                        color("--control-critical-primary-background-default")
+                    } else {
+                        color("--background-mod-subtle")
+                    })
+                    .hover(|s| {
+                        s.bg(if confirm_disable {
+                            color("--control-critical-primary-background-hover")
+                        } else {
+                            color("--background-mod-strong")
+                        })
+                    })
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(if confirm_disable {
+                        color("--white")
+                    } else {
+                        color("--text-strong")
+                    })
+                    .child(dc_intl::t("PYPdl4"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(m) = this.powerup_level_modal.as_mut() {
+                            if m.confirm_disable {
+                                let _ = this
+                                    .requests
+                                    .send(toggle_guild_powerup_request(guild_id, &sku_id, false));
+                                m.is_active = false;
+                                m.confirm_disable = false;
+                            } else {
+                                m.confirm_disable = true;
+                            }
+                        }
+                        cx.notify();
+                    }));
+                self.with_tip(
+                    "powerup-level-disable-tip",
+                    super::tooltip::Tip::body(
+                        super::tooltip::Body::Text(tip_text.into()),
+                        super::tooltip::Side::Top,
+                    ),
+                    btn,
+                    cx,
+                )
+                .into_any_element()
+            } else {
+                let disabled = disabled_reason.is_some();
+                div()
+                    .id("powerup-level-enable")
+                    .h(px(38.))
+                    .px(px(18.))
+                    .rounded(px(8.))
+                    .bg(color("--control-primary-background-default"))
+                    .when(!disabled, |b| {
+                        b.cursor_pointer()
+                            .hover(|s| s.bg(color("--control-primary-background-hover")))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let _ = this
+                                    .requests
+                                    .send(toggle_guild_powerup_request(guild_id, &sku_id, true));
+                                if let Some(m) = this.powerup_level_modal.as_mut() {
+                                    m.is_active = true;
+                                    m.error = None;
+                                }
+                                cx.notify();
+                            }))
+                    })
+                    .when(disabled, |b| b.opacity(0.5))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .child(icon("boost_gem", 16., "--white"))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("AOQgki")),
+                    )
+                    .into_any_element()
+            }
+        });
+
+        let card = div()
+            .id("powerup-level-modal")
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .w(px(480.))
+            .rounded(px(12.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(px(24.))
+                    .pt(px(22.))
+                    .pb(px(16.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .size(px(40.))
+                                    .rounded_full()
+                                    .bg(if is_active {
+                                        super::hsla("--guild-boosting-pink-refresh")
+                                    } else {
+                                        gpui::Hsla::from(color("--background-mod-strong"))
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("boost_gem", 20., "--white")),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(tier_title),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .line_height(px(18.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-muted"))
+                                            .child(subtitle),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("powerup-level-close")
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.powerup_level_modal = None;
+                                cx.notify();
+                            }))
+                            .child(icon("close", 16., "--interactive-text-default")),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .pb(px(20.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .child(perk_grid)
+                    .when_some(disabled_reason, |col, reason| {
+                        col.child(
+                            div()
+                                .w_full()
+                                .p(px(12.))
+                                .rounded(px(8.))
+                                .bg(color("--background-mod-subtle"))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(icon("circle_info", 16., "--text-subtle"))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(px(13.))
+                                        .line_height(px(18.))
+                                        .text_color(color("--text-default"))
+                                        .child(reason),
+                                ),
+                        )
+                    })
+                    .when_some(error, |col, err| {
+                        col.child(
+                            div()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-feedback-critical"))
+                                .child(err),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .py(px(14.))
+                    .bg(color("--background-base-lower"))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .id("powerup-level-badge-packs")
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-link"))
+                            .cursor_pointer()
+                            .hover(|s| s.underline())
+                            .child("View Badge Packs")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let can_manage = this
+                                    .powerup_level_modal
+                                    .as_ref()
+                                    .is_some_and(|m| m.can_manage);
+                                this.powerup_level_modal = None;
+                                this.powerup_multi_perk_modal =
+                                    Some(PowerupMultiPerkModal::badge_packs(guild_id, can_manage));
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().flex().items_center().gap(px(8.)).children(action_btn)),
+            );
+
+        Some(
+            deferred(
+                div()
+                    .id("powerup-level-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.powerup_level_modal = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(card),
+            )
+            .with_priority(98)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture-harness opener for module 789267 (`powerup-multi-perk open|close`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_powerup_multi_perk(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.powerup_multi_perk_modal = None;
+            cx.notify();
+            return "powerup-multi-perk: closed".to_owned();
+        }
+        let guild_id = self.guild.unwrap_or(1);
+        self.powerup_multi_perk_modal = Some(PowerupMultiPerkModal::badge_packs(guild_id, true));
+        cx.notify();
+        "powerup-multi-perk: open".to_owned()
+    }
+
+    /// Renders `GuildPowerupsMultiPerkModal` (module 789267): wrapping row of `220px` cards
+    /// (`perkCard_ua3BFY`, `204x140px` image box, optional `"NEW"` pill, description, active/expiring/
+    /// removing status or `boost_gem` + `t2Wbo1` `"{required} Boosts"`, hover-revealed deactivate toggle,
+    /// `footerInfoText` warning max 220px, optional `footerAction`).
+    pub(super) fn powerup_multi_perk_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.powerup_multi_perk_modal.as_ref()?;
+        let guild_id = modal.guild_id;
+        let can_manage = modal.can_manage;
+        let title = modal.title.clone();
+        let subtitle = modal.subtitle.clone();
+        let footer_info = modal.footer_info.clone();
+        let footer_action = modal.footer_action_label.clone();
+
+        let cards = modal.perks.iter().enumerate().map(|(idx, item)| {
+            let group = SharedString::from(format!("multi-perk-card-{idx}"));
+            let sku_id = item.sku_id.clone();
+            let status = item.status;
+            let accent_top = rgba((item.accent << 8) | 0xff);
+            let accent_bot = rgba(((item.accent >> 1) & 0x7f7f7f) << 8 | 0xff);
+            let border = match status {
+                MultiPerkStatus::Active => gpui::Hsla::from(color("--status-positive")),
+                MultiPerkStatus::Expiring => gpui::Hsla::from(color("--status-warning")),
+                MultiPerkStatus::Removing => gpui::Hsla::from(color("--text-feedback-critical")),
+                MultiPerkStatus::Inactive => gpui::Hsla::from(color("--border-subtle")),
+            };
+
+            let footer_row: AnyElement = match status {
+                MultiPerkStatus::Active => div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(icon("checkmark_large", 14., "--status-positive"))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--status-positive"))
+                                    .child("Active"),
+                            ),
+                    )
+                    .when(can_manage, |row| {
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!("multi-perk-disable-{idx}")))
+                                .px(px(8.))
+                                .py(px(3.))
+                                .rounded(px(6.))
+                                .bg(color("--background-mod-subtle"))
+                                .hover(|s| s.bg(color("--background-mod-strong")))
+                                .cursor_pointer()
+                                .invisible()
+                                .group_hover(group.clone(), |b| b.visible())
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("PYPdl4"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let _ = this.requests.send(toggle_guild_powerup_request(
+                                        guild_id, &sku_id, false,
+                                    ));
+                                    if let Some(m) = this.powerup_multi_perk_modal.as_mut()
+                                        && let Some(p) = m.perks.get_mut(idx)
+                                    {
+                                        p.status = MultiPerkStatus::Inactive;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .into_any_element(),
+                MultiPerkStatus::Expiring => div()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--status-warning"))
+                    .child("Expiring Soon")
+                    .into_any_element(),
+                MultiPerkStatus::Removing => div()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-feedback-critical"))
+                    .child("Removing")
+                    .into_any_element(),
+                MultiPerkStatus::Inactive => div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(icon("boost_gem", 14., "--guild-boosting-pink-refresh"))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(multi_perk_cost_label(item.cost)),
+                            ),
+                    )
+                    .when(can_manage, |row| {
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!("multi-perk-enable-{idx}")))
+                                .px(px(10.))
+                                .py(px(4.))
+                                .rounded(px(6.))
+                                .bg(color("--control-primary-background-default"))
+                                .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("AOQgki"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let _ = this.requests.send(toggle_guild_powerup_request(
+                                        guild_id, &sku_id, true,
+                                    ));
+                                    if let Some(m) = this.powerup_multi_perk_modal.as_mut()
+                                        && let Some(p) = m.perks.get_mut(idx)
+                                    {
+                                        p.status = MultiPerkStatus::Active;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .into_any_element(),
+            };
+
+            div()
+                .id(SharedString::from(format!("multi-perk-card-el-{idx}")))
+                .group(group)
+                .w(px(220.))
+                .p(px(8.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(border)
+                .bg(color("--background-base-lower"))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .relative()
+                        .w(px(204.))
+                        .h(px(140.))
+                        .rounded(px(8.))
+                        .overflow_hidden()
+                        .bg(linear_gradient(
+                            135.,
+                            linear_color_stop(accent_top, 0.),
+                            linear_color_stop(accent_bot, 1.),
+                        ))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("boost_gem", 44., "--white"))
+                        .when(item.is_new, |box_div| {
+                            box_div.child(
+                                div()
+                                    .absolute()
+                                    .top(px(8.))
+                                    .right(px(8.))
+                                    .px(px(6.))
+                                    .py(px(2.))
+                                    .rounded(px(999.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .text_size(px(10.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--white"))
+                                    .child("NEW"),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .px(px(4.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(item.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-muted"))
+                                .child(item.description.clone()),
+                        ),
+                )
+                .child(div().px(px(4.)).pt(px(2.)).child(footer_row))
+        });
+
+        let card = div()
+            .id("powerup-multi-perk-modal")
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .w(px(740_f32.min((self.viewport.0 - 48.).max(320.))))
+            .rounded(px(12.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(px(24.))
+                    .pt(px(22.))
+                    .pb(px(14.))
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-muted"))
+                                    .child(subtitle),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("powerup-multi-perk-close")
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.powerup_multi_perk_modal = None;
+                                cx.notify();
+                            }))
+                            .child(icon("close", 16., "--interactive-text-default")),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .pb(px(20.))
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(14.))
+                    .children(cards),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .py(px(14.))
+                    .bg(color("--background-base-lower"))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .max_w(px(220.))
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-feedback-warning"))
+                            .children(footer_info),
+                    )
+                    .when_some(footer_action, |bar, label| {
+                        bar.child(
+                            div()
+                                .id("powerup-multi-perk-footer-action")
+                                .h(px(38.))
+                                .px(px(16.))
+                                .rounded(px(8.))
+                                .bg(color("--control-primary-background-default"))
+                                .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(label)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.powerup_multi_perk_modal = None;
+                                    this.open_server_settings_at(
+                                        guild_id,
+                                        super::server_settings::Page::Tag,
+                                        cx,
+                                    );
+                                })),
+                        )
+                    }),
+            );
+
+        Some(
+            deferred(
+                div()
+                    .id("powerup-multi-perk-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.powerup_multi_perk_modal = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(card),
+            )
+            .with_priority(98)
+            .into_any_element(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -2900,5 +3783,28 @@ mod tests {
             powerup_settings_page_for_sku(SKU_ROLE_STYLES),
             crate::ui::server_settings::Page::Roles
         );
+    }
+
+    #[test]
+    fn powerup_level_784140_and_multi_perk_789267_helpers() {
+        assert_eq!(powerup_level_boost_count(1), 2);
+        assert_eq!(powerup_level_boost_count(2), 7);
+        assert_eq!(powerup_level_boost_count(3), 14);
+        assert!(powerup_level_subtitle(1).contains('2'));
+        assert!(powerup_level_subtitle(2).contains('7'));
+        assert!(powerup_level_subtitle(3).contains("14"));
+        let tip = powerup_level_disable_tooltip(7);
+        assert!(tip.contains('7'), "got {tip}");
+        let mut m = PowerupLevelModal::for_tier(42, 2, false, true);
+        assert!(m.can_show_action());
+        m.is_tier_override = true;
+        assert!(!m.can_show_action());
+        assert_eq!(dc_intl::t("AOQgki"), "Enable");
+        assert_eq!(dc_intl::t("PYPdl4"), "Disable");
+        let cost_lbl = multi_perk_cost_label(3);
+        assert!(cost_lbl.contains('3'), "got {cost_lbl}");
+        let packs = PowerupMultiPerkModal::badge_packs(42, true);
+        assert_eq!(packs.perks.len(), 3);
+        assert!(packs.perks.iter().any(|p| p.is_new));
     }
 }

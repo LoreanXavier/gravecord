@@ -47,6 +47,75 @@ pub(in crate::ui) struct Listing {
     /// The first carousel item's label icon (`primaryIconAsset` of module 871123 `Cv`).
     pub label_icon: Option<String>,
     pub price: Option<String>,
+    /// Module 787844: optional Orbs coupon price (`discord_orb` entry in `storefront_pricing`).
+    pub orb_price: Option<u64>,
+    /// Module 783481: optional coupon discount percent (`discount_percent` / `coupon_discount_percent`).
+    pub discount_percent: Option<u32>,
+}
+
+/// Surface that opened the coupon flow (module 783481 & 787844).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ui) enum CouponSurface {
+    Storefront,
+    ProductDetails,
+}
+
+/// Module 783481: Social Layer Storefront coupon purchase complete modal state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::ui) struct CouponCompleteModal {
+    pub application_id: String,
+    pub application_name: String,
+    pub sku_id: String,
+    pub discount_percent: Option<u32>,
+    pub surface: CouponSurface,
+}
+
+/// Module 787844: in-flight `POST /virtual-currency/skus/{skuId}/redeem` state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::ui) struct PendingCouponRedeem {
+    pub application_id: String,
+    pub application_name: String,
+    pub sku_id: String,
+    pub discount_percent: Option<u32>,
+    pub orb_price: u64,
+    pub surface: CouponSurface,
+}
+
+/// Module 783481: title for coupon purchase complete modal (`NWcb7k` with discount or `Xtf9wP` fallback).
+pub(in crate::ui) fn coupon_complete_title(discount_percent: Option<u32>) -> String {
+    if let Some(pct) = discount_percent {
+        dc_intl::format(
+            "NWcb7k",
+            &[("discountPercent", dc_intl::Arg::Num(pct as f64))],
+        )
+    } else {
+        dc_intl::t("Xtf9wP").to_owned()
+    }
+}
+
+/// Module 783481: subtitle `"Explore the {applicationName} Shop and treat yourself."` (`tm2lfr`).
+pub(in crate::ui) fn coupon_complete_subtitle(application_name: &str) -> String {
+    dc_intl::format("tm2lfr", &[("applicationName", application_name.into())])
+}
+
+/// Module 787844: dual-mode Orbs coupon CTA label + whether balance suffices to spend Orbs.
+pub(in crate::ui) fn orb_coupon_cta_label(
+    balance: u64,
+    orb_price: u64,
+    surface: CouponSurface,
+) -> (String, bool) {
+    if balance < orb_price {
+        (dc_intl::t("SymzJC").to_owned(), false)
+    } else {
+        let label = match surface {
+            CouponSurface::Storefront => dc_intl::t("BxjHiu").to_owned(),
+            CouponSurface::ProductDetails => dc_intl::format(
+                "lTwxHh",
+                &[("orbAmount", dc_intl::Arg::Num(orb_price as f64))],
+            ),
+        };
+        (label, true)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -72,11 +141,11 @@ pub(in crate::ui) struct Storefront {
 }
 
 /// `GET /partner-sdk/applications/{id}/application-storefront` (`SOCIAL_LAYER_STOREFRONT_BY_APPLICATION_ID`).
-pub(super) fn storefront_route(app: &str) -> String {
+pub(in crate::ui) fn storefront_route(app: &str) -> String {
     format!("/partner-sdk/applications/{app}/application-storefront")
 }
 
-pub(super) fn storefront_key(app: &str) -> String {
+pub(in crate::ui) fn storefront_key(app: &str) -> String {
     format!("shop:gameshop:{app}")
 }
 
@@ -153,6 +222,23 @@ fn listing_price(listing: &Value, pricing: &Value) -> Option<String> {
     Some(format_price(amount, &currency, exponent))
 }
 
+/// Module 787844: extract optional `discord_orb` price from `storefront_pricing`.
+fn listing_orb_price(listing: &Value, pricing: &Value) -> Option<u64> {
+    let sku = &listing["sku"];
+    let id = sku["id"].as_str()?;
+    pricing["sku_price_map"][id]["pricing_result_id"]
+        .as_str()
+        .and_then(|result| pricing["pricing_result_id_map"][result].as_object())
+        .and_then(|by_gateway| by_gateway.get("0").or_else(|| by_gateway.values().next()))
+        .and_then(|entry| entry["user_price"].as_array())
+        .and_then(|prices| {
+            prices
+                .iter()
+                .find(|price| price["currency"].as_str() == Some("discord_orb"))
+        })
+        .and_then(|price| price["amount"].as_u64())
+}
+
 fn strings(value: &Value) -> Vec<String> {
     value
         .as_array()
@@ -210,6 +296,11 @@ pub(super) fn parse_storefront(body: &Value) -> Option<Storefront> {
                         .as_str()
                         .map(str::to_owned),
                     price: listing_price(listing, &body["storefront_pricing"]),
+                    orb_price: listing_orb_price(listing, &body["storefront_pricing"]),
+                    discount_percent: social["discount_percent"]
+                        .as_u64()
+                        .or_else(|| sku["discount_percent"].as_u64())
+                        .map(|n| n as u32),
                 },
             ))
         })
@@ -917,11 +1008,28 @@ impl Root {
                         ),
                 )
                 .child(
-                    div().h(px(20.)).flex().items_center().child(
-                        text(14., 20., 600., "--white")
-                            .truncate()
-                            .child(listing.price.clone().unwrap_or_default()),
-                    ),
+                    div()
+                        .h(px(32.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.))
+                        .child(
+                            text(14., 20., 600., "--white")
+                                .truncate()
+                                .child(listing.price.clone().unwrap_or_default()),
+                        )
+                        .children(listing.orb_price.map(|orb_price| {
+                            self.game_shop_orb_coupon_cta(
+                                sku.to_owned(),
+                                share_app_id.clone(),
+                                share_app_name.clone(),
+                                orb_price,
+                                listing.discount_percent,
+                                CouponSurface::Storefront,
+                                cx,
+                            )
+                        })),
                 )
         } else {
             // `placeholderText_RGwqSL`: two 24px bars at a width that varies from card to card.
@@ -1041,6 +1149,285 @@ impl Root {
             }))
             .into_any_element()
     }
+
+    /// Module 787844 (`Earn Orbs` / `Spend Orbs`): dual-mode Orbs coupon CTA button (`sm` 32px, `shop_orb_18`).
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::ui) fn game_shop_orb_coupon_cta(
+        &self,
+        sku_id: String,
+        application_id: String,
+        application_name: String,
+        orb_price: u64,
+        discount_percent: Option<u32>,
+        surface: CouponSurface,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let balance = self
+            .orb_wallet
+            .balance
+            .or_else(|| self.shop.balance.map(|b| b.max(0) as u64))
+            .unwrap_or(0);
+        let (label, can_spend) = orb_coupon_cta_label(balance, orb_price, surface);
+        let redeeming = self
+            .shop
+            .coupon_redeeming
+            .as_ref()
+            .is_some_and(|p| p.sku_id == sku_id);
+        div()
+            .id(SharedString::from(format!("game-shop-orb-cta-{sku_id}")))
+            .h(px(32.))
+            .px(px(12.))
+            .rounded(px(8.))
+            .bg(if can_spend {
+                color("--background-brand")
+            } else {
+                color("--background-mod-strong")
+            })
+            .hover(|s| {
+                s.bg(if can_spend {
+                    color("--brand-560")
+                } else {
+                    color("--background-surface-highest")
+                })
+            })
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .when(redeeming, |s| s.opacity(0.6))
+            .child(icon("shop_orb_18", 16., "--white"))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .line_height(px(16.))
+                    .font_weight(gpui::FontWeight(600.))
+                    .text_color(color("--white"))
+                    .child(label),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                if redeeming {
+                    return;
+                }
+                if !can_spend {
+                    this.open_quests(cx);
+                } else {
+                    this.shop.coupon_redeeming = Some(PendingCouponRedeem {
+                        application_id: application_id.clone(),
+                        application_name: application_name.clone(),
+                        sku_id: sku_id.clone(),
+                        discount_percent,
+                        orb_price,
+                        surface,
+                    });
+                    let _ = this.requests.send(
+                        super::super::orb_wallet::redeem_virtual_currency_sku_request(&sku_id),
+                    );
+                    cx.notify();
+                }
+            }))
+            .into_any_element()
+    }
+
+    /// Module 783481: Social Layer Storefront Coupon Purchase Complete Modal (`480px`, blue expressive header).
+    pub(in crate::ui) fn coupon_complete_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.shop.coupon_complete.as_ref()?.clone();
+        let title = coupon_complete_title(modal.discount_percent);
+        let subtitle = coupon_complete_subtitle(&modal.application_name);
+        let app_id = modal.application_id.clone();
+        let card = div()
+            .id("coupon-complete-modal")
+            .w(px(480.))
+            .rounded(px(12.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .flex()
+            .flex_col()
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(172.))
+                    .bg(linear_gradient(
+                        135.,
+                        linear_color_stop(rgba(0x5865f2ff), 0.),
+                        linear_color_stop(rgba(0x2d7d9aff), 1.),
+                    ))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .size(px(84.))
+                            .rounded_full()
+                            .bg(rgba(0xffffff24))
+                            .border_2()
+                            .border_color(rgba(0xffffff55))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("shop_orb_18", 44., "--white")),
+                    )
+                    .child(
+                        div()
+                            .id("coupon-complete-close")
+                            .absolute()
+                            .top(px(12.))
+                            .right(px(12.))
+                            .size(px(30.))
+                            .rounded_full()
+                            .bg(rgba(0x00000044))
+                            .hover(|s| s.bg(rgba(0x00000066)))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 16., "--white"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.shop.coupon_complete = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .p(px(24.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .line_height(px(26.))
+                            .font_weight(gpui::FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .text_center()
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-subtle"))
+                            .text_center()
+                            .child(subtitle),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .pb(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .when(modal.surface == CouponSurface::ProductDetails, |row| {
+                        let back_app = app_id.clone();
+                        row.child(
+                            div()
+                                .id("coupon-complete-back-to-shop")
+                                .h(px(38.))
+                                .px(px(16.))
+                                .rounded(px(8.))
+                                .bg(color("--background-mod-subtle"))
+                                .hover(|s| s.bg(color("--background-mod-strong")))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(gpui::FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("itMa3c")),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.shop.coupon_complete = None;
+                                    this.shop_open_game_shop(&back_app, 0, cx);
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("coupon-complete-primary")
+                            .h(px(38.))
+                            .px(px(20.))
+                            .rounded(px(8.))
+                            .bg(color("--background-brand"))
+                            .hover(|s| s.bg(color("--brand-560")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(gpui::FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(match modal.surface {
+                                        CouponSurface::Storefront => dc_intl::t("NX+WJN"),
+                                        CouponSurface::ProductDetails => dc_intl::t("3PatSz"),
+                                    }),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.shop.coupon_complete = None;
+                                cx.notify();
+                            })),
+                    ),
+            );
+        Some(
+            gpui::deferred(
+                div()
+                    .id("coupon-complete-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.shop.coupon_complete = None;
+                        cx.notify();
+                    }))
+                    .child(card),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture-harness opener for module 783481 (`coupon-complete` / `coupon-complete pdp`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_coupon_complete(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let mode = arg.trim();
+        if mode == "close" {
+            self.shop.coupon_complete = None;
+            cx.notify();
+            return "coupon-complete: closed".to_owned();
+        }
+        let pdp = mode == "pdp";
+        self.shop.coupon_complete = Some(CouponCompleteModal {
+            application_id: "1346069614634864772".to_owned(),
+            application_name: "Marvel Rivals".to_owned(),
+            sku_id: "1346069614634864999".to_owned(),
+            discount_percent: Some(25),
+            surface: if pdp {
+                CouponSurface::ProductDetails
+            } else {
+                CouponSurface::Storefront
+            },
+        });
+        cx.notify();
+        format!("coupon-complete: {mode}")
+    }
 }
 
 #[cfg(test)]
@@ -1122,9 +1509,36 @@ mod tests {
         let second = &store.listings["2"];
         assert_eq!(second.price.as_deref(), Some("TRY\u{a0}1,012.79"));
         assert_eq!(second.card_image.as_deref(), Some("5"));
+        assert_eq!(second.orb_price, Some(5000));
         assert_eq!(
             asset_url("9", "6", 512),
             "https://cdn.discordapp.com/app-assets/9/store/6.webp?size=512"
         );
+    }
+
+    #[test]
+    fn coupon_complete_783481_and_orb_cta_787844_format_correctly() {
+        let with_pct = coupon_complete_title(Some(25));
+        assert!(with_pct.contains("25%"), "got {with_pct}");
+        assert_eq!(coupon_complete_title(None), dc_intl::t("Xtf9wP"));
+        let sub = coupon_complete_subtitle("Marvel Rivals");
+        assert!(sub.contains("Marvel Rivals"), "got {sub}");
+        assert_eq!(
+            orb_coupon_cta_label(500, 1200, CouponSurface::Storefront),
+            (dc_intl::t("SymzJC").to_owned(), false)
+        );
+        assert_eq!(
+            orb_coupon_cta_label(1500, 1200, CouponSurface::Storefront),
+            (dc_intl::t("BxjHiu").to_owned(), true)
+        );
+        let (pdp_label, can_spend) =
+            orb_coupon_cta_label(1500, 1200, CouponSurface::ProductDetails);
+        assert!(can_spend);
+        assert!(pdp_label.contains("1,200") || pdp_label.contains("1200"));
+        let req = super::super::super::orb_wallet::redeem_virtual_currency_sku_request("999");
+        assert!(matches!(
+            req,
+            crate::net::Request::Rest { route, .. } if route == "/virtual-currency/skus/999/redeem"
+        ));
     }
 }

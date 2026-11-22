@@ -28,6 +28,8 @@ pub(crate) const TOTAL_REDEEMED_KEY: &str = "orbs:total-redeemed";
 pub(crate) const ACHIEVEMENTS_LIST_KEY: &str = "orbs:achievements-list";
 pub(crate) const ACHIEVEMENTS_CLAIM_PREFIX: &str = "orbs:achievement-claim:";
 pub(crate) const ACHIEVEMENTS_UNREAD_ACK_KEY: &str = "orbs:achievements-unread-ack";
+/// Module 787844 (`POST /virtual-currency/skus/{skuId}/redeem`).
+pub(crate) const REDEEM_SKU_PREFIX: &str = "orbs:redeem-sku:";
 
 const ORBS_HELP_URL: &str = "https://support.discord.com/hc/en-us/articles/30593690165783";
 
@@ -99,6 +101,17 @@ pub(crate) fn unread_ack_request() -> Request {
         key: Some(ACHIEVEMENTS_UNREAD_ACK_KEY.to_owned()),
         method: reqwest::Method::POST,
         route: "/users/@me/achievements/unread-ack".to_owned(),
+        body: Some(json!({})),
+    }
+}
+
+/// `POST /virtual-currency/skus/{skuId}/redeem` (module 787844 / 979286): spend Orbs on a virtual-currency SKU
+/// (e.g. a Social Layer Storefront coupon).
+pub(crate) fn redeem_virtual_currency_sku_request(sku_id: &str) -> Request {
+    Request::Rest {
+        key: Some(format!("{REDEEM_SKU_PREFIX}{sku_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/virtual-currency/skus/{sku_id}/redeem"),
         body: Some(json!({})),
     }
 }
@@ -183,6 +196,35 @@ impl Root {
                         *bal += ch.orb_amount;
                     }
                 }
+            }
+            cx.notify();
+        } else if let Some(sku_id) = key.strip_prefix(REDEEM_SKU_PREFIX) {
+            if let Some(pending) = self.shop.coupon_redeeming.take()
+                && pending.sku_id == sku_id
+                && !failed
+            {
+                if let Some(bal) = self.orb_wallet.balance.as_mut() {
+                    *bal = bal.saturating_sub(pending.orb_price);
+                }
+                if let Some(bal) = self.shop.balance.as_mut() {
+                    *bal = (*bal - pending.orb_price as i64).max(0);
+                }
+                // Module 787844 -> 783481: refetch storefront & show coupon purchase complete modal.
+                self.requested
+                    .remove(&super::shop::game_shop::storefront_key(
+                        &pending.application_id,
+                    ));
+                self.shop_request(
+                    &super::shop::game_shop::storefront_key(&pending.application_id),
+                    super::shop::game_shop::storefront_route(&pending.application_id),
+                );
+                self.shop.coupon_complete = Some(super::shop::game_shop::CouponCompleteModal {
+                    application_id: pending.application_id,
+                    application_name: pending.application_name,
+                    sku_id: pending.sku_id,
+                    discount_percent: pending.discount_percent,
+                    surface: pending.surface,
+                });
             }
             cx.notify();
         }

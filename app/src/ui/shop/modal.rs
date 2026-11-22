@@ -692,6 +692,39 @@ impl Root {
             );
         let bundle_strip = (product.kind == data::KIND_BUNDLE && !product.items.is_empty())
             .then(|| self.shop_bundle_strip(product, slide, cx));
+        // Module 784054: wrapped expanded variant swatch picker + active variant label in PDP.
+        let variant_strip = self
+            .shop_variant_swatches(product, true, None, true, cx)
+            .map(|swatches| {
+                let idx = self
+                    .shop
+                    .variant_hover
+                    .as_ref()
+                    .and_then(|(s, i)| (s == &product.sku_id).then_some(*i))
+                    .or_else(|| self.shop.variant_selections.get(&product.sku_id).copied())
+                    .unwrap_or(0)
+                    .min(product.variants.len().saturating_sub(1));
+                let active_label = product
+                    .variants
+                    .get(idx)
+                    .map(|v| {
+                        if v.purchased {
+                            format!("{} · {}", v.variant_label, dc_intl::t("6cfuDj"))
+                        } else {
+                            v.variant_label.clone()
+                        }
+                    })
+                    .unwrap_or_default();
+                div()
+                    .pt(px(8.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(swatches)
+                    .when(!active_label.is_empty(), |col| {
+                        col.child(text(12., 16., 500., "--text-muted").child(active_label))
+                    })
+            });
         let left = div()
             .parity("shop-modal-left")
             .relative()
@@ -743,7 +776,8 @@ impl Root {
                                 text(14., 18., 400., "--text-default")
                                     .child(self.shop_summary(product)),
                             )
-                            .children(bundle_strip),
+                            .children(bundle_strip)
+                            .children(variant_strip),
                     )
                     .child(pricing),
             );

@@ -1995,6 +1995,24 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_powerup_perk(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `powerup-level [1|2|3|active|disabled|close]`: GuildPowerupLevelModal (784140).
+            ["powerup-level", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_powerup_level(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `powerup-multi-perk [open|close]`: GuildPowerupsMultiPerkModal (789267).
+            ["powerup-multi-perk", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_powerup_multi_perk(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `coupon-complete [storefront|pdp|close]`: Social Layer Coupon Complete Modal (783481).
+            ["coupon-complete", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_coupon_complete(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `partner-reward [locked|claimed|error|close]`: Recurring Partner Reward Code Card (116011).
             ["partner-reward", rest @ ..] => {
                 let arg = rest.join(" ");

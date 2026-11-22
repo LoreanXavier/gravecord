@@ -7,7 +7,6 @@
 //! how long the person has been in the channel (`connectedAt`); then, or without `T` alone, the person's cards. With
 //! neither, nothing opens. Styles: `*_utcclU` (module 8936, stylesheet 847810) over `popover_81IzEA` (module 489387).
 
-use super::live_activity::Surface;
 use super::member_avatars::HIDDEN_STATUS;
 use super::voice_badge::HoverCard;
 use super::{Root, color};
@@ -202,14 +201,197 @@ impl Root {
                 .into_any_element(),
         )
     }
+}
 
+/// Module 804630 (`_Q(activityType)`): Voice User Activity card header label (`J4MQFX`, `xeqvTg`, `ep6av7`, `1+boPi`).
+pub(super) fn voice_activity_header(activity_type: u64) -> &'static str {
+    match activity_type {
+        0 | 5 => dc_intl::t("J4MQFX"), // Playing Now
+        3 => dc_intl::t("xeqvTg"),     // Watching Now
+        2 => dc_intl::t("ep6av7"),     // Listening Now
+        _ => dc_intl::t("1+boPi"),     // Happening Now
+    }
+}
+
+/// Module 804630 (`Gf`): resolved activity summary for Voice User Popout (`329554` / `804630.vP`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ResolvedVoiceActivity {
+    pub is_spotify: bool,
+    pub activity_type: u64,
+    pub header: &'static str,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub detail: Option<String>,
+    pub sync_id: Option<String>,
+    pub image_url: Option<String>,
+}
+
+/// Module 804630 (`Gf`): resolves a raw presence activity JSON into a voice user popout card model.
+pub(super) fn resolve_voice_activity(activity: &serde_json::Value) -> ResolvedVoiceActivity {
+    let is_spotify = dc_state::now_playing::is_spotify(activity)
+        || (activity["type"].as_u64() == Some(2)
+            && activity["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("spotify:")));
+    let activity_type = if is_spotify {
+        2
+    } else {
+        activity["type"].as_u64().unwrap_or(0)
+    };
+    let name = activity["name"].as_str().unwrap_or_default();
+    let details = activity["details"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let state = activity["state"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let title = if is_spotify {
+        details.clone().unwrap_or_else(|| name.to_owned())
+    } else {
+        name.to_owned()
+    };
+    let subtitle = if is_spotify { state.clone() } else { details };
+    let detail = if is_spotify { None } else { state };
+    let sync_id = activity["sync_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let image_url = activity["assets"]["large_image"]
+        .as_str()
+        .or_else(|| activity["assets"]["small_image"].as_str())
+        .and_then(|raw| {
+            if let Some(hash) = raw.strip_prefix("spotify:") {
+                Some(format!("https://i.scdn.co/image/{hash}"))
+            } else if let Some(ext) = raw.strip_prefix("mp:external/") {
+                Some(format!("https://media.discordapp.net/external/{ext}"))
+            } else {
+                activity["application_id"].as_str().map(|app| {
+                    format!("https://cdn.discordapp.com/app-assets/{app}/{raw}.png?size=128")
+                })
+            }
+        });
+    ResolvedVoiceActivity {
+        is_spotify,
+        activity_type,
+        header: voice_activity_header(activity_type),
+        title,
+        subtitle,
+        detail,
+        sync_id,
+        image_url,
+    }
+}
+
+impl Root {
+    /// Module 804630 (`vP` Spotify / `329554.v` compact card + `Tf` 32x32 artwork + `_Q` header):
+    /// renders a compact voice user activity card (`-kuxsn`) for a resolved activity.
+    fn voice_user_activity_card_804630(
+        &self,
+        resolved: &ResolvedVoiceActivity,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let thumb = resolved
+            .image_url
+            .as_deref()
+            .and_then(|u| self.images.get(u).cloned());
+        let open_spotify = resolved
+            .is_spotify
+            .then(|| resolved.sync_id.clone())
+            .flatten();
+        div()
+            .id(gpui::SharedString::from(format!(
+                "voice-act-804630-{index}"
+            )))
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-muted"))
+                    .child(resolved.header),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        // `Tf` (`image_-kuxsn`): 32x32 rounded-sm artwork.
+                        div()
+                            .size(px(32.))
+                            .flex_none()
+                            .rounded(px(4.))
+                            .overflow_hidden()
+                            .bg(color("--background-mod-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .children(thumb.map(|im| {
+                                gpui::img(im).size_full().object_fit(gpui::ObjectFit::Cover)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .when_some(open_spotify, |el, track_id| {
+                                        el.cursor_pointer().on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(move |_, _, _, cx| {
+                                                cx.open_url(&format!(
+                                                    "https://open.spotify.com/track/{track_id}"
+                                                ));
+                                            }),
+                                        )
+                                    })
+                                    .child(resolved.title.clone()),
+                            )
+                            .when_some(resolved.subtitle.clone(), |col, sub| {
+                                col.child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .text_color(color("--text-muted"))
+                                        .child(sub),
+                                )
+                            })
+                            .when_some(resolved.detail.clone(), |col, det| {
+                                col.child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .text_color(color("--text-muted"))
+                                        .child(det),
+                                )
+                            }),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+impl Root {
     /// Module 772800 `A`, or `None` when it renders nothing (`!J`).
-    ///
-    /// GAP: of the cards only the activities (module 845056 `m`, drawn with the profile's live activity cards rather
-    /// than module 329554's voice activity card) are drawn. The stream card (module 727353 `P`, with Watch Stream),
-    /// the embedded Activity cards (module 685399 through 329554) and the voice channel game card (module 655724 `B`,
-    /// `$` of 208284/729829) are not, so they neither show nor make the popout open; the stream's own activity is not
-    /// left out of the list either.
+    /// Combines the stream card (`727353.P`) and voice user activity cards (`804630` `_Q`/`Gf`/`Tf`/`vP`).
+    /// Note: embedded Activity cards (module 685399 through 329554) and the voice channel game card
+    /// (module 655724 `B`, `$` of 208284/729829) are not yet drawn here.
     pub(super) fn voice_user_card(
         &self,
         target: VoiceUserTarget,
@@ -221,7 +403,7 @@ impl Root {
             user,
         } = target;
         let duration = self.guild_experiment_on(DURATION_EXPERIMENT, guild);
-        let picks: Vec<(usize, bool)> = self
+        let activities: Vec<ResolvedVoiceActivity> = self
             .stores
             .presence
             .get(user, Some(guild))
@@ -229,9 +411,8 @@ impl Root {
                 presence
                     .visible_activities()
                     .iter()
-                    .enumerate()
-                    .filter(|(_, activity)| voice_activity_shown(activity) && !embedded(activity))
-                    .map(|(index, _)| (index, true))
+                    .filter(|activity| voice_activity_shown(activity) && !embedded(activity))
+                    .map(|activity| resolve_voice_activity(activity))
                     .collect()
             })
             .unwrap_or_default();
@@ -241,15 +422,8 @@ impl Root {
         if let Some(stream_card) = self.voice_user_stream_card(guild, channel, user, cx) {
             cards.push(stream_card);
         }
-        if !picks.is_empty() {
-            cards.extend(self.live_activity_cards_picked(
-                user,
-                Surface::Popout,
-                color("--text-strong").into(),
-                color("--text-subtle").into(),
-                Some(&picks),
-                cx,
-            ));
+        for (idx, resolved) in activities.iter().enumerate() {
+            cards.push(self.voice_user_activity_card_804630(resolved, idx, cx));
         }
         let has_cards = !cards.is_empty();
         if !has_cards && !duration {
@@ -410,5 +584,33 @@ mod tests {
             &json!({"type": 4, "state": "custom"})
         ));
         assert!(!voice_activity_shown(&json!({"type": 1, "name": "Stream"})));
+    }
+
+    #[test]
+    fn voice_user_activity_helpers_804630() {
+        use super::{resolve_voice_activity, voice_activity_header};
+        assert_eq!(voice_activity_header(0), "Playing Now");
+        assert_eq!(voice_activity_header(5), "Playing Now");
+        assert_eq!(voice_activity_header(3), "Watching Now");
+        assert_eq!(voice_activity_header(2), "Listening Now");
+        assert_eq!(voice_activity_header(99), "Happening Now");
+
+        let spotify = resolve_voice_activity(&json!({
+            "id": "spotify:1",
+            "type": 2,
+            "name": "Spotify",
+            "details": "Track Title",
+            "state": "Artist Name",
+            "sync_id": "abc123",
+            "assets": { "large_image": "spotify:deadbeef" }
+        }));
+        assert!(spotify.is_spotify);
+        assert_eq!(spotify.header, "Listening Now");
+        assert_eq!(spotify.title, "Track Title");
+        assert_eq!(spotify.subtitle.as_deref(), Some("Artist Name"));
+        assert_eq!(
+            spotify.image_url.as_deref(),
+            Some("https://i.scdn.co/image/deadbeef")
+        );
     }
 }

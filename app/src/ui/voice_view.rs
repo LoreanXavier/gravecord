@@ -34,6 +34,41 @@ pub(super) const MESSAGE_PREVIEWS: &str = "audio.call_message_previews";
 const ART_URL: &str = "https://discord.com/assets/664390de11a80444.svg";
 /// `CONNECT`: permission bit 20.
 const CONNECT: u64 = 1 << 20;
+/// `USE_EMBEDDED_ACTIVITIES`: permission bit 39 (module 804980).
+const USE_EMBEDDED_ACTIVITIES: u64 = 1 << 39;
+
+/// Module 804980 (`Ay`): responsive size bucket for an embedded activity tile in the voice call grid
+/// (`>400` -> 2 large, `301..=400` -> 1 medium, `<=300` -> 0 small).
+pub(super) fn activity_tile_breakpoint(tile_width: f32) -> u8 {
+    if tile_width > 400. {
+        2
+    } else if tile_width > 300. {
+        1
+    } else {
+        0
+    }
+}
+
+/// Module 804980 (`Ay`): `"<username> is playing"` (`7Uuia2`) or `"<username> & <count> other(s)"` (`cpe6CK`).
+pub(super) fn activity_participants_subtitle(
+    first_username: &str,
+    total_participants: usize,
+) -> String {
+    if total_participants > 1 {
+        dc_intl::format(
+            "cpe6CK",
+            &[
+                ("username", dc_intl::Arg::Str(first_username.into())),
+                ("count", dc_intl::Arg::Num((total_participants - 1) as f64)),
+            ],
+        )
+    } else {
+        dc_intl::format(
+            "7Uuia2",
+            &[("username", dc_intl::Arg::Str(first_username.into()))],
+        )
+    }
+}
 const CHAT_WIDTH: f32 = 450.;
 const MORE_WIDTH: f32 = 239.6;
 
@@ -1371,7 +1406,15 @@ impl Root {
         // Alone in the call with the right to invite: the invite card keeps the user's tile company (526369:
         // `userLimit <= 0 || > 1`, one user, `canInvite`). A person's stream does not count as a user.
         let card = user_count == 1 && can_invite && !outside;
-        let count = (people.len() + usize::from(card)).max(1);
+        // Module 804980: embedded activity instances running in this voice channel (rendered as grid tiles when
+        // not viewing the full `activity-stage`).
+        let channel_activities: Vec<super::activity_launch::Instance> = self
+            .activities
+            .in_channel(channel)
+            .into_iter()
+            .cloned()
+            .collect();
+        let count = (people.len() + channel_activities.len() + usize::from(card)).max(1);
         let layout = grid_layout(count, width, height);
         if card {
             self.request_image(ART_URL.to_owned(), ART_URL.to_owned());
@@ -1386,6 +1429,9 @@ impl Root {
             .iter()
             .map(|person| self.tile(person, layout, cx))
             .collect();
+        for inst in &channel_activities {
+            tiles.push(self.activity_grid_tile(inst, guild, channel, layout, cx));
+        }
         if card {
             tiles.push(self.voice_invite_card(layout, cx));
         }
@@ -1485,6 +1531,190 @@ impl Root {
             .children(self.event_prompts(guild, channel, self.call_idle_t(shown), cx))
             .children(self.voice_menus(channel, width, height, cx))
             .children(self.soundboard_suggest(cx))
+            .into_any_element()
+    }
+
+    /// Module 804980 (`Ay` + `LN`): embedded activity tile rendered inside the voice call grid with
+    /// splash backdrop, `--opacity-black-60` scrim, max-4 overlapping participant avatar stack with
+    /// display-name tooltips, responsive typography, and `"Join Activity"` (`4i2vj+`) CTA gated on
+    /// `USE_EMBEDDED_ACTIVITIES` + `CONNECT`.
+    fn activity_grid_tile(
+        &self,
+        instance: &super::activity_launch::Instance,
+        guild: Id,
+        channel: Id,
+        layout: GridLayout,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let bp = activity_tile_breakpoint(layout.tile_width);
+        let (avatar_sz, title_sz, sub_sz, btn_h) = match bp {
+            2 => (40., 20., 14., 38.),
+            1 => (32., 16., 13., 34.),
+            _ => (24., 14., 12., 30.),
+        };
+        let app_id = instance.application_id.clone();
+        let app_name = self
+            .activities
+            .names
+            .get(&app_id)
+            .cloned()
+            .unwrap_or_else(|| "Activity".to_owned());
+
+        let participant_users: Vec<(Id, String, Option<std::sync::Arc<gpui::Image>>)> = instance
+            .participants
+            .iter()
+            .filter_map(|p| p.user_id.parse::<Id>().ok())
+            .map(|uid| {
+                let user = self.stores.users.get(&uid);
+                let name = user
+                    .map(|u| u.display_name().to_owned())
+                    .unwrap_or_else(|| "Member".to_owned());
+                let avatar = user.and_then(|u| {
+                    let (key, _) = super::avatar_source(u);
+                    self.images.get(&key).cloned()
+                });
+                (uid, name, avatar)
+            })
+            .collect();
+        let first_name = participant_users
+            .first()
+            .map(|(_, n, _)| n.as_str())
+            .unwrap_or("Someone");
+        let subtitle = activity_participants_subtitle(first_name, participant_users.len().max(1));
+
+        // `LN`: max 4 overlapping circular participant avatars with display-name tooltips.
+        let avatar_stack =
+            div()
+                .flex()
+                .items_center()
+                .children(participant_users.iter().take(4).enumerate().map(
+                    |(idx, (uid, name, av))| {
+                        let initial = name
+                            .chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_uppercase()
+                            .to_string();
+                        let circle = div()
+                            .when(idx > 0, |d| d.ml(px(-8.)))
+                            .size(px(avatar_sz))
+                            .rounded_full()
+                            .border_2()
+                            .border_color(rgba(0x111214ff))
+                            .bg(color("--background-brand"))
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(match av {
+                                Some(image) => img(image.clone())
+                                    .size_full()
+                                    .object_fit(gpui::ObjectFit::Cover)
+                                    .into_any_element(),
+                                None => div()
+                                    .text_size(px((avatar_sz * 0.42).max(10.)))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(rgba(0xffffffff))
+                                    .child(initial)
+                                    .into_any_element(),
+                            });
+                        self.with_tip(
+                            format!("activity-tile-avatar-{app_id}-{uid}"),
+                            Tip::body(super::tooltip::Body::Text(name.clone().into()), Side::Top),
+                            circle,
+                            cx,
+                        )
+                    },
+                ));
+
+        let can_join = guild == 0
+            || self
+                .stores
+                .guild(guild)
+                .and_then(|g| g.channels.iter().find(|c| c.id == channel))
+                .is_none_or(|ch| {
+                    self.can_in_channel(ch, CONNECT)
+                        && self.can_in_channel(ch, USE_EMBEDDED_ACTIVITIES)
+                });
+        let join_app = app_id.clone();
+
+        div()
+            .id(SharedString::from(format!("voice-activity-tile-{app_id}")))
+            .relative()
+            .w(px(layout.tile_width))
+            .h(px(layout.tile_height))
+            .flex_none()
+            .rounded(px(8.))
+            .overflow_hidden()
+            .bg(linear_gradient(
+                135.,
+                linear_color_stop(rgba(0x3b2d6bff), 0.),
+                linear_color_stop(rgba(0x1a1e3aff), 1.),
+            ))
+            .child(
+                // `--opacity-black-60` scrim
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000099))
+                    .p(px(16.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(10.))
+                    .child(avatar_stack)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(sub_sz))
+                                    .line_height(px(sub_sz + 4.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(rgba(0xdbdee1ff))
+                                    .text_center()
+                                    .child(subtitle),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(title_sz))
+                                    .line_height(px(title_sz + 6.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(rgba(0xffffffff))
+                                    .text_center()
+                                    .child(app_name),
+                            ),
+                    )
+                    .when(can_join, |col| {
+                        col.child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "voice-activity-join-{join_app}"
+                                )))
+                                .h(px(btn_h))
+                                .px(px(16.))
+                                .rounded(px(8.))
+                                .bg(rgba(0xffffffff))
+                                .hover(|s| s.bg(rgba(0xe3e5e8ff)))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(rgba(0x111214ff))
+                                .child(dc_intl::t("4i2vj+"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.launch_activity(&join_app, cx);
+                                })),
+                        )
+                    }),
+            )
             .into_any_element()
     }
 
@@ -4926,5 +5156,17 @@ mod tests {
         for key in ["o53CL2", "jYnGPG", "8BEiNn", "NOP3Ry", "EE+P0H"] {
             assert!(!dc_intl::t(key).is_empty(), "missing 778768 key {key}");
         }
+    }
+
+    #[test]
+    fn voice_activity_tile_804980_breakpoints_and_intl() {
+        assert_eq!(activity_tile_breakpoint(480.), 2);
+        assert_eq!(activity_tile_breakpoint(350.), 1);
+        assert_eq!(activity_tile_breakpoint(260.), 0);
+        let single = activity_participants_subtitle("Alex", 1);
+        assert!(single.contains("Alex"), "got {single}");
+        let multi = activity_participants_subtitle("Alex", 4);
+        assert!(multi.contains("Alex") && multi.contains('3'), "got {multi}");
+        assert_eq!(dc_intl::t("4i2vj+"), "Join Activity");
     }
 }

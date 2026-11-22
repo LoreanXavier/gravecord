@@ -118,6 +118,12 @@ pub(super) enum Then {
         guild: Id,
         message: Id,
     },
+    /// Yes of "Did we get it wrong?" (module 794267): `POST /guilds/{guild}/auto-moderation/alert-action` type 4.
+    SubmitAutomodFeedback {
+        guild: Id,
+        channel: Id,
+        message: Id,
+    },
     /// Leave Server of "Server Unavailable" (module 537560): `leaveGuild`.
     LeaveGuild {
         guild: Id,
@@ -1020,6 +1026,24 @@ impl Root {
                     .send(super::automod_alert::false_alarm_request(
                         guild, message, reason,
                     ));
+            }
+            Then::SubmitAutomodFeedback {
+                guild,
+                channel,
+                message,
+            } => {
+                // Module 794267 (`179832.E5`): requires `MANAGE_MESSAGES` in `channel`.
+                let ch = self
+                    .stores
+                    .guild(guild)
+                    .and_then(|g| g.channels.iter().find(|c| c.id == channel));
+                if self.my_permission(guild, ch, dc_state::permissions::MANAGE_MESSAGES) {
+                    let _ = self
+                        .requests
+                        .send(super::automod_alert::submit_feedback_request(
+                            guild, channel, message,
+                        ));
+                }
             }
             Then::LeaveGuild { guild } => {
                 let _ = self.requests.send(super::guild_menu::leave_request(guild));

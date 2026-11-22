@@ -753,6 +753,10 @@ pub struct Root {
     clear_activity_history_modal: Option<full_profile_recent::ClearActivityHistoryModal>,
     /// Guild Powerup Perk modal (module 945942, `boost_page`).
     powerup_perk_modal: Option<boost_page::PowerupPerkModal>,
+    /// Guild Powerup Level Detail modal (module 784140, `boost_page`).
+    powerup_level_modal: Option<boost_page::PowerupLevelModal>,
+    /// Guild Powerup Multi-Perk Group modal (module 789267, `boost_page`).
+    powerup_multi_perk_modal: Option<boost_page::PowerupMultiPerkModal>,
     /// Recurring Partner Reward Code Card modal (module 116011, `settings::gift_inventory_page`).
     partner_reward_modal: Option<settings::gift_inventory_page::PartnerRewardState>,
     /// Pre-purchase unclaimed account gate modal (module 195759, `claim_account`).
@@ -1504,6 +1508,8 @@ impl Root {
             billing_address_modal: None,
             clear_activity_history_modal: None,
             powerup_perk_modal: None,
+            powerup_level_modal: None,
+            powerup_multi_perk_modal: None,
             partner_reward_modal: None,
             claim_before_purchase_modal: None,
             nitro_upload_badge_upsell: false,
@@ -12150,6 +12156,8 @@ impl Render for Root {
                     && (this.billing_address_modal.is_some()
                         || this.clear_activity_history_modal.is_some()
                         || this.powerup_perk_modal.is_some()
+                        || this.powerup_level_modal.is_some()
+                        || this.powerup_multi_perk_modal.is_some()
                         || this.partner_reward_modal.is_some()
                         || this.claim_before_purchase_modal.is_some()
                         || this.nitro_upload_badge_upsell
@@ -12160,6 +12168,7 @@ impl Render for Root {
                         || this.try_it_out_upsell
                         || this.activity_invite_modal.is_some()
                         || this.shop.wishlist_nux_sku.is_some()
+                        || this.shop.coupon_complete.is_some()
                         || this.orb_wallet.delivered_modal.is_some()
                         || this.nitro_upsell_modal.is_some()
                         || this.gift_ready_modal.is_some()
@@ -12263,6 +12272,8 @@ impl Render for Root {
                     this.billing_address_modal = None;
                     this.clear_activity_history_modal = None;
                     this.powerup_perk_modal = None;
+                    this.powerup_level_modal = None;
+                    this.powerup_multi_perk_modal = None;
                     this.partner_reward_modal = None;
                     this.claim_before_purchase_modal = None;
                     this.nitro_upload_badge_upsell = false;
@@ -12273,6 +12284,7 @@ impl Render for Root {
                     this.try_it_out_upsell = false;
                     this.activity_invite_modal = None;
                     this.shop.wishlist_nux_sku = None;
+                    this.shop.coupon_complete = None;
                     this.orb_wallet.delivered_modal = None;
                     this.nitro_upsell_modal = None;
                     this.gift_ready_modal = None;
@@ -13621,6 +13633,7 @@ impl Render for Root {
             .children(self.overlay_stream_menu_layer(cx))
             .children(self.pick_guild_settings_layer(cx))
             .children(self.orb_wallet_layer(cx))
+            .children(self.coupon_complete_layer(cx))
             .children(self.research_survey_layer(cx))
             .children(self.guild_theme_nux_layer(cx))
             .children(self.conjure_actions_layer(cx))
@@ -13717,6 +13730,8 @@ impl Render for Root {
             .children(self.billing_address_overlay(cx))
             .children(self.clear_activity_history_layer(cx))
             .children(self.powerup_perk_overlay(cx))
+            .children(self.powerup_level_overlay(cx))
+            .children(self.powerup_multi_perk_overlay(cx))
             .children(self.partner_reward_overlay(cx))
             .children(self.claim_before_purchase_layer(cx))
             .children(self.nitro_upload_badge_upsell(cx))

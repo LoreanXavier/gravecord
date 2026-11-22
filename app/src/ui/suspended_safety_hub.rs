@@ -65,6 +65,8 @@ pub(crate) struct SuspendedSafetyHub {
     pub active_shown: usize,
     pub expired_shown: usize,
     pub violations: Vec<SafetyHubViolation>,
+    /// Module 793163 (`AgeVerificationModalLayout`): `Some(step)` (`0` = start, `1` = method step).
+    pub age_verify_step: Option<u8>,
 }
 
 impl SuspendedSafetyHub {
@@ -83,6 +85,7 @@ impl SuspendedSafetyHub {
             active_shown: PAGE_STEP,
             expired_shown: PAGE_STEP,
             violations: Vec::new(),
+            age_verify_step: None,
         }
     }
 
@@ -195,6 +198,160 @@ fn status_banner(
         .into_any_element()
 }
 
+/// Module 793163 (`AgeVerificationModalLayout`): whether the footer distributes space-between
+/// (when `"Back to start"` `fjKFae` is shown alongside the right slot / `"Cancel"` `4gTnU0`) vs `end`.
+pub(super) fn age_verification_footer_space_between(show_back: bool, hide_footer: bool) -> bool {
+    !hide_footer && show_back
+}
+
+/// Module 793163 (`AgeVerificationModalLayout`): medium (`480px`) modal shell titled `"Age verification"`
+/// (`eKo6mw`), optional fullbleed body, and footer `ButtonGroup` (`fjKFae` `"Back to start"`, right slot
+/// or `4gTnU0` `"Cancel"`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn age_verification_modal_layout(
+    body: AnyElement,
+    fullbleed: bool,
+    show_back_to_start: bool,
+    hide_footer: bool,
+    footer_right_slot: Option<AnyElement>,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    let space_between = age_verification_footer_space_between(show_back_to_start, hide_footer);
+    let right_slot = footer_right_slot.unwrap_or_else(|| {
+        div()
+            .id("age-verify-cancel")
+            .h(px(38.))
+            .px(px(16.))
+            .rounded(px(8.))
+            .bg(color("--background-mod-subtle"))
+            .hover(|s| s.bg(color("--background-mod-strong")))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(14.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--text-strong"))
+            .child(dc_intl::t("4gTnU0"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(hub) = this.suspended_safety_hub.as_mut() {
+                    hub.age_verify_step = None;
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    });
+    div()
+        .id("age-verification-modal-backdrop")
+        .occlude()
+        .absolute()
+        .inset_0()
+        .bg(gpui::rgba(0x000000b3))
+        .flex()
+        .items_center()
+        .justify_center()
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                if let Some(hub) = this.suspended_safety_hub.as_mut() {
+                    hub.age_verify_step = None;
+                }
+                cx.notify();
+            }),
+        )
+        .child(
+            div()
+                .id("age-verification-modal")
+                .w(px(480.))
+                .rounded(px(12.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .flex()
+                .flex_col()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .px(px(20.))
+                        .py(px(16.))
+                        .border_b_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(18.))
+                                .line_height(px(24.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("eKo6mw")),
+                        )
+                        .child(
+                            div()
+                                .id("age-verify-close")
+                                .size(px(28.))
+                                .rounded(px(6.))
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("modal_close", 16., "--interactive-icon-default"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(hub) = this.suspended_safety_hub.as_mut() {
+                                        hub.age_verify_step = None;
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(div().when(!fullbleed, |b| b.p(px(20.))).child(body))
+                .when(!hide_footer, |card| {
+                    card.child(
+                        div()
+                            .px(px(20.))
+                            .py(px(14.))
+                            .bg(color("--background-base-lower"))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_center()
+                            .when(space_between, |f| f.justify_between())
+                            .when(!space_between, |f| f.justify_end())
+                            .when(show_back_to_start, |f| {
+                                f.child(
+                                    div()
+                                        .id("age-verify-back-to-start")
+                                        .h(px(38.))
+                                        .px(px(14.))
+                                        .rounded(px(8.))
+                                        .bg(color("--background-mod-subtle"))
+                                        .hover(|s| s.bg(color("--background-mod-strong")))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("fjKFae"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(hub) = this.suspended_safety_hub.as_mut() {
+                                                hub.age_verify_step = Some(0);
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(right_slot),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
 impl Root {
     pub(crate) fn close_suspended_safety_hub(&mut self) -> bool {
         self.suspended_safety_hub.take().is_some()
@@ -230,6 +387,7 @@ impl Root {
             return;
         };
         hub.manual_review_methods_loading = true;
+        hub.age_verify_step = Some(0);
         let token = hub.suspended_token.clone();
         let _ = self.requests.send(Request::Rest {
             key: Some("safety-hub-age-methods".to_owned()),
@@ -815,6 +973,58 @@ impl Root {
                 .into_any_element()
         };
 
+        let age_verify_overlay = hub.age_verify_step.map(|step| {
+            let show_back = step > 0;
+            let body = div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(if step == 0 {
+                            "Choose how you'd like to confirm your age to restore access to your account."
+                        } else {
+                            "Follow the instructions in the verification prompt or go back to choose another method."
+                        }),
+                )
+                .when(step == 0, |col| {
+                    col.child(
+                        div()
+                            .id("age-verify-method-next")
+                            .px(px(14.))
+                            .py(px(10.))
+                            .rounded(px(8.))
+                            .bg(color("--background-base-lower"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("IcA9iD")),
+                            )
+                            .child(icon("chevron_right", 16., "--interactive-icon-default"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(hub) = this.suspended_safety_hub.as_mut() {
+                                    hub.age_verify_step = Some(1);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                })
+                .into_any_element();
+            age_verification_modal_layout(body, false, show_back, false, None, cx)
+        });
+
         Some(
             deferred(
                 div()
@@ -878,7 +1088,8 @@ impl Root {
                                     .children(age_banner)
                                     .child(body_content),
                             ),
-                    ),
+                    )
+                    .children(age_verify_overlay),
             )
             .with_priority(2)
             .into_any_element(),
@@ -953,6 +1164,9 @@ impl Root {
             "none" => AgeCheckStatus::None,
             _ => AgeCheckStatus::Underage,
         };
+        if arg == "age-modal" {
+            hub.age_verify_step = Some(1);
+        }
         hub.expired_open = true;
         self.suspended_safety_hub = Some(hub);
         cx.notify();
@@ -1000,5 +1214,15 @@ mod tests {
         guild_v.guild_name = Some("Test Guild".into());
         let title = SuspendedSafetyHub::violation_title(&guild_v);
         assert!(title.contains("Test Guild") && title.contains("spam"));
+    }
+
+    #[test]
+    fn age_verification_modal_layout_793163_keys_and_footer_justify() {
+        assert_eq!(dc_intl::t("eKo6mw"), "Age verification");
+        assert_eq!(dc_intl::t("fjKFae"), "Back to start");
+        assert_eq!(dc_intl::t("4gTnU0"), "Cancel");
+        assert!(age_verification_footer_space_between(true, false));
+        assert!(!age_verification_footer_space_between(false, false));
+        assert!(!age_verification_footer_space_between(true, true));
     }
 }

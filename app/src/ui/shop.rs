@@ -147,6 +147,14 @@ pub(super) struct State {
     pub shelf_glide: HashMap<String, (f32, f32, f64, Option<f32>)>,
     /// Module 599062: forced/observed Shop load error message (for error state rendering & retry).
     pub load_error: Option<String>,
+    /// Module 783481: Social Layer Storefront coupon purchase complete modal.
+    pub coupon_complete: Option<game_shop::CouponCompleteModal>,
+    /// Module 787844: in-flight Orbs virtual-currency coupon redeem metadata.
+    pub coupon_redeeming: Option<game_shop::PendingCouponRedeem>,
+    /// Module 784054: selected product variant index by parent SKU id.
+    pub variant_selections: HashMap<String, usize>,
+    /// Module 784054: currently hovered product variant swatch `(parent_sku_id, variant_index)`.
+    pub variant_hover: Option<(String, usize)>,
 }
 
 /// Origin of the Shop load error view (module 599062 `A`: `SHOP_PAGE = 0`, `GIFT_MODAL = 1`).

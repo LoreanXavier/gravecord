@@ -127,10 +127,34 @@ pub struct Item {
     pub layers: Vec<String>,
 }
 
+/// One color/style variant of a Shop product (`variants[]`, module 784054).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ProductVariant {
+    pub sku_id: String,
+    pub store_listing_id: String,
+    pub variant_label: String,
+    /// CSS color string (e.g. `"#ff6b9d"` or `"5865f2"`) painted inside the circular swatch.
+    pub variant_value: String,
+    pub purchased: bool,
+}
+
+/// Parses a `#RRGGBB` / `RRGGBB` swatch color string to `0xRRGGBB`, falling back to Blurple.
+pub fn parse_swatch_rgb(raw: &str) -> u32 {
+    let trimmed = raw.trim().trim_start_matches('#');
+    if trimmed.len() == 6
+        && let Ok(rgb) = u32::from_str_radix(trimmed, 16)
+    {
+        return rgb;
+    }
+    0x5865f2
+}
+
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Product {
     pub sku_id: String,
+    pub store_listing_id: String,
     pub name: String,
     pub summary: String,
     pub kind: i64,
@@ -144,6 +168,7 @@ pub struct Product {
     pub bg_static: Option<String>,
     pub items: Vec<Item>,
     pub bundled: Vec<Product>,
+    pub variants: Vec<ProductVariant>,
     pub is_first_party: bool,
     /// `styles.background_colors` and `styles.button_colors` as 0xRRGGBB integers.
     pub background_colors: Vec<u32>,
@@ -203,6 +228,7 @@ pub fn parse_product(value: &serde_json::Value) -> Option<Product> {
     };
     Some(Product {
         sku_id,
+        store_listing_id: text("store_listing_id"),
         name: text("name"),
         summary: text("summary"),
         kind: value["type"].as_i64().unwrap_or(-1),
@@ -244,6 +270,36 @@ pub fn parse_product(value: &serde_json::Value) -> Option<Product> {
         bundled: value["bundled_products"]
             .as_array()
             .map(|list| list.iter().filter_map(parse_product).collect())
+            .unwrap_or_default(),
+        variants: value["variants"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|v| {
+                        let v_sku = v["sku_id"]
+                            .as_str()
+                            .or_else(|| v["base_variant_sku_id"].as_str())?
+                            .to_owned();
+                        Some(ProductVariant {
+                            sku_id: v_sku,
+                            store_listing_id: v["store_listing_id"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                            variant_label: v["variant_label"]
+                                .as_str()
+                                .or_else(|| v["name"].as_str())
+                                .unwrap_or_default()
+                                .to_owned(),
+                            variant_value: v["variant_value"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                            purchased: v["purchased"].as_bool().unwrap_or(false),
+                        })
+                    })
+                    .collect()
+            })
             .unwrap_or_default(),
         is_first_party: value["is_first_party"].as_bool().unwrap_or(false),
         background_colors: colors("background_colors"),

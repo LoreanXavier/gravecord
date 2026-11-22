@@ -250,26 +250,28 @@ enum ButtonPlace {
     Quick(Mark),
 }
 
-/// Why a sound is in the quick access popout (`type` of module 453997).
+/// Why a sound is in the quick access popout (`type` of module 453997 / 782618).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Mark {
     Favorite,
+    FrequentlyUsed,
     Guild,
     Default,
 }
 
-/// The quick access popout's sounds (module 453997 `A`): available favourites from the call's server, then (with
-/// USE_EXTERNAL_SOUNDS) every server in list order, then the defaults, five or six of them unlocked; a favourite of
+/// The quick access popout's sounds (module 453997 `A` / 782618): available favourites from the call's server, then
+/// (with USE_EXTERNAL_SOUNDS) every server in list order, then the defaults; followed by up to 3 non-favorite
+/// frequently-used sounds (`Mark::FrequentlyUsed`, clock icon + "+cGVV6"); a favourite or frequently-used sound of
 /// another server without Nitro is held back and the first such one ends the list, locked. The rest is filled with the
-/// call's server's available sounds, then the defaults, each by sound id. GAP: frequently used sounds (`frequently_used`
-/// with the clock and "Frequently Used") come between favourites and the server's sounds; play counts are not kept.
-/// Returns `(sounds, has_locked)` for the quick access popout (module 662080 / 453997 `A`).
+/// call's server's available sounds, then the defaults, each by sound id.
+/// Returns `(sounds, has_locked)` for the quick access popout (module 662080 / 453997 `A` / 782618).
 pub(super) fn quick_access_with_lock(
     ctx: &Ctx,
     order: &[Id],
     sounds: &HashMap<Id, Vec<Sound>>,
     defaults: &[Sound],
     favorites: &[String],
+    frequently_used: &[String],
 ) -> (Vec<(Sound, Mark)>, bool) {
     let mut lists: Vec<&[Sound]> = Vec::new();
     if let Some(current) = ctx.current {
@@ -298,15 +300,35 @@ pub(super) fn quick_access_with_lock(
             && !ctx.everywhere
     };
     let full = if ctx.everywhere { 6 } else { 5 };
-    let (mut open, mut held): (Vec<(Sound, Mark)>, Vec<Sound>) = (Vec::new(), Vec::new());
+    let mut open: Vec<(Sound, Mark)> = Vec::new();
+    let mut held: Vec<(Sound, Mark)> = Vec::new();
     for sound in favorites.iter().filter_map(find) {
         if locked(sound) {
-            held.push(sound.clone());
+            held.push((sound.clone(), Mark::Favorite));
         } else {
             open.push((sound.clone(), Mark::Favorite));
         }
         if open.len() >= full && (ctx.everywhere || !held.is_empty()) {
             break;
+        }
+    }
+    // Module 453997 / 782618: up to 3 non-favorite frequently used sounds (`+cGVV6` "Frequently Used").
+    let mut freq_added = 0usize;
+    for id in frequently_used {
+        if freq_added >= 3 {
+            break;
+        }
+        if favorites.iter().any(|fav| fav == id) {
+            continue;
+        }
+        let Some(sound) = find(id) else {
+            continue;
+        };
+        freq_added += 1;
+        if locked(sound) {
+            held.push((sound.clone(), Mark::FrequentlyUsed));
+        } else if open.len() < full && !open.iter().any(|(known, _)| known.id == sound.id) {
+            open.push((sound.clone(), Mark::FrequentlyUsed));
         }
     }
     let has_locked = !held.is_empty();
@@ -338,8 +360,8 @@ pub(super) fn quick_access_with_lock(
         }
     }
     open.truncate(limit);
-    if let Some(first) = held.into_iter().next() {
-        open.push((first, Mark::Favorite));
+    if let Some((first, mark)) = held.into_iter().next() {
+        open.push((first, mark));
     }
     (open, has_locked)
 }
@@ -351,7 +373,7 @@ pub(super) fn quick_access(
     defaults: &[Sound],
     favorites: &[String],
 ) -> Vec<(Sound, Mark)> {
-    quick_access_with_lock(ctx, order, sounds, defaults, favorites).0
+    quick_access_with_lock(ctx, order, sounds, defaults, favorites, &[]).0
 }
 
 /// The picker's sections: Favorites, the call's server, Discord Sounds (last for Nitro users), then the servers whose
@@ -621,6 +643,8 @@ pub(crate) struct Board {
     gift_tip_closed: bool,
     upsell_dismissed: bool,
     favorites: Vec<String>,
+    /// Module 782618 / 453997: played sound usage counts for "Frequently Used" quick-access ranking.
+    usage_counts: HashMap<String, u32>,
     collapsed: HashSet<String>,
     /// Sounds playing now, by sound and by who started them (`PLAY_START` / `PLAY_END`).
     playing: HashMap<String, usize>,
@@ -1020,6 +1044,11 @@ impl Root {
             route: format!("/channels/{channel}/send-soundboard-sound"),
             body: Some(sound.send_body()),
         });
+        *self
+            .soundboard
+            .usage_counts
+            .entry(sound.id.clone())
+            .or_insert(0) += 1;
         let me = self.stores.current_user.as_ref().map(|user| user.id);
         self.soundboard_play(&sound.id, sound.volume, me, 1.);
         cx.notify();
@@ -1238,12 +1267,21 @@ impl Root {
         };
         let ctx = self.soundboard_ctx();
         let order: Vec<Id> = self.stores.guilds.iter().map(|guild| guild.id).collect();
+        let mut freq_pairs: Vec<(&String, u32)> = self
+            .soundboard
+            .usage_counts
+            .iter()
+            .map(|(k, &v)| (k, v))
+            .collect();
+        freq_pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let frequently_used: Vec<String> = freq_pairs.into_iter().map(|(k, _)| k.clone()).collect();
         let (sounds, has_locked) = quick_access_with_lock(
             &ctx,
             &order,
             &self.soundboard.guilds,
             &self.soundboard.defaults,
             &self.soundboard.favorites,
+            &frequently_used,
         );
         let loading = sounds.is_empty()
             && self.soundboard.defaults_requested
@@ -2792,21 +2830,22 @@ impl Root {
                         }
                     }))
                     .when_some(quick, |this, mark| {
-                        // Module 782618 `R` in the quick access popout: the end icon only says why the sound is
-                        // there (a star with "Favorited"); it toggles nothing.
-                        let tip = match mark {
-                            Mark::Favorite => Some(dc_intl::t("iJA/TE")),
+                        // Module 782618 `R` in the quick access popout: StarIcon ("Favorited" `iJA/TE`) or
+                        // ClockIcon ("Frequently Used" `+cGVV6`); toggles nothing.
+                        let badge = match mark {
+                            Mark::Favorite => Some(("sb_star", dc_intl::t("iJA/TE"))),
+                            Mark::FrequentlyUsed => Some(("user_clock", dc_intl::t("+cGVV6"))),
                             Mark::Guild | Mark::Default => None,
                         };
                         let mark_icon = div()
                             .id(SharedString::from(format!("sb-mark-{key}")))
                             .size(px(16.))
                             .flex_none()
-                            .when(tip.is_some(), |this| {
-                                this.child(icon("sb_star", 16., "--interactive-text-default"))
+                            .when_some(badge, |this, (icon_name, _)| {
+                                this.child(icon(icon_name, 16., "--interactive-text-default"))
                             });
-                        match tip {
-                            Some(tip) => this.child(self.with_tip(
+                        match badge {
+                            Some((_, tip)) => this.child(self.with_tip(
                                 format!("sb-mark-tip-{key}"),
                                 Tip::body(Body::Text(tip.into()), Side::Top),
                                 mark_icon,
@@ -3093,6 +3132,32 @@ mod tests {
         };
         let picked = quick_access(&closed, &[10, 20], &sounds, &defaults, &favorites);
         assert!(picked.iter().all(|(sound, _)| sound.id != "201"));
+
+        // Module 782618: up to 3 non-favorite frequently-used sounds slot right after favorites.
+        let freq = vec![
+            "5".to_owned(),   // duplicate of favorite -> skipped
+            "7".to_owned(),   // default -> Mark::FrequentlyUsed
+            "8".to_owned(),   // default -> Mark::FrequentlyUsed
+            "102".to_owned(), // guild -> Mark::FrequentlyUsed
+            "6".to_owned(),   // 4th non-fav -> capped at 3
+        ];
+        let (with_freq, has_locked) =
+            quick_access_with_lock(&ctx, &[10, 20], &sounds, &defaults, &favorites, &freq);
+        assert!(has_locked);
+        assert_eq!(with_freq[0].1, Mark::Favorite);
+        assert_eq!(
+            (with_freq[1].0.id.as_str(), with_freq[1].1),
+            ("7", Mark::FrequentlyUsed)
+        );
+        assert_eq!(
+            (with_freq[2].0.id.as_str(), with_freq[2].1),
+            ("8", Mark::FrequentlyUsed)
+        );
+        assert_eq!(
+            (with_freq[3].0.id.as_str(), with_freq[3].1),
+            ("102", Mark::FrequentlyUsed)
+        );
+        assert_eq!(dc_intl::t("+cGVV6"), "Frequently Used");
     }
 
     #[test]

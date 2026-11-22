@@ -172,6 +172,9 @@ pub(super) fn alert_is_completed(message: &Message) -> bool {
         .is_some_and(|map| map.contains_key("1"))
 }
 
+/// Module 794267 (`845625.G.SUBMIT_FEEDBACK = 4`): report an AutoMod alert as a false positive.
+pub(super) const ALERT_ACTION_SUBMIT_FEEDBACK: u8 = 4;
+
 /// `E5` of module 179832 (used by `485304.js`): `POST /guilds/{guildId}/auto-moderation/alert-action`
 /// with `alert_action_type = 1` (`SET_COMPLETED`) or `2` (`UNSET_COMPLETED`).
 pub(super) fn alert_action_request(
@@ -190,6 +193,50 @@ pub(super) fn alert_action_request(
             "channel_id": channel.to_string(),
             "alert_action_type": action_type,
         })),
+    }
+}
+
+/// Module 794267 (`179832.E5(messageId, channel, 4)`): `POST /guilds/{guildId}/auto-moderation/alert-action`
+/// with `alert_action_type = 4` (`SUBMIT_FEEDBACK`).
+pub(super) fn submit_feedback_request(guild: Id, channel: Id, message: Id) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("automod-feedback:{message}")),
+        method: reqwest::Method::POST,
+        route: format!("/guilds/{guild}/auto-moderation/alert-action"),
+        body: Some(serde_json::json!({
+            "message_id": message.to_string(),
+            "channel_id": channel.to_string(),
+            "alert_action_type": ALERT_ACTION_SUBMIT_FEEDBACK,
+        })),
+    }
+}
+
+/// Module 794267 (`449585.w2` / `189213.a`): "Did we get it wrong?" AutoMod false-positive feedback
+/// confirmation dialog (`7bdzNo`, `Lbpk6m`, Cancel `ETE/oC`, Yes `p89ACt`).
+pub(super) fn feedback_alert(guild: Id, channel: Id, message: Id) -> Alert {
+    Alert {
+        id: "automod-feedback",
+        title: dc_intl::t("7bdzNo").to_owned(),
+        subtitle: Some(vec![(dc_intl::t("Lbpk6m").to_owned(), false)]),
+        content: None,
+        buttons: vec![
+            AlertButton {
+                id: "automod-feedback-cancel",
+                label: dc_intl::t("ETE/oC").to_owned(),
+                tone: Tone::Secondary,
+                then: Then::Close,
+            },
+            AlertButton {
+                id: "automod-feedback-confirm",
+                label: dc_intl::t("p89ACt").to_owned(),
+                tone: Tone::Primary,
+                then: Then::SubmitAutomodFeedback {
+                    guild,
+                    channel,
+                    message,
+                },
+            },
+        ],
     }
 }
 
@@ -310,6 +357,17 @@ impl Root {
                 .hover(|style| style.underline())
                 .child(label)
         };
+        let channel_id = message.channel_id;
+        let can_manage_messages = guild.is_some_and(|g| {
+            self.stores
+                .guild(g)
+                .zip(self.stores.me())
+                .is_some_and(|(known, me)| {
+                    dc_state::permissions::guild_permissions(known, me)
+                        & dc_state::permissions::MANAGE_MESSAGES
+                        != 0
+                })
+        });
         let footer = guild
             .filter(|guild| self.incident_actions_shown(*guild))
             .map(|guild| {
@@ -355,6 +413,15 @@ impl Root {
                             )),
                         ),
                     )
+                    .when(can_manage_messages, |row| {
+                        row.child(dot()).child(div().p(px(8.)).flex().child(
+                            text_button("automod-raid-feedback", dc_intl::t("7bdzNo")).on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.open_automod_feedback(guild, channel_id, id, cx);
+                                }),
+                            ),
+                        ))
+                    })
             });
         let card = div()
             .mt(px(4.))
@@ -507,6 +574,18 @@ impl Root {
         self.chat_extra.alert = Some(resolve_alert(guild, message));
         cx.notify();
     }
+
+    /// Module 794267: open the "Did we get it wrong?" false-positive feedback confirmation dialog.
+    pub(super) fn open_automod_feedback(
+        &mut self,
+        guild: Id,
+        channel: Id,
+        message: Id,
+        cx: &mut Context<Self>,
+    ) {
+        self.chat_extra.alert = Some(feedback_alert(guild, channel, message));
+        cx.notify();
+    }
 }
 
 #[cfg(test)]
@@ -586,5 +665,21 @@ mod tests {
             panic!("expected REST request");
         };
         assert_eq!(body.unwrap()["alert_action_type"], 1);
+
+        // Module 794267: AutoMod false-positive feedback modal & REST action type 4.
+        let alert = feedback_alert(10, 20, 30);
+        assert_eq!(alert.title, "Did we get it wrong?");
+        assert_eq!(alert.buttons.len(), 2);
+        assert_eq!(alert.buttons[0].label, "Cancel");
+        assert_eq!(alert.buttons[1].label, "Yes");
+        let crate::net::Request::Rest { route, body, .. } = submit_feedback_request(10, 20, 30)
+        else {
+            panic!("expected REST request");
+        };
+        assert_eq!(route, "/guilds/10/auto-moderation/alert-action");
+        let payload = body.unwrap();
+        assert_eq!(payload["alert_action_type"], 4);
+        assert_eq!(payload["message_id"], "30");
+        assert_eq!(payload["channel_id"], "20");
     }
 }

@@ -719,6 +719,8 @@ impl Root {
             44.,
             cx,
         );
+        let swatches_collapsed = self.shop_variant_swatches(&product, false, Some(4), false, cx);
+        let swatches_expanded = self.shop_variant_swatches(&product, true, Some(4), false, cx);
         outer
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -745,6 +747,7 @@ impl Root {
                     .flex_col()
                     .gap(px(4.))
                     .group_hover(id.clone(), |row| row.invisible())
+                    .children(swatches_collapsed)
                     .child(name_row(&product))
                     .child(
                         div()
@@ -771,6 +774,7 @@ impl Root {
                     .gap(px(7.))
                     .invisible()
                     .group_hover(id.clone(), |row| row.visible())
+                    .children(swatches_expanded)
                     .child(name_row(&product))
                     .child(
                         div()
@@ -791,6 +795,140 @@ impl Root {
             .children(wishlist_pile)
             .child(heart)
             .into_any_element()
+    }
+
+    /// Module 784054 (`ProductVariants`): collapsed (`16px`, `-2px` overlap) / expanded (`20px`, `6px` gap)
+    /// circular color swatch picker with owned checkmark (`6cfuDj` `"Acquired"`) and overflow `+` (`+0zcgs`
+    /// `"See more variants"`).
+    pub(super) fn shop_variant_swatches(
+        &self,
+        product: &Product,
+        expanded: bool,
+        max_variants_to_show: Option<usize>,
+        wrap: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if product.variants.len() <= 1 {
+            return None;
+        }
+        let visible_cap = max_variants_to_show.unwrap_or(product.variants.len());
+        let has_overflow = product.variants.len() > visible_cap;
+        let shown_count = if has_overflow {
+            visible_cap.saturating_sub(1)
+        } else {
+            product.variants.len()
+        };
+        let selected = self
+            .shop
+            .variant_selections
+            .get(&product.sku_id)
+            .copied()
+            .unwrap_or(0)
+            .min(product.variants.len().saturating_sub(1));
+        let hovered = self
+            .shop
+            .variant_hover
+            .as_ref()
+            .and_then(|(sku, idx)| (sku == &product.sku_id).then_some(*idx));
+        let swatch_size = if expanded { 20. } else { 16. };
+        let parent_sku = product.sku_id.clone();
+
+        let mut row = div()
+            .flex()
+            .items_center()
+            .when(expanded, |r| r.gap(px(6.)))
+            .when(wrap, |r| r.flex_wrap());
+
+        for (i, variant) in product.variants.iter().take(shown_count).enumerate() {
+            let active = hovered.unwrap_or(selected) == i;
+            let rgb = data::parse_swatch_rgb(&variant.variant_value);
+            let fill = gpui::rgba((rgb << 8) | 0xff);
+            let click_sku = parent_sku.clone();
+            let hover_sku = parent_sku.clone();
+            let a11y_label = if variant.purchased {
+                format!("{} ({})", variant.variant_label, dc_intl::t("6cfuDj"))
+            } else {
+                variant.variant_label.clone()
+            };
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "shop-variant-{}-{}-{i}",
+                        parent_sku,
+                        if expanded { "exp" } else { "col" }
+                    )))
+                    .aria_label(a11y_label)
+                    .when(!expanded && i > 0, |d| d.ml(px(-2.)))
+                    .size(px(swatch_size))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(fill)
+                    .border_2()
+                    .border_color(if active {
+                        color("--border-focus")
+                    } else {
+                        color("--background-base-low")
+                    })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(expanded, |d| {
+                        d.cursor_pointer()
+                            .on_hover(cx.listener(move |this, is_hover: &bool, _, cx| {
+                                if *is_hover {
+                                    this.shop.variant_hover = Some((hover_sku.clone(), i));
+                                } else if this
+                                    .shop
+                                    .variant_hover
+                                    .as_ref()
+                                    .is_some_and(|(s, idx)| s == &hover_sku && *idx == i)
+                                {
+                                    this.shop.variant_hover = None;
+                                }
+                                cx.notify();
+                            }))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.shop.variant_selections.insert(click_sku.clone(), i);
+                                cx.notify();
+                            }))
+                    })
+                    .when(variant.purchased, |d| {
+                        d.child(icon("discover_check", 10., "--white"))
+                    }),
+            );
+        }
+
+        if has_overflow {
+            let more_sku = parent_sku.clone();
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "shop-variant-more-{}-{}",
+                        parent_sku,
+                        if expanded { "exp" } else { "col" }
+                    )))
+                    .aria_label(dc_intl::t("+0zcgs"))
+                    .when(!expanded, |d| d.ml(px(-2.)))
+                    .size(px(swatch_size))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(color("--background-mod-strong"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.shop_open_product(&more_sku, cx);
+                    }))
+                    .child(text(11., 12., 700., "--text-strong").child("+")),
+            );
+        }
+
+        Some(row.into_any_element())
     }
 
     /// Wishlisted avatar pile badge overlaid on top-right of Shop gifting/recommendation cards
@@ -1550,6 +1688,35 @@ mod tests {
             super::gift_button_label("Burnice White"),
             "Send a gift, Burnice White"
         );
+    }
+
+    #[test]
+    fn product_variants_784054_parse_and_swatch_rgb() {
+        let json = serde_json::json!({
+            "sku_id": "100",
+            "store_listing_id": "200",
+            "name": "Galaxy Hoodie",
+            "type": 0,
+            "variants": [
+                {"sku_id": "100", "store_listing_id": "200", "variant_label": "Nebula Pink", "variant_value": "#ff6b9d", "purchased": true},
+                {"sku_id": "101", "store_listing_id": "201", "variant_label": "Starlight Blue", "variant_value": "5865f2", "purchased": false}
+            ]
+        });
+        let p = super::data::parse_product(&json).expect("product");
+        assert_eq!(p.store_listing_id, "200");
+        assert_eq!(p.variants.len(), 2);
+        assert!(p.variants[0].purchased);
+        assert_eq!(
+            super::data::parse_swatch_rgb(&p.variants[0].variant_value),
+            0xff6b9d
+        );
+        assert_eq!(
+            super::data::parse_swatch_rgb(&p.variants[1].variant_value),
+            0x5865f2
+        );
+        assert_eq!(super::data::parse_swatch_rgb("invalid"), 0x5865f2);
+        assert_eq!(dc_intl::t("6cfuDj"), "Acquired");
+        assert_eq!(dc_intl::t("+0zcgs"), "See more variants");
     }
 }
 
