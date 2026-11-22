@@ -145,6 +145,60 @@ pub struct LoginView {
     captcha_poll: Option<gpui::Task<()>>,
     /// The Multi-Factor dialog a captcha interrupted, put back when the captcha is done.
     captcha_behind: Option<Mfa>,
+    /// Module 916226 (`EmailOrPhoneInput`): selected country index into `phone_countries::COUNTRIES`.
+    country_idx: usize,
+    /// Module 916226 (`CountryCodePopout`): whether the 220x240 searchable country picker is open.
+    country_popout_open: bool,
+    /// Module 916226: search query editor inside the country code popout (`hGOODh`).
+    country_query: Entity<Editor>,
+}
+
+/// Module 916226 / `628387.Vl`: detects phone-like login input (`len >= 3 && /^[-() \d]+$/`).
+pub(crate) fn is_phone_like(value: &str) -> bool {
+    value.len() >= 3
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'-' | b'(' | b')' | b' '))
+}
+
+/// Module 916226 / `91871`: case-insensitive subsequence match for country code picker search.
+pub(crate) fn fuzzy_country_match(query: &str, name: &str, code: &str) -> bool {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    let matches_subseq = |haystack: &str| {
+        let mut needle = q.chars();
+        let Some(mut target) = needle.next() else {
+            return true;
+        };
+        for ch in haystack.chars().flat_map(char::to_lowercase) {
+            if ch == target {
+                match needle.next() {
+                    Some(next) => target = next,
+                    None => return true,
+                }
+            }
+        }
+        false
+    };
+    matches_subseq(name) || matches_subseq(code)
+}
+
+fn default_country_index() -> usize {
+    super::settings::phone_countries::COUNTRIES
+        .iter()
+        .position(|c| c.alpha2 == "US")
+        .unwrap_or(0)
+}
+
+fn country_dial_prefix(idx: usize) -> &'static str {
+    let countries = super::settings::phone_countries::COUNTRIES;
+    let code = countries
+        .get(idx)
+        .or_else(|| countries.first())
+        .map_or("+1", |c| c.code);
+    code.split(' ').next().unwrap_or(code)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -189,6 +243,18 @@ impl LoginView {
         let email = field(cx, false);
         let password = field(cx, true);
         let code = field(cx, false);
+        let country_query = cx.new(|cx| {
+            let mut style = editor_style();
+            style.size = 13.;
+            style.line_height = 18.;
+            let mut editor = Editor::new(style, cx);
+            editor.set_keeps_text(true);
+            editor.set_reports_all_edits(true);
+            editor.set_placeholder(dc_intl::t("hGOODh").to_owned());
+            editor
+        });
+        cx.subscribe(&country_query, |_, _, _: &EditorEvent, cx| cx.notify())
+            .detach();
         let (avatar_tx, avatar_rx) = match avatar_requests {
             Some((tx, rx)) => (Some(tx), Some(rx)),
             None => (None, None),
@@ -215,6 +281,9 @@ impl LoginView {
             captcha_failed: false,
             captcha_poll: None,
             captcha_behind: None,
+            country_idx: default_country_index(),
+            country_popout_open: false,
+            country_query,
         };
         this.send(Command::StartQr);
         cx.spawn(async move |this, cx| {
@@ -685,11 +754,20 @@ impl LoginView {
         }
     }
 
+    fn resolved_login_value(&self, cx: &Context<Self>) -> String {
+        let raw = self.email.read(cx).text().trim().to_owned();
+        if is_phone_like(&raw) {
+            format!("{}{raw}", country_dial_prefix(self.country_idx))
+        } else {
+            raw
+        }
+    }
+
     fn log_in(&mut self, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
-        let login = self.email.read(cx).text().trim().to_owned();
+        let login = self.resolved_login_value(cx);
         let password = Zeroizing::new(self.password.read(cx).text().to_owned());
         self.login_error = login.is_empty().then(|| REQUIRED.to_owned());
         self.password_error = password.is_empty().then(|| REQUIRED.to_owned());
@@ -707,7 +785,7 @@ impl LoginView {
     }
 
     fn forgot_password(&mut self, cx: &mut Context<Self>) {
-        let login = self.email.read(cx).text().trim().to_owned();
+        let login = self.resolved_login_value(cx);
         if login.is_empty() {
             self.login_error = Some(REQUIRED.to_owned());
             cx.notify();
@@ -1187,6 +1265,185 @@ impl LoginView {
         self.password
             .update(cx, |editor, _| editor.set_masked(!show));
 
+        let email_text = self.email.read(cx).text().to_owned();
+        let show_country = is_phone_like(&email_text);
+        let countries = super::settings::phone_countries::COUNTRIES;
+        let current_country = countries
+            .get(self.country_idx)
+            .or_else(|| countries.first());
+        let country_chip_label = current_country.map_or_else(
+            || "US +1".to_owned(),
+            |c| format!("{} {}", c.alpha2, country_dial_prefix(self.country_idx)),
+        );
+        let country_popout = (show_country && self.country_popout_open).then(|| {
+            let q = self.country_query.read(cx).text().to_owned();
+            let matches: Vec<(usize, &'static super::settings::phone_countries::Country)> =
+                countries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| fuzzy_country_match(&q, c.name, c.code))
+                    .collect();
+            let list_el: AnyElement = if matches.is_empty() {
+                div()
+                    .py(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(13.))
+                    .text_color(color("--text-muted"))
+                    .child(dc_intl::t("PoWNfe"))
+                    .into_any_element()
+            } else {
+                div()
+                    .id("login-country-scroller")
+                    .h(px(184.))
+                    .overflow_y_scroll()
+                    .pb(px(10.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .children(matches.into_iter().map(|(idx, c)| {
+                        let active = idx == self.country_idx;
+                        div()
+                            .id(SharedString::from(format!("login-country-{idx}")))
+                            .h(px(34.))
+                            .px(px(10.))
+                            .rounded(px(3.))
+                            .when(active, |d| d.bg(color("--background-mod-strong")))
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-muted"))
+                                    .child(c.name),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(c.code),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.country_idx = idx;
+                                this.country_popout_open = false;
+                                cx.notify();
+                            }))
+                    }))
+                    .into_any_element()
+            };
+            // `.phoneFieldPopout_iiqC5t`: 220x240 anchored above the input (`position="top"`).
+            div()
+                .id("login-country-popout")
+                .occlude()
+                .absolute()
+                .bottom(px(48.))
+                .left_0()
+                .w(px(220.))
+                .h(px(240.))
+                .p(px(10.))
+                .pb(px(0.))
+                .rounded(px(5.))
+                .bg(color("--background-surface-high"))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .shadow(vec![gpui::BoxShadow {
+                    color: gpui::hsla(0., 0., 0., 0.35),
+                    offset: gpui::point(px(0.), px(6.)),
+                    blur_radius: px(16.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .h(px(30.))
+                        .px(px(8.))
+                        .rounded(px(4.))
+                        .bg(color("--input-background-default"))
+                        .border_1()
+                        .border_color(color("--input-border-default"))
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(self.country_query.clone()),
+                        ),
+                )
+                .child(div().my(px(8.)).h(px(1.)).bg(color("--border-subtle")))
+                .child(list_el)
+        });
+
+        // Module 916226 (`EmailOrPhoneInput`): 44px wrapper with animated country-code trigger + 1px divider when phone-like.
+        let email_input = div()
+            .relative()
+            .child(
+                div()
+                    .w_full()
+                    .h(px(44.))
+                    .px(px(if show_country { 4. } else { 11. }))
+                    .rounded(px(8.))
+                    .bg(color("--input-background-default"))
+                    .border(px(if email_error.is_some() { 2. } else { 1. }))
+                    .border_color(if email_error.is_some() {
+                        color("--text-feedback-critical")
+                    } else if email_focused {
+                        color("--text-link")
+                    } else {
+                        color("--input-border-default")
+                    })
+                    .flex()
+                    .items_center()
+                    .when(show_country, |row| {
+                        row.child(
+                            div()
+                                .id("login-country-code-btn")
+                                .px(px(8.))
+                                .py(px(9.))
+                                .rounded(px(4.))
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .cursor_pointer()
+                                .flex_none()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(SharedString::from(country_chip_label))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.country_popout_open = !this.country_popout_open;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .w(px(1.))
+                                .h(px(24.))
+                                .mx(px(4.))
+                                .bg(color("--border-subtle")),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .px(px(if show_country { 6. } else { 0. }))
+                            .child(self.email.clone()),
+                    ),
+            )
+            .children(country_popout);
+
         let email_field = div()
             .flex()
             .flex_col()
@@ -1197,14 +1454,7 @@ impl LoginView {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(self.input_box(
-                        &self.email,
-                        44.,
-                        11.,
-                        email_focused,
-                        email_error.is_some(),
-                        "--text-link",
-                    ))
+                    .child(email_input)
                     .children(email_error.as_deref().map(field_error)),
             );
         let password_field = div()
@@ -2327,5 +2577,26 @@ impl Render for LoginView {
                     .window_control_area(WindowControlArea::Drag),
             )
             .child(div().absolute().top_0().right_0().child(window_controls()))
+    }
+}
+
+#[cfg(test)]
+mod email_or_phone_tests {
+    use super::*;
+
+    #[test]
+    fn email_or_phone_916226_detection_and_country_fuzzy_search() {
+        assert!(!is_phone_like("12"));
+        assert!(is_phone_like("555"));
+        assert!(is_phone_like("(555) 123-4567"));
+        assert!(!is_phone_like("user@example.com"));
+        assert!(!is_phone_like("+15551234567"));
+
+        assert!(fuzzy_country_match("", "Turkey", "+90"));
+        assert!(fuzzy_country_match("trk", "Turkey", "+90"));
+        assert!(fuzzy_country_match("+90", "Turkey", "+90"));
+        assert!(!fuzzy_country_match("xyz", "Turkey", "+90"));
+        assert_eq!(dc_intl::t("hGOODh"), "Search a country");
+        assert_eq!(dc_intl::t("PoWNfe"), "None");
     }
 }

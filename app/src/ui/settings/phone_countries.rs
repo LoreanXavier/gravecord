@@ -2,13 +2,13 @@
 //! `tools/gen-phone-countries.mjs` from modules 96337 (countries, dialing codes) and 956956 (`Gw`, the names).
 
 /// One option: the country's name, its alpha-2 code (drawn as two regional-indicator letters) and a dialing code.
-pub(super) struct Country {
+pub(in crate::ui) struct Country {
     pub name: &'static str,
     pub alpha2: &'static str,
     pub code: &'static str,
 }
 
-pub(super) const COUNTRIES: &[Country] = &[
+pub(in crate::ui) const COUNTRIES: &[Country] = &[
     Country {
         name: "Afghanistan",
         alpha2: "AF",

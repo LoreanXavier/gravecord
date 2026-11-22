@@ -34,7 +34,7 @@ mod notifications_page;
 mod overlay_page;
 mod pages;
 pub(super) mod payment_sources;
-mod phone_countries;
+pub(in crate::ui) mod phone_countries;
 pub(super) mod prefs;
 mod preview;
 mod privacy;

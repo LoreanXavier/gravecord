@@ -833,7 +833,91 @@ impl Root {
                     ),
             )
             .child(list)
+            .children(self.emoji_processing_modal_layer(cx))
             .into_any_element()
+    }
+
+    /// Module 897126 (`ProcessingFilesModal`): rendered while bulk emoji upload is posting (`B/HSDd`
+    /// "Uploading...", `k7OALr` "Your files are being prepared. Please wait.", `.spinner_HOuv1P`
+    /// `margin: 32px`, no footer actions). Auto-closes once `bulk.posting` clears.
+    pub(super) fn emoji_processing_modal_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let uploading = self
+            .server_settings
+            .as_ref()
+            .and_then(|open| open.emoji.as_ref())
+            .is_some_and(|st| st.bulk.posting.is_some());
+        if !uploading {
+            return None;
+        }
+        let dialog = div()
+            .id("server-emoji-processing-modal")
+            .occlude()
+            .w(px(440.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .p(px(24.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(8.))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .text_center()
+                    .text_size(px(20.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child(dc_intl::t("B/HSDd")),
+            )
+            .child(
+                div()
+                    .text_center()
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(dc_intl::t("k7OALr")),
+            )
+            .child(
+                div()
+                    .m(px(32.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(super::login::wandering_cubes()),
+            );
+        Some(
+            gpui::deferred(
+                div()
+                    .id("server-emoji-processing-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(st) = this
+                            .server_settings
+                            .as_mut()
+                            .and_then(|open| open.emoji.as_mut())
+                        {
+                            st.bulk.posting = None;
+                            st.bulk.queue.clear();
+                        }
+                        cx.notify();
+                    }))
+                    .child(dialog),
+            )
+            .with_priority(95)
+            .into_any_element(),
+        )
     }
 }
 
@@ -880,5 +964,14 @@ mod tests {
         assert_eq!(of(429, Value::Null), Some(UploadError::RateLimit));
         assert_eq!(of(403, json!({"code": 50013})), None);
         assert_eq!(of(0, Value::Null), None);
+    }
+
+    #[test]
+    fn processing_files_modal_897126_intl() {
+        assert_eq!(dc_intl::t("B/HSDd"), "Uploading...");
+        assert_eq!(
+            dc_intl::t("k7OALr"),
+            "Your files are being prepared. Please wait."
+        );
     }
 }

@@ -160,11 +160,39 @@ impl Root {
                         let description = item["description"].as_str().unwrap_or("").to_owned();
                         let cents = item["price_tier"].as_u64().unwrap_or(499);
                         let price_label = format!("${:.2}/mo", cents as f64 / 100.);
+                        let guild_id = page.guild_id;
                         let perks = item["role_benefits"]["benefits"]
                             .as_array()
                             .map(|b| {
                                 b.iter()
-                                    .filter_map(|x| x["name"].as_str().map(str::to_owned))
+                                    .filter_map(|x| {
+                                        let ref_type = x["ref_type"].as_u64().unwrap_or(2);
+                                        if ref_type == 1 {
+                                            let cid = x["ref_id"]
+                                                .as_str()
+                                                .and_then(|s| s.parse::<dc_state::Id>().ok())
+                                                .or_else(|| x["ref_id"].as_u64());
+                                            let benefit =
+                                                super::role_subscription_card::TierBenefit {
+                                                    name: x["name"]
+                                                        .as_str()
+                                                        .unwrap_or_default()
+                                                        .to_owned(),
+                                                    description: String::new(),
+                                                    emoji: None,
+                                                    channel_id: cid,
+                                                };
+                                            let (_, resolved) =
+                                                super::role_subscription_card::resolve_benefit_ref(
+                                                    &self.stores,
+                                                    Some(guild_id),
+                                                    &benefit,
+                                                );
+                                            Some(resolved)
+                                        } else {
+                                            x["name"].as_str().map(str::to_owned)
+                                        }
+                                    })
                                     .collect()
                             })
                             .unwrap_or_default();

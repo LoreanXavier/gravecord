@@ -377,6 +377,29 @@ impl Root {
             })),
             cx,
         );
+        let app_id_num = app_id.parse::<dc_state::Id>().unwrap_or_default();
+        let more_btn = self.with_tip(
+            "activity-pip-more-tip",
+            Tip::text(dc_intl::t("SS9Y6P"), Side::Top),
+            toolbar_btn(
+                "activity-pip-more",
+                "more_horizontal",
+                "--interactive-icon-default",
+            )
+            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                if app_id_num != 0 {
+                    this.open_context_menu(
+                        super::context_menu::Target::ActivityPopoutOverflow {
+                            app_id: app_id_num,
+                            show_device_permissions: false,
+                        },
+                        event.position(),
+                        cx,
+                    );
+                }
+            })),
+            cx,
+        );
         let close_btn = self.with_tip(
             "activity-pip-close-tip",
             Tip::text(close_tip, Side::Top),
@@ -434,6 +457,7 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(4.))
+                    .child(more_btn)
                     .child(open_btn)
                     .child(hide_btn)
                     .child(close_btn),

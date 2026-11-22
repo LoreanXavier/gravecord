@@ -21,7 +21,7 @@
 //! the window only on the harness's hidden desktop, and `overlay shot` renders it to a picture.
 
 use super::motion::{Spring, SpringConfig};
-use super::{Root, avatar_source, kerning};
+use super::{Root, avatar_source, color, icon, kerning};
 use dc_overlay::decision::{self, Foreground, OverlayMethod, Rect};
 use dc_overlay::layout::{self, Layout};
 use dc_overlay::notify::{self, Kind, Options, Priority, Queue};
@@ -31,8 +31,8 @@ use dc_state::Id;
 use dc_state::running_games::Game;
 use dc_tokens::Theme;
 use gpui::{
-    AnyElement, Bounds, Context, FontWeight, IntoElement, Pixels, Render, Rgba, WeakEntity, Window,
-    WindowHandle, canvas, div, img, prelude::*, px, rgba, svg,
+    AnyElement, Bounds, Context, FontWeight, IntoElement, Pixels, Render, Rgba, SharedString,
+    WeakEntity, Window, WindowHandle, canvas, div, img, prelude::*, px, rgba, svg,
 };
 use serde_json::Value;
 use std::cell::RefCell;
@@ -333,6 +333,11 @@ pub(super) struct Overlay {
     /// Favorites server (`FRIENDS` tab user IDs and `MESSAGES` tab channel IDs).
     pub(super) favorite_users: std::collections::HashSet<Id>,
     pub(super) favorite_channels: std::collections::HashSet<Id>,
+    /// Module 911024 (`eM`): Shift+click crash notice toggles the monospace stack trace box.
+    pub(super) crash_show_trace: bool,
+    pub(super) crash_trace: Option<String>,
+    /// Module 907357 (`ts` invite button): timestamp (ms) when a play invite was sent to a user.
+    pub(super) activity_invite_sent: HashMap<Id, f64>,
 }
 
 impl Default for Overlay {
@@ -386,6 +391,9 @@ impl Default for Overlay {
             crash_timer: false,
             favorite_users: std::collections::HashSet::new(),
             favorite_channels: std::collections::HashSet::new(),
+            crash_show_trace: false,
+            crash_trace: None,
+            activity_invite_sent: HashMap::new(),
         }
     }
 }
@@ -696,19 +704,56 @@ impl Root {
             width,
             height,
         );
+        let show_trace = self.overlay.crash_show_trace;
+        let trace_text = self
+            .overlay
+            .crash_trace
+            .clone()
+            .unwrap_or_else(|| "OverlayView::render panic (captured by boundary)".to_owned());
         Some(
             div()
                 .relative()
                 .size_full()
                 .child(
                     div()
+                        .id("overlay-crash-notice")
                         .absolute()
                         .left(px(anchor.left.unwrap_or(0.) + 10.))
                         .top(px(anchor.top.unwrap_or(0.) + 10.))
                         .w(px(300.))
+                        // Module 911024 (`eM`): Shift+click toggles crash stack trace panel.
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                                if event.modifiers.shift {
+                                    this.overlay.crash_show_trace = !this.overlay.crash_show_trace;
+                                    cx.notify();
+                                }
+                            }),
+                        )
                         .child(self.overlay_toast(CRASH_TOAST, &toast, cx))
                         .child(self.overlay_zone_probe()),
                 )
+                .when(show_trace, |root| {
+                    root.child(
+                        div()
+                            .id("overlay-crash-trace")
+                            .absolute()
+                            .left(px(anchor.left.unwrap_or(0.) + 10.))
+                            .top(px(anchor.top.unwrap_or(0.) + 140.))
+                            .w(px(420.))
+                            .p(px(12.))
+                            .rounded(px(8.))
+                            .bg(rgba(0x131318f2))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .font_family("Consolas")
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-default"))
+                            .child(trace_text),
+                    )
+                })
                 .into_any_element(),
         )
     }
@@ -1353,6 +1398,450 @@ impl Root {
             },
             cx,
         );
+    }
+
+    /// Module 911024 (`t9`): Activity Invite notification (`aB5xLy`, `VJlc0S` "Join", 30s).
+    #[allow(dead_code)]
+    pub(super) fn overlay_activity_invite_notice(
+        &mut self,
+        channel: Id,
+        title: String,
+        body: String,
+        cx: &mut Context<Self>,
+    ) {
+        let hint = self.overlay_keybind_hint_text("aB5xLy");
+        let toast = Toast {
+            kind: ToastKind::Text,
+            icon: None,
+            title: Some(title),
+            body: Some(body),
+            hint: Some(hint),
+            max_lines: Some(2),
+            confirm: Some(dc_intl::t("VJlc0S").to_owned()),
+            cancel: None,
+            click: Some(ToastAction::Click),
+            channel: Some(channel),
+            no_zone: false,
+        };
+        self.overlay_push(
+            toast,
+            Options {
+                priority: Priority::High,
+                kind: Kind::Generic,
+                duration: notify::ACTIVITY_DURATION,
+                externally_managed: true,
+                channel: Some(channel),
+                ..Options::default()
+            },
+            cx,
+        );
+    }
+
+    /// Module 911024 (`t9`): Activity Join Request (`VDODnv`, `fgP/wX` "Yeah" / `tpXzJ+` "Nope", 30s).
+    #[allow(dead_code)]
+    pub(super) fn overlay_activity_join_request_notice(
+        &mut self,
+        username: &str,
+        game: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let body = dc_intl::format(
+            "VDODnv",
+            &[("username", username.into()), ("game", game.into())],
+        );
+        let toast = Toast {
+            kind: ToastKind::Welcome,
+            icon: None,
+            title: Some(game.to_owned()),
+            body: Some(body),
+            hint: None,
+            max_lines: Some(2),
+            confirm: Some(dc_intl::t("fgP/wX").to_owned()),
+            cancel: Some(dc_intl::t("tpXzJ+").to_owned()),
+            click: Some(ToastAction::Click),
+            channel: None,
+            no_zone: false,
+        };
+        self.overlay_push(
+            toast,
+            Options {
+                priority: Priority::High,
+                kind: Kind::Generic,
+                duration: notify::ACTIVITY_DURATION,
+                ..Options::default()
+            },
+            cx,
+        );
+    }
+
+    /// Module 911024 (`t9`): User Joining Game (`Yk+uYG` + `WRj1Wn`).
+    #[allow(dead_code)]
+    pub(super) fn overlay_activity_user_join_notice(
+        &mut self,
+        username: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let title = dc_intl::format("Yk+uYG", &[("username", username.into())]);
+        let toast = Toast {
+            kind: ToastKind::Welcome,
+            icon: None,
+            title: Some(title),
+            body: Some(dc_intl::t("WRj1Wn").to_owned()),
+            hint: None,
+            max_lines: Some(2),
+            confirm: None,
+            cancel: None,
+            click: None,
+            channel: None,
+            no_zone: false,
+        };
+        self.overlay_push(toast, Options::default(), cx);
+    }
+
+    /// Module 911024 (`t9`): Go Live nudge (`z9znpa` in voice / `0SVWgF` solo, CTA `U76Ft2` "Go Live", 8s).
+    #[allow(dead_code)]
+    pub(super) fn overlay_go_live_nudge(
+        &mut self,
+        game: &str,
+        server: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let title = match server {
+            Some(guild) if !guild.is_empty() => {
+                dc_intl::format("z9znpa", &[("game", game.into()), ("server", guild.into())])
+            }
+            _ => dc_intl::format("0SVWgF", &[("game", game.into())]),
+        };
+        let toast = Toast {
+            kind: ToastKind::Welcome,
+            icon: None,
+            title: Some(title),
+            body: None,
+            hint: None,
+            max_lines: Some(2),
+            confirm: Some(dc_intl::t("U76Ft2").to_owned()),
+            cancel: None,
+            click: Some(ToastAction::Confirm),
+            channel: None,
+            no_zone: false,
+        };
+        self.overlay_push(
+            toast,
+            Options {
+                priority: Priority::Urgent,
+                kind: Kind::Nudge,
+                duration: notify::NUDGE_DURATION,
+                ..Options::default()
+            },
+            cx,
+        );
+    }
+
+    /// Module 911024 (`STREAM_START`): Clips keybind reminder toast (`S5uhCN`).
+    #[allow(dead_code)]
+    pub(super) fn overlay_clips_reminder_notice(&mut self, cx: &mut Context<Self>) {
+        let body = self.overlay_keybind_hint_text("S5uhCN");
+        let toast = Toast {
+            kind: ToastKind::Welcome,
+            icon: None,
+            title: Some(dc_intl::t("NBMK9m").to_owned()),
+            body: Some(body),
+            hint: None,
+            max_lines: Some(2),
+            confirm: None,
+            cancel: None,
+            click: None,
+            channel: None,
+            no_zone: false,
+        };
+        self.overlay_push(toast, Options::default(), cx);
+    }
+
+    /// Module 907357 (`OverlayActivityWidget` + `OverlayFriendsPlayingList`, `.container_DKsPd0` 300px Onyx):
+    /// renders current user's active game card + `"Invite Friends"` (`6Qgrev`) and friend rows
+    /// (`y9eo7a`, `"Ask to Join"` `OKsSCR`, `"Invite to Join"` `3fRySx` / `"Message this person..."` `XHxDIV`,
+    /// sending `UVBA9g` `"Want to play {gameName}?"` or `DwAcMz` `"Want to play?"`).
+    fn overlay_activity_content(&self, locked: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if locked {
+            return None;
+        }
+        let me_id = self.stores.me().map(|u| u.id);
+        let my_game = me_id
+            .and_then(|id| self.stores.presence.get(id, None))
+            .and_then(|p| {
+                p.activities
+                    .iter()
+                    .find(|a| a["type"].as_u64() == Some(0))
+                    .and_then(|a| a["name"].as_str())
+                    .map(str::to_owned)
+            })
+            .or_else(|| self.overlay.demo.as_ref().and_then(|d| d.game.name.clone()));
+
+        let now = self.overlay_now();
+        let mut friends: Vec<(Id, String, Option<String>, bool, bool)> = self
+            .stores
+            .relationships
+            .iter()
+            .filter(|(_, kind)| **kind == super::friends::RELATIONSHIP_FRIEND)
+            .filter_map(|(&uid, _)| {
+                let user = self.stores.users.get(&uid)?;
+                let presence = self.stores.presence.get(uid, None);
+                let act = presence
+                    .and_then(|p| p.activities.iter().find(|a| a["type"].as_u64() == Some(0)));
+                let streaming = presence
+                    .is_some_and(|p| p.activities.iter().any(|a| a["type"].as_u64() == Some(1)));
+                let can_ask_join = act.is_some_and(|a| a["party"]["id"].is_string());
+                let game_match = my_game.as_deref().is_some_and(|g| {
+                    act.and_then(|a| a["name"].as_str())
+                        .is_some_and(|name| name.eq_ignore_ascii_case(g))
+                });
+                if !game_match && act.is_none() {
+                    return None;
+                }
+                let (av_key, _) = avatar_source(user);
+                Some((
+                    uid,
+                    user.display_name().to_owned(),
+                    Some(av_key),
+                    streaming,
+                    can_ask_join,
+                ))
+            })
+            .take(12)
+            .collect();
+        friends.sort_by(|a, b| a.1.cmp(&b.1));
+
+        if my_game.is_none() && friends.is_empty() {
+            return None;
+        }
+        let game_name = my_game.unwrap_or_default();
+        let invite_rows: Vec<AnyElement> = friends
+            .into_iter()
+            .map(|(uid, name, av_key, streaming, can_ask_join)| {
+                let av = av_key.and_then(|k| self.images.get(&k).cloned());
+                let sent_at = self.overlay.activity_invite_sent.get(&uid).copied();
+                let redirect_ready = sent_at.is_some_and(|at| now - at >= 2000.);
+                let sent = sent_at.is_some();
+                let game_for_msg = game_name.clone();
+                div()
+                    .id(SharedString::from(format!("overlay-activity-friend-{uid}")))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .size(px(32.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(color("--background-mod-subtle"))
+                            .overflow_hidden()
+                            .children(
+                                av.map(|img_data| img(img_data).size(px(32.)).rounded_full()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .mx(px(4.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(name),
+                            )
+                            .when(streaming, |row| {
+                                row.child(
+                                    div()
+                                        .px(px(6.))
+                                        .h(px(16.))
+                                        .rounded(px(8.))
+                                        .bg(color("--status-danger"))
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(10.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--white"))
+                                        .child("LIVE"),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .when(can_ask_join, |btns| {
+                                btns.child(
+                                    div()
+                                        .id(SharedString::from(format!("overlay-ask-join-{uid}")))
+                                        .aria_label(dc_intl::t("OKsSCR"))
+                                        .size(px(28.))
+                                        .rounded(px(6.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon("user_play", 14., "--text-strong")),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("overlay-invite-play-{uid}")))
+                                    .aria_label(if sent {
+                                        dc_intl::t("3fRySx")
+                                    } else {
+                                        dc_intl::t("XHxDIV")
+                                    })
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .bg(if sent {
+                                        color("--status-positive")
+                                    } else {
+                                        color("--control-secondary-background-default")
+                                    })
+                                    .hover(|s| {
+                                        s.bg(if sent {
+                                            color("--status-positive")
+                                        } else {
+                                            color("--control-secondary-background-hover")
+                                        })
+                                    })
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon(
+                                        if redirect_ready {
+                                            "members_nav"
+                                        } else if sent {
+                                            "select_check"
+                                        } else {
+                                            "user_plus"
+                                        },
+                                        14.,
+                                        "--white",
+                                    ))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if redirect_ready {
+                                            this.open_dm_with(uid, cx);
+                                        } else {
+                                            let ts = this.overlay_now();
+                                            this.overlay.activity_invite_sent.insert(uid, ts);
+                                            let content = if game_for_msg.is_empty() {
+                                                dc_intl::t("DwAcMz").to_owned()
+                                            } else {
+                                                dc_intl::format(
+                                                    "UVBA9g",
+                                                    &[("gameName", game_for_msg.as_str().into())],
+                                                )
+                                            };
+                                            if let Some(dm) = this
+                                                .stores
+                                                .private_channels
+                                                .iter()
+                                                .find(|c| {
+                                                    c.kind == 1
+                                                        && c.recipients.len() == 1
+                                                        && c.recipients[0] == uid
+                                                })
+                                                .map(|c| c.id)
+                                            {
+                                                let _ =
+                                                    this.requests.send(crate::net::Request::Rest {
+                                                        key: None,
+                                                        method: reqwest::Method::POST,
+                                                        route: format!("/channels/{dm}/messages"),
+                                                        body: Some(serde_json::json!({
+                                                            "content": content,
+                                                        })),
+                                                    });
+                                            }
+                                            cx.notify();
+                                        }
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+
+        Some(
+            div()
+                .id("overlay-activity-widget")
+                .w(px(300.))
+                .p(px(12.))
+                .rounded(px(8.))
+                .bg(rgba(0x131318f2))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .when(!game_name.is_empty(), |card| {
+                    card.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(game_name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .px(px(10.))
+                                    .h(px(28.))
+                                    .rounded(px(6.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(dc_intl::t("6Qgrev")),
+                            ),
+                    )
+                })
+                .when(!invite_rows.is_empty(), |card| {
+                    card.child(
+                        div()
+                            .pt(px(12.))
+                            .border_t_1()
+                            .border_color(color("--background-mod-strong"))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-default"))
+                                    .child(dc_intl::t("y9eo7a")),
+                            )
+                            .children(invite_rows),
+                    )
+                })
+                .into_any_element(),
+        )
     }
 
     /// A message the desktop notification announces (`MESSAGE_CREATE` with `lx`): a text toast, its expiry externally
@@ -2361,8 +2850,14 @@ impl Root {
                     self.overlay_go_live_content(&widget, locked, show_empty, (width, height), cx)
                         .unwrap_or_else(|| div().into_any_element()),
                 ),
-                // Activity and Friends are not built (BLOCKED.md). They have no render gate, so the official empty
-                // state does not count them as gone either.
+                // Module 907357 (`OverlayActivityWidget` `Ay`): hidden while locked or when empty.
+                layout::ACTIVITY => {
+                    let Some(content) = self.overlay_activity_content(locked, cx) else {
+                        gated_out += 1;
+                        continue;
+                    };
+                    (dc_intl::tr("Activity"), content)
+                }
                 _ => continue,
             };
             widgets.push(self.overlay_widget_frame(&widget, title, content, &frame, cx));
@@ -2999,5 +3494,34 @@ mod tests {
         assert!(!overlay_admin_warning_needed(false, true, false));
         assert!(!dc_intl::t("PIeSHF").is_empty());
         assert!(!dc_intl::t("MVS9pV").is_empty());
+    }
+
+    #[test]
+    fn overlay_activity_907357_and_notifications_911024_intl() {
+        for key in [
+            "3fRySx", "6Qgrev", "DwAcMz", "OKsSCR", "XHxDIV", "y9eo7a", "VJlc0S", "fgP/wX",
+            "tpXzJ+", "WRj1Wn", "U76Ft2",
+        ] {
+            assert!(!dc_intl::t(key).is_empty(), "empty key {key}");
+        }
+        assert!(dc_intl::format("UVBA9g", &[("gameName", "Valorant".into())]).contains("Valorant"));
+        assert!(
+            dc_intl::format(
+                "VDODnv",
+                &[("username", "Ada".into()), ("game", "Apex".into())]
+            )
+            .contains("Ada")
+        );
+        assert!(dc_intl::format("Yk+uYG", &[("username", "Ada".into())]).contains("Ada"));
+        assert!(
+            dc_intl::format(
+                "z9znpa",
+                &[("game", "Apex".into()), ("server", "Squad".into())]
+            )
+            .contains("Squad")
+        );
+        assert!(dc_intl::format("0SVWgF", &[("game", "Apex".into())]).contains("Apex"));
+        assert!(dc_intl::has_key("aB5xLy"));
+        assert!(dc_intl::has_key("S5uhCN"));
     }
 }

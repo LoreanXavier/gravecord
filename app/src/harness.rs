@@ -2025,6 +2025,18 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_member_bulk_bar(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `text-context [text]`: Standalone Text Selection Context Menu (898811).
+            ["text-context", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_text_selection_menu(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `activity-overflow [perms|plain]`: Activity Popout Overflow Menu (913525).
+            ["activity-overflow", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_activity_overflow_menu(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `friends-popout [open|all|pending|close]`: Title Bar Friends List Popout (824042).
             ["friends-popout", rest @ ..] => {
                 let arg = rest.join(" ");

@@ -1,9 +1,10 @@
-//! Role Subscription Tier Card, benefit lists, trial pill, and purchase confirmation Welcome modal
-//! (module 31637, period formatter 500345).
+//! Role Subscription Tier Card, benefit lists, trial pill, purchase confirmation Welcome modal
+//! (module 31637, period formatter 500345), and benefit reference resolver (module 898612).
 
+use super::channel_icon;
 use super::{Root, color, icon};
 use dc_intl::Arg;
-use dc_state::Id;
+use dc_state::{ChannelKind, Id};
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, deferred, div, img, prelude::*, px,
     rgba,
@@ -16,7 +17,47 @@ pub(crate) struct TierBenefit {
     pub name: String,
     pub description: String,
     pub emoji: Option<String>,
+    /// `ref_type == 1` (`CHANNEL`): target channel snowflake (`ref_id`). `None` for `INTANGIBLE` (`ref_type == 2`).
     pub channel_id: Option<Id>,
+}
+
+/// Module 898612 (`RoleSubscriptionBenefitName`): resolves `ref_type == 1` (Channel) to
+/// `(Some(channel_icon_name), channel.name)` or `(None, "[Channel Deleted]")` (`bz1PZX`),
+/// and `ref_type == 2` (Intangible) to `(None, benefit.name)`.
+pub(crate) fn resolve_benefit_ref(
+    stores: &dc_state::Stores,
+    guild_id: Option<Id>,
+    benefit: &TierBenefit,
+) -> (Option<&'static str>, String) {
+    let Some(cid) = benefit.channel_id else {
+        return (None, benefit.name.clone());
+    };
+    let found = guild_id
+        .and_then(|gid| stores.guild(gid))
+        .and_then(|g| g.channels.iter().find(|c| c.id == cid))
+        .or_else(|| {
+            stores
+                .guilds
+                .iter()
+                .find_map(|g| g.channels.iter().find(|c| c.id == cid))
+        });
+    let Some(ch) = found else {
+        return (None, format!("[{}]", dc_intl::t("bz1PZX")));
+    };
+    let icon_name = if ch.kind == ChannelKind::Other(16) {
+        "media_channel"
+    } else {
+        channel_icon::name(&channel_icon::Facts {
+            kind: ch.kind,
+            rules: false,
+            nsfw: ch.nsfw,
+            private: false,
+            pending: false,
+            locked: false,
+            active_threads: false,
+        })
+    };
+    (Some(icon_name), ch.name.clone())
 }
 
 #[derive(Clone, Debug)]
@@ -223,6 +264,8 @@ impl Root {
                         .child(dc_intl::t(header).to_uppercase()),
                 )
                 .children(shown.iter().map(|b| {
+                    let guild_id = self.role_subscription_modal.as_ref().map(|m| m.guild_id);
+                    let (ch_icon, display_name) = resolve_benefit_ref(&self.stores, guild_id, b);
                     div()
                         .flex()
                         .items_start()
@@ -237,11 +280,23 @@ impl Root {
                                 .gap(px(2.))
                                 .child(
                                     div()
+                                        .flex()
+                                        .items_center()
                                         .text_size(px(14.))
                                         .line_height(px(18.))
                                         .font_weight(FontWeight(500.))
                                         .text_color(color("--text-strong"))
-                                        .child(b.name.clone()),
+                                        .when_some(ch_icon, |row, ic| {
+                                            // `.icon_kUYmc2`: 16x16, mr 4px, mb 2px
+                                            row.child(
+                                                div()
+                                                    .mr(px(4.))
+                                                    .mb(px(2.))
+                                                    .flex_none()
+                                                    .child(icon(ic, 16., "--text-muted")),
+                                            )
+                                        })
+                                        .child(SharedString::from(display_name)),
                                 )
                                 .when(!b.description.is_empty(), |col| {
                                     col.child(
@@ -1107,5 +1162,30 @@ mod tests {
         ] {
             assert!(!reason.message().is_empty());
         }
+    }
+
+    #[test]
+    fn benefit_reference_name_898612_channel_deleted_and_intangible() {
+        assert_eq!(dc_intl::t("bz1PZX"), "Channel Deleted");
+        let stores = dc_state::Stores::default();
+        let deleted = TierBenefit {
+            name: "ignored".to_owned(),
+            description: String::new(),
+            emoji: None,
+            channel_id: Some(999_999),
+        };
+        let (ic, label) = resolve_benefit_ref(&stores, Some(1), &deleted);
+        assert_eq!(ic, None);
+        assert_eq!(label, "[Channel Deleted]");
+
+        let intangible = TierBenefit {
+            name: "Custom Role Color".to_owned(),
+            description: String::new(),
+            emoji: None,
+            channel_id: None,
+        };
+        let (ic2, label2) = resolve_benefit_ref(&stores, Some(1), &intangible);
+        assert_eq!(ic2, None);
+        assert_eq!(label2, "Custom Role Color");
     }
 }

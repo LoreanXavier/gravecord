@@ -322,6 +322,11 @@ pub(super) struct InviteRole {
     pub position: i64,
     /// `colors`: the primary, secondary and tertiary colours of a gradient role.
     pub colors: Option<(u32, Option<u32>, Option<u32>)>,
+    /// Optional role icon hash (`7864.ZW`).
+    #[allow(dead_code)]
+    pub icon: Option<String>,
+    /// Optional role unicode emoji (`7864.ZW`).
+    pub unicode_emoji: Option<String>,
 }
 
 /// The invite's roles in the order of `d6` (module 7864): highest position first, then by id.
@@ -347,6 +352,14 @@ pub(super) fn invite_roles(body: &serde_json::Value) -> Vec<InviteRole> {
                             colour(&colors["tertiary_color"]),
                         )
                     }),
+                icon: role["icon"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                unicode_emoji: role["unicode_emoji"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
             })
         })
         .collect();
@@ -355,11 +368,10 @@ pub(super) fn invite_roles(body: &serde_json::Value) -> Vec<InviteRole> {
 }
 
 impl Root {
-    /// "Roles Granted" under the server's profile on an invite (module 897288, `rolesList_fknPy8` of 679636): the
-    /// heading and the role pills (`rolePill_8JQJle` over the pill of 417454: 24 tall, 4px padding, the role's circle,
-    /// the name in 12px semibold). GAP: when the card's content grows past 292px the official card folds it under a
-    /// gradient with a details button; this card does not fold.
-    fn invite_roles_list(
+    /// "Roles Granted" under the server's profile on an invite (module 897288, `rolesList_fknPy8` of 679636
+    /// and `700156` Accept Invite modal): the heading and the role pills (`rolePill_8JQJle` over the pill of
+    /// 417454: 24 tall, 4px padding, the role's circle, optional unicode emoji, the name in 12px semibold).
+    pub(super) fn invite_roles_list(
         &self,
         roles: &[InviteRole],
         cx: &mut Context<Self>,
@@ -425,6 +437,15 @@ impl Root {
                         .mr(px(4.))
                         .child(circle.mx(px(4.)).size(px(12.)).flex_none()),
                 )
+                .when_some(role.unicode_emoji.clone(), |pill, emoji| {
+                    pill.child(
+                        div()
+                            .mr(px(4.))
+                            .text_size(px(12.))
+                            .line_height(px(14.))
+                            .child(emoji),
+                    )
+                })
                 .child(
                     div()
                         .mr(px(2.))

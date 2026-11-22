@@ -190,6 +190,16 @@ pub(super) enum Target {
     Image,
     /// Application Command Permission target right-click (`dev-context`, module 739174 -> 646938, `oJ1Muw`).
     CommandPermId(Id),
+    /// Standalone embedded text-selection context menu (`text-context`, module 898811, `s285pq`);
+    /// selected string stored in `State::text_selection_target`.
+    TextSelection,
+    /// Desktop Report-to-Mod channel context menu (`report-to-mod-channel-context`, module 907647, `zp+z/E`).
+    ModReportChannel(Id),
+    /// Activity Popout Overflow menu (`activity-popout-overflow-popout`, module 913525, `SS9Y6P`).
+    ActivityPopoutOverflow {
+        app_id: Id,
+        show_device_permissions: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -477,13 +487,19 @@ pub(super) enum Act {
     CloseChannelTab,
     /// Module 769192 (`671483`): "Set Channel Status" (`RBd5PW`).
     SetVoiceStatus,
+    /// Module 898811 / 826308 (`text-context`): "Search with Google" (`Rd/Mko`).
+    SearchGoogle,
+    /// Module 898811 (`text-context`): "Copy" (`OpuAlK`).
+    CopySelection,
+    /// Module 913525 / 46486 (`activity-popout-overflow-popout`): "Device Permissions" (`wum6n2`).
+    DevicePermissions,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 193] = [
+    pub(super) const ALL: [Act; 196] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -677,6 +693,9 @@ impl Act {
         Act::PinChannelTab,
         Act::CloseChannelTab,
         Act::SetVoiceStatus,
+        Act::SearchGoogle,
+        Act::CopySelection,
+        Act::DevicePermissions,
     ];
 
     #[cfg(test)]
@@ -875,6 +894,9 @@ impl Act {
             Act::PinChannelTab => 190,
             Act::CloseChannelTab => 191,
             Act::SetVoiceStatus => 192,
+            Act::SearchGoogle => 193,
+            Act::CopySelection => 194,
+            Act::DevicePermissions => 195,
         }
     }
 }
@@ -923,7 +945,10 @@ pub(super) fn status(act: Act) -> Status {
         | Act::OverlayFavoriteChannel
         | Act::CopyImage
         | Act::SaveImage
-        | Act::OpenLink => Wired,
+        | Act::OpenLink
+        | Act::SearchGoogle
+        | Act::CopySelection
+        | Act::DevicePermissions => Wired,
         Act::ModerationSettings => Wired,
         Act::ToggleProgressBar => Wired,
         Act::RemovePermission => Wired,
@@ -2224,7 +2249,9 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::EditProfileMenu(_) => Some(dc_intl::t("AXIHpV")),
         Target::DmListMore => Some(dc_intl::t("/QQnjy")),
         Target::GdmCleanupSort => Some(dc_intl::t("yySzqH")),
-        Target::OverlayModReportChannel(_) => Some(dc_intl::t("zp+z/E")),
+        Target::OverlayModReportChannel(_) | Target::ModReportChannel(_) => {
+            Some(dc_intl::t("zp+z/E"))
+        }
         Target::OverlayVoiceChannel(_) | Target::OverlayChannel(_) => Some(dc_intl::t("Xm41aV")),
         Target::MemberApplication { .. } => Some(dc_intl::t("liqwPJ")),
         Target::ChannelTab(_) => Some(dc_intl::t("dd5Eyn")),
@@ -2232,6 +2259,8 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::GameMention(_) => Some(dc_intl::t("Hf9fuS")),
         Target::Image => Some(dc_intl::t("Zow2V5")),
         Target::CommandPermId(_) => Some(dc_intl::t("ogxXGq")),
+        Target::TextSelection => Some(dc_intl::t("s285pq")),
+        Target::ActivityPopoutOverflow { .. } => Some(dc_intl::t("SS9Y6P")),
         _ => None,
     }
 }
@@ -2262,6 +2291,107 @@ pub(super) fn image_context_items(url: &str) -> Vec<Entry> {
             Row::new(Act::OpenLink, open_label)
                 .icon("menu_browser")
                 .trailing("link_external_small"),
+        ],
+    );
+    tidy(out)
+}
+
+/// Module 898811 (`text-context`, aria-label `s285pq` "Text Actions"):
+/// Group 1 (`826308`): Search with Google (`Rd/Mko`, `MagnifyingGlassIcon`) when text is non-empty.
+/// Group 2: Copy (`OpuAlK`).
+pub(super) fn text_selection_items(text: &str) -> Vec<Entry> {
+    let mut out = Vec::new();
+    if !text.is_empty() {
+        group(
+            &mut out,
+            vec![Row::new(Act::SearchGoogle, dc_intl::t("Rd/Mko")).icon("search")],
+        );
+    }
+    group(
+        &mut out,
+        vec![Row::new(Act::CopySelection, dc_intl::t("OpuAlK"))],
+    );
+    tidy(out)
+}
+
+/// Module 907647 (`report-to-mod-channel-context`, aria-label `zp+z/E` "Mod Queue Channel Actions"):
+/// Desktop channel context menu for `IS_MODERATOR_REPORT_CHANNEL` (`flags & (1 << 19) != 0`),
+/// 7 groups: Mark As Read | Add to Favorites | Copy Link | Mute + Notifications | Edit Channel |
+/// Remove from Favorites (danger) | Copy Channel ID (`gFHI3k`).
+pub(super) fn report_to_mod_channel_items(
+    unread: bool,
+    favorite: bool,
+    can_edit: bool,
+    level: &'static str,
+    developer: bool,
+) -> Vec<Entry> {
+    let mut out = Vec::new();
+    group(
+        &mut out,
+        vec![Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread)],
+    );
+    if !favorite {
+        group(
+            &mut out,
+            vec![Row::new(Act::Favorite, dc_intl::tr("Add to Favorites")).icon("clips_star")],
+        );
+    }
+    group(
+        &mut out,
+        vec![Row::new(Act::CopyLink, dc_intl::t("WqhZss"))],
+    );
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::Mute, dc_intl::tr("Mute Channel")).caret(),
+            Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
+                .sub(level)
+                .caret(),
+        ],
+    );
+    if can_edit {
+        group(
+            &mut out,
+            vec![Row::new(Act::EditChannel, dc_intl::t("3gUsJb"))],
+        );
+    }
+    if favorite {
+        group(
+            &mut out,
+            vec![Row::new(Act::Favorite, dc_intl::tr("Remove from Favorites")).danger()],
+        );
+    }
+    if developer {
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::t("gFHI3k")).icon("menu_id")],
+        );
+    }
+    tidy(out)
+}
+
+/// Module 913525 (`activity-popout-overflow-popout`, aria-label `SS9Y6P` "Activity Actions"):
+/// Optional Group 1 (`46486`): Device Permissions (`wum6n2`, `ShieldIcon`);
+/// Group 2: Report App (`NgA5vp`, `FlagIcon`, danger).
+pub(super) fn activity_popout_overflow_items(show_device_permissions: bool) -> Vec<Entry> {
+    let mut out = Vec::new();
+    if show_device_permissions {
+        let label = if dc_intl::has_key("wum6n2") {
+            dc_intl::t("wum6n2")
+        } else {
+            dc_intl::tr("Device Permissions")
+        };
+        group(
+            &mut out,
+            vec![Row::new(Act::DevicePermissions, label).icon("role_shield")],
+        );
+    }
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::ReportApp, dc_intl::t("NgA5vp"))
+                .icon("menu_flag")
+                .danger(),
         ],
     );
     tidy(out)
@@ -3801,6 +3931,8 @@ pub(super) struct State {
     pub attachment_link: Option<(String, String)>,
     /// Standalone Image Actions target (`Target::Image`, module 177079): `(url, optional cache key)`.
     pub image_target: Option<(String, Option<String>)>,
+    /// Standalone Text Selection target (`Target::TextSelection`, module 898811).
+    pub text_selection_target: Option<String>,
     /// Apps submenu (module 173500) search box and active nested app section.
     pub apps_search: Option<gpui::Entity<crate::editor::Editor>>,
     pub apps_search_sub: Option<gpui::Subscription>,
@@ -4478,6 +4610,7 @@ impl Root {
                 }),
             Target::Channel(id)
             | Target::Category(id)
+            | Target::ModReportChannel(id)
             | Target::OverlayModReportChannel(id)
             | Target::OverlayVoiceChannel(id)
             | Target::OverlayChannel(id) => match self.guild_of_channel(id) {
@@ -4643,7 +4776,7 @@ impl Root {
 
     pub(super) fn open_context_menu(
         &mut self,
-        target: Target,
+        mut target: Target,
         at: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
@@ -4989,6 +5122,33 @@ impl Root {
                         level,
                         self.list_opt_in_for(guild, &known),
                     )
+                } else if known.flags & (1 << 19) != 0 {
+                    // Module 907647 (`IS_MODERATOR_REPORT_CHANNEL = 524_288`): report-to-mod channel menu.
+                    target = Target::ModReportChannel(id);
+                    let can_edit = can_manage
+                        || self.my_permission(
+                            guild,
+                            Some(&known),
+                            dc_state::permissions::MANAGE_ROLES,
+                        )
+                        || self.my_permission(
+                            guild,
+                            Some(&known),
+                            dc_state::permissions::MANAGE_WEBHOOKS,
+                        );
+                    let favorite = self
+                        .stores
+                        .favorites()
+                        .channels
+                        .iter()
+                        .any(|(c, _)| *c == id);
+                    report_to_mod_channel_items(
+                        self.has_unread_or_mentions(id),
+                        favorite,
+                        can_edit,
+                        level,
+                        developer,
+                    )
                 } else if activity_voice {
                     activity_voice_items(
                         can_manage,
@@ -5122,6 +5282,49 @@ impl Root {
                 };
                 image_context_items(url)
             }
+            Target::TextSelection => {
+                let Some(text) = self.context.text_selection_target.as_deref() else {
+                    return;
+                };
+                text_selection_items(text)
+            }
+            Target::ModReportChannel(id) => {
+                let Some(guild) = self.guild_of_channel(id) else {
+                    return;
+                };
+                let known = self
+                    .stores
+                    .guild(guild)
+                    .and_then(|g| g.channels.iter().find(|c| c.id == id))
+                    .cloned();
+                let can_edit = known.as_ref().is_some_and(|ch| {
+                    self.my_permission(guild, Some(ch), MANAGE_CHANNELS)
+                        || self.my_permission(guild, Some(ch), dc_state::permissions::MANAGE_ROLES)
+                        || self.my_permission(
+                            guild,
+                            Some(ch),
+                            dc_state::permissions::MANAGE_WEBHOOKS,
+                        )
+                });
+                let level = self.channel_level_label(guild, id);
+                let favorite = self
+                    .stores
+                    .favorites()
+                    .channels
+                    .iter()
+                    .any(|(c, _)| *c == id);
+                report_to_mod_channel_items(
+                    self.has_unread_or_mentions(id),
+                    favorite,
+                    can_edit,
+                    level,
+                    developer,
+                )
+            }
+            Target::ActivityPopoutOverflow {
+                show_device_permissions,
+                ..
+            } => activity_popout_overflow_items(show_device_permissions),
             Target::CommandPermId(_) => vec![Entry::Row(
                 Row::new(Act::CopyId, dc_intl::t("oJ1Muw")).icon("menu_id"),
             )],
@@ -5720,6 +5923,56 @@ impl Root {
         format!("image-context: {url}")
     }
 
+    /// Module 898811 (`text-context`): open standalone text-selection context menu.
+    #[allow(dead_code)]
+    pub(super) fn open_text_selection_menu(
+        &mut self,
+        text: String,
+        at: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        self.context.text_selection_target = Some(text);
+        self.open_context_menu(Target::TextSelection, at, cx);
+    }
+
+    /// Capture-only helper: opens `Target::TextSelection` (`text-context`, 898811) or
+    /// `Target::ActivityPopoutOverflow` (`913525`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_text_selection_menu(
+        &mut self,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let sample = if text.trim().is_empty() {
+            "gravecord GPUI"
+        } else {
+            text.trim()
+        };
+        self.open_text_selection_menu(sample.to_owned(), gpui::point(px(520.), px(260.)), cx);
+        format!("text-context: {sample}")
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_activity_overflow_menu(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let show_perms = arg.trim() != "plain";
+        self.open_context_menu(
+            Target::ActivityPopoutOverflow {
+                app_id: 880218394199220334,
+                show_device_permissions: show_perms,
+            },
+            gpui::point(px(520.), px(260.)),
+            cx,
+        );
+        format!("activity-overflow: perms={show_perms}")
+    }
+
     pub(super) fn close_context_menu(&mut self, cx: &mut Context<Self>) {
         if self.context.open.take().is_some() {
             self.context.apps_active_section = None;
@@ -6268,6 +6521,25 @@ impl Root {
             (Act::ReportApp, Target::AppDirectory(app)) => {
                 self.open_report_app(app, "app_directory", cx);
             }
+            (Act::ReportApp, Target::ActivityPopoutOverflow { app_id, .. }) => {
+                self.open_report_app(app_id, "activity_ui_popout", cx);
+            }
+            (Act::DevicePermissions, Target::ActivityPopoutOverflow { .. }) => {
+                self.open_settings_page("authorized_apps", cx);
+            }
+            (Act::SearchGoogle, Target::TextSelection) => {
+                if let Some(text) = self.context.text_selection_target.clone() {
+                    cx.open_url(&format!(
+                        "https://www.google.com/search?q={}",
+                        dc_http::percent_encode(&text)
+                    ));
+                }
+            }
+            (Act::CopySelection, Target::TextSelection) => {
+                if let Some(text) = self.context.text_selection_target.clone() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
             (Act::ReportWidget, Target::ProfileWidget { user, widget }) => {
                 self.open_report_widget(user, widget, cx);
             }
@@ -6315,6 +6587,7 @@ impl Root {
                 | Target::Thread(channel)
                 | Target::Dm(channel)
                 | Target::OverlayDm(channel)
+                | Target::ModReportChannel(channel)
                 | Target::OverlayModReportChannel(channel)
                 | Target::OverlayVoiceChannel(channel)
                 | Target::OverlayChannel(channel),
@@ -6523,6 +6796,7 @@ impl Root {
                 Act::CopyLink,
                 Target::Channel(channel)
                 | Target::Thread(channel)
+                | Target::ModReportChannel(channel)
                 | Target::OverlayModReportChannel(channel)
                 | Target::OverlayVoiceChannel(channel)
                 | Target::OverlayChannel(channel),
@@ -6545,6 +6819,7 @@ impl Root {
                     | Target::Thread(id)
                     | Target::Dm(id)
                     | Target::OverlayDm(id)
+                    | Target::ModReportChannel(id)
                     | Target::OverlayModReportChannel(id)
                     | Target::OverlayVoiceChannel(id)
                     | Target::OverlayChannel(id)
@@ -6594,6 +6869,8 @@ impl Root {
                     | Target::BadgeCustomization { .. }
                     | Target::GameShopSku
                     | Target::Image
+                    | Target::TextSelection
+                    | Target::ActivityPopoutOverflow { .. }
                     | Target::InviteRoles => {
                         return;
                     }
@@ -6603,6 +6880,7 @@ impl Root {
             (
                 Act::EditChannel,
                 Target::Channel(channel)
+                | Target::ModReportChannel(channel)
                 | Target::Category(channel)
                 | Target::Thread(channel)
                 | Target::AuditChannel(channel),
@@ -7321,6 +7599,7 @@ impl Root {
                 | Target::Thread(_)
                 | Target::Dm(_)
                 | Target::OverlayDm(_)
+                | Target::ModReportChannel(_)
                 | Target::OverlayModReportChannel(_)
                 | Target::OverlayVoiceChannel(_)
                 | Target::OverlayChannel(_),
@@ -7337,6 +7616,7 @@ impl Root {
                 Target::Thread(id) => self.patch_thread_settings(id, json!({"muted": false})),
                 Target::Channel(id)
                 | Target::Category(id)
+                | Target::ModReportChannel(id)
                 | Target::OverlayModReportChannel(id)
                 | Target::OverlayVoiceChannel(id)
                 | Target::OverlayChannel(id) => {
@@ -7379,7 +7659,13 @@ impl Root {
                     self.patch_channel_override(guild, id, json!({"flags": flags}));
                 }
             }
-            (Act::Favorite, Target::Channel(id) | Target::Thread(id) | Target::Dm(id)) => {
+            (
+                Act::Favorite,
+                Target::Channel(id)
+                | Target::ModReportChannel(id)
+                | Target::Thread(id)
+                | Target::Dm(id),
+            ) => {
                 let kind = match target {
                     Target::Dm(_) => self
                         .stores
@@ -7756,6 +8042,7 @@ impl Root {
                 let channel = matches!(
                     target,
                     Target::Channel(_)
+                        | Target::ModReportChannel(_)
                         | Target::Thread(_)
                         | Target::OverlayModReportChannel(_)
                         | Target::OverlayVoiceChannel(_)
@@ -7763,6 +8050,7 @@ impl Root {
                 );
                 let current = match target {
                     Target::Channel(id)
+                    | Target::ModReportChannel(id)
                     | Target::Thread(id)
                     | Target::OverlayModReportChannel(id)
                     | Target::OverlayVoiceChannel(id)
@@ -7782,6 +8070,7 @@ impl Root {
                     // What "Use Category Default" would give: the category's level, else the server's.
                     let inherited = match target {
                         Target::Channel(id)
+                        | Target::ModReportChannel(id)
                         | Target::Thread(id)
                         | Target::OverlayModReportChannel(id)
                         | Target::OverlayVoiceChannel(id)
@@ -8180,12 +8469,14 @@ impl Root {
                 }
                 Target::Channel(id)
                 | Target::Category(id)
+                | Target::ModReportChannel(id)
                 | Target::OverlayModReportChannel(id)
                 | Target::OverlayVoiceChannel(id)
                 | Target::OverlayChannel(id) => {
                     let channel = matches!(
                         target,
                         Target::Channel(_)
+                            | Target::ModReportChannel(_)
                             | Target::OverlayModReportChannel(_)
                             | Target::OverlayVoiceChannel(_)
                             | Target::OverlayChannel(_)
@@ -10517,5 +10808,46 @@ mod tests {
         assert!(overlay_text.iter().any(|l| l == "Mute Channel"));
         assert!(overlay_text.iter().any(|l| l == "Invite People"));
         assert!(overlay_text.iter().any(|l| l == "Copy Channel ID"));
+
+        // Module 898811: standalone text-context menu (`s285pq`, `Rd/Mko`, `OpuAlK`).
+        assert_eq!(menu_aria_label(Target::TextSelection), Some("Text Actions"));
+        assert_eq!(
+            labels(&text_selection_items("hello")),
+            vec!["Search with Google", "-", "Copy"]
+        );
+        assert_eq!(labels(&text_selection_items("")), vec!["Copy"]);
+
+        // Module 907647: desktop report-to-mod channel context menu (`zp+z/E`, `gFHI3k`).
+        assert_eq!(
+            menu_aria_label(Target::ModReportChannel(42)),
+            Some(dc_intl::t("zp+z/E"))
+        );
+        let mod_ch = labels(&report_to_mod_channel_items(true, false, true, "All", true));
+        assert!(mod_ch.iter().any(|l| l == "Mark As Read"));
+        assert!(mod_ch.iter().any(|l| l == "Add to Favorites"));
+        assert!(mod_ch.iter().any(|l| l == "Copy Link"));
+        assert!(mod_ch.iter().any(|l| l == "Edit Channel"));
+        assert!(mod_ch.iter().any(|l| l == "Copy Channel ID"));
+        let mod_ch_fav = labels(&report_to_mod_channel_items(
+            false, true, false, "All", false,
+        ));
+        assert!(mod_ch_fav.iter().any(|l| l == "Remove from Favorites"));
+        assert!(!mod_ch_fav.iter().any(|l| l == "Add to Favorites"));
+
+        // Module 913525: activity-popout-overflow-popout (`SS9Y6P`, `NgA5vp`, `wum6n2`).
+        assert_eq!(
+            menu_aria_label(Target::ActivityPopoutOverflow {
+                app_id: 1,
+                show_device_permissions: true,
+            }),
+            Some("Activity Actions")
+        );
+        let act_with_perms = labels(&activity_popout_overflow_items(true));
+        assert_eq!(act_with_perms.len(), 3);
+        assert_eq!(act_with_perms[2], "Report App");
+        assert_eq!(
+            labels(&activity_popout_overflow_items(false)),
+            vec!["Report App"]
+        );
     }
 }

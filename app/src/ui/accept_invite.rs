@@ -38,6 +38,8 @@ pub struct ResolvedInvite {
     pub online_count: Option<u64>,
     pub target_application_name: Option<String>,
     pub is_stream: bool,
+    /// Module 897288 (`InviteRoles`): roles granted by the invite (`body["roles"]`).
+    pub(super) roles: Vec<super::invite_embed::InviteRole>,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +120,7 @@ pub fn parse_resolved_invite(code: &str, body: &Value) -> Option<ResolvedInvite>
             .as_str()
             .map(str::to_owned),
         is_stream: body["target_type"].as_u64() == Some(1),
+        roles: super::invite_embed::invite_roles(body),
     })
 }
 
@@ -493,6 +496,11 @@ impl Root {
                             )
                         },
                     )
+                    // Module 897288 (`InviteRoles` in Accept Invite modal `700156`): "Roles Granted" pills.
+                    .children(
+                        self.invite_roles_list(&inv.roles, cx)
+                            .map(|list| div().w_full().child(list)),
+                    )
                     // Collapsible Server Settings (`700156` `M`)
                     .when(inv.guild_name.is_some(), |col| {
                         col.child(
@@ -862,6 +870,26 @@ impl Root {
             online_count: Some(318),
             target_application_name: None,
             is_stream: false,
+            roles: vec![
+                super::invite_embed::InviteRole {
+                    id: 901,
+                    name: "Early Tester".into(),
+                    color: 0x5865f2,
+                    position: 2,
+                    colors: None,
+                    icon: None,
+                    unicode_emoji: Some("⚡".into()),
+                },
+                super::invite_embed::InviteRole {
+                    id: 902,
+                    name: "Community".into(),
+                    color: 0x57f287,
+                    position: 1,
+                    colors: None,
+                    icon: None,
+                    unicode_emoji: None,
+                },
+            ],
         };
         match mode.trim() {
             "loading" => {
