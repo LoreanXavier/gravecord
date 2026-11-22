@@ -935,6 +935,8 @@ pub struct Root {
     tenure_level_up: Option<badge_modal::TenureLevelUpPopout>,
     /// Welcome to your Server Hub NUX modal (module 725041).
     guild_space_nux: Option<guild_space_nux::GuildSpaceNuxModal>,
+    /// Stream Privacy Code modal (module 773262, DAVE MLS stream epoch authenticator).
+    stream_privacy_code_modal: Option<voice_panel::StreamPrivacyCodeModal>,
     /// Quest Bar Bounty Card overlay (module 682908).
     quest_bar_bounty: Option<quest_bar::QuestBarBountyState>,
     /// Suspended User Safety Hub full page + embedded standing/violations body (module 187686 + 37380).
@@ -1593,6 +1595,7 @@ impl Root {
             evolving_tenure_modal: None,
             tenure_level_up: None,
             guild_space_nux: None,
+            stream_privacy_code_modal: None,
             quest_bar_bounty: None,
             suspended_safety_hub: None,
             nitro_trials_picker: None,
@@ -2499,6 +2502,22 @@ impl Root {
                         .unwrap_or_else(|| orig.to_owned());
                     cx.write_to_clipboard(ClipboardItem::new_string(resolved));
                     self.show_success_toast(dc_intl::t("L/PwZf").to_owned(), cx);
+                    return;
+                }
+                if let Some(rest) = key.strip_prefix("voice-invite-create:") {
+                    // Module 778768: transition voice invite suggestion row Sending -> Sent (or reset on error).
+                    if let Some((_, uid_str)) = rest.split_once(':')
+                        && let Ok(uid) = uid_str.parse::<dc_state::Id>()
+                    {
+                        if body["code"].as_str().is_some() {
+                            self.vv
+                                .invite_suggestions_sent
+                                .insert(uid, voice_view::VoiceInviteSendState::Sent);
+                        } else {
+                            self.vv.invite_suggestions_sent.remove(&uid);
+                        }
+                        cx.notify();
+                    }
                     return;
                 }
                 if let Some(rest) = key.strip_prefix(crate::net::EDIT_KEY) {
@@ -12224,6 +12243,8 @@ impl Render for Root {
                         || this.evolving_tenure_modal.is_some()
                         || this.tenure_level_up.is_some()
                         || this.guild_space_nux.is_some()
+                        || this.stream_privacy_code_modal.is_some()
+                        || this.vv.invite_suggestions_open
                         || this.quest_bar_bounty.is_some()
                         || this.quests.activity_panel_card.is_some()
                         || this.quests.video_modal.is_some()
@@ -12339,6 +12360,8 @@ impl Render for Root {
                     this.evolving_tenure_modal = None;
                     this.tenure_level_up = None;
                     this.guild_space_nux = None;
+                    this.stream_privacy_code_modal = None;
+                    this.vv.invite_suggestions_open = false;
                     this.quest_bar_bounty = None;
                     this.quests.activity_panel_card = None;
                     this.quests.video_modal = None;
@@ -13626,6 +13649,8 @@ impl Render for Root {
             .children(self.evolving_tenure_badge_layer(cx))
             .children(self.tenure_level_up_popout_layer(cx))
             .children(self.guild_space_nux_layer(cx))
+            .children(self.stream_privacy_code_layer(cx))
+            .children(self.voice_invite_suggestions_layer(cx))
             .children(self.quest_bar_bounty_layer(cx))
             .children(self.activity_panel_quest_card_layer(cx))
             .children(self.video_quest_modal_layer(cx))

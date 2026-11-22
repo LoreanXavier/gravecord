@@ -170,6 +170,8 @@ struct Live {
     started: Option<Started>,
     /// What a watched stream says it sends at most (`StreamEvent::Quality`).
     remote_quality: Option<(Option<u32>, u32)>,
+    /// Module 773262: DAVE MLS stream epoch authenticator (`StreamEvent::Live { privacy_code }`).
+    privacy_code: Option<String>,
 }
 
 static STREAM_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -730,6 +732,7 @@ impl Root {
                 last,
                 started: Some(started),
                 remote_quality: None,
+                privacy_code: None,
             },
         );
         info!("stream: create");
@@ -1006,6 +1009,7 @@ impl Root {
                 last,
                 started: None,
                 remote_quality: watch.then_some((Some(1440), 60)),
+                privacy_code: None,
             },
         );
         if watch {
@@ -1215,6 +1219,7 @@ impl Root {
                 last,
                 started: None,
                 remote_quality: None,
+                privacy_code: None,
             },
         );
         // The Stream Volume and Mute of this owner, as last chosen.
@@ -1269,6 +1274,15 @@ impl Root {
             call.controls.set_camera(Some(id));
         }
         cx.notify();
+    }
+
+    /// Module 773262 (`getSecureFramesState(streamKey)`): DAVE MLS epoch authenticator of `owner`'s stream.
+    pub(super) fn stream_privacy_code_of(&self, owner: u64) -> Option<String> {
+        self.video
+            .streams
+            .iter()
+            .find(|(key, _)| key.owner() == owner)
+            .and_then(|(_, live)| live.privacy_code.clone())
     }
 
     /// The stream of `owner` in our call, if we send it, watch it, or the voice state says they go live.
@@ -1579,7 +1593,10 @@ impl Root {
             cx.notify();
             return;
         }
-        if matches!(event, StreamEvent::Connected | StreamEvent::Live { .. }) {
+        if let StreamEvent::Live { privacy_code } = &event {
+            live.privacy_code = privacy_code.clone();
+            live.retry.succeed();
+        } else if matches!(event, StreamEvent::Connected) {
             live.retry.succeed();
         }
         if let StreamEvent::Ended { reason } = &event

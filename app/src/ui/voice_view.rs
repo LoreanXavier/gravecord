@@ -160,6 +160,10 @@ pub(super) struct State {
     pub menu: Option<Menu>,
     /// "Invite to Voice" in the sidebar was closed with its X.
     pub invite_dismissed: bool,
+    /// Module 778768 (`VoiceInviteSuggestionsPopover`): popover open/hovered state and per-user send status.
+    pub invite_suggestions_open: bool,
+    pub invite_suggestions_hovered: bool,
+    pub invite_suggestions_sent: HashMap<Id, VoiceInviteSendState>,
     /// The channel row was the last thing pressed: it keeps its action icons instead of the timer.
     pub row_focus: bool,
     /// The Stream Quality submenu of the Share menu is open.
@@ -217,6 +221,9 @@ impl Default for State {
             ticking: false,
             menu: None,
             invite_dismissed: false,
+            invite_suggestions_open: false,
+            invite_suggestions_hovered: false,
+            invite_suggestions_sent: HashMap::new(),
             row_focus: false,
             quality_open: false,
             suggest: false,
@@ -242,6 +249,16 @@ impl Default for State {
         }
     }
 }
+
+/// Module 778768 (`VoiceInviteSuggestionsPopover`): per-user invite row send state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum VoiceInviteSendState {
+    Sending,
+    Sent,
+}
+
+/// Module 778768 (`582904.kt`): maximum number of voice invite suggestions shown in the popover.
+pub(super) const MAX_VOICE_INVITE_SUGGESTIONS: usize = 5;
 
 /// What `Grid` lays out: columns, rows, the tile's width (its height is that over 16:9) and the list's paddings.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -4048,7 +4065,9 @@ impl Root {
         if call.guild != guild
             || call.channel != channel
             || self.vv.invite_dismissed
-            || since.elapsed() >= INVITE_ROW_TIMEOUT
+            || (!self.vv.invite_suggestions_open
+                && !self.vv.invite_suggestions_hovered
+                && since.elapsed() >= INVITE_ROW_TIMEOUT)
         {
             return None;
         }
@@ -4076,7 +4095,17 @@ impl Root {
                 .items_center()
                 .gap(px(8.))
                 .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| this.open_invite(cx)))
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    this.vv.invite_suggestions_hovered = *hovered;
+                    if *hovered {
+                        this.vv.invite_suggestions_open = true;
+                    }
+                    cx.notify();
+                }))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.vv.invite_suggestions_open = !this.vv.invite_suggestions_open;
+                    cx.notify();
+                }))
                 .child(
                     div()
                         .relative()
@@ -4147,11 +4176,258 @@ impl Root {
                         .on_click(cx.listener(|this, _, _, cx| {
                             cx.stop_propagation();
                             this.vv.invite_dismissed = true;
+                            this.vv.invite_suggestions_open = false;
                             cx.notify();
                         })),
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Module 778768 (`582904.kt`): up to 5 guild members not currently in `channel`'s voice states,
+    /// excluding self & bots, prioritizing online/active users.
+    pub(super) fn voice_invite_suggestions_for(&self, guild: Id, channel: Id) -> Vec<Id> {
+        let me = self.stores.current_user.as_ref().map(|u| u.id);
+        let in_vc: HashSet<Id> = self
+            .stores
+            .voice_members(guild, channel)
+            .into_iter()
+            .map(|vs| vs.user_id)
+            .collect();
+        let mut candidates: Vec<(u8, Id)> = self
+            .stores
+            .users
+            .values()
+            .filter(|u| Some(u.id) != me && !u.bot && !in_vc.contains(&u.id))
+            .map(|u| {
+                let rank = match self.stores.presences.get(&u.id).map(String::as_str) {
+                    Some("online") => 0,
+                    Some("idle") => 1,
+                    Some("dnd") => 2,
+                    _ => 3,
+                };
+                (rank, u.id)
+            })
+            .collect();
+        candidates.sort_by_key(|(rank, id)| (*rank, *id));
+        candidates
+            .into_iter()
+            .take(MAX_VOICE_INVITE_SUGGESTIONS)
+            .map(|(_, id)| id)
+            .collect()
+    }
+
+    /// Module 778768 (`popover_d8EjQE`): 260px right-side Voice Invite Suggestions popover (`o53CL2`),
+    /// max 5 40px member rows (`jYnGPG` Invite / Sending / `8BEiNn` Sent) + `"See more..."` (`NOP3Ry`) footer.
+    pub(super) fn voice_invite_suggestions_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.vv.invite_suggestions_open {
+            return None;
+        }
+        let (guild, channel) = self
+            .call
+            .as_ref()
+            .map(|c| (c.guild, c.channel))
+            .or_else(|| self.guild.zip(self.channel))?;
+        let suggestions = self.voice_invite_suggestions_for(guild, channel);
+
+        let rows: Vec<AnyElement> = suggestions
+            .into_iter()
+            .map(|uid| {
+                let user = self.stores.users.get(&uid);
+                let name = user
+                    .map(|u| u.display_name().to_owned())
+                    .unwrap_or_else(|| format!("User {uid}"));
+                let avatar =
+                    user.and_then(|u| self.images.get(&super::avatar_source(u).0).cloned());
+                let activity_sub = self.stores.presence.get(uid, Some(guild)).and_then(|p| {
+                    p.visible_activities()
+                        .into_iter()
+                        .find(|a| a["type"].as_u64() != Some(4))
+                        .and_then(|a| a["name"].as_str())
+                        .map(str::to_owned)
+                });
+                let send_state = self.vv.invite_suggestions_sent.get(&uid).copied();
+                let trailing: AnyElement = match send_state {
+                    None => div()
+                        .id(SharedString::from(format!("voice-invite-send-{uid}")))
+                        .size(px(28.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("user_plus", 16., "--channels-default"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.vv
+                                .invite_suggestions_sent
+                                .insert(uid, VoiceInviteSendState::Sending);
+                            let _ = this.requests.send(crate::net::Request::Rest {
+                                key: Some(format!("voice-invite-create:{channel}:{uid}")),
+                                method: reqwest::Method::POST,
+                                route: format!("/channels/{channel}/invites"),
+                                body: Some(serde_json::json!({})),
+                            });
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                    Some(VoiceInviteSendState::Sending) => div()
+                        .px(px(6.))
+                        .text_size(px(12.))
+                        .text_color(color("--text-muted"))
+                        .child("...")
+                        .into_any_element(),
+                    Some(VoiceInviteSendState::Sent) => div()
+                        .px(px(6.))
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("8BEiNn"))
+                        .into_any_element(),
+                };
+                div()
+                    .id(SharedString::from(format!("voice-invite-sugg-{uid}")))
+                    .h(px(40.))
+                    .px(px(8.))
+                    .rounded(px(8.))
+                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .size(px(24.))
+                            .flex_none()
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(color("--background-mod-subtle"))
+                            .children(avatar.map(|pic| img(pic).size(px(24.)).rounded_full())),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-default"))
+                                    .child(name),
+                            )
+                            .when_some(activity_sub, |col, sub| {
+                                col.child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-status-online"))
+                                        .child(sub),
+                                )
+                            }),
+                    )
+                    .child(trailing)
+                    .into_any_element()
+            })
+            .collect();
+
+        let card = div()
+            .id("voice-invite-suggestions-popover")
+            .occlude()
+            .absolute()
+            .left(px(329.))
+            .bottom(px(140.))
+            .w(px(260.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .shadow(vec![super::shadow_high()])
+            .p(px(8.))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                this.vv.invite_suggestions_hovered = *hovered;
+                cx.notify();
+            }))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.vv.invite_suggestions_open = false;
+                this.vv.invite_suggestions_hovered = false;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .px(px(8.))
+                    .py(px(4.))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-muted"))
+                    .child(dc_intl::t("o53CL2")),
+            )
+            .children(rows)
+            .child(
+                div()
+                    .id("voice-invite-see-more")
+                    .h(px(40.))
+                    .px(px(8.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .size(px(24.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("audit_group", 18., "--channels-default")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::t("NOP3Ry")),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.vv.invite_suggestions_open = false;
+                        this.open_invite(cx);
+                    })),
+            );
+
+        Some(deferred(card).with_priority(60).into_any_element())
+    }
+
+    /// Capture harness: `voice-invite-suggestions [open|close]` (module 778768).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_voice_invite_suggestions(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.eq_ignore_ascii_case("close") {
+            self.vv.invite_suggestions_open = false;
+            cx.notify();
+            return "voice-invite-suggestions: closed".to_owned();
+        }
+        self.vv.invite_suggestions_open = true;
+        cx.notify();
+        "voice-invite-suggestions: open".to_owned()
     }
 
     // ---- not in the call ----
@@ -4642,5 +4918,13 @@ mod tests {
         let (top, bottom) = video_tile_theme_stops(0xff0000, 0x0000ff, bg);
         assert!(top.r > bg.r && top.r < 0.3);
         assert!(bottom.b > 0.55 && bottom.b < 0.7);
+    }
+
+    #[test]
+    fn voice_invite_suggestions_778768_keys_and_limit() {
+        assert_eq!(MAX_VOICE_INVITE_SUGGESTIONS, 5);
+        for key in ["o53CL2", "jYnGPG", "8BEiNn", "NOP3Ry", "EE+P0H"] {
+            assert!(!dc_intl::t(key).is_empty(), "missing 778768 key {key}");
+        }
     }
 }

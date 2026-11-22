@@ -91,6 +91,24 @@ pub(crate) struct ShopCheckoutReviewModal {
     pub orb_balance: u64,
     pub orb_cost: Option<u64>,
     pub picker_open: bool,
+    /// Module 773882 (`CheckoutBaseReviewStep`): gift flow shows "Buy Gift" (`ouo4FK`) + Back button.
+    pub is_gift: bool,
+    /// Module 773882: invoice total in cents (`Some(0)` -> "Get Item" `302tKP`, else "Purchase" `ExD0Ng`).
+    pub total_cents: Option<i64>,
+    /// Module 773882: loading skeleton state while checkout invoice preview loads.
+    pub is_loading: bool,
+}
+
+/// Module 773882 (`tenantProvidedReviewButtonProps`): selects review CTA label
+/// (`ouo4FK` "Buy Gift" for gifts, `302tKP` "Get Item" when `total == 0`, else `ExD0Ng` "Purchase").
+pub(crate) fn review_cta_label(is_gift: bool, total_cents: Option<i64>) -> &'static str {
+    if is_gift {
+        dc_intl::t("ouo4FK")
+    } else if total_cents == Some(0) {
+        dc_intl::t("302tKP")
+    } else {
+        dc_intl::t("ExD0Ng")
+    }
 }
 
 /// Purchase legal fine print variants (module 596034 `I`).
@@ -789,6 +807,71 @@ impl Root {
                                         this.open_shop(cx);
                                     })),
                             ),
+                    )
+                    // Module 773882 (`169797.lo` unified review footer): optional Back (gifts) + active CTA (`Purchase`/`Buy Gift`/`Get Item`).
+                    .child(
+                        div()
+                            .pt(px(16.))
+                            .pb(px(8.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_center()
+                            .when(modal.is_gift, |f| f.justify_between())
+                            .when(!modal.is_gift, |f| f.justify_end())
+                            .when(modal.is_gift, |f| {
+                                f.child(
+                                    div()
+                                        .id("checkout-review-back")
+                                        .h(px(38.))
+                                        .px(px(16.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .child(dc_intl::t("13/7kX"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.close_shop_checkout_review();
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id("checkout-review-submit")
+                                    .h(px(38.))
+                                    .px(px(20.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .when(!modal.is_loading && !insufficient_orbs, |b| {
+                                        b.hover(|s| {
+                                            s.bg(color("--control-primary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                    })
+                                    .when(modal.is_loading || insufficient_orbs, |b| b.opacity(0.5))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--control-primary-text-default"))
+                                    .child(review_cta_label(modal.is_gift, modal.total_cents))
+                                    .when(!modal.is_loading && !insufficient_orbs, |b| {
+                                        b.on_click(cx.listener(|this, _, _, cx| {
+                                            this.close_shop_checkout_review();
+                                            cx.notify();
+                                        }))
+                                    }),
+                            ),
                     ),
             );
 
@@ -831,8 +914,15 @@ impl Root {
                 CheckoutMethod::Card
             },
             orb_balance: 1200,
-            orb_cost: if arg == "express" { None } else { Some(2500) },
-            picker_open: arg != "closed" && arg != "express",
+            orb_cost: if arg == "express" || arg == "gift" || arg == "free" {
+                None
+            } else {
+                Some(2500)
+            },
+            picker_open: arg != "closed" && arg != "express" && arg != "gift" && arg != "free",
+            is_gift: arg == "gift",
+            total_cents: if arg == "free" { Some(0) } else { Some(599) },
+            is_loading: arg == "loading",
         });
         cx.notify();
         format!("shop-checkout-review: {arg}")
@@ -867,5 +957,14 @@ mod tests {
         assert!(build_express_checkout_line_items("Frame", 599, 0, 599, false, false).is_empty());
         assert!(build_express_checkout_line_items("Frame", 599, 0, 0, false, true).is_empty());
         assert_eq!(dc_intl::t("jiRvC7"), "Tax");
+    }
+
+    #[test]
+    fn unified_checkout_review_cta_labels_773882() {
+        assert_eq!(review_cta_label(false, Some(599)), "Purchase");
+        assert_eq!(review_cta_label(false, None), "Purchase");
+        assert_eq!(review_cta_label(false, Some(0)), "Get Item");
+        assert_eq!(review_cta_label(true, Some(599)), "Buy Gift");
+        assert_eq!(review_cta_label(true, Some(0)), "Buy Gift");
     }
 }

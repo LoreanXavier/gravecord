@@ -171,6 +171,16 @@ pub(super) enum Target {
     },
     /// Overlay Report-to-Mod channel context menu (`overlay-report-to-mod-channel-context`, module 95616).
     OverlayModReportChannel(Id),
+    /// Overlay Voice / Stage channel context menu (`overlay-channel-context`, module 769192).
+    OverlayVoiceChannel(Id),
+    /// Member Application context menu (`member-application-context-menu`, module 772063).
+    MemberApplication {
+        guild: Id,
+        user: Id,
+    },
+    /// Channel Tab context menu (`channel-tab-context`, module 774448).
+    #[allow(dead_code)]
+    ChannelTab(u64),
     /// Favorites server category context menu (`FAVORITE_CATEGORY`, module 250737 `"Rename Category"`).
     FavoriteCategory(Id),
     /// Standalone Image Actions fallback context menu (`image-context`, module 177079); URL & cache key in
@@ -457,13 +467,21 @@ pub(super) enum Act {
     OpenLink,
     /// Module 468389 (`useActivityMenuItems`): Join / Ask to Join / Invite / Spotify / Embedded Activity.
     ActivityAction(usize),
+    /// Module 772063 (`121127.A`): "Open in Mod View" (`kj3tz2`).
+    OpenModView,
+    /// Module 774448 (`channel-tab-context`): "Pin Tab" (`Aiucjd`) / "Unpin Tab" (`LvKSA8`).
+    PinChannelTab,
+    /// Module 774448 (`channel-tab-context`): "Close Tab" (`In6PEK`).
+    CloseChannelTab,
+    /// Module 769192 (`671483`): "Set Channel Status" (`RBd5PW`).
+    SetVoiceStatus,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 189] = [
+    pub(super) const ALL: [Act; 193] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -653,6 +671,10 @@ impl Act {
         Act::SaveImage,
         Act::OpenLink,
         Act::ActivityAction(0),
+        Act::OpenModView,
+        Act::PinChannelTab,
+        Act::CloseChannelTab,
+        Act::SetVoiceStatus,
     ];
 
     #[cfg(test)]
@@ -847,6 +869,10 @@ impl Act {
             Act::OpenLink => 186,
             Act::ActivityAction(_) => 187,
             Act::OpenInNewTab => 188,
+            Act::OpenModView => 189,
+            Act::PinChannelTab => 190,
+            Act::CloseChannelTab => 191,
+            Act::SetVoiceStatus => 192,
         }
     }
 }
@@ -1045,7 +1071,11 @@ pub(super) fn status(act: Act) -> Status {
         | Act::EntranceGlobal
         | Act::DownloadSound
         | Act::Noop
-        | Act::ActivityAction(_) => Wired,
+        | Act::ActivityAction(_)
+        | Act::OpenModView
+        | Act::PinChannelTab
+        | Act::CloseChannelTab
+        | Act::SetVoiceStatus => Wired,
     }
 }
 
@@ -2193,6 +2223,9 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::DmListMore => Some(dc_intl::t("/QQnjy")),
         Target::GdmCleanupSort => Some(dc_intl::t("yySzqH")),
         Target::OverlayModReportChannel(_) => Some(dc_intl::t("zp+z/E")),
+        Target::OverlayVoiceChannel(_) => Some(dc_intl::t("Xm41aV")),
+        Target::MemberApplication { .. } => Some(dc_intl::t("liqwPJ")),
+        Target::ChannelTab(_) => Some(dc_intl::t("dd5Eyn")),
         Target::OverlayUser { .. } => Some(dc_intl::t("ogxXGq")),
         Target::GameMention(_) => Some(dc_intl::t("Hf9fuS")),
         Target::Image => Some(dc_intl::t("Zow2V5")),
@@ -2973,6 +3006,130 @@ pub(super) fn game_shop_sku_items(developer: bool) -> Vec<Entry> {
     vec![Entry::Row(
         Row::new(Act::CopyId, dc_intl::t("7axpVs")).icon("menu_id"),
     )]
+}
+
+/// Overlay Voice / Stage channel context menu (`overlay-channel-context`, module 769192,
+/// `aria-label` `Xm41aV` "Channel Actions"): 4 groups — primary-actions (Overlay Chat toggle,
+/// Overlay Favorites toggle, Invite, Copy Link) | voice-actions (Mark As Read, Set/Clear Channel
+/// Status, Report Stage) | notifications (Mute Channel, Stage Notification Settings) |
+/// developer-actions (Copy Channel ID).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn overlay_voice_channel_items(
+    is_stage: bool,
+    stage_live: bool,
+    unread: bool,
+    chat_open: bool,
+    overlay_favorite: bool,
+    can_invite: bool,
+    can_set_status: bool,
+    has_status: bool,
+    muted: bool,
+    level: &'static str,
+    developer: bool,
+) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let mut primary = vec![
+        if chat_open {
+            Row::new(Act::OverlayCloseChat, dc_intl::t("ERApc4"))
+        } else {
+            Row::new(Act::OverlayOpenChat, dc_intl::t("KWrMk5"))
+        },
+        if overlay_favorite {
+            Row::new(Act::OverlayFavoriteChannel, dc_intl::t("Bou7lT")).danger()
+        } else {
+            Row::new(Act::OverlayFavoriteChannel, dc_intl::t("4wcdE/"))
+        },
+    ];
+    if can_invite {
+        primary.push(Row::new(Act::Invite, dc_intl::tr("Invite People")));
+    }
+    primary.push(Row::new(Act::CopyLink, dc_intl::t("WqhZss")));
+    group(&mut out, primary);
+
+    let mut voice_actions = vec![Row::new(Act::MarkRead, dc_intl::t("e6RscS")).disabled(!unread)];
+    if !is_stage && can_set_status {
+        if has_status {
+            voice_actions.push(Row::new(Act::ClearStatus, dc_intl::t("22CYiZ")));
+        } else {
+            voice_actions.push(Row::new(Act::SetVoiceStatus, dc_intl::t("RBd5PW")));
+        }
+    }
+    if is_stage && stage_live {
+        voice_actions.push(
+            Row::new(Act::ReportStage, dc_intl::t("JGj6Ci"))
+                .icon("menu_flag")
+                .danger(),
+        );
+    }
+    group(&mut out, voice_actions);
+
+    let mut notif = vec![if muted {
+        Row::new(Act::Mute, dc_intl::t("OYefme"))
+    } else {
+        Row::new(Act::Mute, dc_intl::t("tbeRRJ")).caret()
+    }];
+    if is_stage {
+        notif.push(
+            Row::new(Act::Notifications, dc_intl::t("h850Ss"))
+                .sub(level)
+                .caret(),
+        );
+    }
+    group(&mut out, notif);
+
+    if developer {
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::t("gFHI3k")).icon("menu_id")],
+        );
+    }
+    tidy(out)
+}
+
+/// Member Application context menu (`member-application-context-menu`, module 772063,
+/// `aria-label` `liqwPJ` "User Settings Actions"): Group 1 optional "Open in Mod View" (`kj3tz2`),
+/// Group 2 optional "Ban User" (`I+Cbum`, danger, HammerIcon) + always-shown "Copy User ID" (`/AXYnE`, IdIcon).
+pub(super) fn member_application_items(can_mod_view: bool, can_ban: bool) -> Vec<Entry> {
+    let mut out = Vec::new();
+    if can_mod_view {
+        group(
+            &mut out,
+            vec![Row::new(Act::OpenModView, dc_intl::t("kj3tz2"))],
+        );
+    }
+    let mut mod_group = Vec::new();
+    if can_ban {
+        mod_group.push(
+            Row::new(Act::Ban, dc_intl::t("I+Cbum"))
+                .icon("oauth_entry_hammer")
+                .danger(),
+        );
+    }
+    mod_group.push(Row::new(Act::CopyId, dc_intl::t("/AXYnE")).icon("menu_id"));
+    group(&mut out, mod_group);
+    tidy(out)
+}
+
+/// Channel Tab context menu (`channel-tab-context`, module 774448, `aria-label` `dd5Eyn` "Tab actions"):
+/// Group 1 Pin Tab (`Aiucjd`) / Unpin Tab (`LvKSA8`), Group 2 Close Tab (`In6PEK`).
+pub(super) fn channel_tab_items(pinned: bool) -> Vec<Entry> {
+    let mut out = Vec::new();
+    group(
+        &mut out,
+        vec![Row::new(
+            Act::PinChannelTab,
+            if pinned {
+                dc_intl::t("LvKSA8")
+            } else {
+                dc_intl::t("Aiucjd")
+            },
+        )],
+    );
+    group(
+        &mut out,
+        vec![Row::new(Act::CloseChannelTab, dc_intl::t("In6PEK"))],
+    );
+    tidy(out)
 }
 
 /// Overlay Report-to-Mod channel context menu (`overlay-report-to-mod-channel-context`, module 95616, aria-label
@@ -4259,15 +4416,16 @@ impl Root {
                 .map_or((false, None), |thread| {
                     (thread.joined && thread.muted, thread.mute_end)
                 }),
-            Target::Channel(id) | Target::Category(id) | Target::OverlayModReportChannel(id) => {
-                match self.guild_of_channel(id) {
-                    Some(guild) => {
-                        let entry = self.stores.guild_settings.channel(guild, id);
-                        (entry.muted, entry.mute_end)
-                    }
-                    None => (false, None),
+            Target::Channel(id)
+            | Target::Category(id)
+            | Target::OverlayModReportChannel(id)
+            | Target::OverlayVoiceChannel(id) => match self.guild_of_channel(id) {
+                Some(guild) => {
+                    let entry = self.stores.guild_settings.channel(guild, id);
+                    (entry.muted, entry.mute_end)
                 }
-            }
+                None => (false, None),
+            },
             Target::Dm(id) | Target::OverlayDm(id) => {
                 let entry = self.stores.guild_settings.channel(0, id);
                 (entry.muted, entry.mute_end)
@@ -4922,6 +5080,69 @@ impl Root {
                     .find(|(id, _)| *id == category_id)
                     .is_some_and(|(_, known)| known.collapsed);
                 favorite_category_items(collapsed)
+            }
+            Target::OverlayVoiceChannel(channel) => {
+                let Some(guild) = self.guild_of_channel(channel) else {
+                    return;
+                };
+                let (is_stage, can_invite, can_set_status) = self
+                    .stores
+                    .guild(guild)
+                    .and_then(|g| g.channels.iter().find(|c| c.id == channel))
+                    .map_or((false, false, false), |ch| {
+                        (
+                            ch.kind == dc_state::ChannelKind::Other(13),
+                            self.can_in_channel(ch, dc_state::permissions::CREATE_INSTANT_INVITE),
+                            self.can_in_channel(ch, dc_state::permissions::MANAGE_CHANNELS),
+                        )
+                    });
+                let stage_live = is_stage
+                    && self
+                        .stores
+                        .stage_instances
+                        .get_by_channel(channel)
+                        .is_some();
+                let chat_open = self.overlay.text_chat.is_tracked(channel)
+                    || self.overlay.text_chat.selected() == Some(channel);
+                let has_status = self
+                    .stores
+                    .channel_status
+                    .get_channel_status(guild, channel)
+                    .is_some();
+                let (muted, _) = self.mute_state(Target::OverlayVoiceChannel(channel));
+                let level = level_label(
+                    self.stores
+                        .guild_settings
+                        .channel(guild, channel)
+                        .message_notifications,
+                );
+                overlay_voice_channel_items(
+                    is_stage,
+                    stage_live,
+                    self.has_unread_or_mentions(channel),
+                    chat_open,
+                    self.overlay.favorite_channels.contains(&channel),
+                    can_invite,
+                    can_set_status,
+                    has_status,
+                    muted,
+                    level,
+                    developer,
+                )
+            }
+            Target::MemberApplication { guild, .. } => {
+                let can_mod = self.my_permission(guild, None, dc_state::permissions::MANAGE_GUILD);
+                let can_ban = self.my_permission(guild, None, dc_state::permissions::BAN_MEMBERS);
+                member_application_items(can_mod, can_ban)
+            }
+            Target::ChannelTab(tab_id) => {
+                let pinned = self
+                    .channel_tabs
+                    .tabs
+                    .iter()
+                    .find(|t| t.id == tab_id)
+                    .is_some_and(|t| t.pinned);
+                channel_tab_items(pinned)
             }
             Target::OverlayModReportChannel(channel) => {
                 let Some(guild) = self.guild_of_channel(channel) else {
@@ -6005,20 +6226,25 @@ impl Root {
                 | Target::Thread(channel)
                 | Target::Dm(channel)
                 | Target::OverlayDm(channel)
-                | Target::OverlayModReportChannel(channel),
+                | Target::OverlayModReportChannel(channel)
+                | Target::OverlayVoiceChannel(channel),
             ) => {
                 self.mark_channel_read(channel);
             }
             (
                 Act::OverlayCloseChat,
-                Target::OverlayDm(channel) | Target::OverlayModReportChannel(channel),
+                Target::OverlayDm(channel)
+                | Target::OverlayModReportChannel(channel)
+                | Target::OverlayVoiceChannel(channel),
             ) => {
                 let voice = self.call.as_ref().map(|call| call.channel);
                 self.overlay.text_chat.remove(channel, voice);
             }
             (
                 Act::OverlayOpenChat,
-                Target::OverlayDm(channel) | Target::OverlayModReportChannel(channel),
+                Target::OverlayDm(channel)
+                | Target::OverlayModReportChannel(channel)
+                | Target::OverlayVoiceChannel(channel),
             ) => {
                 self.overlay_chat_select(channel, cx);
             }
@@ -6031,10 +6257,53 @@ impl Root {
             }
             (
                 Act::OverlayFavoriteChannel,
-                Target::OverlayDm(channel) | Target::OverlayModReportChannel(channel),
+                Target::OverlayDm(channel)
+                | Target::OverlayModReportChannel(channel)
+                | Target::OverlayVoiceChannel(channel),
             ) => {
                 if !self.overlay.favorite_channels.remove(&channel) {
                     self.overlay.favorite_channels.insert(channel);
+                }
+            }
+            (Act::Invite, Target::OverlayVoiceChannel(channel)) => {
+                if let Some(guild) = self.guild_of_channel(channel) {
+                    self.select(guild, Some(channel));
+                    self.open_invite(cx);
+                }
+            }
+            (Act::OpenModView, Target::MemberApplication { user, .. }) => {
+                self.open_full_profile(user, window, cx);
+            }
+            (Act::Ban, Target::MemberApplication { guild, user }) => {
+                self.open_member_action(super::member_actions::Kind::Ban, guild, user, window, cx);
+            }
+            (Act::PinChannelTab, Target::ChannelTab(tab_id)) => {
+                self.channel_tabs.toggle_pin(tab_id);
+            }
+            (Act::CloseChannelTab, Target::ChannelTab(tab_id)) => {
+                if let Some(next) = self.channel_tabs.close_tab(tab_id) {
+                    if let Some(guild) = next.guild_id {
+                        self.select(guild, Some(next.channel_id));
+                    } else {
+                        self.guild = None;
+                        self.channel = Some(next.channel_id);
+                    }
+                }
+            }
+            (Act::ReportStage, Target::OverlayVoiceChannel(channel)) => {
+                self.open_report_stage(channel, cx);
+            }
+            (Act::ClearStatus, Target::OverlayVoiceChannel(channel)) => {
+                let _ = self.requests.send(Request::Rest {
+                    key: None,
+                    method: reqwest::Method::PUT,
+                    route: format!("/channels/{channel}/voice-status"),
+                    body: Some(json!({"status": ""})),
+                });
+            }
+            (Act::SetVoiceStatus, Target::OverlayVoiceChannel(channel)) => {
+                if let Some(guild) = self.guild_of_channel(channel) {
+                    self.select(guild, Some(channel));
                 }
             }
             (Act::Invite, Target::Guild(guild)) => {
@@ -6158,7 +6427,8 @@ impl Root {
                 Act::CopyLink,
                 Target::Channel(channel)
                 | Target::Thread(channel)
-                | Target::OverlayModReportChannel(channel),
+                | Target::OverlayModReportChannel(channel)
+                | Target::OverlayVoiceChannel(channel),
             ) => {
                 let guild = self.guild_of_channel(channel).unwrap_or_default();
                 cx.write_to_clipboard(ClipboardItem::new_string(format!(
@@ -6179,14 +6449,17 @@ impl Root {
                     | Target::Dm(id)
                     | Target::OverlayDm(id)
                     | Target::OverlayModReportChannel(id)
+                    | Target::OverlayVoiceChannel(id)
                     | Target::FavoriteCategory(id)
                     | Target::ChannelMention(id)
                     | Target::GameMention(id)
                     | Target::CommandPermId(id)
+                    | Target::ChannelTab(id)
                     | Target::AuditChannel(id) => id,
                     Target::User { user, .. }
                     | Target::OverlayUser { user, .. }
                     | Target::ModerationUser { user, .. }
+                    | Target::MemberApplication { user, .. }
                     | Target::InventoryAuthor { user }
                     | Target::SpotifyActivity { user, .. }
                     | Target::GameActivity { user, .. }
@@ -6950,7 +7223,8 @@ impl Root {
                 | Target::Thread(_)
                 | Target::Dm(_)
                 | Target::OverlayDm(_)
-                | Target::OverlayModReportChannel(_),
+                | Target::OverlayModReportChannel(_)
+                | Target::OverlayVoiceChannel(_),
             ) => match target {
                 Target::Guild(guild) => {
                     self.patch_guild_setting(guild, "muted", json!(false));
@@ -6964,7 +7238,8 @@ impl Root {
                 Target::Thread(id) => self.patch_thread_settings(id, json!({"muted": false})),
                 Target::Channel(id)
                 | Target::Category(id)
-                | Target::OverlayModReportChannel(id) => {
+                | Target::OverlayModReportChannel(id)
+                | Target::OverlayVoiceChannel(id) => {
                     if let Some(guild) = self.guild_of_channel(id) {
                         self.patch_channel_override(
                             guild,
@@ -7380,12 +7655,16 @@ impl Root {
             Act::Notifications => {
                 let channel = matches!(
                     target,
-                    Target::Channel(_) | Target::Thread(_) | Target::OverlayModReportChannel(_)
+                    Target::Channel(_)
+                        | Target::Thread(_)
+                        | Target::OverlayModReportChannel(_)
+                        | Target::OverlayVoiceChannel(_)
                 );
                 let current = match target {
                     Target::Channel(id)
                     | Target::Thread(id)
-                    | Target::OverlayModReportChannel(id) => self
+                    | Target::OverlayModReportChannel(id)
+                    | Target::OverlayVoiceChannel(id) => self
                         .guild_of_channel(id)
                         .map_or(INHERIT, |guild| self.channel_level(guild, id)),
                     Target::Guild(guild) => self
@@ -7402,7 +7681,8 @@ impl Root {
                     let inherited = match target {
                         Target::Channel(id)
                         | Target::Thread(id)
-                        | Target::OverlayModReportChannel(id) => self.inherited_level_label(id),
+                        | Target::OverlayModReportChannel(id)
+                        | Target::OverlayVoiceChannel(id) => self.inherited_level_label(id),
                         _ => dc_intl::t!("n/bTaY"),
                     };
                     rows.push(SubRow {
@@ -7764,7 +8044,8 @@ impl Root {
                     }
                     Target::Channel(id)
                     | Target::Category(id)
-                    | Target::OverlayModReportChannel(id) => {
+                    | Target::OverlayModReportChannel(id)
+                    | Target::OverlayVoiceChannel(id) => {
                         if let Some(guild) = self.guild_of_channel(id) {
                             self.patch_channel_override(
                                 guild,
@@ -7795,10 +8076,13 @@ impl Root {
                 }
                 Target::Channel(id)
                 | Target::Category(id)
-                | Target::OverlayModReportChannel(id) => {
+                | Target::OverlayModReportChannel(id)
+                | Target::OverlayVoiceChannel(id) => {
                     let channel = matches!(
                         target,
-                        Target::Channel(_) | Target::OverlayModReportChannel(_)
+                        Target::Channel(_)
+                            | Target::OverlayModReportChannel(_)
+                            | Target::OverlayVoiceChannel(_)
                     );
                     let value = if channel && index == 0 {
                         INHERIT
@@ -10062,6 +10346,56 @@ mod tests {
         assert_eq!(
             extract_refreshed_attachment_url(&serde_json::json!({})),
             None
+        );
+    }
+
+    #[test]
+    fn phase3an_context_menus_769192_772063_774448() {
+        // Module 769192: overlay voice/stage channel context menu (4 groups, aria-label Xm41aV).
+        assert_eq!(
+            menu_aria_label(Target::OverlayVoiceChannel(1)),
+            Some("Channel Actions")
+        );
+        let stage_rows = labels(&overlay_voice_channel_items(
+            true, true, true, false, false, true, false, false, false, "All", true,
+        ));
+        assert!(stage_rows.iter().any(|l| l == "Open Overlay Chat"));
+        assert!(stage_rows.iter().any(|l| l == "Add to Favorites"));
+        assert!(stage_rows.iter().any(|l| l == "Report Stage"));
+        assert!(stage_rows.iter().any(|l| l == "Notification Settings"));
+        assert!(stage_rows.iter().any(|l| l == "Copy Channel ID"));
+
+        let voice_rows = labels(&overlay_voice_channel_items(
+            false, false, false, true, true, false, true, false, true, "All", false,
+        ));
+        assert!(voice_rows.iter().any(|l| l == "Close overlay chat"));
+        assert!(voice_rows.iter().any(|l| l == "Remove from Favorites"));
+        assert!(voice_rows.iter().any(|l| l == "Set Channel Status"));
+        assert!(voice_rows.iter().any(|l| l == "Unmute Channel"));
+        assert!(!voice_rows.iter().any(|l| l == "Notification Settings"));
+
+        // Module 772063: member-application-context-menu.
+        assert_eq!(
+            menu_aria_label(Target::MemberApplication { guild: 1, user: 2 }),
+            Some("User Settings Actions")
+        );
+        let mod_rows = labels(&member_application_items(true, true));
+        assert_eq!(
+            mod_rows,
+            vec!["Open in Mod View", "-", "Ban User", "Copy User ID"]
+        );
+        let basic_rows = labels(&member_application_items(false, false));
+        assert_eq!(basic_rows, vec!["Copy User ID"]);
+
+        // Module 774448: channel-tab-context.
+        assert_eq!(menu_aria_label(Target::ChannelTab(1)), Some("Tab actions"));
+        assert_eq!(
+            labels(&channel_tab_items(false)),
+            vec!["Pin Tab", "-", "Close Tab"]
+        );
+        assert_eq!(
+            labels(&channel_tab_items(true)),
+            vec!["Unpin Tab", "-", "Close Tab"]
         );
     }
 }

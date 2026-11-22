@@ -374,17 +374,35 @@ impl Root {
                                     }
                                 },
                             ))
-                            .child(self.member_action(
-                                SharedString::from(format!("member-more-{index}")),
-                                "more_dots",
-                                18.,
-                                cx,
-                                move |this, window, cx| {
-                                    if let Some(user) = user_id {
-                                        this.open_full_profile(user, window, cx);
-                                    }
-                                },
-                            )),
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("member-more-{index}")))
+                                    .size(px(28.))
+                                    .flex_none()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                                    .child(icon("more_dots", 18., "--icon-subtle"))
+                                    .on_click(cx.listener(
+                                        move |this, event: &gpui::ClickEvent, _, cx| {
+                                            // Module 772063 (`member-application-context-menu`): Open in Mod View / Ban User / Copy User ID.
+                                            if let Some(user) = user_id {
+                                                this.open_context_menu(
+                                                super::context_menu::Target::MemberApplication {
+                                                    guild,
+                                                    user,
+                                                },
+                                                event.position(),
+                                                cx,
+                                            );
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
+                            ),
                     )
                     .into_any_element()
             })

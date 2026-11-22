@@ -2086,6 +2086,20 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_tenure_level_up(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `stream-privacy-code [loading|close]`: Stream Privacy Code modal (773262).
+            ["stream-privacy-code", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_stream_privacy_code(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `voice-invite-suggestions [open|close]`: Voice Invite Suggestions popover (778768).
+            ["voice-invite-suggestions", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| {
+                    root.script_voice_invite_suggestions(&arg, cx)
+                });
+                let _ = writeln!(output, "{line}");
+            }
             // `purchase-email-auth [pending|resent|error|close]`: Checkout Email Verification & Predicate Error (615456).
             ["purchase-email-auth", rest @ ..] => {
                 let arg = rest.join(" ");

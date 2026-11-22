@@ -120,21 +120,40 @@ pub(super) fn activity_share_media_summary(
     }
 }
 
-/// Module 714892 (`SocialLayerStorefrontShareModal`): one in-game item SKU in the share preview.
+/// Module 714892 / 763375 (`SocialLayerStorefrontShareModal`): one in-game item SKU in the share preview.
 #[derive(Clone, Debug)]
 pub(crate) struct ShareStorefrontItem {
     pub sku_id: String,
+    pub slug: Option<String>,
     pub name: String,
     pub image_url: Option<String>,
 }
 
-/// Module 714892: in-game item (`SOCIAL_LAYER_STOREFRONT`) share payload wrapped in `ForwardModal`.
+/// Module 714892 / 763375: in-game item (`SOCIAL_LAYER_STOREFRONT`) share payload wrapped in `ForwardModal`.
 #[derive(Clone, Debug)]
 pub(crate) struct ShareStorefront {
     pub application_id: String,
     pub application_name: String,
     pub guild_id: Option<Id>,
     pub items: Vec<ShareStorefrontItem>,
+}
+
+/// Module 763375 (`871123.OY`): builds the official single-SKU Game Shop share URL.
+pub(crate) fn build_single_sku_share_url(
+    application_id: &str,
+    guild_id: Option<Id>,
+    sku_id: &str,
+    slug: Option<&str>,
+) -> String {
+    match guild_id {
+        Some(gid) => match slug.filter(|s| !s.is_empty()) {
+            Some(s) => format!("https://discord.com/channels/{gid}/game-shop/{sku_id}/{s}"),
+            None => format!("https://discord.com/channels/{gid}/game-shop/{sku_id}"),
+        },
+        None => format!(
+            "https://discord.com/shop?tab=game-shops&applicationId={application_id}&skuId={sku_id}"
+        ),
+    }
 }
 
 /// Module 714892 (`871123.aU`): builds the official Game Shop share URL for one or more SKUs.
@@ -149,6 +168,24 @@ pub(crate) fn build_storefront_share_url(
         None => format!(
             "https://discord.com/shop?tab=game-shops&applicationId={application_id}&skuIds={joined}"
         ),
+    }
+}
+
+impl ShareStorefront {
+    /// Resolves the official share URL: single-SKU `871123.OY` (module 763375) vs multi-SKU `871123.aU` (module 714892).
+    pub(crate) fn share_url(&self) -> String {
+        if self.items.len() == 1 {
+            let item = &self.items[0];
+            build_single_sku_share_url(
+                &self.application_id,
+                self.guild_id,
+                &item.sku_id,
+                item.slug.as_deref(),
+            )
+        } else {
+            let ids: Vec<&str> = self.items.iter().map(|i| i.sku_id.as_str()).collect();
+            build_storefront_share_url(&self.application_id, self.guild_id, &ids)
+        }
     }
 }
 
@@ -543,6 +580,21 @@ impl Root {
             self.show_success_toast(toast.to_owned(), cx);
             return;
         }
+        if let Some(sf) = forward.storefront.as_ref() {
+            // Module 763375 / 714892 (`871123.Q6`): send single-SKU or multi-SKU storefront link + optional note.
+            let link = sf.share_url();
+            let content = if note.is_empty() {
+                link
+            } else {
+                format!("{link}\n\n{note}")
+            };
+            for destination in &forward.selected {
+                self.start_local_text(destination.channel(), content.clone());
+            }
+            self.go_to_destination(&forward.selected);
+            self.show_success_toast(dc_intl::t("kwmYkt").to_owned(), cx);
+            return;
+        }
         if let Some(user) = forward.profile.as_ref() {
             // The link, then the note after a blank line, as one message per destination.
             let link = profile_link(user.id);
@@ -932,16 +984,32 @@ impl Root {
             .into_any_element()
     }
 
-    /// Module 714892 (`.forwardPreview_IHYJU0`): in-game item share preview with 4px vertical
-    /// `--border-subtle` bar, SKU title (`j7Go5A` "{count} Items" when > 1), `CqpEC+`
-    /// "{applicationName} - In-game item" subtitle with link icon, and 40x40 overlapping thumbnail
-    /// stack (`-12px` overlap).
+    /// Module 763375 (`345938.d`): opens `ForwardModal` pre-populated for sharing a single Game Shop SKU.
+    pub(super) fn open_share_storefront(
+        &mut self,
+        sf: ShareStorefront,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_forward_with(None, None, window, cx);
+        if let Some(f) = self.forward.as_mut() {
+            f.storefront = Some(sf);
+        }
+        cx.notify();
+    }
+
+    /// Module 714892 (`.forwardPreview_IHYJU0`) / Module 763375 (`.forwardPreview_0g0qmy`):
+    /// in-game item share preview with 4px vertical `--border-subtle` bar, SKU title (`j7Go5A`
+    /// "{count} Items" when > 1), `CqpEC+` "{applicationName} - In-game item" subtitle with link
+    /// icon, and either a single 68x68 square `.cardImage_0g0qmy` (763375) or 40x40 overlapping
+    /// thumbnail stack (714892).
     fn storefront_share_preview(&self, sf: &ShareStorefront) -> AnyElement {
         let _toast_keys = (
             dc_intl::t("kwmYkt"),
             dc_intl::t("iufib1"),
             dc_intl::t("L/PwZf"),
         );
+        let single_sku = sf.items.len() == 1;
         let link_title = if sf.items.len() > 1 {
             dc_intl::format(
                 "j7Go5A",
@@ -960,6 +1028,7 @@ impl Root {
                 dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&sf.application_name)),
             )],
         );
+        let thumb_size = if single_sku { 68. } else { 40. };
         let thumbs: Vec<AnyElement> = sf
             .items
             .iter()
@@ -971,12 +1040,14 @@ impl Root {
                     .as_deref()
                     .and_then(|u| self.images.get(u).cloned());
                 div()
-                    .size(px(40.))
+                    .size(px(thumb_size))
                     .flex_none()
                     .when(i > 0, |d| d.ml(px(-12.)))
                     .rounded(px(8.))
-                    .border_2()
-                    .border_color(color("--background-surface-high"))
+                    .when(!single_sku, |d| {
+                        d.border_2()
+                            .border_color(color("--background-surface-high"))
+                    })
                     .bg(color("--background-mod-subtle"))
                     .overflow_hidden()
                     .flex()
@@ -988,7 +1059,13 @@ impl Root {
                             .as_deref()
                             .and_then(|u| self.images.get(u))
                             .is_none(),
-                        |d| d.child(super::icon("activity_game", 20., "--text-muted")),
+                        |d| {
+                            d.child(super::icon(
+                                "activity_game",
+                                if single_sku { 28. } else { 20. },
+                                "--text-muted",
+                            ))
+                        },
                     )
                     .into_any_element()
             })
@@ -1050,27 +1127,40 @@ impl Root {
         }
         self.open_forward_with(None, None, window, cx);
         if let Some(f) = self.forward.as_mut() {
-            f.storefront = Some(ShareStorefront {
-                application_id: "1234567890".to_owned(),
-                application_name: "Starlight Odyssey".to_owned(),
-                guild_id: self.guild,
-                items: vec![
+            let items = if arg.eq_ignore_ascii_case("single") {
+                vec![ShareStorefrontItem {
+                    sku_id: "sku-1".to_owned(),
+                    slug: Some("astral-blade-skin".to_owned()),
+                    name: "Astral Blade Skin".to_owned(),
+                    image_url: None,
+                }]
+            } else {
+                vec![
                     ShareStorefrontItem {
                         sku_id: "sku-1".to_owned(),
+                        slug: Some("astral-blade-skin".to_owned()),
                         name: "Astral Blade Skin".to_owned(),
                         image_url: None,
                     },
                     ShareStorefrontItem {
                         sku_id: "sku-2".to_owned(),
+                        slug: Some("nebula-cape".to_owned()),
                         name: "Nebula Cape".to_owned(),
                         image_url: None,
                     },
                     ShareStorefrontItem {
                         sku_id: "sku-3".to_owned(),
+                        slug: Some("void-helm".to_owned()),
                         name: "Void Helm".to_owned(),
                         image_url: None,
                     },
-                ],
+                ]
+            };
+            f.storefront = Some(ShareStorefront {
+                application_id: "1234567890".to_owned(),
+                application_name: "Starlight Odyssey".to_owned(),
+                guild_id: self.guild,
+                items,
             });
         }
         cx.notify();
@@ -1138,12 +1228,7 @@ impl Root {
             .as_ref()
             .map(|act| act.share_url.clone())
             .filter(|u| !u.is_empty())
-            .or_else(|| {
-                forward.storefront.as_ref().map(|sf| {
-                    let ids: Vec<&str> = sf.items.iter().map(|i| i.sku_id.as_str()).collect();
-                    build_storefront_share_url(&sf.application_id, sf.guild_id, &ids)
-                })
-            });
+            .or_else(|| forward.storefront.as_ref().map(ShareStorefront::share_url));
         let send_label = if count <= 1 {
             "Send".to_owned()
         } else {
@@ -1397,6 +1482,7 @@ impl Root {
                                 } else if sharing.is_some()
                                     || forward.clip.is_some()
                                     || forward.activity.is_some()
+                                    || forward.storefront.is_some()
                                 {
                                     div().child(preview)
                                 } else {
@@ -1979,8 +2065,17 @@ mod tests {
             build_storefront_share_url("100", None, &["a"]),
             "https://discord.com/shop?tab=game-shops&applicationId=100&skuIds=a"
         );
+        // Module 763375 single-SKU slugged URL (`871123.OY`).
+        assert_eq!(
+            build_single_sku_share_url("100", Some(42), "sku-9", Some("astral-blade")),
+            "https://discord.com/channels/42/game-shop/sku-9/astral-blade"
+        );
+        assert_eq!(
+            build_single_sku_share_url("100", None, "sku-9", Some("astral-blade")),
+            "https://discord.com/shop?tab=game-shops&applicationId=100&skuId=sku-9"
+        );
         for k in ["yiaXeN", "j7Go5A", "CqpEC+", "kwmYkt", "iufib1", "L/PwZf"] {
-            assert!(dc_intl::has_key(k), "missing 714892 key {k}");
+            assert!(dc_intl::has_key(k), "missing 714892/763375 key {k}");
         }
     }
 }

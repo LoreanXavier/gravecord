@@ -300,10 +300,24 @@ impl Root {
                     .iter()
                     .any(|known| known.id == channel && known.is_moderator_report_channel())
             });
+        let voice_or_stage = !private
+            && !mod_report
+            && self.stores.guilds.iter().any(|guild| {
+                guild.channels.iter().any(|known| {
+                    known.id == channel
+                        && matches!(
+                            known.kind,
+                            dc_state::ChannelKind::Voice | dc_state::ChannelKind::Other(13)
+                        )
+                })
+            });
         let target = if private {
             super::context_menu::Target::OverlayDm(channel)
         } else if mod_report {
             super::context_menu::Target::OverlayModReportChannel(channel)
+        } else if voice_or_stage {
+            // Module 769192 (`overlay-channel-context`): voice & stage channels in overlay chat/friends widgets.
+            super::context_menu::Target::OverlayVoiceChannel(channel)
         } else {
             super::context_menu::Target::Channel(channel)
         };

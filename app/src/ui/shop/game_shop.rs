@@ -780,6 +780,19 @@ impl Root {
         let wished = self.shop.wishlist.contains(sku);
         let id = sku.to_owned();
         let heart_id = sku.to_owned();
+        let share_app_id = store.app.clone();
+        let share_app_name = store
+            .pages
+            .first()
+            .map(|p| p.title.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| store.app.clone());
+        let share_sku_id = sku.to_owned();
+        let share_sku_name = listing.name.clone();
+        let share_img_url = listing
+            .card_image
+            .as_ref()
+            .map(|asset| asset_url(&store.app, asset, 512));
         let group = SharedString::from(format!("shop-game-card-{sku}"));
         let inner_h = height - 2. * BORDER;
         let inner_w = width - 2. * BORDER;
@@ -938,6 +951,44 @@ impl Root {
                 .child(bar(7))
         };
         card.child(details)
+            .child(
+                // Module 763375 (`869099` share button): opens single-SKU ForwardModal (`345938.d`).
+                div()
+                    .id(SharedString::from(format!("shop-game-share-{sku}")))
+                    .absolute()
+                    .top(px(CORNER))
+                    .right(px(CORNER + 48.))
+                    .size(px(40.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-muted"))
+                    .bg(rgba(0x0000008f))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .invisible()
+                    .group_hover(group.clone(), |btn| btn.visible())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.open_share_storefront(
+                            super::super::forward::ShareStorefront {
+                                application_id: share_app_id.clone(),
+                                application_name: share_app_name.clone(),
+                                guild_id: this.guild,
+                                items: vec![super::super::forward::ShareStorefrontItem {
+                                    sku_id: share_sku_id.clone(),
+                                    slug: None,
+                                    name: share_sku_name.clone(),
+                                    image_url: share_img_url.clone(),
+                                }],
+                            },
+                            window,
+                            cx,
+                        );
+                    }))
+                    .child(icon("menu_forward", 20., "--primary-100")),
+            )
             .child(
                 div()
                     .id(SharedString::from(format!("shop-game-heart-{sku}")))

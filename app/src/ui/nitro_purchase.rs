@@ -196,7 +196,52 @@ pub(crate) fn payment_provider_copy(provider: PaymentProviderStep) -> (&'static 
     }
 }
 
-/// Module 671334 + 677959: interactive state for the Add Payment Card form and Gift Card Balance Redemption modal.
+/// Module 768161 (`EURO_CURRENCY_COUNTRIES`): EU countries that require Country select instead of ZIP/Postal Code.
+pub(crate) const EURO_CURRENCY_COUNTRIES: &[&str] = &[
+    "AT", "BE", "CY", "DE", "EE", "ES", "FI", "FR", "GR", "HR", "IE", "IT", "LT", "LU", "LV", "MT",
+    "NL", "PT", "SI", "SK",
+];
+
+pub(crate) fn is_eu_country(code: &str) -> bool {
+    let up = code.trim().to_ascii_uppercase();
+    EURO_CURRENCY_COUNTRIES.iter().any(|c| *c == up)
+}
+
+/// Module 768161 (`POST /billing/gift-card/redeem`): strips whitespace and hyphens, uppercases PIN.
+pub(crate) fn normalize_gift_card_pin(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// Module 768161 (`z` submit validation): validates PIN (`PZDPvQ`) and region (`+bm+zE` EU country
+/// or `LRlhb1` non-EU postal) simultaneously, returning `(code_error, billing_error)`.
+pub(crate) fn validate_gift_card_form(
+    pin: &str,
+    country: &str,
+    postal: &str,
+) -> (Option<&'static str>, Option<&'static str>) {
+    let code_err = if normalize_gift_card_pin(pin).is_empty() {
+        Some(dc_intl::t("PZDPvQ"))
+    } else {
+        None
+    };
+    let billing_err = if is_eu_country(country) {
+        if country.trim().is_empty() {
+            Some(dc_intl::t("+bm+zE"))
+        } else {
+            None
+        }
+    } else if postal.trim().is_empty() {
+        Some(dc_intl::t("LRlhb1"))
+    } else {
+        None
+    };
+    (code_err, billing_err)
+}
+
+/// Module 671334 + 677959 + 768161: interactive state for the Add Payment Card form and Gift Card Balance Redemption modal.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CheckoutExtraState {
     pub provider: PaymentProviderStep,
@@ -210,6 +255,10 @@ pub(crate) struct CheckoutExtraState {
     pub gift_postal: String,
     pub gift_country: String,
     pub gift_error: Option<String>,
+    pub gift_code_error: Option<String>,
+    pub gift_billing_error: Option<String>,
+    pub gift_eu_dropdown_open: bool,
+    pub gift_submitting: bool,
     pub gift_added_price: String,
 }
 
@@ -3511,8 +3560,9 @@ impl Root {
         )
     }
 
-    /// Module 677959 — Gift Card Balance Redemption modal (`26tjwd`, `Bn/CZQ`, `3jjweL`, `eDdrAD`,
-    /// `hnRau6`, `POST /billing/gift-card/redeem`, errors `uo9YsP` / `EUKPip`).
+    /// Module 768161 + 677959 — Redeem Gift Card Modal (`26tjwd`, `Bn/CZQ`, `dSPkHo`, `3jjweL`,
+    /// `B+/GvM`, `eDdrAD`, `PZDPvQ`, `+bm+zE`, `LRlhb1`, `CCVlIb`, `hnRau6`, `POST /billing/gift-card/redeem`,
+    /// errors `590009` -> `uo9YsP` / fallback `EUKPip`).
     fn gift_card_redeem_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let extra = self
             .nitro
@@ -3521,8 +3571,15 @@ impl Root {
             .map(|p| p.extra.clone())
             .unwrap_or_default();
         let _err_keys = (dc_intl::t("uo9YsP"), dc_intl::t("EUKPip"));
+        let country_code = if extra.gift_country.trim().is_empty() {
+            "US".to_owned()
+        } else {
+            extra.gift_country.trim().to_ascii_uppercase()
+        };
+        let is_eu = is_eu_country(&country_code);
 
-        let input_row = |label: &'static str, value: &str, placeholder: &str| {
+        // `.giftCodeInputWrapper_Vs_-rN`: 48px input height (`--input-background-default`).
+        let input_row = |label: &'static str, value: &str, placeholder: &str, err: Option<&str>| {
             let shown = if value.is_empty() { placeholder } else { value };
             div()
                 .flex()
@@ -3537,11 +3594,15 @@ impl Root {
                 )
                 .child(
                     div()
-                        .h(px(40.))
+                        .h(px(48.))
                         .px(px(12.))
                         .rounded(px(8.))
                         .border_1()
-                        .border_color(color("--input-border-default"))
+                        .border_color(color(if err.is_some() {
+                            "--status-danger"
+                        } else {
+                            "--input-border-default"
+                        }))
                         .bg(color("--input-background-default"))
                         .flex()
                         .items_center()
@@ -3553,6 +3614,116 @@ impl Root {
                         }))
                         .child(shown.to_owned()),
                 )
+                .when_some(err.map(str::to_owned), |col, msg| {
+                    col.child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-feedback-critical"))
+                            .child(msg),
+                    )
+                })
+        };
+
+        let region_field: AnyElement = if is_eu {
+            let dropdown_open = extra.gift_eu_dropdown_open;
+            let err = extra.gift_billing_error.clone();
+            div()
+                .relative()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::t("eDdrAD")),
+                )
+                .child(
+                    div()
+                        .id("gift-card-eu-country")
+                        .h(px(48.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color(if err.is_some() {
+                            "--status-danger"
+                        } else {
+                            "--input-border-default"
+                        }))
+                        .bg(color("--input-background-default"))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .text_size(px(14.))
+                        .text_color(color("--text-strong"))
+                        .child(country_code.clone())
+                        .child(icon("chevron_down", 14., "--icon-subtle"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(p) = this.nitro.purchase.as_mut() {
+                                p.extra.gift_eu_dropdown_open = !p.extra.gift_eu_dropdown_open;
+                            }
+                            cx.notify();
+                        })),
+                )
+                .when(dropdown_open, |col| {
+                    col.child(
+                        div()
+                            .id("gift-card-eu-country-list")
+                            .max_h(px(160.))
+                            .overflow_y_scroll()
+                            .p(px(4.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-higher"))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .children(EURO_CURRENCY_COUNTRIES.iter().map(|&cc| {
+                                div()
+                                    .id(gpui::SharedString::from(format!("gift-eu-{cc}")))
+                                    .h(px(30.))
+                                    .px(px(8.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(13.))
+                                    .text_color(color("--text-default"))
+                                    .child(cc)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(p) = this.nitro.purchase.as_mut() {
+                                            p.extra.gift_country = cc.to_owned();
+                                            p.extra.gift_billing_error = None;
+                                            p.extra.gift_eu_dropdown_open = false;
+                                        }
+                                        cx.notify();
+                                    }))
+                            })),
+                    )
+                })
+                .when_some(err, |col, msg| {
+                    col.child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-feedback-critical"))
+                            .child(msg),
+                    )
+                })
+                .into_any_element()
+        } else {
+            input_row(
+                dc_intl::t("3jjweL"),
+                &extra.gift_postal,
+                dc_intl::t("B+/GvM"),
+                extra.gift_billing_error.as_deref(),
+            )
+            .into_any_element()
         };
 
         let body = div()
@@ -3562,6 +3733,17 @@ impl Root {
             .flex()
             .flex_col()
             .gap(px(12.))
+            // Country subtitle (`667455.A` / `.headerFlag_Vs_-rN`).
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-muted"))
+                    .child(format!("{}: {country_code}", dc_intl::t("eDdrAD"))),
+            )
             .when_some(extra.gift_error.clone(), |col, err| {
                 col.child(
                     div()
@@ -3578,26 +3760,19 @@ impl Root {
             .child(input_row(
                 dc_intl::t("Bn/CZQ"),
                 &extra.gift_pin,
-                "XXXX-XXXX-XXXX-XXXX",
+                dc_intl::t("dSPkHo"),
+                extra.gift_code_error.as_deref(),
             ))
+            .child(region_field)
+            // `.legalText_Vs_-rN`: 12px/16px `--text-muted` (`CCVlIb` Gift Card Terms & Wallet Terms).
             .child(
                 div()
-                    .flex()
-                    .gap(px(12.))
-                    .child(div().flex_1().min_w(px(0.)).child(input_row(
-                        dc_intl::t("3jjweL"),
-                        &extra.gift_postal,
-                        "94107",
-                    )))
-                    .child(div().flex_1().min_w(px(0.)).child(input_row(
-                        dc_intl::t("eDdrAD"),
-                        if extra.gift_country.is_empty() {
-                            "US"
-                        } else {
-                            &extra.gift_country
-                        },
-                        "US",
-                    ))),
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(color("--text-muted"))
+                    .child(
+                        "By clicking 'Redeem', you agree to the Gift Card Terms and Wallet Terms.",
+                    ),
             );
 
         let footer = div()
@@ -3616,6 +3791,7 @@ impl Root {
                     .bg(color("--control-primary-background-default"))
                     .hover(|s| s.bg(color("--control-primary-background-hover")))
                     .cursor_pointer()
+                    .when(extra.gift_submitting, |b| b.opacity(0.6))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -3627,28 +3803,37 @@ impl Root {
                         let Some(p) = this.nitro.purchase.as_mut() else {
                             return;
                         };
-                        let pin = p.extra.gift_pin.trim().to_owned();
-                        if pin.is_empty() {
-                            p.extra.gift_error = Some(dc_intl::t("uo9YsP").to_owned());
-                            cx.notify();
-                            return;
-                        }
-                        let postal = p.extra.gift_postal.trim().to_owned();
                         let country = if p.extra.gift_country.trim().is_empty() {
                             "US".to_owned()
                         } else {
-                            p.extra.gift_country.trim().to_owned()
+                            p.extra.gift_country.trim().to_ascii_uppercase()
                         };
+                        let (code_err, billing_err) = validate_gift_card_form(
+                            &p.extra.gift_pin,
+                            &country,
+                            &p.extra.gift_postal,
+                        );
+                        p.extra.gift_code_error = code_err.map(str::to_owned);
+                        p.extra.gift_billing_error = billing_err.map(str::to_owned);
+                        if code_err.is_some() || billing_err.is_some() {
+                            cx.notify();
+                            return;
+                        }
+                        let pin = normalize_gift_card_pin(&p.extra.gift_pin);
+                        let mut payload = serde_json::json!({ "pin": pin });
+                        if is_eu_country(&country) {
+                            payload["country_code"] = serde_json::json!(country);
+                        } else {
+                            payload["postal_code"] =
+                                serde_json::json!(p.extra.gift_postal.trim().to_owned());
+                        }
                         p.extra.gift_error = None;
+                        p.extra.gift_submitting = true;
                         let _ = this.requests.send(crate::net::Request::Rest {
                             key: Some("billing:gift-card-redeem".to_owned()),
                             method: reqwest::Method::POST,
                             route: "/billing/gift-card/redeem".to_owned(),
-                            body: Some(serde_json::json!({
-                                "pin": pin,
-                                "postal_code": postal,
-                                "country_code": country,
-                            })),
+                            body: Some(payload),
                         });
                         cx.notify();
                     })),
@@ -5876,6 +6061,26 @@ mod tests {
         assert_eq!(
             current.secondary_sub_text.as_deref(),
             Some(dc_intl::t("ymSxhy"))
+        );
+
+        // Module 768161: gift card PIN normalization, EU country detection, and dual validation.
+        assert_eq!(
+            super::normalize_gift_card_pin(" abcd-1234 ef "),
+            "ABCD1234EF"
+        );
+        assert!(super::is_eu_country("DE"));
+        assert!(super::is_eu_country("fr"));
+        assert!(!super::is_eu_country("US"));
+        let (code_err, billing_err) = super::validate_gift_card_form("  ", "US", "");
+        assert_eq!(code_err, Some(dc_intl::t("PZDPvQ")));
+        assert_eq!(billing_err, Some(dc_intl::t("LRlhb1")));
+        assert_eq!(
+            super::validate_gift_card_form("ABCD-1234", "DE", ""),
+            (None, None)
+        );
+        assert_eq!(
+            super::validate_gift_card_form("ABCD-1234", "US", "94107"),
+            (None, None)
         );
     }
 }

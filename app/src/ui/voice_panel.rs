@@ -1280,6 +1280,307 @@ impl Root {
     }
 }
 
+/// Module 773262 (`StreamPrivacyCodeModal`): displays a Go Live stream's 30-digit DAVE MLS epoch
+/// authenticator (6 chunks of 5 digits, 3 columns x 2 rows) or loading spinner.
+#[derive(Clone, Debug)]
+pub(crate) struct StreamPrivacyCodeModal {
+    pub owner: dc_state::Id,
+    /// Optional demo/override code for capture & tests when no live stream DAVE epoch is active.
+    pub demo_code: Option<String>,
+    pub copied: bool,
+}
+
+impl Root {
+    /// Opens module 773262 (`openSecureFramesStreamVerification`) for `owner`'s Go Live stream.
+    pub(super) fn open_stream_privacy_code(&mut self, owner: dc_state::Id, cx: &mut Context<Self>) {
+        self.stream_privacy_code_modal = Some(StreamPrivacyCodeModal {
+            owner,
+            demo_code: None,
+            copied: false,
+        });
+        cx.notify();
+    }
+
+    /// Module 773262 (`75811.j` + `686418` `.verification_jKs4FP`): Stream Privacy Code modal layer.
+    pub(super) fn stream_privacy_code_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.stream_privacy_code_modal.as_ref()?;
+        let live_code = self
+            .stream_privacy_code_of(modal.owner)
+            .or_else(|| modal.demo_code.clone());
+        let chunks = live_code
+            .as_deref()
+            .map(code_chunks)
+            .filter(|c| !c.is_empty());
+        let copied = modal.copied;
+        let copy_value = chunks.as_ref().map(|c| c.join(" "));
+        let (foot_before, foot_link, foot_after) = if dc_intl::has_key("H3+ktv") {
+            split_link_message("H3+ktv", &[("helpArticle", ENCRYPTION_ARTICLE.into())])
+        } else {
+            (
+                "A new code is generated when people join or leave this stream. ".to_owned(),
+                "Learn more about end-to-end encryption.".to_owned(),
+                String::new(),
+            )
+        };
+
+        let code_row = |slice: &[String]| {
+            div()
+                .flex()
+                .gap(px(8.))
+                .children(slice.iter().cloned().map(|chunk| {
+                    div()
+                        .flex_1()
+                        .text_center()
+                        .text_size(px(14.))
+                        .line_height(px(22.))
+                        .font_weight(FontWeight(700.))
+                        .font_family(PRIVACY_CODE_FONT)
+                        .text_color(color("--text-default"))
+                        .child(chunk)
+                }))
+        };
+
+        let grid_body: AnyElement = if let Some(chunks) = chunks {
+            let first = &chunks[..chunks.len().min(3)];
+            let rest = chunks.get(3..).unwrap_or_default();
+            div()
+                .min_h(px(104.))
+                .p(px(12.))
+                .rounded_b(px(12.))
+                .border_1()
+                .border_t_0()
+                .border_color(color("--border-muted"))
+                .bg(color("--background-base-lower"))
+                .flex()
+                .flex_col()
+                .justify_center()
+                .gap(px(16.))
+                .child(code_row(first))
+                .when(!rest.is_empty(), |col| {
+                    col.child(div().h(px(1.)).bg(color("--border-subtle")))
+                        .child(code_row(rest))
+                })
+                .into_any_element()
+        } else {
+            div()
+                .min_h(px(104.))
+                .p(px(12.))
+                .rounded_b(px(12.))
+                .border_1()
+                .border_t_0()
+                .border_color(color("--border-muted"))
+                .bg(color("--background-base-lower"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(super::login::wandering_cubes())
+                .into_any_element()
+        };
+
+        let card = div()
+            .id("stream-privacy-code-modal")
+            .occlude()
+            .w(px(440_f32.min((self.viewport.0 - 48.).max(320.))))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .shadow(vec![super::shadow_high()])
+            .overflow_hidden()
+            .p(px(24.))
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("QogHld")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::t("qODBkW")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("stream-privacy-code-close")
+                            .size(px(32.))
+                            .flex_none()
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(color("--control-icon-only-background-hover")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 16., "--control-icon-only-icon-default"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.stream_privacy_code_modal = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            // `.verification_jKs4FP`: `.header_jKs4FP` + `.code_jKs4FP`.
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .px(px(16.))
+                            .py(px(8.))
+                            .rounded_t(px(12.))
+                            .border_1()
+                            .border_color(color("--border-muted"))
+                            .bg(color("--background-mod-normal"))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("cgBTyO")),
+                            )
+                            .when_some(copy_value, |bar, text| {
+                                bar.child(
+                                    div()
+                                        .id("stream-privacy-code-copy")
+                                        .px(px(6.))
+                                        .py(px(2.))
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
+                                        .child(icon(
+                                            if copied { "circle_check" } else { "clips_copy" },
+                                            14.,
+                                            if copied {
+                                                "--text-feedback-positive"
+                                            } else {
+                                                "--interactive-text-default"
+                                            },
+                                        ))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(color(if copied {
+                                                    "--text-feedback-positive"
+                                                } else {
+                                                    "--text-muted"
+                                                }))
+                                                .child(dc_intl::t(if copied {
+                                                    "t5VZ88"
+                                                } else {
+                                                    "OpuAlK"
+                                                })),
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                text.clone(),
+                                            ));
+                                            if let Some(m) = this.stream_privacy_code_modal.as_mut()
+                                            {
+                                                m.copied = true;
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                            }),
+                    )
+                    .child(grid_body),
+            )
+            // `.footer_jKs4FP`: centered `H3+ktv` with E2EE help article link.
+            .child(
+                div()
+                    .w_full()
+                    .text_center()
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-muted"))
+                    .child(self.text_with_link(
+                        "stream-privacy-e2ee",
+                        &foot_before,
+                        &foot_link,
+                        &foot_after,
+                        cx,
+                        |_, cx| cx.open_url(ENCRYPTION_ARTICLE),
+                    )),
+            );
+
+        Some(
+            deferred(
+                div()
+                    .id("stream-privacy-code-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(color("--background-scrim"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.stream_privacy_code_modal = None;
+                        cx.notify();
+                    }))
+                    .child(card),
+            )
+            .with_priority(95)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `stream-privacy-code [loading|close]` (module 773262).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_stream_privacy_code(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.eq_ignore_ascii_case("close") {
+            self.stream_privacy_code_modal = None;
+            cx.notify();
+            return "stream-privacy-code: closed".to_owned();
+        }
+        let demo_code = if arg.eq_ignore_ascii_case("loading") {
+            None
+        } else {
+            Some("482910374651928374650192837465".to_owned())
+        };
+        self.stream_privacy_code_modal = Some(StreamPrivacyCodeModal {
+            owner: 1,
+            demo_code,
+            copied: false,
+        });
+        cx.notify();
+        format!("stream-privacy-code: open ({arg})")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1430,5 +1731,16 @@ mod tests {
             code_chunks(stats.privacy_code().unwrap_or_default()).len(),
             6
         );
+    }
+
+    #[test]
+    fn stream_privacy_code_773262_keys_and_chunks() {
+        let chunks = code_chunks("482910374651928374650192837465");
+        assert_eq!(chunks.len(), 6);
+        assert_eq!(chunks[0], "48291");
+        assert_eq!(chunks[5], "37465");
+        for key in ["tjbJbf", "QogHld", "qODBkW", "cgBTyO", "OpuAlK", "t5VZ88"] {
+            assert!(!dc_intl::t(key).is_empty(), "missing 773262 key {key}");
+        }
     }
 }

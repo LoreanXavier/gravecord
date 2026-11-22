@@ -33,9 +33,19 @@ pub(super) fn clear_history_title_key(content_type: Option<u64>) -> &'static str
     match content_type {
         Some(PLAYED_GAME | TOP_GAME) => "4f8iut",
         Some(WATCHED_MEDIA) => "yX2hNy",
-        Some(LISTENED_SESSION | 4) => "oSs8eg",
+        Some(LISTENED_SESSION | TOP_ARTIST) => "oSs8eg",
         _ => "bK9GT1",
     }
+}
+
+/// `754495.s` gate: menu item appears only for the current user's own `recent` activity entry
+/// that satisfies `20805.$R(entry)` (`has_card`).
+pub(super) fn can_show_clear_activity_history(
+    is_own_user: bool,
+    is_recent_display: bool,
+    entry: &Value,
+) -> bool {
+    is_own_user && is_recent_display && has_card(entry)
 }
 
 /// Modal state for Clear Activity History confirmation (`839785.js`).
@@ -61,6 +71,7 @@ pub(super) fn delete_activity_history_request(entry_id: &str) -> Request {
 pub(super) const PLAYED_GAME: u64 = 1;
 pub(super) const WATCHED_MEDIA: u64 = 2;
 pub(super) const TOP_GAME: u64 = 3;
+pub(super) const TOP_ARTIST: u64 = 4;
 pub(super) const LISTENED_SESSION: u64 = 5;
 
 /// `ContentInventoryTraitType` (module 974690).
@@ -530,7 +541,7 @@ impl Root {
                 .is_some_and(|app| self.game_profile_available(app));
         let mut items = super::context_menu::recent_activity_items(own, spotify, game, profile);
         // Module 754495 / 839785: "Clear {Game|Watch|Listening|Activity} History" danger action on own recent entries.
-        if own && has_card(entry) {
+        if can_show_clear_activity_history(own, true, entry) {
             let label = dc_intl::t(clear_history_title_key(entry["content_type"].as_u64()));
             if !items.is_empty() {
                 items.push(super::context_menu::Entry::Separator);
@@ -1775,9 +1786,27 @@ mod tests {
             "Clear Listening History"
         );
         assert_eq!(
+            dc_intl::t(clear_history_title_key(Some(TOP_GAME))),
+            "Clear Game History"
+        );
+        assert_eq!(
+            dc_intl::t(clear_history_title_key(Some(TOP_ARTIST))),
+            "Clear Listening History"
+        );
+        assert_eq!(
             dc_intl::t(clear_history_title_key(None)),
             "Clear Activity History"
         );
+        // Module 754495 gate: own user && recent display && 20805.$R(entry).
+        let game_entry = serde_json::json!({ "content_type": PLAYED_GAME });
+        let app_entry =
+            serde_json::json!({ "content_type": 99, "extra": { "application_id": "123" } });
+        let empty_entry = serde_json::json!({ "content_type": 99, "extra": {} });
+        assert!(can_show_clear_activity_history(true, true, &game_entry));
+        assert!(can_show_clear_activity_history(true, true, &app_entry));
+        assert!(!can_show_clear_activity_history(false, true, &game_entry));
+        assert!(!can_show_clear_activity_history(true, false, &game_entry));
+        assert!(!can_show_clear_activity_history(true, true, &empty_entry));
         let Request::Rest { method, route, .. } = delete_activity_history_request("ent-42") else {
             panic!("expected rest");
         };

@@ -127,8 +127,10 @@ pub(super) enum Run {
     ReportStream(Id),
     /// Overlay Stream Video widget context menu (module 663912): Fit stream to container (`mpnvrV`).
     OverlayFitStream(Id),
-    /// Overlay Stream Video widget context menu (module 663912): View Stream Privacy / Verification Code (`tjbJbf` / `8ErYvY`).
+    /// Overlay Stream Video widget context menu (module 663912): View Stream Privacy Code (`tjbJbf` -> module 773262).
     OverlayPrivacyCode(Id),
+    /// Overlay Stream Video widget context menu (module 663912): View Verification Code (`8ErYvY` -> module 730713).
+    OverlayVerifyUser(Id),
     /// A row whose feature this client does not have: drawn disabled, never live.
     Missing,
 }
@@ -840,7 +842,7 @@ pub(super) fn overlay_stream_items(
         Item::Line(Line::new(
             "overlay-verification-code",
             dc_intl::t("8ErYvY"),
-            Run::OverlayPrivacyCode(owner),
+            Run::OverlayVerifyUser(owner),
         )),
     ];
     if !facts.own {
@@ -1463,7 +1465,8 @@ impl Root {
                     self.overlay_stream_fit.insert(owner);
                 }
             }
-            Run::OverlayPrivacyCode(owner) => self.open_e2ee_verify_modal(owner, cx),
+            Run::OverlayPrivacyCode(owner) => self.open_stream_privacy_code(owner, cx),
+            Run::OverlayVerifyUser(owner) => self.open_e2ee_verify_modal(owner, cx),
             Run::Missing => {}
         }
         cx.notify();
