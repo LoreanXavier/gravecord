@@ -102,6 +102,107 @@ impl Root {
         self.voice_hover_enter(key, HoverCard::User(target), OPEN_AFTER, cx);
     }
 
+    /// Module 727353 `P` (`streamPreviewWrapper_1v6-1l`): Voice User Activities stream card with
+    /// `HV97U/` ("Streaming Now"), small LIVE badge, 142px preview (`stream_previews`), and `711589.K` hover CTA.
+    fn voice_user_stream_card(
+        &self,
+        guild: Id,
+        channel: Id,
+        user: Id,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let streaming = self
+            .stores
+            .voice_members(guild, channel)
+            .iter()
+            .any(|s| s.user_id == user && s.self_stream);
+        if !streaming {
+            return None;
+        }
+        let me = self.stores.current_user.as_ref().map(|u| u.id);
+        let is_own = me == Some(user);
+        let is_watching = !is_own && self.video_stream_of(user).is_some();
+        let action_label = super::live_activity::stream_action_label(is_own, is_watching, true);
+        let preview_key = format!("stream-preview:guild:{guild}:{channel}:{user}");
+        let thumb = self.images.get(&preview_key).cloned();
+        let can_watch = !is_own && !is_watching;
+        let group = gpui::SharedString::from(format!("voice-stream-card-{user}"));
+        let preview_box = div()
+            .id(gpui::SharedString::from(format!(
+                "voice-stream-preview-{user}"
+            )))
+            .group(group.clone())
+            .relative()
+            .w_full()
+            .h(px(142.))
+            .rounded(px(8.))
+            .overflow_hidden()
+            .bg(color("--background-base-lowest"))
+            .when(can_watch, |d| {
+                d.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.watch_stream_joining(guild, channel, user, cx);
+                    }))
+            })
+            .children(thumb.map(|img_arc| {
+                gpui::img(img_arc)
+                    .size_full()
+                    .rounded(px(8.))
+                    .object_fit(gpui::ObjectFit::Cover)
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded(px(8.))
+                    .bg(color("--opacity-black-60"))
+                    .opacity(0.)
+                    .group_hover(group, |s| s.opacity(1.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--white"))
+                    .child(action_label),
+            );
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t("HV97U/")),
+                        )
+                        .child(
+                            div()
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded_full()
+                                .bg(color("--status-danger"))
+                                .text_size(px(10.))
+                                .line_height(px(14.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--white"))
+                                .child("LIVE"),
+                        ),
+                )
+                .child(preview_box)
+                .into_any_element(),
+        )
+    }
+
     /// Module 772800 `A`, or `None` when it renders nothing (`!J`).
     ///
     /// GAP: of the cards only the activities (module 845056 `m`, drawn with the profile's live activity cards rather
@@ -134,18 +235,22 @@ impl Root {
                     .collect()
             })
             .unwrap_or_default();
-        let cards: Vec<AnyElement> = if picks.is_empty() {
-            Vec::new()
-        } else {
-            self.live_activity_cards_picked(
+        let mut cards: Vec<AnyElement> = Vec::new();
+        // Module 727353 `P` (Voice User Activities stream card): "Streaming Now" (`HV97U/`) + LIVE badge +
+        // 142px rounded preview box with `--opacity-black-60` hover CTA (`711589.K`) and Watch Stream click.
+        if let Some(stream_card) = self.voice_user_stream_card(guild, channel, user, cx) {
+            cards.push(stream_card);
+        }
+        if !picks.is_empty() {
+            cards.extend(self.live_activity_cards_picked(
                 user,
                 Surface::Popout,
                 color("--text-strong").into(),
                 color("--text-subtle").into(),
                 Some(&picks),
                 cx,
-            )
-        };
+            ));
+        }
         let has_cards = !cards.is_empty();
         if !has_cards && !duration {
             return None;

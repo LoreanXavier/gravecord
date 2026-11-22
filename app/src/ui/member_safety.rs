@@ -240,9 +240,13 @@ impl Root {
                 .bg(gpui::rgba(0x00000014))
                 .when(disabled, |this| this.opacity(0.5))
         };
+        let page_size = state.page_size.max(1) as usize;
+        let skip = (state.current_page.saturating_sub(1) as usize).saturating_mul(page_size);
         let rows: Vec<AnyElement> = members
             .iter()
             .enumerate()
+            .skip(skip)
+            .take(page_size)
             .map(|(index, entry)| {
                 let member = &entry["member"];
                 let user = User::from_value(&member["user"]);
@@ -463,31 +467,7 @@ impl Root {
                     .children(rows),
             )
             .when(!indexing, |this| {
-                this.child(
-                    div()
-                        .h(px(45.))
-                        .mb(px(9.))
-                        .px(px(16.))
-                        .border_t_1()
-                        .border_color(gpui::rgba(0x97979f1f))
-                        .flex()
-                        .items_center()
-                        .text_size(px(16.))
-                        .line_height(px(20.))
-                        .text_color(color("--text-muted"))
-                        .child("Showing\u{a0}")
-                        .child(
-                            div()
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--text-default"))
-                                .child(total.to_string()),
-                        )
-                        .child(if total == 1 {
-                            "\u{a0}member"
-                        } else {
-                            "\u{a0}members"
-                        }),
-                )
+                this.child(self.member_safety_pagination_footer(guild, total, cx))
             })
             .into_any_element()
     }

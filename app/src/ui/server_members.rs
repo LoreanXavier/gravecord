@@ -32,6 +32,8 @@ const OTHER_JOIN_TYPES: [u64; 6] = [3, 6, 1, 4, 7, 8];
 const JOIN_HEADER: &str = "server-members-join-method";
 const MODERATION_FEATURE: &str = "ENABLED_MODERATION_EXPERIENCE_FOR_NON_COMMUNITY";
 const PAGE_SIZE: u64 = 250;
+/// Module 749060 / 233693 `MO`: member safety table page-size choices.
+pub(super) const PAGE_SIZES: [u64; 4] = [12, 25, 50, 100];
 const PRUNE_PREFIX: &str = "guild-members-search:prune:";
 /// The Sort menu (`design/dom/menus/members-sort-darker-cozy.json`) with module 70738's orders.
 const SORTS: [(&str, u64); 4] = [
@@ -70,6 +72,11 @@ pub(crate) struct MembersState {
     join_typed: u64,
     /// The server's invite codes, newest first.
     invites: Vec<String>,
+    /// Module 749060 pagination state (`pageSize`, `currentPage`, page-size dropdown, loading).
+    pub(super) page_size: u64,
+    pub(super) current_page: u64,
+    page_size_open: bool,
+    loading: bool,
     _events: Subscription,
     _join_events: Subscription,
 }
@@ -298,6 +305,9 @@ impl Root {
             state.join_typed += 1;
             return true;
         }
+        if std::mem::take(&mut state.page_size_open) {
+            return true;
+        }
         std::mem::take(&mut state.sort_open)
     }
 
@@ -363,6 +373,10 @@ impl Root {
             join_search,
             join_typed: 0,
             invites: Vec::new(),
+            page_size: PAGE_SIZES[0],
+            current_page: 1,
+            page_size_open: false,
+            loading: false,
             _events: events,
             _join_events: join_events,
         }
@@ -429,14 +443,18 @@ impl Root {
     }
 
     fn search_members(&mut self, guild: Id, query: &str) {
-        let (sort, join) = self
+        let (sort, join, page_size) = self
             .members_state()
-            .map_or((1, JoinFilter::default()), |state| {
-                (state.sort, state.join.clone())
+            .map_or((1, JoinFilter::default(), PAGE_SIZES[0]), |state| {
+                (state.sort, state.join.clone(), state.page_size)
             });
-        let body = search_body(query, sort, &join);
+        let mut body = search_body(query, sort, &join);
+        // Module 636496: chunk size = `Math.max(5 * pageSize, 250)`.
+        body["limit"] = serde_json::json!((page_size.saturating_mul(5)).max(PAGE_SIZE));
         if let Some(state) = self.members_state_mut() {
             state.last_body = body.clone();
+            state.loading = true;
+            state.current_page = 1;
         }
         let _ = self.requests.send(Request::Rest {
             key: Some(format!("{MEMBERS_PREFIX}{guild}")),
@@ -613,6 +631,9 @@ impl Root {
             cx.notify();
             return;
         }
+        if let Some(state) = self.members_state_mut() {
+            state.loading = false;
+        }
         let users: Vec<User> = report["body"]["members"]
             .as_array()
             .into_iter()
@@ -700,8 +721,12 @@ impl Root {
                     this.child(icon("checkbox_check", 18., "--white"))
                 })
         };
+        let page_size = state.page_size.max(1) as usize;
+        let skip = (state.current_page.saturating_sub(1) as usize).saturating_mul(page_size);
         let rows: Vec<AnyElement> = members
             .iter()
+            .skip(skip)
+            .take(page_size)
             .map(|entry| {
                 let member = &entry["member"];
                 let user = User::from_value(&member["user"]);
@@ -928,21 +953,7 @@ impl Root {
                                     .children(rows),
                             )
                             .when(!indexing, |this| {
-                                this.child(
-                                    div()
-                                        .h(px(44.))
-                                        .px(px(16.))
-                                        .border_t_1()
-                                        .border_color(color("--border-subtle"))
-                                        .flex()
-                                        .items_center()
-                                        .text_size(px(16.))
-                                        .line_height(px(20.))
-                                        .text_color(color("--text-muted"))
-                                        .child("Showing\u{a0}")
-                                        .child(div().font_weight(FontWeight(600.)).text_color(color("--text-default")).child(total.to_string()))
-                                        .child(if total == 1 { "\u{a0}member" } else { "\u{a0}members" }),
-                                )
+                                this.child(self.member_safety_pagination_footer(guild, total, cx))
                             }),
                     ),
             )
@@ -950,7 +961,316 @@ impl Root {
     }
 }
 
+/// Module 749060 / 233693: recalculates current page when `pageSize` changes:
+/// `Math.max(Math.ceil(oldPageSize / newPageSize * currentPage), 1)`.
+pub(super) fn recalculate_page_for_size(old_size: u64, new_size: u64, current_page: u64) -> u64 {
+    let old = old_size.max(1) as f64;
+    let new = new_size.max(1) as f64;
+    let cur = current_page.max(1) as f64;
+    ((old / new) * cur).ceil().max(1.0) as u64
+}
+
+/// Module 749060 / 662203 `Paginator` (`maxVisiblePages: 7`, `disablePaginationGap: true`, `hideMaxPage: true`):
+/// returns up to `max_visible` contiguous 1-based page numbers centered around `current_page`.
+pub(super) fn visible_page_window(
+    current_page: u64,
+    total_pages: u64,
+    max_visible: u64,
+) -> Vec<u64> {
+    if total_pages == 0 || max_visible == 0 {
+        return Vec::new();
+    }
+    let count = total_pages.min(max_visible);
+    let cur = current_page.clamp(1, total_pages);
+    let half = count / 2;
+    let start = cur
+        .saturating_sub(half)
+        .max(1)
+        .min(total_pages.saturating_sub(count) + 1);
+    (start..start + count).collect()
+}
+
 impl Root {
+    /// Module 749060 (`paginationContainer_nkD26S`): shared Member Safety & Server Settings Members
+    /// table pagination footer with `GZpwME` (`<= 12`), or `jNwLu2` + `[12, 25, 50, 100]` selector +
+    /// `RNDnQ/` (`members of {count}` / `"..."` + `ZTNur7` loading) + right-aligned round-14px `Paginator`.
+    pub(super) fn member_safety_pagination_footer(
+        &self,
+        guild: Id,
+        total: u64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (page_size, current_page, page_size_open, loading) =
+            self.members_state()
+                .map_or((PAGE_SIZES[0], 1, false, false), |s| {
+                    (
+                        s.page_size.max(1),
+                        s.current_page.max(1),
+                        s.page_size_open,
+                        s.loading,
+                    )
+                });
+        let total_pages = total.max(1).div_ceil(page_size);
+        let cur = current_page.min(total_pages);
+        let show_selector = total > PAGE_SIZES[0];
+        let show_paginator = total > page_size || loading;
+
+        let left: AnyElement = if !show_selector {
+            let text = dc_intl::t!("GZpwME", count = total).replace("**", "");
+            div()
+                .flex()
+                .items_center()
+                .py(px(12.))
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .text_color(color("--text-muted"))
+                .child(text)
+                .into_any_element()
+        } else {
+            let count_str = if loading {
+                "...".to_owned()
+            } else {
+                total.to_string()
+            };
+            let members_of =
+                dc_intl::format("RNDnQ/", &[("count", dc_intl::Arg::Str(count_str.into()))])
+                    .replace("**", "");
+            let selector = div()
+                .id("member-safety-page-size")
+                .relative()
+                .flex_none()
+                .min_w(px(72.))
+                .h(px(32.))
+                .px(px(10.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--input-border-default"))
+                .bg(color("--input-background-default"))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(6.))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .text_color(color("--text-default"))
+                .child(page_size.to_string())
+                .child(icon("chevron_down", 12., "--icon-subtle"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(state) = this.members_state_mut() {
+                        state.page_size_open = !state.page_size_open;
+                    }
+                    cx.notify();
+                }))
+                .when(page_size_open, |el| {
+                    el.child(
+                        div()
+                            .id("member-safety-page-size-menu")
+                            .occlude()
+                            .absolute()
+                            .bottom(px(36.))
+                            .left(px(0.))
+                            .w(px(96.))
+                            .p(px(4.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-higher"))
+                            .shadow(vec![super::shadow_high()])
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .children(PAGE_SIZES.into_iter().map(|sz| {
+                                let selected = sz == page_size;
+                                div()
+                                    .id(SharedString::from(format!("member-page-size-{sz}")))
+                                    .h(px(28.))
+                                    .px(px(8.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .when(selected, |r| r.bg(color("--background-mod-subtle")))
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_size(px(14.))
+                                    .text_color(color("--text-default"))
+                                    .child(sz.to_string())
+                                    .when(selected, |r| {
+                                        r.child(icon(
+                                            "circle_check",
+                                            14.,
+                                            "--control-primary-background-default",
+                                        ))
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let mut changed = false;
+                                        if let Some(state) = this.members_state_mut() {
+                                            if state.page_size != sz {
+                                                let old = state.page_size;
+                                                state.current_page = recalculate_page_for_size(
+                                                    old,
+                                                    sz,
+                                                    state.current_page,
+                                                );
+                                                state.page_size = sz;
+                                                changed = true;
+                                            }
+                                            state.page_size_open = false;
+                                        }
+                                        if changed {
+                                            let next_page =
+                                                this.members_state().map_or(1, |s| s.current_page);
+                                            this.research_members(guild, cx);
+                                            if let Some(state) = this.members_state_mut() {
+                                                state.current_page = next_page;
+                                            }
+                                        }
+                                        cx.notify();
+                                    }))
+                            })),
+                    )
+                });
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .py(px(8.))
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("jNwLu2")),
+                )
+                .child(selector)
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-muted"))
+                        .child(if loading {
+                            format!("{members_of} ({})", dc_intl::t("ZTNur7"))
+                        } else {
+                            members_of
+                        }),
+                )
+                .into_any_element()
+        };
+
+        let pages = visible_page_window(cur, total_pages, 7);
+        let paginator: Option<AnyElement> = show_paginator.then(|| {
+            let can_back = cur > 1;
+            let can_next = cur < total_pages;
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .id("member-page-prev")
+                        .px(px(8.))
+                        .h(px(28.))
+                        .rounded(px(14.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color(if can_back {
+                            "--text-strong"
+                        } else {
+                            "--text-muted"
+                        }))
+                        .when(can_back, |b| {
+                            b.cursor_pointer()
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(state) = this.members_state_mut() {
+                                        state.current_page =
+                                            state.current_page.saturating_sub(1).max(1);
+                                    }
+                                    cx.notify();
+                                }))
+                        })
+                        .child("Back"),
+                )
+                .children(pages.into_iter().map(|page| {
+                    let active = page == cur;
+                    div()
+                        .id(SharedString::from(format!("member-page-btn-{page}")))
+                        .min_w(px(28.))
+                        .h(px(28.))
+                        .px(px(6.))
+                        .rounded(px(14.))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .when(active, |b| {
+                            b.bg(color("--brand-500")).text_color(color("--white"))
+                        })
+                        .when(!active, |b| {
+                            b.text_color(color("--text-strong"))
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(state) = this.members_state_mut() {
+                                state.current_page = page;
+                            }
+                            cx.notify();
+                        }))
+                        .child(page.to_string())
+                }))
+                .child(
+                    div()
+                        .id("member-page-next")
+                        .px(px(8.))
+                        .h(px(28.))
+                        .rounded(px(14.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color(if can_next {
+                            "--text-strong"
+                        } else {
+                            "--text-muted"
+                        }))
+                        .when(can_next, |b| {
+                            b.cursor_pointer()
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(state) = this.members_state_mut() {
+                                        state.current_page =
+                                            (state.current_page + 1).min(total_pages);
+                                    }
+                                    cx.notify();
+                                }))
+                        })
+                        .child("Next"),
+                )
+                .into_any_element()
+        });
+
+        div()
+            .min_h(px(48.))
+            .px(px(16.))
+            .border_t_1()
+            .border_color(color("--border-subtle"))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(left)
+            .children(paginator)
+            .into_any_element()
+    }
+
     /// The Sort button: it opens the menu of `members_sort_layer` under it.
     pub(super) fn members_sort_button(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
@@ -1899,5 +2219,31 @@ mod tests {
         );
         assert_eq!(join_method(&json!({"join_source_type": 6})), "Vanity URL");
         assert_eq!(join_method(&json!({})), "Unknown");
+    }
+
+    #[test]
+    fn member_safety_pagination_footer_math_749060() {
+        assert_eq!(PAGE_SIZES, [12, 25, 50, 100]);
+        // Module 233693 formula: Math.max(Math.ceil(oldPageSize / newPageSize * currentPage), 1).
+        assert_eq!(recalculate_page_for_size(12, 25, 1), 1);
+        assert_eq!(recalculate_page_for_size(12, 25, 3), 2);
+        assert_eq!(recalculate_page_for_size(50, 25, 2), 4);
+        assert_eq!(recalculate_page_for_size(100, 12, 1), 9);
+
+        // Max 7 visible pages centered around currentPage.
+        assert_eq!(visible_page_window(1, 3, 7), vec![1, 2, 3]);
+        assert_eq!(visible_page_window(1, 20, 7), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(
+            visible_page_window(10, 20, 7),
+            vec![7, 8, 9, 10, 11, 12, 13]
+        );
+        assert_eq!(
+            visible_page_window(20, 20, 7),
+            vec![14, 15, 16, 17, 18, 19, 20]
+        );
+
+        for key in ["jNwLu2", "RNDnQ/", "ZTNur7", "GZpwME"] {
+            assert!(!dc_intl::t(key).is_empty(), "missing intl key {key}");
+        }
     }
 }

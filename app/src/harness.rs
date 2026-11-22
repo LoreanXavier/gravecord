@@ -2074,6 +2074,18 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_evolving_tenure(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `guild-space-nux [published|draft|close]`: Welcome to your Server Hub NUX modal (725041).
+            ["guild-space-nux", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_guild_space_nux(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `tenure-level-up [tier_idx|close]`: Tiered Nitro Tenure Badge Level-Up Popout (748579).
+            ["tenure-level-up", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_tenure_level_up(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `purchase-email-auth [pending|resent|error|close]`: Checkout Email Verification & Predicate Error (615456).
             ["purchase-email-auth", rest @ ..] => {
                 let arg = rest.join(" ");

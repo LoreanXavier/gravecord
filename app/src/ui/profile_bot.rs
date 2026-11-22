@@ -487,8 +487,34 @@ impl Root {
                 .into_any_element(),
             );
         }
-        // GAP: the modal's `viewProfileItem` (module 722868, View Main/Server Profile) needs a server profile of the
-        // bot, which this client does not tell apart; it is left out.
+        // Module 722868 (`useViewUserProfileModalItem`): when full profile is open from a server and the bot
+        // has a per-server profile, allow switching between Main Profile and Server Profile.
+        if let Some((origin_guild, viewing_guild)) = self
+            .full_profile
+            .as_ref()
+            .filter(|fp| fp.user == user)
+            .and_then(|fp| fp.origin_guild.map(|og| (og, fp.guild)))
+            && self.user_has_guild_profile(user, origin_guild)
+        {
+            let target_guild = if viewing_guild.is_some() {
+                None
+            } else {
+                Some(origin_guild)
+            };
+            let label = if viewing_guild.is_some() {
+                dc_intl::t("GISTta").to_owned()
+            } else {
+                dc_intl::t("mrfJ3z").to_owned()
+            };
+            first.push(
+                self.profile_row("bot-view-profile-switch", label.into(), false, false, cx)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.profile_menu = None;
+                        this.switch_full_profile_guild(target_guild, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         first.push(
             self.profile_row(
                 "bot-share-profile",

@@ -1451,6 +1451,41 @@ impl Root {
     }
 }
 
+/// Module 748579 (`764231.T`): formats tenure timeframe label (`erUSmA` months or `qOdyDe` years, `6+ Years` at 72m).
+pub(crate) fn tenure_time_frame_label(months: u32) -> String {
+    if months < 12 {
+        dc_intl::format(
+            "erUSmA",
+            &[("months", dc_intl::Arg::Num(f64::from(months)))],
+        )
+    } else {
+        let years = (months / 12).max(1);
+        dc_intl::format("qOdyDe", &[("years", dc_intl::Arg::Num(f64::from(years)))])
+    }
+}
+
+/// Module 748579 (`content_vYDVPJ`): Tiered Nitro Tenure Badge Level-Up Popout state.
+#[derive(Clone, Debug)]
+pub(crate) struct TenureLevelUpPopout {
+    pub prev_tier_index: Option<usize>,
+    pub current_tier_index: usize,
+    pub subscriber_since: Option<String>,
+    pub ended: bool,
+    pub replay_count: u32,
+}
+
+/// Accent colors for the 8 Nitro tenure tiers (`--custom-old-badge-color` / `--custom-new-badge-color`).
+const TENURE_TIER_COLORS: [u32; 8] = [
+    0xcd7f32ff, // Bronze (1m)
+    0xc0c0c0ff, // Silver (3m)
+    0xffd700ff, // Gold (6m)
+    0xe5e4e2ff, // Platinum (1y)
+    0x58c7f3ff, // Diamond (2y)
+    0x3ba55dff, // Emerald (3y)
+    0xe91e63ff, // Ruby (5y)
+    0xb48effff, // Opal (6+y)
+];
+
 /// Nitro Evolving Tenure Badge Modal state (module 384048).
 #[derive(Clone, Debug)]
 pub(crate) struct EvolvingTenureBadgeModal {
@@ -1734,6 +1769,230 @@ impl Root {
         )
     }
 
+    /// Module 748579 (`content_vYDVPJ`): Tiered Nitro Tenure Badge Level-Up Popout layer.
+    pub(super) fn tenure_level_up_popout_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let popout = self.tenure_level_up.as_ref()?;
+        let cur_idx = popout.current_tier_index.min(TENURE_TIERS.len() - 1);
+        let (cur_name_key, _, cur_num, cur_is_years) = TENURE_TIERS[cur_idx];
+        let cur_months = if cur_is_years { cur_num * 12 } else { cur_num };
+        let cur_name = dc_intl::t(cur_name_key);
+        let cur_color = rgba(TENURE_TIER_COLORS[cur_idx]);
+        let prev_name = popout
+            .prev_tier_index
+            .and_then(|i| TENURE_TIERS.get(i))
+            .map(|(k, _, _, _)| dc_intl::t(k));
+        let prev_color = popout
+            .prev_tier_index
+            .and_then(|i| TENURE_TIER_COLORS.get(i).copied())
+            .map(rgba);
+        let is_light = super::theme() == dc_tokens::Theme::Light;
+        let bg = if is_light {
+            rgba(0xeeeff1ff)
+        } else {
+            rgba(0x000000ff)
+        };
+        let sub_line = popout.subscriber_since.as_deref().map(|date| {
+            let tf = tenure_time_frame_label(cur_months);
+            dc_intl::format(
+                "f/OGgM",
+                &[
+                    ("timeFrame", dc_intl::Arg::Str(tf.into())),
+                    ("date", dc_intl::Arg::Str(date.into())),
+                ],
+            )
+        });
+        let ended = popout.ended;
+
+        let card = div()
+            .id("tenure-level-up-popout")
+            .occlude()
+            .relative()
+            .w(px(420_f32.min((self.viewport.0 - 48.).max(320.))))
+            .h(px(460_f32.min((self.viewport.1 - 64.).max(320.))))
+            .rounded(px(16.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(bg)
+            .shadow(vec![super::shadow_high()])
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(16.))
+            .p(px(24.))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .id("tenure-level-up-close")
+                    .absolute()
+                    .top(px(12.))
+                    .right(px(12.))
+                    .size(px(32.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(color("--control-icon-only-background-hover")))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("modal_close", 16., "--control-icon-only-icon-default"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tenure_level_up = None;
+                        cx.notify();
+                    })),
+            )
+            // Level-up emblem centerpiece (replaces video frame in static/no-asset mode).
+            .child(
+                div()
+                    .size(px(128.))
+                    .rounded_full()
+                    .bg(gpui::Rgba {
+                        a: 0.16,
+                        ..cur_color
+                    })
+                    .border_2()
+                    .border_color(cur_color)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        gpui::svg()
+                            .path("icons/settings_nitro.svg")
+                            .size(px(56.))
+                            .text_color(cur_color),
+                    ),
+            )
+            // `textContainer_vYDVPJ`: NitroWordmark (60x15) + old/new tier titles + subscribedText + Play again.
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .h(px(15.))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(icon("settings_nitro", 15., "--text-strong"))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(15.))
+                                    .font_weight(FontWeight(800.))
+                                    .text_color(color("--text-strong"))
+                                    .child("NITRO"),
+                            ),
+                    )
+                    .children(prev_name.zip(prev_color).map(|(name, col)| {
+                        div()
+                            .text_size(px(13.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(gpui::Rgba { a: 0.65, ..col })
+                            .child(name)
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(30.))
+                            .line_height(px(36.))
+                            .font_weight(FontWeight(800.))
+                            .text_color(cur_color)
+                            .child(cur_name),
+                    )
+                    .children(sub_line.map(|line| {
+                        div()
+                            .mt(px(4.))
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-muted"))
+                            .child(line)
+                    }))
+                    .when(ended, |col| {
+                        col.child(
+                            div()
+                                .id("tenure-level-up-replay")
+                                .mt(px(12.))
+                                .h(px(32.))
+                                .px(px(12.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(icon("clips_play", 14., "--control-secondary-text-default"))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .child(dc_intl::t("hsvh0i")),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(p) = this.tenure_level_up.as_mut() {
+                                        p.replay_count = p.replay_count.saturating_add(1);
+                                        p.ended = true;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            );
+
+        Some(
+            deferred(
+                div()
+                    .id("tenure-level-up-layer")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(color("--background-scrim"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tenure_level_up = None;
+                        cx.notify();
+                    }))
+                    .child(card),
+            )
+            .with_priority(96)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `tenure-level-up [tier|close]` (module 748579).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_tenure_level_up(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let trimmed = arg.trim();
+        if trimmed == "close" {
+            self.tenure_level_up = None;
+            cx.notify();
+            return "tenure-level-up: closed".to_owned();
+        }
+        let idx = trimmed
+            .parse::<usize>()
+            .unwrap_or(4)
+            .min(TENURE_TIERS.len() - 1);
+        self.tenure_level_up = Some(TenureLevelUpPopout {
+            prev_tier_index: idx.checked_sub(1),
+            current_tier_index: idx,
+            subscriber_since: Some("Oct 29, 2021".to_owned()),
+            ended: true,
+            replay_count: 0,
+        });
+        cx.notify();
+        format!("tenure-level-up: tier {idx}")
+    }
+
     /// Capture harness: `evolving-tenure [subscriber|upsell|other|close]` (module 384048).
     #[cfg(feature = "capture")]
     pub(crate) fn script_evolving_tenure(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
@@ -1864,5 +2123,18 @@ mod tests {
             "{date}"
         );
         assert_eq!(short_date("not a date"), None);
+    }
+
+    #[test]
+    fn tenure_level_up_time_frame_labels_748579() {
+        assert_eq!(tenure_time_frame_label(1), "1 Month");
+        assert_eq!(tenure_time_frame_label(3), "3 Months");
+        assert_eq!(tenure_time_frame_label(6), "6 Months");
+        assert_eq!(tenure_time_frame_label(12), "1 Year");
+        assert_eq!(tenure_time_frame_label(24), "2 Years");
+        assert_eq!(tenure_time_frame_label(72), "6+ Years");
+        for key in ["f/OGgM", "hsvh0i", "erUSmA", "qOdyDe"] {
+            assert!(dc_intl::has_key(key), "missing 748579 key {key}");
+        }
     }
 }

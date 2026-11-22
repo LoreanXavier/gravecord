@@ -359,6 +359,7 @@ mod forum_post_perms;
 mod forum_tag_editor;
 mod game_leaderboard;
 mod grant_channel_access;
+mod guild_space_nux;
 mod guild_theme_nux;
 mod icymi;
 mod incoming_call;
@@ -930,6 +931,10 @@ pub struct Root {
     shop_product_embed_preview: Option<shop::cards::ShopProductEmbedPreview>,
     /// Nitro Evolving Tenure Badge modal (module 384048).
     evolving_tenure_modal: Option<badge_modal::EvolvingTenureBadgeModal>,
+    /// Tiered Nitro Tenure Badge Level-Up Popout (module 748579).
+    tenure_level_up: Option<badge_modal::TenureLevelUpPopout>,
+    /// Welcome to your Server Hub NUX modal (module 725041).
+    guild_space_nux: Option<guild_space_nux::GuildSpaceNuxModal>,
     /// Quest Bar Bounty Card overlay (module 682908).
     quest_bar_bounty: Option<quest_bar::QuestBarBountyState>,
     /// Suspended User Safety Hub full page + embedded standing/violations body (module 187686 + 37380).
@@ -1586,6 +1591,8 @@ impl Root {
             forum_default_reaction_modal: None,
             shop_product_embed_preview: None,
             evolving_tenure_modal: None,
+            tenure_level_up: None,
+            guild_space_nux: None,
             quest_bar_bounty: None,
             suspended_safety_hub: None,
             nitro_trials_picker: None,
@@ -2486,6 +2493,14 @@ impl Root {
                 }
             }
             Update::Fetched { key, body } => {
+                if let Some(orig) = key.strip_prefix("attachment-refresh:") {
+                    // Module 740024 (`679164.AN`): copy refreshed signed attachment CDN URL (or fallback to original).
+                    let resolved = context_menu::extract_refreshed_attachment_url(&body)
+                        .unwrap_or_else(|| orig.to_owned());
+                    cx.write_to_clipboard(ClipboardItem::new_string(resolved));
+                    self.show_success_toast(dc_intl::t("L/PwZf").to_owned(), cx);
+                    return;
+                }
                 if let Some(rest) = key.strip_prefix(crate::net::EDIT_KEY) {
                     self.edit_answered(rest, &body, cx);
                     return;
@@ -12207,6 +12222,8 @@ impl Render for Root {
                         || this.forum_default_reaction_modal.is_some()
                         || this.shop_product_embed_preview.is_some()
                         || this.evolving_tenure_modal.is_some()
+                        || this.tenure_level_up.is_some()
+                        || this.guild_space_nux.is_some()
                         || this.quest_bar_bounty.is_some()
                         || this.quests.activity_panel_card.is_some()
                         || this.quests.video_modal.is_some()
@@ -12320,6 +12337,8 @@ impl Render for Root {
                     this.forum_default_reaction_modal = None;
                     this.shop_product_embed_preview = None;
                     this.evolving_tenure_modal = None;
+                    this.tenure_level_up = None;
+                    this.guild_space_nux = None;
                     this.quest_bar_bounty = None;
                     this.quests.activity_panel_card = None;
                     this.quests.video_modal = None;
@@ -13605,6 +13624,8 @@ impl Render for Root {
             .children(self.forum_default_reaction_layer(cx))
             .children(self.shop_product_embed_layer(cx))
             .children(self.evolving_tenure_badge_layer(cx))
+            .children(self.tenure_level_up_popout_layer(cx))
+            .children(self.guild_space_nux_layer(cx))
             .children(self.quest_bar_bounty_layer(cx))
             .children(self.activity_panel_quest_card_layer(cx))
             .children(self.video_quest_modal_layer(cx))

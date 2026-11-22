@@ -1757,15 +1757,44 @@ impl Root {
                     .children(rows)
                     .into_any_element()
             }
-            WidgetData::ClipsGallery { .. } => div()
-                .p(px(12.))
-                .rounded(px(8.))
-                .bg(palette.token("--background-mod-subtle"))
-                .text_size(px(13.))
-                .line_height(px(18.))
-                .text_color(palette.token("--text-muted"))
-                .child(dc_intl::t!("pb2Was", numClips = 6))
-                .into_any_element(),
+            WidgetData::ClipsGallery { clips } => {
+                // Module 741934 (`media_QsRXyC` + `ring_6i1vAy`): Clips Gallery video thumbnail & upload progress ring.
+                if clips.is_empty() {
+                    div()
+                        .p(px(12.))
+                        .rounded(px(8.))
+                        .bg(palette.token("--background-mod-subtle"))
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(palette.token("--text-muted"))
+                        .child(dc_intl::t!("pb2Was", numClips = 6))
+                        .into_any_element()
+                } else {
+                    let tiles: Vec<AnyElement> = clips
+                        .iter()
+                        .take(6)
+                        .enumerate()
+                        .map(|(ci, clip)| {
+                            let thumb_url = clip_gallery_thumbnail_url(clip);
+                            let thumb = thumb_url.and_then(|u| self.images.get(u).cloned());
+                            let uploading = clip_gallery_upload_progress(clip);
+                            render_clip_gallery_media(
+                                &format!("clip-tile-{index}-{ci}"),
+                                thumb,
+                                uploading,
+                                false,
+                                true,
+                            )
+                        })
+                        .collect();
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(8.))
+                        .children(tiles)
+                        .into_any_element()
+                }
+            }
         };
 
         div()
@@ -3002,9 +3031,156 @@ fn apply_comment_edit(widgets: &mut [UserWidget], key: &str, text: String) {
     }
 }
 
+/// Module 741934 (`media_QsRXyC` / `ring_6i1vAy`): extract thumbnail URL from a clips-gallery item JSON.
+pub(super) fn clip_gallery_thumbnail_url(clip: &serde_json::Value) -> Option<&str> {
+    clip.get("thumbnail_url")
+        .or_else(|| clip.get("thumbnailURL"))
+        .or_else(|| clip.get("thumbnail"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+}
+
+/// Module 741934 (`media_QsRXyC` / `ring_6i1vAy`): returns `Some(progress)` in `0.0..=1.0` when `status == "uploading"`.
+pub(super) fn clip_gallery_upload_progress(clip: &serde_json::Value) -> Option<f32> {
+    let uploading = clip
+        .get("status")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s == "uploading");
+    if !uploading {
+        return None;
+    }
+    let raw = clip
+        .get("upload_progress")
+        .or_else(|| clip.get("progress"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    Some((raw as f32).clamp(0.0, 1.0))
+}
+
+/// Module 741934 (`ring_6i1vAy`): maps `0.0..=1.0` upload progress to integer percentage `0..=100`.
+pub(super) fn clip_gallery_progress_pct(progress: f32) -> u8 {
+    (progress.clamp(0.0, 1.0) * 100.0).round() as u8
+}
+
+/// Module 741934 (`media_QsRXyC`, `frame_QsRXyC`, `frameContain_QsRXyC`, `uploading_QsRXyC`, `ring_6i1vAy`):
+/// Clips Gallery video thumbnail tile with optional centered upload progress ring (`16px` sm / `40px` lg)
+/// in `--icon-overlay-light` and `RFRuwZ` ("Uploading clip") label.
+pub(super) fn render_clip_gallery_media(
+    id: &str,
+    thumb: Option<std::sync::Arc<gpui::Image>>,
+    uploading: Option<f32>,
+    fit_contain: bool,
+    large_ring: bool,
+) -> AnyElement {
+    let fit = if fit_contain {
+        gpui::ObjectFit::Contain
+    } else {
+        gpui::ObjectFit::Cover
+    };
+    let is_uploading = uploading.is_some();
+    let ring_size = if large_ring { 40. } else { 16. };
+    div()
+        .id(gpui::SharedString::from(id.to_owned()))
+        .relative()
+        .w(px(124.))
+        .h(px(70.))
+        .rounded(px(8.))
+        .overflow_hidden()
+        .bg(color("--background-base-lowest"))
+        .children(thumb.map(|image| {
+            gpui::img(image)
+                .size_full()
+                .object_fit(fit)
+                .when(is_uploading, |img| img.opacity(0.45))
+        }))
+        .when(!is_uploading, |tile| {
+            tile.child(
+                div()
+                    .absolute()
+                    .bottom(px(6.))
+                    .right(px(6.))
+                    .size(px(22.))
+                    .rounded_full()
+                    .bg(color("--opacity-black-60"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("clips_play", 11., "--icon-overlay-light")),
+            )
+        })
+        .children(uploading.map(|progress| {
+            let pct = clip_gallery_progress_pct(progress);
+            div()
+                .absolute()
+                .inset_0()
+                .bg(color("--opacity-black-60"))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(4.))
+                .child(
+                    // `.ring_6i1vAy` (`lg_6i1vAy` 40x40 / `sm_6i1vAy` 16x16) in `--icon-overlay-light`.
+                    div()
+                        .size(px(ring_size))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(color("--icon-overlay-light"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(large_ring, |ring| {
+                            ring.text_size(px(10.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--icon-overlay-light"))
+                                .child(format!("{pct}%"))
+                        }),
+                )
+                .when(large_ring, |overlay| {
+                    overlay.child(
+                        div()
+                            .text_size(px(10.))
+                            .line_height(px(12.))
+                            .text_color(color("--icon-overlay-light"))
+                            .child(dc_intl::t("RFRuwZ")),
+                    )
+                })
+        }))
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_gallery_media_parses_status_and_progress_741934() {
+        let saved = serde_json::json!({
+            "status": "saved",
+            "thumbnailURL": "https://cdn.example/thumb.png",
+            "videoURL": "https://cdn.example/clip.mp4"
+        });
+        assert_eq!(
+            clip_gallery_thumbnail_url(&saved),
+            Some("https://cdn.example/thumb.png")
+        );
+        assert_eq!(clip_gallery_upload_progress(&saved), None);
+
+        let uploading = serde_json::json!({
+            "status": "uploading",
+            "thumbnail": "https://cdn.example/up.png",
+            "upload_progress": 0.645
+        });
+        assert_eq!(
+            clip_gallery_thumbnail_url(&uploading),
+            Some("https://cdn.example/up.png")
+        );
+        assert_eq!(clip_gallery_upload_progress(&uploading), Some(0.645));
+        assert_eq!(clip_gallery_progress_pct(0.645), 65);
+        assert_eq!(clip_gallery_progress_pct(1.5), 100);
+        assert_eq!(clip_gallery_progress_pct(-0.2), 0);
+        assert!(!dc_intl::t("RFRuwZ").is_empty());
+    }
 
     /// The capture's grid: the six featured games, then the four game list widgets.
     #[test]

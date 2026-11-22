@@ -490,7 +490,112 @@ impl Root {
             }
         }
     }
+}
 
+/// Module 727353 (`711589.K`): stream preview action overlay copy (`XvBdeT`, `JH1SJ+`, `7Xq/nV`, `pgUTZC`).
+pub(super) fn stream_action_label(
+    is_own: bool,
+    is_watching: bool,
+    can_watch: bool,
+) -> &'static str {
+    if is_own {
+        dc_intl::t("XvBdeT")
+    } else if is_watching {
+        dc_intl::t("JH1SJ+")
+    } else if can_watch {
+        dc_intl::t("7Xq/nV")
+    } else {
+        dc_intl::t("pgUTZC")
+    }
+}
+
+/// Module 727353 `Z` (Standalone / Overlay Stream Preview Popout): header (`4CQq9Q` / `Jpkr/q`),
+/// 142px preview (`previewContainer_1v6-1l`) with hover overlay, and protip (`YRdw70` / `CCTgbF`).
+#[allow(dead_code)]
+pub(super) fn stream_preview_popout(
+    app_name: Option<&str>,
+    thumb: Option<std::sync::Arc<gpui::Image>>,
+    is_own: bool,
+    is_watching: bool,
+    is_overlay: bool,
+    hide_tip: bool,
+) -> AnyElement {
+    let header_title = match app_name.filter(|s| !s.is_empty()) {
+        Some(name) => dc_intl::format("4CQq9Q", &[("name", dc_intl::Arg::Str(name.into()))]),
+        None => dc_intl::t("Jpkr/q").to_owned(),
+    };
+    let action_text = stream_action_label(is_own, is_watching, true);
+    let protip = if is_overlay {
+        dc_intl::t("YRdw70")
+    } else {
+        dc_intl::t("CCTgbF")
+    };
+    div()
+        .max_w(px(252.))
+        .w(px(252.))
+        .rounded(px(12.))
+        .border_1()
+        .border_color(color("--border-subtle"))
+        .bg(color("--background-surface-high"))
+        .shadow(vec![super::shadow_high()])
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .px(px(10.))
+                .pt(px(10.))
+                .pb(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .truncate()
+                        .child(header_title),
+                ),
+        )
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(142.))
+                .bg(color("--background-base-lowest"))
+                .children(thumb.map(|im| img(im).size_full().object_fit(gpui::ObjectFit::Cover)))
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(color("--opacity-black-60"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child(action_text),
+                ),
+        )
+        .when(!hide_tip, |card| {
+            card.child(
+                div()
+                    .p(px(12.))
+                    .text_center()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(color("--text-muted"))
+                    .child(protip),
+            )
+        })
+        .into_any_element()
+}
+
+impl Root {
     pub(super) fn live_activity_cards(
         &self,
         user: Id,

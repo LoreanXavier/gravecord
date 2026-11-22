@@ -680,7 +680,7 @@ impl Root {
         else {
             return "stage-preview: no guild".to_owned();
         };
-        let stage_id: Id = 9_999_000_062_3413;
+        let stage_id: Id = 99_990_000_623_413;
         if let Some(guild) = self.stores.guilds.iter_mut().find(|g| g.id == gid)
             && !guild.channels.iter().any(|c| c.id == stage_id)
         {

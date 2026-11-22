@@ -495,8 +495,102 @@ impl Root {
                         toggle.into_any_element()
                     };
 
+                    // Module 739174 (`identifier_2zb7OH`): channel 20px icon + `7YqSGx` All Channels + `(category)`,
+                    // role 23px tinted `role_shield`, user 24px avatar + streamer-mode-gated tag, + right-click `oJ1Muw`.
+                    let row_id = row.id;
+                    let row_kind = row.kind;
+                    let is_sentinel = row.is_sentinel;
+                    let hide_personal = self.streamer_hides_personal();
+                    let (leading_icon, display_title, secondary_tag): (
+                        AnyElement,
+                        String,
+                        Option<String>,
+                    ) = match row_kind {
+                        TargetType::Channel => {
+                            let title = if is_sentinel {
+                                dc_intl::t("7YqSGx").to_owned()
+                            } else {
+                                row_name.clone()
+                            };
+                            let cat_tag = if is_sentinel {
+                                None
+                            } else {
+                                self.stores.guild(modal.guild_id).and_then(|g| {
+                                    g.channels
+                                        .iter()
+                                        .find(|c| c.id == row_id)
+                                        .and_then(|c| c.parent_id)
+                                        .and_then(|pid| g.channels.iter().find(|c| c.id == pid))
+                                        .map(|cat| format!("({})", cat.name))
+                                })
+                            };
+                            (
+                                div()
+                                    .w(px(24.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("channel_type_text", 20., "--text-default"))
+                                    .into_any_element(),
+                                title,
+                                cat_tag,
+                            )
+                        }
+                        TargetType::Role => {
+                            let role_color = self
+                                .stores
+                                .guild(modal.guild_id)
+                                .and_then(|g| g.role_color(&[row_id]))
+                                .unwrap_or(0);
+                            let shield = if role_color != 0 {
+                                gpui::svg()
+                                    .path("icons/role_shield.svg")
+                                    .size(px(23.))
+                                    .text_color(gpui::rgb(role_color))
+                            } else {
+                                icon("role_shield", 23., "--text-default")
+                            };
+                            (
+                                div()
+                                    .w(px(24.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(shield)
+                                    .into_any_element(),
+                                row_name.clone(),
+                                None,
+                            )
+                        }
+                        TargetType::User => {
+                            let known_user = self.stores.users.get(&row_id);
+                            let av = known_user
+                                .and_then(|u| self.images.get(&super::avatar_source(u).0).cloned());
+                            let tag = if hide_personal {
+                                None
+                            } else {
+                                known_user.map(|u| format!("@{}", u.username))
+                            };
+                            let av_el = div()
+                                .size(px(24.))
+                                .flex_none()
+                                .rounded_full()
+                                .overflow_hidden()
+                                .bg(color("--background-surface-higher"))
+                                .children(av.map(|im| gpui::img(im).size(px(24.)).rounded_full()))
+                                .into_any_element();
+                            (av_el, row_name.clone(), tag)
+                        }
+                    };
+
                     list = list.child(
                         div()
+                            .id(SharedString::from(format!(
+                                "cmd-perm-row-{}-{}",
+                                row_kind as u8, row_id
+                            )))
                             .py(px(10.))
                             .border_t_1()
                             .border_color(color("--border-subtle"))
@@ -504,21 +598,51 @@ impl Root {
                             .items_center()
                             .justify_between()
                             .gap(px(12.))
+                            .when(!is_sentinel, |d| {
+                                d.on_mouse_up(
+                                    gpui::MouseButton::Right,
+                                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                        this.open_context_menu(
+                                            super::context_menu::Target::CommandPermId(row_id),
+                                            event.position,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    }),
+                                )
+                            })
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w(px(0.))
                                     .flex()
                                     .items_center()
                                     .gap(px(8.))
-                                    .when(locked, |d| {
-                                        d.child(icon("access_lock", 14., "--icon-muted"))
-                                    })
+                                    .child(leading_icon)
                                     .child(
                                         div()
                                             .text_size(px(14.))
-                                            .font_weight(FontWeight(500.))
+                                            .line_height(px(18.))
+                                            .font_weight(FontWeight(400.))
                                             .text_color(color("--text-strong"))
-                                            .child(row_name),
-                                    ),
+                                            .truncate()
+                                            .child(display_title),
+                                    )
+                                    .children(secondary_tag.map(|tag| {
+                                        div()
+                                            .flex_none()
+                                            .text_size(px(13.))
+                                            .line_height(px(18.))
+                                            .text_color(color("--text-muted"))
+                                            .child(tag)
+                                    }))
+                                    .when(locked, |d| {
+                                        d.child(div().ml(px(3.)).flex().child(icon(
+                                            "access_lock",
+                                            14.,
+                                            "--text-muted",
+                                        )))
+                                    }),
                             )
                             .child(
                                 div()

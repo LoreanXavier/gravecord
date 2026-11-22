@@ -597,11 +597,21 @@ impl Root {
                     .gap(px(10.))
                     .child(
                         div()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--text-strong"))
-                            .child(tier.name.clone()),
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(tier.name.clone()),
+                            )
+                            // Module 724609: unpublished creator monetization "Draft" warning badge (`vosPk5`).
+                            .when(!tier.published, |d| {
+                                d.child(super::server_shop::creator_draft_badge())
+                            }),
                     )
                     .child(
                         div()

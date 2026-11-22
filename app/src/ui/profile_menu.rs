@@ -328,7 +328,90 @@ impl Root {
                 (menu.anchor, vec![row])
             }
             Which::Overflow => {
-                let mut first: Vec<AnyElement> = vec![
+                let mut first: Vec<AnyElement> = Vec::new();
+                // Module 722868 (`useViewUserProfileModalItem`): when full profile is open from a server and the user
+                // has a guild profile (and isn't own WYSIWYG editing), offer View Main Profile / View Per-server Profile
+                // with `mn/nW2` ("AKA {displayName}") subtext.
+                if let Some(open) = self.full_profile.as_ref().filter(|fp| fp.user == user)
+                    && let Some(origin_guild) = open.origin_guild
+                    && !self.own_profile_edits_in_place(user)
+                    && self.user_has_guild_profile(user, origin_guild)
+                {
+                    let viewing_server = open.guild.is_some();
+                    let (row_id, title, aka_name, next_guild) = if viewing_server {
+                        let global = self
+                            .stores
+                            .users
+                            .get(&user)
+                            .map(|u| u.display_name().to_owned())
+                            .unwrap_or_default();
+                        (
+                            "view-main-profile",
+                            dc_intl::t("GISTta").to_owned(),
+                            global,
+                            None,
+                        )
+                    } else {
+                        let server_name = self
+                            .stores
+                            .members
+                            .get(origin_guild, user)
+                            .and_then(|m| m.nick.clone())
+                            .or_else(|| {
+                                self.stores
+                                    .users
+                                    .get(&user)
+                                    .map(|u| u.display_name().to_owned())
+                            })
+                            .unwrap_or_default();
+                        (
+                            "view-server-profile",
+                            dc_intl::t("DisZzB").to_owned(),
+                            server_name,
+                            Some(origin_guild),
+                        )
+                    };
+                    let subtext = dc_intl::format(
+                        "mn/nW2",
+                        &[(
+                            "displayName",
+                            dc_intl::Arg::Str(std::borrow::Cow::Owned(aka_name)),
+                        )],
+                    );
+                    first.push(
+                        div()
+                            .id(row_id)
+                            .min_h(px(34.))
+                            .px(px(8.))
+                            .py(px(6.))
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(color("--interactive-background-hover")))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--text-muted"))
+                                    .child(subtext),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.profile_menu = None;
+                                this.switch_full_profile_guild(next_guild, cx);
+                            }))
+                            .into_any_element(),
+                    );
+                }
+                first.push(
                     self.profile_row("share-profile", "Share Profile".into(), false, false, cx)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.profile_menu = None;
@@ -338,7 +421,7 @@ impl Root {
                             cx.notify();
                         }))
                         .into_any_element(),
-                ];
+                );
                 let guilds = self.invite_guilds();
                 if Some(user) != me && !bot && !guilds.is_empty() && !blocked && !ignored {
                     first.push(

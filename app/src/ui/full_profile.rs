@@ -190,6 +190,8 @@ pub(super) fn activity_empty_text(name: &str, user: Id) -> (String, String) {
 pub(super) struct FullProfile {
     pub user: Id,
     pub(super) guild: Option<Id>,
+    /// Guild from which this modal was opened, preserved when toggling Main <-> Per-server profile (module 722868).
+    pub(super) origin_guild: Option<Id>,
     pub tab: Tab,
     /// A tab was asked for (`initialSection`) or pressed; otherwise the first tab shows.
     pub explicit: bool,
@@ -1031,13 +1033,51 @@ impl Root {
 
     /// Module 927071 `eL`: your own profile opens in editing mode (the profile editor) under the
     /// `2026-03-wysiwyg-user-profile-editing` experiment, unless Streamer Mode hides personal information.
-    fn own_profile_edits_in_place(&self, user: Id) -> bool {
+    pub(super) fn own_profile_edits_in_place(&self, user: Id) -> bool {
         self.stores
             .current_user
             .as_ref()
             .is_some_and(|me| me.id == user)
             && self.stores.experiments.variant(WYSIWYG_EDITING) == Some(1)
             && !self.streamer_hides_personal()
+    }
+
+    /// Module 722868 (`useViewUserProfileModalItem`): switches an open full profile modal between
+    /// the user's Main Profile (`guild = None`) and Per-server Profile (`guild = Some(origin)`).
+    pub(super) fn switch_full_profile_guild(&mut self, guild: Option<Id>, cx: &mut Context<Self>) {
+        let Some(open) = self.full_profile.as_mut() else {
+            return;
+        };
+        let user = open.user;
+        open.guild = guild;
+        let _ = self.requests.send(Request::Fetch {
+            key: format!("profile:{user}"),
+            route: profile_route(user, guild),
+        });
+        if let Some(known) = self.stores.users.get(&user).cloned() {
+            let (image, url) = self.guild_avatar_source_in(&known, guild);
+            self.request_image(image, url);
+        }
+        if let Some(body) = self.fetched.get(&format!("profile:{user}")).cloned()
+            && let Some((key, url)) = super::profile_art::banner_source(user, guild, &body)
+        {
+            self.request_image(key, url);
+        }
+        cx.notify();
+    }
+
+    /// Module 722868 (`useViewUserProfileModalItem`): whether the user has a guild-specific profile in `guild`.
+    pub(super) fn user_has_guild_profile(&self, user: Id, guild: Id) -> bool {
+        if let Some(body) = self.fetched.get(&format!("profile:{user}"))
+            && body
+                .get("guild_member_profile")
+                .is_some_and(|p| p.get("guild_id").and_then(|g| g.as_str()).is_some())
+        {
+            return true;
+        }
+        self.stores.members.get(guild, user).is_some_and(|m| {
+            m.nick.is_some() || m.avatar.is_some() || m.avatar_decoration.is_some()
+        })
     }
 
     pub(super) fn open_full_profile(
@@ -1088,6 +1128,7 @@ impl Root {
         self.full_profile = Some(FullProfile {
             user,
             guild: self.guild,
+            origin_guild: self.guild,
             tab: first,
             explicit: true,
             note,

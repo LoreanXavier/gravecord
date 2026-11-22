@@ -176,6 +176,8 @@ pub(super) enum Target {
     /// Standalone Image Actions fallback context menu (`image-context`, module 177079); URL & cache key in
     /// `State::image_target`.
     Image,
+    /// Application Command Permission target right-click (`dev-context`, module 739174 -> 646938, `oJ1Muw`).
+    CommandPermId(Id),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2194,6 +2196,7 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::OverlayUser { .. } => Some(dc_intl::t("ogxXGq")),
         Target::GameMention(_) => Some(dc_intl::t("Hf9fuS")),
         Target::Image => Some(dc_intl::t("Zow2V5")),
+        Target::CommandPermId(_) => Some(dc_intl::t("ogxXGq")),
         _ => None,
     }
 }
@@ -2227,6 +2230,42 @@ pub(super) fn image_context_items(url: &str) -> Vec<Entry> {
         ],
     );
     tidy(out)
+}
+
+/// Module 740024 (`attachment-link-context`, `679164.AN`): parses hex `ex` query param and returns true when a
+/// Discord CDN attachment URL is expired or within 1 hour of expiring and needs `POST /attachments/refresh-urls`.
+pub(crate) fn attachment_url_needs_refresh(url: &str, now_secs: u64) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let is_discord_cdn =
+        lower.contains("://cdn.discordapp.com/") || lower.contains("://media.discordapp.net/");
+    if !is_discord_cdn {
+        return false;
+    }
+    let Some(query) = lower.split('?').nth(1) else {
+        return true;
+    };
+    let query = query.split('#').next().unwrap_or(query);
+    for pair in query.split('&') {
+        if let Some(hex) = pair.strip_prefix("ex=")
+            && let Ok(exp_secs) = u64::from_str_radix(hex, 16)
+        {
+            return exp_secs <= now_secs.saturating_add(3600);
+        }
+    }
+    true
+}
+
+/// Module 740024 (`679164.AN`): extracts `refreshed_urls[0].refreshed` from `POST /attachments/refresh-urls` reply.
+pub(crate) fn extract_refreshed_attachment_url(body: &serde_json::Value) -> Option<String> {
+    let payload = body.get("body").unwrap_or(body);
+    payload
+        .get("refreshed_urls")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|entry| entry.get("refreshed"))
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 /// Module 740024 (Link Options): Copy Media Link, Copy Text.
@@ -4864,6 +4903,9 @@ impl Root {
                 };
                 image_context_items(url)
             }
+            Target::CommandPermId(_) => vec![Entry::Row(
+                Row::new(Act::CopyId, dc_intl::t("oJ1Muw")).icon("menu_id"),
+            )],
             Target::GameShopSku => {
                 let items = game_shop_sku_items(developer);
                 if items.is_empty() {
@@ -6033,7 +6075,7 @@ impl Root {
                     self.open_create_channel(false, window, cx);
                 }
             }
-            // Module 740024. GAP: an expired signed address is not refreshed first (`AN` of module 679164).
+            // Module 740024 (`attachment-link-context`): Copy Media Link refreshes expired signed CDN URLs via `POST /attachments/refresh-urls`.
             (Act::CopyGifLink, Target::PickerGif) => {
                 if let Some(link) = self.context.gif_link.clone() {
                     cx.write_to_clipboard(ClipboardItem::new_string(link));
@@ -6076,7 +6118,20 @@ impl Root {
             }
             (Act::CopyLink, Target::AttachmentLink) => {
                 if let Some((url, _)) = self.context.attachment_link.take() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(url));
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs());
+                    if attachment_url_needs_refresh(&url, now_secs) {
+                        let _ = self.requests.send(Request::Rest {
+                            key: Some(format!("attachment-refresh:{url}")),
+                            method: reqwest::Method::POST,
+                            route: "/attachments/refresh-urls".to_owned(),
+                            body: Some(serde_json::json!({ "attachment_urls": [url] })),
+                        });
+                    } else {
+                        cx.write_to_clipboard(ClipboardItem::new_string(url));
+                        self.show_success_toast(dc_intl::t("L/PwZf").to_owned(), cx);
+                    }
                 }
             }
             (Act::Copy, Target::AttachmentLink) => {
@@ -6127,6 +6182,7 @@ impl Root {
                     | Target::FavoriteCategory(id)
                     | Target::ChannelMention(id)
                     | Target::GameMention(id)
+                    | Target::CommandPermId(id)
                     | Target::AuditChannel(id) => id,
                     Target::User { user, .. }
                     | Target::OverlayUser { user, .. }
@@ -9970,5 +10026,42 @@ mod tests {
         let active = store.active_tab_id.unwrap();
         assert!(store.close_tab(active).is_some());
         assert_eq!(store.tabs.len(), ChannelTabsState::MAX_TABS - 1);
+    }
+
+    #[test]
+    fn attachment_link_refresh_logic_740024() {
+        let now = 1_700_000_000_u64;
+        // Missing `ex` -> needs refresh.
+        assert!(attachment_url_needs_refresh(
+            "https://cdn.discordapp.com/attachments/1/2/file.png",
+            now
+        ));
+        // `ex` within 1 hour -> needs refresh.
+        let soon_hex = format!("{:x}", now + 1800);
+        assert!(attachment_url_needs_refresh(
+            &format!("https://cdn.discordapp.com/attachments/1/2/file.png?ex={soon_hex}&is=1"),
+            now
+        ));
+        // `ex` > 1 hour away -> no refresh needed.
+        let fresh_hex = format!("{:x}", now + 7200);
+        assert!(!attachment_url_needs_refresh(
+            &format!("https://cdn.discordapp.com/attachments/1/2/file.png?ex={fresh_hex}&is=1"),
+            now
+        ));
+        // Response extraction (`refreshed_urls[0].refreshed`).
+        let body = serde_json::json!({
+            "refreshed_urls": [{
+                "original": "https://old",
+                "refreshed": "https://cdn.discordapp.com/attachments/1/2/file.png?ex=ffffffff"
+            }]
+        });
+        assert_eq!(
+            extract_refreshed_attachment_url(&body).as_deref(),
+            Some("https://cdn.discordapp.com/attachments/1/2/file.png?ex=ffffffff")
+        );
+        assert_eq!(
+            extract_refreshed_attachment_url(&serde_json::json!({})),
+            None
+        );
     }
 }

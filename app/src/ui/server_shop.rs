@@ -89,6 +89,26 @@ pub(crate) struct ServerShopModal {
     pub unavailable_alert: bool,
 }
 
+/// Module 724609 (`.draftBadge_jGF6_I` + `805251.E` warning `Badge`, `vosPk5` "Draft"):
+/// unpublished creator monetization badge shared by Server Shop products (`500770`) and
+/// Role Subscription tier cards (`31637`).
+pub(super) fn creator_draft_badge() -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .px(px(8.))
+        .py(px(2.))
+        .rounded_full()
+        .bg(color("--badge-warning-background"))
+        .border_1()
+        .border_color(color("--badge-warning-border"))
+        .text_size(px(12.))
+        .line_height(px(16.))
+        .font_weight(FontWeight(600.))
+        .text_color(color("--badge-warning-text"))
+        .child(dc_intl::t("vosPk5"))
+}
+
 impl Root {
     /// Server Shop Product Listing Card (module 500770 `A`):
     /// - 187px thumbnail (`#2b2c31`) with optional `"Purchase to Unlock"` (`YmIiSe`) and `"Draft"` (`vosPk5`) badges
@@ -192,16 +212,7 @@ impl Root {
                         .absolute()
                         .right(px(8.))
                         .bottom(px(8.))
-                        .px(px(8.))
-                        .py(px(3.))
-                        .rounded(px(4.))
-                        .bg(color("--background-surface-high"))
-                        .border_1()
-                        .border_color(color("--border-subtle"))
-                        .text_size(px(11.))
-                        .font_weight(FontWeight(700.))
-                        .text_color(color("--text-strong"))
-                        .child(dc_intl::t("vosPk5")),
+                        .child(creator_draft_badge()),
                 )
             });
 

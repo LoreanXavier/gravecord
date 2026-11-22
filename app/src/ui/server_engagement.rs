@@ -593,6 +593,41 @@ otherwise only online members and voice channels will be provided."),
                         .child("By enabling the widget, your server profile will be visible to others outside of your server members. You can control Profile privacy in Server Settings > Profile."),
                 )
             })
+            .when(
+                now.features
+                    .iter()
+                    .any(|f| f == "GUILD_SPACE" || f == "GUILD_HOME_DEPRECATION_OVERRIDE"),
+                |this| {
+                    let published = now.features.iter().any(|f| f == "GUILD_SPACE_PUBLISHED");
+                    this.child(divider())
+                        .child(heading("Server Hub"))
+                        .child(note(
+                            "Introduce your server with customizable widgets and highlights.",
+                        ))
+                        .child(
+                            div()
+                                .id("engagement-open-server-hub-nux")
+                                .mt(px(12.))
+                                .h(px(36.))
+                                .px(px(14.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .cursor_pointer()
+                                .self_start()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--control-secondary-text-default"))
+                                .child("Preview Server Hub")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_guild_space_nux(guild, published, cx);
+                                })),
+                        )
+                },
+            )
             .into_any_element()
     }
 

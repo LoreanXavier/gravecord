@@ -646,6 +646,150 @@ pub(crate) struct ReviewContext {
     pub can_edit_plan: bool,
 }
 
+/// Formatted plan option for module `726775` (`X`, unified checkout `PlanRadioGroup` `677959.me`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlanSelectorRow {
+    pub label: String,
+    pub sub_text: String,
+    pub sub_text_strikethrough: Option<String>,
+    pub secondary_sub_text: Option<String>,
+    pub badge_text: Option<String>,
+    pub disabled: bool,
+}
+
+/// Pure `726775` builder covering loading (`ZTNur7`), trial (`$0` + `hXcaLT`), monthly/yearly discount
+/// (`ODKoJd`/`JsSin7`/`VZ8Tvh`/`nsG1jw`), current plan (`ymSxhy`), and yearly per-month breakdown (`uVgNlo`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_plan_selector_row(
+    yearly: bool,
+    loading: bool,
+    is_current_plan: bool,
+    is_trial_eligible: bool,
+    discount_offer: Option<CheckoutDiscountOffer>,
+    regular_price: &str,
+    per_month_of_year: Option<&str>,
+    discounted_price: Option<&str>,
+    savings_badge: Option<&str>,
+) -> PlanSelectorRow {
+    let label = if yearly {
+        dc_intl::t("M2mY1J").to_owned()
+    } else {
+        dc_intl::t("8gVLB3").to_owned()
+    };
+    if loading {
+        return PlanSelectorRow {
+            label,
+            sub_text: dc_intl::t("ZTNur7").to_owned(),
+            sub_text_strikethrough: None,
+            secondary_sub_text: None,
+            badge_text: None,
+            disabled: is_current_plan,
+        };
+    }
+    if is_trial_eligible {
+        return PlanSelectorRow {
+            label,
+            sub_text: dc_intl::format("hXcaLT", &[("price", dc_intl::Arg::Str("$0".into()))]),
+            sub_text_strikethrough: None,
+            secondary_sub_text: if is_current_plan {
+                Some(dc_intl::t("ymSxhy").to_owned())
+            } else {
+                None
+            },
+            badge_text: savings_badge.map(|s| format!("{s} OFF")),
+            disabled: is_current_plan,
+        };
+    }
+    if let Some(offer) = discount_offer {
+        if offer.is_yearly && yearly {
+            let discounted = discounted_price.unwrap_or(regular_price);
+            return PlanSelectorRow {
+                label,
+                sub_text: dc_intl::format(
+                    "hXcaLT",
+                    &[("price", dc_intl::Arg::Str(discounted.into()))],
+                ),
+                sub_text_strikethrough: Some(regular_price.to_owned()),
+                secondary_sub_text: Some(dc_intl::format(
+                    "VZ8Tvh",
+                    &[("regularPrice", dc_intl::Arg::Str(regular_price.into()))],
+                )),
+                badge_text: savings_badge
+                    .map(|s| {
+                        dc_intl::format("nsG1jw", &[("savingsText", dc_intl::Arg::Str(s.into()))])
+                    })
+                    .or_else(|| {
+                        let pct = format!("{}%", offer.discount_percent);
+                        Some(dc_intl::format(
+                            "nsG1jw",
+                            &[("savingsText", dc_intl::Arg::Str(pct.into()))],
+                        ))
+                    }),
+                disabled: is_current_plan,
+            };
+        }
+        if !offer.is_yearly && !yearly {
+            let discounted = discounted_price.unwrap_or(regular_price);
+            let after_runs = dc_intl::format_runs(
+                "JsSin7",
+                &[
+                    ("priceRate", dc_intl::Arg::Str(regular_price.into())),
+                    (
+                        "intervalCount",
+                        dc_intl::Arg::Num(offer.interval_count.max(1) as f64),
+                    ),
+                ],
+            );
+            let after_line: String = after_runs.into_iter().map(|(t, _)| t).collect();
+            return PlanSelectorRow {
+                label,
+                sub_text: dc_intl::format(
+                    "hXcaLT",
+                    &[("price", dc_intl::Arg::Str(discounted.into()))],
+                ),
+                sub_text_strikethrough: None,
+                secondary_sub_text: Some(after_line),
+                badge_text: None,
+                disabled: is_current_plan,
+            };
+        }
+        if !offer.is_yearly && yearly {
+            let pct_text = dc_intl::format(
+                "ODKoJd",
+                &[("percent", dc_intl::Arg::Num(offer.discount_percent as f64))],
+            );
+            return PlanSelectorRow {
+                label,
+                sub_text: regular_price.to_owned(),
+                sub_text_strikethrough: None,
+                secondary_sub_text: if is_current_plan {
+                    Some(dc_intl::t("ymSxhy").to_owned())
+                } else {
+                    Some(pct_text)
+                },
+                badge_text: savings_badge.map(|s| format!("{s} OFF")),
+                disabled: is_current_plan,
+            };
+        }
+    }
+    let secondary = if is_current_plan {
+        Some(dc_intl::t("ymSxhy").to_owned())
+    } else if yearly {
+        per_month_of_year
+            .map(|pm| dc_intl::format("uVgNlo", &[("price", dc_intl::Arg::Str(pm.into()))]))
+    } else {
+        None
+    };
+    PlanSelectorRow {
+        label,
+        sub_text: regular_price.to_owned(),
+        sub_text_strikethrough: None,
+        secondary_sub_text: secondary,
+        badge_text: savings_badge.map(|s| format!("{s} OFF")),
+        disabled: is_current_plan,
+    }
+}
+
 /// Active checkout discount offer for module `498750` (`hXcaLT` + `VZ8Tvh` / `JsSin7`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CheckoutDiscountOffer {
@@ -2766,27 +2910,48 @@ impl Root {
             .flex_col()
             .gap(px(8.))
             .children(year_price.as_ref().map(|price| {
+                let pm = price.per_month_of_year().display();
+                let spec = build_plan_selector_row(
+                    true,
+                    false,
+                    false,
+                    false,
+                    None,
+                    &price.display(),
+                    Some(&pm),
+                    None,
+                    badge.as_deref(),
+                );
                 self.radio_row(
                     "purchase-yearly",
                     "Yearly",
-                    badge.clone(),
-                    price.display(),
-                    Some(format!(
-                        "{}/month billed annually",
-                        price.per_month_of_year().display()
-                    )),
+                    spec.badge_text
+                        .map(|b| b.trim_end_matches(" OFF").to_owned()),
+                    spec.sub_text,
+                    spec.secondary_sub_text,
                     yearly,
                     true,
                     cx,
                 )
             }))
             .children(month_price.as_ref().map(|price| {
+                let spec = build_plan_selector_row(
+                    false,
+                    false,
+                    false,
+                    false,
+                    None,
+                    &price.display(),
+                    None,
+                    None,
+                    None,
+                );
                 self.radio_row(
                     "purchase-monthly",
                     "Monthly",
-                    None,
-                    price.display(),
-                    None,
+                    spec.badge_text,
+                    spec.sub_text,
+                    spec.secondary_sub_text,
                     !yearly,
                     false,
                     cx,
@@ -5678,5 +5843,39 @@ mod tests {
         ] {
             assert!(dc_intl::has_key(k), "missing 677959 key {k}");
         }
+
+        // Module 726775 plan selector row formatting: loading, trial, current plan, yearly savings.
+        let loading = super::build_plan_selector_row(
+            false, true, false, false, None, "$9.99/mo", None, None, None,
+        );
+        assert_eq!(loading.sub_text, dc_intl::t("ZTNur7"));
+        let trial = super::build_plan_selector_row(
+            false,
+            false,
+            false,
+            true,
+            None,
+            "$9.99/mo",
+            None,
+            None,
+            Some("16%"),
+        );
+        assert!(trial.sub_text.contains("$0"));
+        let current = super::build_plan_selector_row(
+            true,
+            false,
+            true,
+            false,
+            None,
+            "$99.99/yr",
+            Some("$8.33/mo"),
+            None,
+            Some("16%"),
+        );
+        assert!(current.disabled);
+        assert_eq!(
+            current.secondary_sub_text.as_deref(),
+            Some(dc_intl::t("ymSxhy"))
+        );
     }
 }
