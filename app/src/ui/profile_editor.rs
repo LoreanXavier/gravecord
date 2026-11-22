@@ -450,7 +450,14 @@ impl Root {
                 if ok {
                     self.profile_editor_commit_save(&body["body"], cx);
                 } else {
-                    open.error = Some(dc_intl::tr("Something went wrong. Try again.").to_owned());
+                    let is_guild = open.guild.is_some();
+                    let guild_tag_err = body["body"]["errors"]["guild_tag"]
+                        .as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|v| v.as_str());
+                    let msg = profile_save_error_message(is_guild, guild_tag_err);
+                    open.error = Some(msg.clone());
+                    self.put_app_toast(msg, false, cx);
                 }
             }
             _ => {}
@@ -1434,9 +1441,36 @@ impl Root {
     }
 }
 
+/// Module 974504 (`E` / `f`): resolves the save-notice error message (`s35OuK` for guild with
+/// `errors.guild_tag[0]` precedence, `84MExs` for main profile).
+pub(super) fn profile_save_error_message(is_guild: bool, guild_tag_error: Option<&str>) -> String {
+    if is_guild {
+        if let Some(tag_err) = guild_tag_error.filter(|s| !s.trim().is_empty()) {
+            return tag_err.to_owned();
+        }
+        return dc_intl::t("s35OuK").to_owned();
+    }
+    dc_intl::t("84MExs").to_owned()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::profile_route;
+    use super::{profile_route, profile_save_error_message};
+
+    #[test]
+    fn profile_save_notice_974504_error_precedence() {
+        assert!(!dc_intl::t("84MExs").is_empty());
+        assert!(!dc_intl::t("s35OuK").is_empty());
+        assert_eq!(
+            profile_save_error_message(false, None),
+            dc_intl::t("84MExs")
+        );
+        assert_eq!(profile_save_error_message(true, None), dc_intl::t("s35OuK"));
+        assert_eq!(
+            profile_save_error_message(true, Some("Tag already taken")),
+            "Tag already taken"
+        );
+    }
 
     /// The editor asks for its profile as `u7` of module 927071 does: the modal type with mutual guilds and the mutual
     /// friends' count.

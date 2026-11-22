@@ -952,6 +952,8 @@ pub struct Root {
     premium_announcement_modal: Option<premium_announcement_modal::PremiumAnnouncementModalState>,
     /// Checkpoint 2026 full-screen interactive overlay (module 925433).
     checkpoint_2026: Option<checkpoint::CheckpointState>,
+    /// Game Server Created / Updated celebratory success modal (module 978084).
+    game_server_success_modal: Option<shop::game_server_success::GameServerSuccessModal>,
     /// Stream Privacy Code modal (module 773262, DAVE MLS stream epoch authenticator).
     stream_privacy_code_modal: Option<voice_panel::StreamPrivacyCodeModal>,
     /// Quest Bar Bounty Card overlay (module 682908).
@@ -1620,6 +1622,7 @@ impl Root {
             age_verification_modal: None,
             premium_announcement_modal: None,
             checkpoint_2026: None,
+            game_server_success_modal: None,
             stream_privacy_code_modal: None,
             quest_bar_bounty: None,
             suspended_safety_hub: None,
@@ -12333,6 +12336,9 @@ impl Render for Root {
                         || this.age_verification_modal.is_some()
                         || this.premium_announcement_modal.is_some()
                         || this.checkpoint_2026.is_some()
+                        || this.game_server_success_modal.is_some()
+                        || this.library.launch_menu.is_some()
+                        || this.vv.soundboard_nux_preview
                         || this.stream_privacy_code_modal.is_some()
                         || this.vv.invite_suggestions_open
                         || this.quest_bar_bounty.is_some()
@@ -12399,6 +12405,9 @@ impl Render for Root {
                     this.close_premium_announcement_modal();
                     this.close_guild_space();
                     this.close_checkpoint_2026();
+                    this.close_game_server_success_modal();
+                    this.library.launch_menu = None;
+                    this.vv.soundboard_nux_preview = false;
                     this.premium_uncancel_modal = None;
                     this.close_claim_account_if_allowed();
                     this.transfer_ownership_modal = None;
@@ -13670,6 +13679,7 @@ impl Render for Root {
             .children(self.library_remove_modal(cx))
             .children(self.library_hide_modal(cx))
             .children(self.library_game_menu_layer(cx))
+            .children(self.library_launch_menu_layer(cx))
             .children(self.boost_cancel_modal_layer(cx))
             .children(self.channel_link_modal_layer(cx))
             .children(self.hub_add_server_modal_layer(cx))
@@ -13853,6 +13863,8 @@ impl Render for Root {
             .children(self.premium_announcement_modal_layer(cx))
             .children(self.guild_space_layer(cx))
             .children(self.checkpoint_2026_layer(cx))
+            .children(self.game_server_success_modal_layer(cx))
+            .children(self.soundboard_nux_preview_layer(cx))
             .children(self.spotify_premium_layer(cx))
             .children(self.lightbox_layer(cx))
             .children(self.video_fullscreen_layer(window, cx))

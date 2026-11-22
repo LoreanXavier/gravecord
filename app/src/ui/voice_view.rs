@@ -246,6 +246,8 @@ pub(super) struct State {
     pub notices: super::notice_bar::State,
     /// Dominant colour of an avatar by its image key, computed off the UI thread once the image is ready.
     colors: RefCell<HashMap<String, TileColor>>,
+    /// Module 987933 (`SOUNDBOARD_DESKTOP_NUX = 805`): preview override for capture/QA.
+    pub soundboard_nux_preview: bool,
     pub(super) background: super::call_background::State,
 }
 
@@ -284,6 +286,7 @@ impl Default for State {
             tile_menu: None,
             notices: Default::default(),
             colors: RefCell::new(HashMap::new()),
+            soundboard_nux_preview: false,
             background: Default::default(),
             hovered_controls: HashSet::new(),
         }
@@ -2175,7 +2178,18 @@ impl Root {
                     .flex()
                     .items_end()
                     .justify_between()
-                    .child(pill)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(pill)
+                            .children(
+                                stream_tile
+                                    .then(|| self.hd_streaming_referral_upsell(user_id, idle, cx))
+                                    .flatten(),
+                            ),
+                    )
                     // Module 175203 `eM`: a focused tile's action row has no Options; a focused stream's has its zoom
                     // controls when in the call (`zoom-controls`, design/dom/popouts/stream-focused-darker-cozy.json);
                     // non-focused tiles show Options both in-call and while observing (`outside`).
@@ -3449,6 +3463,7 @@ impl Root {
                     .into_any_element(),
                 div()
                     .id("call-soundboard-hover")
+                    .relative()
                     .on_hover({
                         let id = soundboard_id.clone();
                         cx.listener(move |this, inside: &bool, _, cx| {
@@ -3460,6 +3475,11 @@ impl Root {
                             this.soundboard_hover(*inside, cx);
                         })
                     })
+                    .children(self.soundboard_desktop_nux_popover(
+                        soundboard_open,
+                        soundboard_reason.is_none(),
+                        cx,
+                    ))
                     .child(self.bar_tip(
                         "call-soundboard-tip",
                         Tip::text(
@@ -5081,6 +5101,286 @@ fn video_tile_theme_stops(primary: u32, secondary: u32, modal_bg: Rgba) -> (Rgba
     )
 }
 
+/// Module 987933 (`554146.M.SOUNDBOARD_DESKTOP_NUX = 805`): dismissible content bit for Soundboard Desktop NUX.
+pub(crate) const SOUNDBOARD_DESKTOP_NUX: u16 = 805;
+
+/// Module 987933: returns true when the Soundboard Desktop NUX coachmark popover should show.
+pub(crate) fn soundboard_nux_should_show(
+    dismissed: bool,
+    soundboard_open: bool,
+    soundboard_enabled: bool,
+) -> bool {
+    !dismissed && !soundboard_open && soundboard_enabled
+}
+
+/// Module 986491 (`834708.d`): HD Streaming contextual Nitro referral eligibility gate.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn hd_streaming_referral_eligible(
+    is_self: bool,
+    is_bot: bool,
+    streamer_is_premium: bool,
+    blocked_or_ignored: bool,
+    already_referred: bool,
+    referrals_remaining: u32,
+    comm_rank: Option<u32>,
+) -> bool {
+    !is_self
+        && !is_bot
+        && !streamer_is_premium
+        && !blocked_or_ignored
+        && !already_referred
+        && referrals_remaining > 0
+        && comm_rank.is_some_and(|rank| rank <= 20)
+}
+
+impl Root {
+    /// Module 986491 (`HDStreamingContextualReferralUpsell`, CSS `890054`):
+    /// overlay-primary `"Share HD"` (`n/a182`) button on a stream tile opening the Nitro referral picker.
+    pub(super) fn hd_streaming_referral_upsell(
+        &self,
+        streamer_id: Id,
+        idle: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let me_id = self.stores.current_user.as_ref().map(|u| u.id);
+        let is_self = me_id == Some(streamer_id);
+        let user = self.stores.users.get(&streamer_id);
+        let is_bot = user.is_some_and(|u| u.bot);
+        let blocked = self.stores.relationships.get(&streamer_id).copied() == Some(2);
+        let referrals_remaining = if self.stores.account.premium_type.is_some_and(|p| p >= 2) {
+            1
+        } else {
+            0
+        };
+        if !hd_streaming_referral_eligible(
+            is_self,
+            is_bot,
+            false,
+            blocked,
+            false,
+            referrals_remaining,
+            None,
+        ) {
+            return None;
+        }
+        Some(
+            div()
+                .id(SharedString::from(format!("stream-share-hd-{streamer_id}")))
+                .h(px(32.))
+                .px(px(10.))
+                .rounded(px(8.))
+                .bg(rgba(0xffffffff))
+                .hover(|s| s.opacity(0.92))
+                .when(idle, |d| d.opacity(0.))
+                .when(!idle, |d| d.cursor_pointer())
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.open_nitro_trials_picker(cx);
+                }))
+                .child(icon("nitro_wheel", 16., "--black-500"))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(rgba(0x111214ff))
+                        .child(dc_intl::t("n/a182")),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Module 987933: dismisses `SOUNDBOARD_DESKTOP_NUX` (`805`) and persists via settings-proto.
+    pub(super) fn dismiss_soundboard_desktop_nux(&mut self) {
+        self.vv.soundboard_nux_preview = false;
+        if self.stores.content_dismissed(SOUNDBOARD_DESKTOP_NUX) {
+            return;
+        }
+        let patch = self.stores.dismiss_content(SOUNDBOARD_DESKTOP_NUX);
+        if !patch.is_empty() && !crate::storage::settings_writes_blocked() {
+            let _ = self.requests.send(crate::net::Request::Rest {
+                key: None,
+                method: reqwest::Method::PATCH,
+                route: "/users/@me/settings-proto/1".into(),
+                body: Some(serde_json::json!({ "settings": patch })),
+            });
+        }
+    }
+
+    /// Module 987933 (`SoundboardDesktopNuxCoachmark`): pink-gradient coachmark popover (`UaGc2V` / `lyhz2x` / `6EJvHt`)
+    /// anchored above the voice action bar Soundboard button (`533978`).
+    pub(super) fn soundboard_desktop_nux_popover(
+        &self,
+        soundboard_open: bool,
+        soundboard_enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let show = self.vv.soundboard_nux_preview
+            || (self.stores.settings_loaded()
+                && soundboard_nux_should_show(
+                    self.stores.content_dismissed(SOUNDBOARD_DESKTOP_NUX),
+                    soundboard_open,
+                    soundboard_enabled,
+                ));
+        if !show {
+            return None;
+        }
+        Some(self.render_soundboard_nux_card(true, cx))
+    }
+
+    /// Module 987933: standalone preview layer (when triggered outside an active call for QA/capture).
+    pub(in crate::ui) fn soundboard_nux_preview_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.vv.soundboard_nux_preview {
+            return None;
+        }
+        Some(
+            deferred(
+                div()
+                    .id("soundboard-nux-preview-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000099))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.dismiss_soundboard_desktop_nux();
+                            cx.notify();
+                        }),
+                    )
+                    .child(self.render_soundboard_nux_card(false, cx)),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    fn render_soundboard_nux_card(&self, anchored: bool, cx: &mut Context<Self>) -> AnyElement {
+        let mut card = div()
+            .id("soundboard-desktop-nux-card")
+            .occlude()
+            .w(px(288.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
+        if anchored {
+            card = card.absolute().bottom(px(64.)).left(px(-116.));
+        }
+        card.child(
+            div()
+                .relative()
+                .h(px(108.))
+                .w_full()
+                .bg(gpui::linear_gradient(
+                    135.,
+                    gpui::linear_color_stop(rgba(0xe060a8ff), 0.),
+                    gpui::linear_color_stop(rgba(0x5865f2ff), 1.),
+                ))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon("voice_soundboard", 40., "--white"))
+                .child(
+                    div()
+                        .id("soundboard-nux-close")
+                        .absolute()
+                        .top(px(8.))
+                        .right(px(8.))
+                        .size(px(26.))
+                        .rounded_full()
+                        .bg(rgba(0x00000055))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .aria_label(SharedString::from(dc_intl::t("cpT0Cq")))
+                        .child(icon("modal_close", 14., "--white"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dismiss_soundboard_desktop_nux();
+                            cx.notify();
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .p(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("UaGc2V")),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("lyhz2x")),
+                )
+                .child(
+                    div()
+                        .id("soundboard-nux-open-cta")
+                        .mt(px(4.))
+                        .h(px(34.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .bg(color("--control-primary-background-default"))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(6.))
+                        .child(icon("voice_soundboard", 16., "--white"))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("6EJvHt")),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dismiss_soundboard_desktop_nux();
+                            this.panel.popout = Some(super::voice_panel::Popout::Soundboard);
+                            cx.notify();
+                        })),
+                ),
+        )
+        .into_any_element()
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_soundboard_nux(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.vv.soundboard_nux_preview = false;
+            cx.notify();
+            return "soundboard nux closed".to_owned();
+        }
+        self.vv.soundboard_nux_preview = true;
+        cx.notify();
+        "soundboard nux opened".to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5185,5 +5485,73 @@ mod tests {
         let multi = activity_participants_subtitle("Alex", 4);
         assert!(multi.contains("Alex") && multi.contains('3'), "got {multi}");
         assert_eq!(dc_intl::t("4i2vj+"), "Join Activity");
+    }
+
+    #[test]
+    fn hd_streaming_referral_986491_and_soundboard_nux_987933() {
+        for key in ["n/a182", "rdh1ou", "NkgMIP", "UaGc2V", "lyhz2x", "6EJvHt"] {
+            assert!(dc_intl::has_key(key), "missing 986491/987933 key {key}");
+        }
+        assert_eq!(dc_intl::t("n/a182"), "Share HD");
+        assert!(hd_streaming_referral_eligible(
+            false,
+            false,
+            false,
+            false,
+            false,
+            2,
+            Some(5)
+        ));
+        assert!(!hd_streaming_referral_eligible(
+            true,
+            false,
+            false,
+            false,
+            false,
+            2,
+            Some(5)
+        ));
+        assert!(!hd_streaming_referral_eligible(
+            false,
+            true,
+            false,
+            false,
+            false,
+            2,
+            Some(5)
+        ));
+        assert!(!hd_streaming_referral_eligible(
+            false,
+            false,
+            true,
+            false,
+            false,
+            2,
+            Some(5)
+        ));
+        assert!(!hd_streaming_referral_eligible(
+            false,
+            false,
+            false,
+            false,
+            false,
+            2,
+            Some(25)
+        ));
+        assert!(!hd_streaming_referral_eligible(
+            false,
+            false,
+            false,
+            false,
+            false,
+            0,
+            Some(5)
+        ));
+
+        assert_eq!(SOUNDBOARD_DESKTOP_NUX, 805);
+        assert!(soundboard_nux_should_show(false, false, true));
+        assert!(!soundboard_nux_should_show(true, false, true));
+        assert!(!soundboard_nux_should_show(false, true, true));
+        assert!(!soundboard_nux_should_show(false, false, false));
     }
 }

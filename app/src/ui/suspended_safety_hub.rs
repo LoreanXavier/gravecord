@@ -122,6 +122,118 @@ impl SuspendedSafetyHub {
     }
 }
 
+/// Module 962877 (`40449.uv`): supported age verification methods (`1` selfie, `2` ID, `9` Google Wallet).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgeVerificationMethod {
+    FacialAgeEstimation = 1,
+    IdVerification = 2,
+    GoogleWallet = 9,
+}
+
+impl AgeVerificationMethod {
+    pub(crate) fn from_id(id: u8) -> Option<Self> {
+        match id {
+            1 => Some(Self::FacialAgeEstimation),
+            2 => Some(Self::IdVerification),
+            9 => Some(Self::GoogleWallet),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn title(self) -> String {
+        match self {
+            Self::FacialAgeEstimation => age_copy("2yLvkS", "Video selfie via k-ID"),
+            Self::IdVerification => age_copy("dwkwo0", "ID scan via k-ID"),
+            Self::GoogleWallet => age_copy("Y9sLpR", "Google Wallet ID Pass"),
+        }
+    }
+
+    pub(crate) fn description(self) -> String {
+        match self {
+            Self::FacialAgeEstimation => age_copy(
+                "eJmat5",
+                "Estimate your age with a video selfie. Video stays on-device, no biometric data is shared.",
+            ),
+            Self::IdVerification => age_copy(
+                "ZdmRwW",
+                "Scan your ID and take a selfie to confirm it's you. Both are deleted right after confirmation and never linked to your account.",
+            ),
+            Self::GoogleWallet => age_copy(
+                "dah4bF",
+                "Use an ID Pass based on your passport info. Your ID details stay in Google Wallet.",
+            ),
+        }
+    }
+}
+
+/// Module 962877: filters raw method IDs, excluding Google Wallet (`9`) unless enabled + available.
+pub(crate) fn filter_age_verification_methods(
+    raw: &[u8],
+    google_wallet_enabled: bool,
+) -> Vec<AgeVerificationMethod> {
+    raw.iter()
+        .filter_map(|&id| AgeVerificationMethod::from_id(id))
+        .filter(|&m| m != AgeVerificationMethod::GoogleWallet || google_wallet_enabled)
+        .collect()
+}
+
+/// Module 962877 / 295972 (`GET /age-verification/methods` or `POST /age-verification/suspended/methods`).
+#[allow(dead_code)]
+pub(crate) fn fetch_age_verification_methods_request(suspended_token: Option<&str>) -> Request {
+    if let Some(token) = suspended_token.filter(|t| !t.is_empty()) {
+        Request::Rest {
+            key: Some("safety-hub:age-methods".to_owned()),
+            method: reqwest::Method::POST,
+            route: "/age-verification/suspended/methods".to_owned(),
+            body: Some(serde_json::json!({ "token": token })),
+        }
+    } else {
+        Request::Rest {
+            key: Some("safety-hub:age-methods".to_owned()),
+            method: reqwest::Method::GET,
+            route: "/age-verification/methods".to_owned(),
+            body: None,
+        }
+    }
+}
+
+/// Module 962877 / 750481: initiate verification for a specific method (`POST /safety-hub/suspended/request-verification` or `/age-verification/verify`).
+pub(crate) fn request_age_verification_method(
+    method: AgeVerificationMethod,
+    suspended_token: Option<&str>,
+    classification_id: Option<&str>,
+) -> Request {
+    if let Some(token) = suspended_token.filter(|t| !t.is_empty()) {
+        Request::Rest {
+            key: Some("safety-hub:age-verify-start".to_owned()),
+            method: reqwest::Method::POST,
+            route: "/safety-hub/suspended/request-verification".to_owned(),
+            body: Some(serde_json::json!({
+                "token": token,
+                "from_classification_id": classification_id,
+                "method": method as u8,
+            })),
+        }
+    } else {
+        Request::Rest {
+            key: Some("safety-hub:age-verify-start".to_owned()),
+            method: reqwest::Method::POST,
+            route: "/age-verification/verify".to_owned(),
+            body: Some(serde_json::json!({ "method": method as u8 })),
+        }
+    }
+}
+
+fn age_copy(key: &str, fallback: &str) -> String {
+    if dc_intl::has_key(key) {
+        let s = dc_intl::t(key);
+        if !s.trim().is_empty() && s != key {
+            return s.to_owned();
+        }
+    }
+    fallback.to_owned()
+}
+
 enum BannerKind {
     Info,
     Success,
@@ -975,51 +1087,158 @@ impl Root {
 
         let age_verify_overlay = hub.age_verify_step.map(|step| {
             let show_back = step > 0;
+            let methods = if hub.manual_review_methods_available > 0 || step == 0 {
+                filter_age_verification_methods(&[1, 2, 9], false)
+            } else {
+                Vec::new()
+            };
+            let suspended_tok = hub.suspended_token.clone();
+            let first_classification = hub.violations.first().map(|v| v.id.clone());
+            // Module 962877 (`ExpressiveModal` body): blue expressive header, data-assurance banner
+            // (`.dataAssurance_ybIyIN`, `ar3a3q`), clickable `40449.uv` method rows or empty+Reload (`cR6336`/`hDvmYP`).
             let body = div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(px(16.))
+                // Subtitle (`h7qzoa` / `HxS3oQ`)
                 .child(
                     div()
                         .text_size(px(14.))
                         .line_height(px(20.))
-                        .text_color(color("--text-default"))
-                        .child(if step == 0 {
-                            "Choose how you'd like to confirm your age to restore access to your account."
-                        } else {
-                            "Follow the instructions in the verification prompt or go back to choose another method."
-                        }),
+                        .text_color(color("--text-muted"))
+                        .child(age_copy(
+                            "h7qzoa",
+                            "Restore access to Discord by confirming your age using one of the options below.",
+                        )),
                 )
-                .when(step == 0, |col| {
-                    col.child(
-                        div()
-                            .id("age-verify-method-next")
-                            .px(px(14.))
-                            .py(px(10.))
-                            .rounded(px(8.))
-                            .bg(color("--background-base-lower"))
-                            .border_1()
-                            .border_color(color("--border-subtle"))
-                            .hover(|s| s.bg(color("--background-mod-subtle")))
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(color("--text-strong"))
-                                    .child(dc_intl::t("IcA9iD")),
-                            )
-                            .child(icon("chevron_right", 16., "--interactive-icon-default"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(hub) = this.suspended_safety_hub.as_mut() {
-                                    hub.age_verify_step = Some(1);
-                                }
-                                cx.notify();
-                            })),
-                    )
+                // `.dataAssurance_ybIyIN`: info banner (`ar3a3q`)
+                .child(
+                    div()
+                        .px(px(12.))
+                        .py(px(8.))
+                        .rounded(px(8.))
+                        .bg(color("--background-feedback-info"))
+                        .border_1()
+                        .border_color(color("--border-muted"))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon("circle_info", 20., "--text-feedback-info"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-feedback-info"))
+                                .child(age_copy(
+                                    "ar3a3q",
+                                    "The information you provide is only used to confirm your age group, then it's deleted.",
+                                )),
+                        ),
+                )
+                .child(if methods.is_empty() {
+                    div()
+                        .py(px(12.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .text_center()
+                                .text_size(px(14.))
+                                .text_color(color("--text-muted"))
+                                .child(age_copy(
+                                    "cR6336",
+                                    "No age verification methods available. Please check again shortly.",
+                                )),
+                        )
+                        .child(
+                            div()
+                                .id("age-verify-reload-methods")
+                                .h(px(32.))
+                                .px(px(14.))
+                                .rounded(px(8.))
+                                .bg(color("--control-primary-background-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(icon("clips_retry", 14., "--white"))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(age_copy("hDvmYP", "Reload")),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.fetch_suspended_age_methods(cx);
+                                })),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .children(methods.into_iter().enumerate().map(|(idx, method)| {
+                            let tok = suspended_tok.clone();
+                            let cls = first_classification.clone();
+                            div()
+                                .id(SharedString::from(format!("age-verify-method-{idx}")))
+                                .px(px(14.))
+                                .py(px(12.))
+                                .rounded(px(8.))
+                                .bg(color("--background-base-lower"))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(10.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .child(method.title()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .line_height(px(16.))
+                                                .text_color(color("--text-muted"))
+                                                .child(method.description()),
+                                        ),
+                                )
+                                .child(icon(
+                                    "chevron_right_20",
+                                    16.,
+                                    "--interactive-icon-default",
+                                ))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let _ = this.requests.send(request_age_verification_method(
+                                        method,
+                                        Some(tok.as_str()),
+                                        cls.as_deref(),
+                                    ));
+                                    if let Some(hub) = this.suspended_safety_hub.as_mut() {
+                                        hub.age_verify_step = Some(1);
+                                    }
+                                    cx.notify();
+                                }))
+                        }))
+                        .into_any_element()
                 })
                 .into_any_element();
             age_verification_modal_layout(body, false, show_back, false, None, cx)
@@ -1224,5 +1443,32 @@ mod tests {
         assert!(age_verification_footer_space_between(true, false));
         assert!(!age_verification_footer_space_between(false, false));
         assert!(!age_verification_footer_space_between(true, true));
+    }
+
+    #[test]
+    fn expressive_age_verify_962877_methods_and_requests() {
+        for key in ["2jxGer", "lSWVTM", "xYXsr6", "HxS3oQ"] {
+            assert!(dc_intl::has_key(key), "missing 962877 key {key}");
+        }
+        assert_eq!(
+            filter_age_verification_methods(&[1, 2, 9, 99], false),
+            vec![
+                AgeVerificationMethod::FacialAgeEstimation,
+                AgeVerificationMethod::IdVerification,
+            ]
+        );
+        assert_eq!(filter_age_verification_methods(&[1, 2, 9], true).len(), 3);
+        assert!(matches!(
+            fetch_age_verification_methods_request(None),
+            Request::Rest { route, .. } if route == "/age-verification/methods"
+        ));
+        assert!(matches!(
+            fetch_age_verification_methods_request(Some("tok")),
+            Request::Rest { route, .. } if route == "/age-verification/suspended/methods"
+        ));
+        assert!(matches!(
+            request_age_verification_method(AgeVerificationMethod::IdVerification, Some("tok"), Some("c1")),
+            Request::Rest { route, .. } if route == "/safety-hub/suspended/request-verification"
+        ));
     }
 }

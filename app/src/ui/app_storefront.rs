@@ -1333,6 +1333,55 @@ impl Root {
             .as_ref()
             .and_then(|a| a["privacy_policy_url"].as_str())
             .map(str::to_owned);
+        let app_name_hdr = application
+            .as_ref()
+            .and_then(|a| a["name"].as_str())
+            .map(str::to_owned);
+        let app_icon_img = application
+            .as_ref()
+            .and_then(|a| a["icon"].as_str())
+            .and_then(|hash| {
+                let url = format!("https://cdn.discordapp.com/app-icons/{app}/{hash}.webp?size=64");
+                self.images.get(&url).cloned()
+            });
+        // Module 963179 (`ItemDetailsModal`): returns empty when a one-time item SKU has no price.
+        if let StorefrontDetail::Item(sku) = detail
+            && sku.price.is_none()
+        {
+            return div().into_any_element();
+        }
+        let item_hero: Option<AnyElement> = match detail {
+            StorefrontDetail::Item(sku) => {
+                let hero_img = sku.header.as_deref().and_then(|asset| {
+                    let url = format!(
+                        "https://cdn.discordapp.com/app-assets/{app}/store/{asset}.webp?size=256"
+                    );
+                    self.images.get(&url).cloned()
+                });
+                // Module 963179 / 752166.D (`ExpandedProductCard`): 256px header art or 96x96 TicketIcon fallback.
+                Some(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(px(180.))
+                        .bg(color("--background-base-low"))
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(match hero_img {
+                            Some(im) => img(im)
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Cover)
+                                .into_any_element(),
+                            None => icon("system_ticket", 96., "--text-muted").into_any_element(),
+                        })
+                        .into_any_element(),
+                )
+            }
+            _ => None,
+        };
+        let is_item_detail = matches!(detail, StorefrontDetail::Item(_));
         let (title, badge, description, extra_body, cta): (
             String,
             Option<String>,
@@ -1466,7 +1515,7 @@ impl Root {
         let dialog = div()
             .id("storefront-detail-modal")
             .occlude()
-            .w(px(480.))
+            .w(px(if is_item_detail { 540. } else { 480. }))
             .rounded(px(12.))
             .bg(color("--modal-background"))
             .border_1()
@@ -1475,6 +1524,65 @@ impl Root {
             .flex()
             .flex_col()
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            // Module 963179 / 550732.C (`AppProductModal` header): 25px app icon + clickable app name
+            .when_some(app_name_hdr, |modal, name| {
+                modal.child(
+                    div()
+                        .px(px(20.))
+                        .py(px(12.))
+                        .border_b_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .id("storefront-detail-app-title")
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .children(app_icon_img.map(|im| {
+                                    img(im)
+                                        .size(px(25.))
+                                        .rounded(px(6.))
+                                        .object_fit(gpui::ObjectFit::Cover)
+                                }))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-strong"))
+                                        .child(name),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(open) = this.app_storefront.as_mut() {
+                                        open.detail = None;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("storefront-detail-close-top")
+                                .size(px(28.))
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("modal_close", 16., "--interactive-icon-default"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(open) = this.app_storefront.as_mut() {
+                                        open.detail = None;
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
+            .children(item_hero)
             .child(
                 div()
                     .px(px(20.))
@@ -2244,5 +2352,14 @@ mod tests {
         assert_eq!(more_benefits(3), "+ 3 more benefits");
         assert!(storefront_available(&json!({"storefront_available": true})));
         assert!(!storefront_available(&json!({})));
+    }
+
+    #[test]
+    fn item_details_modal_963179_intl_keys_resolve() {
+        for key in ["bm82mm", "6gprwf", "6cfuDj", "Xp5WTn", "0Bf80I"] {
+            assert!(dc_intl::has_key(key), "missing 963179 key {key}");
+        }
+        assert_eq!(dc_intl::t("bm82mm"), "0 / 1 Available");
+        assert_eq!(dc_intl::t("6gprwf"), "1 / 1 Available");
     }
 }

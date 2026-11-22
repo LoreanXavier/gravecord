@@ -987,9 +987,56 @@ impl Root {
                     .unwrap_or_default()
                     .is_empty()
                     || connect_url.is_some()
+                    || application.and_then(|a| cloud_play_launch_app_id(a, "en-US")).is_some()
                 {
                     let distributors = application.map(distributor_options).unwrap_or_default();
+                    let cloud_play_app = application.and_then(|a| cloud_play_launch_app_id(a, "en-US"));
                     let mut stack = div().flex().flex_col().gap(px(8.));
+                    // Module 985629 (`CloudPlayCtaButton`): "Try Game" (`jaYS/h`) with top tooltip `JVwWva`.
+                    if let Some(cp_app_id) = cloud_play_app {
+                        let cp_btn = div()
+                            .id(SharedString::from(format!(
+                                "activity-cloud-play-{user}-{index}-{large}"
+                            )))
+                            .when(!large, |d| d.w_full())
+                            .h(px(32.))
+                            .px(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--control-secondary-border-default"))
+                            .bg(color("--control-secondary-background-default"))
+                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(6.))
+                            .cursor_pointer()
+                            .child(icon("plugin_cloud_download", 16., "--text-strong"))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(strong)
+                                    .child(dc_intl::t("jaYS/h")),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                if let Ok(aid) = cp_app_id.parse::<Id>() {
+                                    this.put_app_toast(
+                                        format!("{} ({aid})", dc_intl::t("jaYS/h")),
+                                        true,
+                                        cx,
+                                    );
+                                }
+                            }));
+                        stack = stack.child(self.with_tip(
+                            format!("activity-cloud-play-tip-{user}-{index}-{large}"),
+                            super::tooltip::Tip::text(dc_intl::t("JVwWva"), super::tooltip::Side::Top),
+                            cp_btn,
+                            cx,
+                        ));
+                    }
                     // 802880 `th`: Connect Account, when the application has a connection entry point and this
                     // account has no linked account for it (the token fetch is not made: an unlinked account is
                     // assumed, so the button shows).
@@ -1799,6 +1846,42 @@ impl Root {
     }
 }
 
+/// Module 985629 (`CloudPlayCtaButton` / `359549.Ay`): `CLOUD_GAMING_DEMO` application flag.
+pub(crate) const CLOUD_GAMING_DEMO_FLAG: u64 = 1 << 16;
+
+/// Module 985629 / 359549: returns the launchable Cloud Play application ID if the application
+/// supports embedded Cloud Play demos in the active locale.
+pub(crate) fn cloud_play_launch_app_id(application: &Value, locale: &str) -> Option<String> {
+    let app_id = application["id"].as_str().filter(|s| !s.is_empty())?;
+    let cfg = &application["embedded_activity_config"];
+    if let Some(blocked) = cfg["blocked_locales"].as_array()
+        && blocked.iter().any(|l| l.as_str() == Some(locale))
+    {
+        return None;
+    }
+    if let Some(supported) = cfg["supported_locales"].as_array()
+        && !supported.is_empty()
+        && !supported.iter().any(|l| l.as_str() == Some(locale))
+    {
+        return None;
+    }
+    let flags = application["flags"].as_u64().unwrap_or(0);
+    let has_bot = application.get("bot").is_some_and(|b| b.is_object());
+    if (flags & CLOUD_GAMING_DEMO_FLAG) != 0 && has_bot {
+        return Some(app_id.to_owned());
+    }
+    if let Some(linked) = application.get("linked_games").and_then(Value::as_array) {
+        for g in linked {
+            if let Some(id) = g["id"].as_str().filter(|s| !s.is_empty())
+                && g.get("bot").is_some_and(|b| b.is_object())
+            {
+                return Some(id.to_owned());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2017,5 +2100,24 @@ mod tests {
         assert_eq!(ContentImageSize::Size72.small_px(), 32.);
         assert_eq!(ContentImageSize::Size100.main_px(), 100.);
         assert_eq!(ContentImageSize::Size100.small_px(), 32.);
+    }
+
+    #[test]
+    fn cloud_play_cta_985629_eligibility_and_intl() {
+        assert_eq!(dc_intl::t("jaYS/h"), "Try Game");
+        assert_eq!(dc_intl::t("JVwWva"), "Try with no install required");
+        let demo = json!({
+            "id": "555",
+            "flags": CLOUD_GAMING_DEMO_FLAG,
+            "bot": {"id": "556"},
+            "embedded_activity_config": {"blocked_locales": ["ja"]}
+        });
+        assert_eq!(
+            cloud_play_launch_app_id(&demo, "en-US").as_deref(),
+            Some("555")
+        );
+        assert!(cloud_play_launch_app_id(&demo, "ja").is_none());
+        let no_bot = json!({"id": "555", "flags": CLOUD_GAMING_DEMO_FLAG});
+        assert!(cloud_play_launch_app_id(&no_bot, "en-US").is_none());
     }
 }

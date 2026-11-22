@@ -1313,10 +1313,18 @@ impl Root {
             return None;
         }
         let saving = open.saving;
-        let message = if nitro {
-            "You're previewing what your profile could look like with Nitro"
+        let save_error = (!nitro).then(|| open.error.clone()).flatten();
+        let message: SharedString = if nitro {
+            SharedString::from("You're previewing what your profile could look like with Nitro")
+        } else if let Some(err) = save_error.as_ref() {
+            SharedString::from(err.clone())
         } else {
-            "Careful — you have unsaved changes!"
+            SharedString::from("Careful — you have unsaved changes!")
+        };
+        let message_token = if save_error.is_some() {
+            "--text-feedback-critical"
+        } else {
+            "--text-strong"
         };
         let buttons = if nitro {
             div()
@@ -1424,7 +1432,7 @@ impl Root {
                 .child(
                     div()
                         .flex_1()
-                        .child(text(message, 14., 18., 400., "--text-strong")),
+                        .child(text(message, 14., 18., 400., message_token)),
                 )
                 .child(buttons)
                 .into_any_element(),

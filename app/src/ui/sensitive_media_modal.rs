@@ -24,6 +24,24 @@ pub(crate) enum SensitiveExplainerMode {
     AgeRestricted,
 }
 
+/// Module 974875 / 705833: 14-day window (in ms) for sender explicit-media false-positive reports.
+pub(crate) const SENDER_FP_MAX_AGE_MS: u64 = 14 * 86_400_000;
+const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+
+/// Module 974875 (`705833.A.canSubmitFpReport`): returns true when the message has not yet been
+/// reported and its snowflake timestamp is strictly younger than 14 days.
+pub(crate) fn can_submit_sender_fp_report(
+    message_id: Id,
+    now_ms: u64,
+    already_submitted: bool,
+) -> bool {
+    if already_submitted {
+        return false;
+    }
+    let created_ms = (message_id >> 22).saturating_add(DISCORD_EPOCH_MS);
+    now_ms.saturating_sub(created_ms) < SENDER_FP_MAX_AGE_MS
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct SensitiveMediaModal {
     pub channel_id: Id,
@@ -34,6 +52,8 @@ pub(crate) struct SensitiveMediaModal {
     pub reported: bool,
     /// Module 961997 confirmation step ("Mark as not sensitive").
     pub confirm_false_positive: bool,
+    /// Module 974875 (`iS/eFN` / `YrjcgR` / `BddRzS`): expired/already-submitted alert dialog.
+    pub expired_alert: bool,
     pub loading: bool,
     pub preview_url: Option<String>,
     /// When `Some`, uses sender false-positive route (`287002` / `135598.wV`).
@@ -105,9 +125,62 @@ impl Root {
             mode,
             reported: false,
             confirm_false_positive: false,
+            expired_alert: false,
             loading: false,
             preview_url: None,
             sender_filenames: None,
+        });
+        cx.notify();
+    }
+
+    /// Module 974875 (`Q`): sender explicit-media false-positive report launcher.
+    /// If `can_submit_sender_fp_report` is false (>= 14 days old or already submitted), opens
+    /// the expired alert modal (`iS/eFN` / `YrjcgR` / `BddRzS`); otherwise opens `287002`/`961997`.
+    #[allow(dead_code)]
+    pub(super) fn open_sender_false_positive(
+        &mut self,
+        channel_id: Id,
+        message_id: Id,
+        attachment_ids: Vec<Id>,
+        filenames: Vec<String>,
+        already_submitted: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        if !can_submit_sender_fp_report(message_id, now_ms, already_submitted) {
+            self.sensitive_media_modal = Some(SensitiveMediaModal {
+                channel_id,
+                message_id,
+                attachment_ids,
+                embed_ids: Vec::new(),
+                mode: SensitiveExplainerMode::CanManageSettings,
+                reported: true,
+                confirm_false_positive: false,
+                expired_alert: true,
+                loading: false,
+                preview_url: None,
+                sender_filenames: Some(filenames),
+            });
+            cx.notify();
+            return;
+        }
+        if attachment_ids.is_empty() {
+            return;
+        }
+        self.sensitive_media_modal = Some(SensitiveMediaModal {
+            channel_id,
+            message_id,
+            attachment_ids,
+            embed_ids: Vec::new(),
+            mode: SensitiveExplainerMode::CanManageSettings,
+            reported: false,
+            confirm_false_positive: true,
+            expired_alert: false,
+            loading: false,
+            preview_url: None,
+            sender_filenames: Some(filenames),
         });
         cx.notify();
     }
@@ -130,9 +203,102 @@ impl Root {
         cx.notify();
     }
 
-    /// Modal layer for "Why we hide some media" (`743461`) & "Mark as not sensitive" confirm (`961997`).
+    /// Modal layer for "Why we hide some media" (`743461`), expired sender FP alert (`974875`),
+    /// & "Mark as not sensitive" confirm (`961997`).
     pub(super) fn sensitive_media_modal_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let modal = self.sensitive_media_modal.as_ref()?;
+        if modal.expired_alert {
+            // Module 974875 (`579872.A.show`): expired / already-submitted single-confirm alert.
+            return Some(
+                deferred(
+                    div()
+                        .id("sensitive-fp-expired-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b3))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p(px(24.))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.sensitive_media_modal = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .id("sensitive-fp-expired-modal")
+                                .w(px(440.))
+                                .rounded(px(12.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-surface-high"))
+                                .overflow_hidden()
+                                .flex()
+                                .flex_col()
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .child(
+                                    div()
+                                        .p(px(24.))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(10.))
+                                        .child(
+                                            div()
+                                                .text_size(px(20.))
+                                                .line_height(px(26.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::t("iS/eFN")),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(14.))
+                                                .line_height(px(20.))
+                                                .text_color(color("--text-default"))
+                                                .child(dc_intl::t("YrjcgR")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .px(px(24.))
+                                        .py(px(16.))
+                                        .border_t_1()
+                                        .border_color(color("--border-subtle"))
+                                        .bg(color("--background-base-lower"))
+                                        .flex()
+                                        .justify_end()
+                                        .child(
+                                            div()
+                                                .id("sensitive-fp-expired-ok")
+                                                .h(px(38.))
+                                                .px(px(18.))
+                                                .rounded(px(8.))
+                                                .bg(color("--control-primary-background-default"))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--white"))
+                                                .child(dc_intl::t("BddRzS"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.sensitive_media_modal = None;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                ),
+                        ),
+                )
+                .with_priority(96)
+                .into_any_element(),
+            );
+        }
         if modal.confirm_false_positive {
             let loading = modal.loading;
             let channel_id = modal.channel_id;
@@ -531,6 +697,7 @@ impl Root {
             mode,
             reported: false,
             confirm_false_positive: confirm,
+            expired_alert: false,
             loading: false,
             preview_url: confirm.then(|| "sensitive:preview".to_owned()),
             sender_filenames: None,
@@ -540,6 +707,13 @@ impl Root {
                 self.sensitive_media_modal = None;
                 cx.notify();
                 "sensitive-media: closed".to_owned()
+            }
+            "expired" => {
+                let mut m = base(SensitiveExplainerMode::CanManageSettings, false);
+                m.expired_alert = true;
+                self.sensitive_media_modal = Some(m);
+                cx.notify();
+                "sensitive-media: expired".to_owned()
             }
             "confirm" => {
                 self.sensitive_media_modal =
@@ -566,5 +740,23 @@ impl Root {
                 "sensitive-media: manage".to_owned()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sender_fp_launcher_974875_14_day_window_and_intl() {
+        for key in ["iS/eFN", "YrjcgR", "BddRzS"] {
+            assert!(dc_intl::has_key(key), "missing 974875 key {key}");
+        }
+        let now_ms: u64 = DISCORD_EPOCH_MS + 30 * 86_400_000;
+        let fresh_id: Id = (25 * 86_400_000) << 22; // 5 days old
+        let expired_id: Id = (10 * 86_400_000) << 22; // 20 days old
+        assert!(can_submit_sender_fp_report(fresh_id, now_ms, false));
+        assert!(!can_submit_sender_fp_report(fresh_id, now_ms, true));
+        assert!(!can_submit_sender_fp_report(expired_id, now_ms, false));
     }
 }

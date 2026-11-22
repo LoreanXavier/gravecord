@@ -1445,7 +1445,8 @@ impl Root {
                         true,
                     ))
                     .children(terms_line)
-                    .child(list),
+                    .child(list)
+                    .children(nitro.then(|| self.nitro_card_affinity_strip()).flatten()),
             )
             .child(
                 div()
@@ -1474,6 +1475,84 @@ impl Root {
                     )),
             )
             .into_any_element()
+    }
+
+    /// Module 976333 (`NitroCardFriendsAffinityStrip`, CSS `896423`):
+    /// compact 36px gradient strip inside a Nitro tier card showing 1 friend's 24px avatar +
+    /// `dpjXPL` ("Join {username} on Nitro") or `c7ETJH` ("Join {username} and other friends on Nitro").
+    pub(super) fn nitro_card_affinity_strip(&self) -> Option<AnyElement> {
+        let raw = self.fetched.get("nitro:affinity")?;
+        let list = raw
+            .get("body")
+            .and_then(Value::as_array)
+            .or_else(|| raw.as_array())?;
+        let names: Vec<String> = list
+            .iter()
+            .take(3)
+            .map(|u| {
+                u["global_name"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| u["username"].as_str())
+                    .unwrap_or("Friend")
+                    .to_owned()
+            })
+            .collect();
+        let copy = nitro_card_affinity_copy(&names)?;
+        let first_id = list.first().and_then(|u| u["id"].as_str());
+        let avatar_img = first_id.and_then(|id| self.images.get(&format!("avatar:{id}")).cloned());
+        let initial = names[0]
+            .chars()
+            .next()
+            .unwrap_or('F')
+            .to_ascii_uppercase()
+            .to_string();
+        Some(
+            div()
+                .mt(px(12.))
+                .h(px(36.))
+                .px(px(10.))
+                .rounded(px(8.))
+                .bg(linear_gradient(
+                    90.,
+                    linear_color_stop(rgba(0xffffff00), 0.),
+                    linear_color_stop(rgba(0xffffff1a), 0.5),
+                ))
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .size(px(24.))
+                        .flex_none()
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(rgba(0xffffff26))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(match avatar_img {
+                            Some(im) => img(im)
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Cover)
+                                .into_any_element(),
+                            None => div()
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-overlay-light"))
+                                .child(initial)
+                                .into_any_element(),
+                        }),
+                )
+                .child(
+                    div()
+                        .ml(px(6.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-overlay-light"))
+                        .child(copy),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Module 579245: Nitro Friends / Affinity Social Proof Banner (`GET /users/@me/billing/nitro-affinity`):
@@ -2579,6 +2658,23 @@ pub(crate) fn select_whats_new_bentos(e: BentoEligibility) -> Vec<BentoKind> {
     out
 }
 
+/// Module 976333: formats `dpjXPL` (1 friend) or `c7ETJH` (>= 2 friends) for the Nitro tier card strip.
+pub(super) fn nitro_card_affinity_copy(usernames: &[String]) -> Option<String> {
+    let first = usernames.first()?;
+    let key = if usernames.len() == 1 {
+        "dpjXPL"
+    } else {
+        "c7ETJH"
+    };
+    Some(dc_intl::format(
+        key,
+        &[(
+            "username",
+            dc_intl::Arg::Str(std::borrow::Cow::Borrowed(first)),
+        )],
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2666,5 +2762,23 @@ mod tests {
             discounted_price: "$6.99".to_owned(),
             regular_price: "$9.99/month".to_owned(),
         });
+    }
+
+    #[test]
+    fn nitro_card_affinity_strip_976333_copy() {
+        assert!(dc_intl::has_key("dpjXPL"));
+        assert!(dc_intl::has_key("c7ETJH"));
+        assert!(nitro_card_affinity_copy(&[]).is_none());
+        let one = nitro_card_affinity_copy(&["Alice".into()]).unwrap();
+        assert!(one.contains("Alice"));
+        assert_eq!(
+            one,
+            dc_intl::format("dpjXPL", &[("username", "Alice".into())])
+        );
+        let two = nitro_card_affinity_copy(&["Alice".into(), "Bob".into()]).unwrap();
+        assert_eq!(
+            two,
+            dc_intl::format("c7ETJH", &[("username", "Alice".into())])
+        );
     }
 }

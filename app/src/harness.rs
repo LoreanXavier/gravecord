@@ -1803,6 +1803,24 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_checkpoint_2026(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `game-server-success [created|downgrade|close]`: Game Server Created/Updated modal (978084).
+            ["game-server-success", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_game_server_success(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `library-launch-menu [open|close]`: Library Application Launch Options menu (980411).
+            ["library-launch-menu", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_library_launch_menu(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `soundboard-nux [open|close]`: Soundboard Desktop NUX coachmark popover (987933).
+            ["soundboard-nux", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_soundboard_nux(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `copy-combo <tier 1..11|reset>`: Copy combo easter egg green tooltip (206845).
             ["copy-combo", rest @ ..] => {
                 let arg = rest.join(" ");

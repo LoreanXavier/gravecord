@@ -212,6 +212,27 @@ fn app_button_disabled_reason(entry: &Value, state: AppButtonState) -> Option<St
     }
 }
 
+/// Module 980411 (`launch-context`): a single alternate launch option for a Library application.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LaunchOption {
+    pub id: String,
+    pub name: String,
+}
+
+/// Module 980411 (`launch-context`): open launch options context menu state.
+#[derive(Clone, Debug)]
+pub(super) struct LibraryLaunchMenu {
+    pub app_id: String,
+    pub branch_id: String,
+    pub options: Vec<LaunchOption>,
+    pub position: Point<Pixels>,
+}
+
+/// Module 980411 (`hasMultipleLaunchOptions`): only shows the split chevron & menu when >= 2 options.
+pub(super) fn has_multiple_launch_options(options: &[LaunchOption]) -> bool {
+    options.len() >= 2
+}
+
 #[derive(Default)]
 pub(super) struct Library {
     pub open: bool,
@@ -225,6 +246,10 @@ pub(super) struct Library {
     action_overrides: std::collections::BTreeMap<String, AppButtonState>,
     /// Local override of an entry's `LibraryApplicationFlags` after toggling in `game-context` (module 873079).
     flag_overrides: std::collections::BTreeMap<String, u64>,
+    /// Active launch option per `(app_id, branch_id)` (module 980411, `LIBRARY_APPLICATION_ACTIVE_LAUNCH_OPTION_UPDATE`).
+    pub(super) active_launch_options: std::collections::BTreeMap<(String, String), String>,
+    /// Open `launch-context` menu (module 980411).
+    pub(super) launch_menu: Option<LibraryLaunchMenu>,
     /// Open `game-context` menu (module 873079).
     pub(super) game_menu: Option<LibraryGameMenu>,
     /// First-time hide confirmation modal (module 873079).
@@ -1591,6 +1616,148 @@ impl Root {
         cx.notify();
     }
 
+    /// Renders the official `launch-context` menu (module 980411, aria-label `tKobzb`).
+    pub(in crate::ui) fn library_launch_menu_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let menu = self.library.launch_menu.clone()?;
+        if !has_multiple_launch_options(&menu.options) {
+            return None;
+        }
+        let x: f32 = menu.position.x.into();
+        let y: f32 = menu.position.y.into();
+        let left = (x - 190.).max(12.);
+        let top = y.max(48.);
+        let active_id = self
+            .library
+            .active_launch_options
+            .get(&(menu.app_id.clone(), menu.branch_id.clone()))
+            .cloned();
+
+        let rows: Vec<AnyElement> = menu
+            .options
+            .iter()
+            .enumerate()
+            .map(|(i, opt)| {
+                let is_active = active_id.as_deref() == Some(opt.id.as_str());
+                let app_id = menu.app_id.clone();
+                let branch_id = menu.branch_id.clone();
+                let opt_id = opt.id.clone();
+                let opt_name = opt.name.clone();
+                div()
+                    .id(SharedString::from(format!("library-launch-opt-{i}")))
+                    .h(px(32.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(color("--brand-500")).text_color(color("--white")))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--interactive-text-default"))
+                    .child(opt_name)
+                    .when(is_active, |r| {
+                        r.child(icon(
+                            "select_check",
+                            14.,
+                            "--control-primary-background-default",
+                        ))
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.library
+                            .active_launch_options
+                            .insert((app_id.clone(), branch_id.clone()), opt_id.clone());
+                        this.library
+                            .action_overrides
+                            .insert(app_id.clone(), AppButtonState::Play);
+                        this.library.launch_menu = None;
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+
+        Some(
+            deferred(
+                div()
+                    .id("library-launch-menu-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.library.launch_menu = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("library-launch-menu")
+                            .occlude()
+                            .absolute()
+                            .left(px(left))
+                            .top(px(top))
+                            .w(px(204.))
+                            .p(px(6.))
+                            .rounded(px(8.))
+                            .bg(color("--background-surface-high"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .flex_col()
+                            .aria_label(SharedString::from(dc_intl::t("tKobzb")))
+                            .children(rows),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_library_launch_menu(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.library.launch_menu = None;
+            cx.notify();
+            return "library launch menu closed".to_owned();
+        }
+        self.library.active_launch_options.insert(
+            ("demo_app".to_owned(), "main".to_owned()),
+            "dx12".to_owned(),
+        );
+        self.library.launch_menu = Some(LibraryLaunchMenu {
+            app_id: "demo_app".to_owned(),
+            branch_id: "main".to_owned(),
+            options: vec![
+                LaunchOption {
+                    id: "dx12".into(),
+                    name: "Play (DirectX 12)".into(),
+                },
+                LaunchOption {
+                    id: "vulkan".into(),
+                    name: "Play (Vulkan)".into(),
+                },
+                LaunchOption {
+                    id: "safe".into(),
+                    name: "Safe Mode".into(),
+                },
+            ],
+            position: gpui::point(px(620.), px(260.)),
+        });
+        cx.notify();
+        "library launch menu opened".to_owned()
+    }
+
     /// Renders the official `game-context` menu (module 873079).
     pub(in crate::ui) fn library_game_menu_layer(
         &self,
@@ -2271,5 +2438,21 @@ mod tests {
         assert!(uninstall_confirm_subtitle("Hades II").contains("Hades II"));
         assert_eq!(dc_intl::t("RVy6Vl"), "Uninstall");
         assert_eq!(dc_intl::t("96dwMR"), "Nevermind");
+        // Module 980411 (`launch-context`): requires >= 2 launch options.
+        assert!(!has_multiple_launch_options(&[]));
+        assert!(!has_multiple_launch_options(&[LaunchOption {
+            id: "1".into(),
+            name: "Default".into(),
+        }]));
+        assert!(has_multiple_launch_options(&[
+            LaunchOption {
+                id: "1".into(),
+                name: "DX12".into(),
+            },
+            LaunchOption {
+                id: "2".into(),
+                name: "Vulkan".into(),
+            },
+        ]));
     }
 }

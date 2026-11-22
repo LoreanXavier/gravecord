@@ -11,6 +11,7 @@ pub(in crate::ui) mod collections;
 pub(super) mod data;
 mod editor_wishlist;
 mod featured;
+pub(crate) mod game_server_success;
 pub(in crate::ui) mod game_shop;
 pub(crate) mod gift_cta;
 mod modal;
