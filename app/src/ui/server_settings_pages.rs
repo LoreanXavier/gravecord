@@ -33,6 +33,7 @@ pub(super) const INVITE_APPLICATION_BYPASS: u64 = 8;
 /// A role an invite grants, as the server has it.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct InviteRole {
+    pub id: Id,
     pub name: String,
     pub color: u32,
 }
@@ -56,7 +57,7 @@ pub(super) fn invite_roles(guild: Option<&dc_state::Guild>, invite: &Value) -> V
         .filter_map(|id| {
             let name = guild.roles.get(&id)?.clone();
             let color = guild.role_info.get(&id).map_or(0, |info| info.color);
-            Some(InviteRole { name, color })
+            Some(InviteRole { id, name, color })
         })
         .collect()
 }
@@ -631,7 +632,12 @@ impl Root {
             tint.a *= alpha;
             tint
         };
+        let first_id = first.id;
         let pill = div()
+            .id(SharedString::from(format!(
+                "server-invite-role-{code}-{first_id}"
+            )))
+            .aria_label(first.name.clone())
             .h(px(24.))
             .p(px(4.))
             .rounded(px(8.))
@@ -639,6 +645,14 @@ impl Root {
             .flex()
             .items_center()
             .min_w(px(0.))
+            .on_mouse_up(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                    if this.open_role_chip_menu(first_id, event.position, cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .child(
                 div().mr(px(4.)).child(
                     div()
@@ -1424,12 +1438,14 @@ mod tests {
             invite_roles(Some(&guild), &invite),
             vec![
                 InviteRole {
+                    id: 2,
                     name: "Plain".into(),
-                    color: 0
+                    color: 0,
                 },
                 InviteRole {
+                    id: 1,
                     name: "Mods".into(),
-                    color: 0x3498db
+                    color: 0x3498db,
                 },
             ]
         );

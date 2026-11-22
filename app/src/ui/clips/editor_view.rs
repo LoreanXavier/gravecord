@@ -81,12 +81,34 @@ impl Root {
             .child(
                 div()
                     .h(px(24.))
-                    .text_size(px(20.))
-                    .line_height(px(24.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--text-strong"))
-                    .overflow_hidden()
-                    .child(title),
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        self.with_tip(
+                            "clips-editor-experimental-tip",
+                            super::super::tooltip::Tip::text(
+                                dc_intl::t("/fgfWh"),
+                                super::super::tooltip::Side::Bottom,
+                            ),
+                            div()
+                                .id("clips-editor-experimental-icon")
+                                .flex_none()
+                                .child(icon("clips_clips", 16., "--icon-subtle")),
+                            cx,
+                        ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(20.))
+                            .line_height(px(24.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .overflow_hidden()
+                            .child(title),
+                    ),
             )
             .child(
                 div()

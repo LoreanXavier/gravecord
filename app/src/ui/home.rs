@@ -187,8 +187,15 @@ impl Root {
                     .justify_center()
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.select_home(None);
-                        cx.notify();
+                        // Module 396655 `nO`: when unacknowledged Nitro offers are the entire Home badge, open Nitro.
+                        let offers = this.unacknowledged_nitro_offer_count();
+                        let other = this.home_badge_count().saturating_sub(offers);
+                        if offers > 0 && other == 0 {
+                            this.open_nitro(cx);
+                        } else {
+                            this.select_home(None);
+                            cx.notify();
+                        }
                     }))
                     .child(glyph),
                     cx,
@@ -807,18 +814,72 @@ impl Root {
                         .on_click(cx.listener(|this, _, _, cx| this.open_message_requests(cx)))
                     }))
                     .child({
-                        // Module 105390 (`MA` / `Ag` / `fY`) + 99462: Nitro offer-expiry countdown badge & tooltip.
+                        // Modules 432458 (`_gLFXov`) + 105390 (`MA` / `Ag` / `fY`) + 99462: Nitro tab offer badge.
                         let now_secs = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs() as i64)
                             .unwrap_or(0);
-                        let offer_badge = self
+                        let is_subscribed = self.premium() != dc_state::premium::PremiumType::None;
+                        let fractional = self
                             .fetched
                             .get("user-offer")
-                            .and_then(|v| {
-                                dc_state::premium::OfferCountdown::from_user_offer(v, now_secs)
-                            })
-                            .map(|cd| {
+                            .is_some_and(|v| v["fractional_premium_active"] == true);
+                        let offer_badge = self.fetched.get("user-offer").and_then(|v| {
+                            dc_state::premium::UserOfferBadge::from_user_offer(
+                                v,
+                                now_secs,
+                                is_subscribed,
+                                fractional,
+                            )
+                        });
+                        let row = self
+                            .home_link("nitro", "home_nitro", dc_intl::tr("Nitro"), nitro_selected)
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx)))
+                            .relative();
+                        match offer_badge {
+                            Some(dc_state::premium::UserOfferBadge::Unacknowledged {
+                                is_discount,
+                                discount_percent,
+                                ..
+                            }) => {
+                                let label = if is_discount {
+                                    match discount_percent {
+                                        Some(pct) => dc_intl::format(
+                                            "iiLbvu",
+                                            &[("percent", dc_intl::Arg::Num(pct as f64))],
+                                        ),
+                                        None => dc_intl::t("/DTtr6").to_owned(),
+                                    }
+                                } else {
+                                    dc_intl::t("IBYG5U").to_owned()
+                                }
+                                .to_uppercase();
+                                // `.premiumTrialBadge_gLFXov.premiumOfferUnackedBadge_gLFXov`
+                                row.child(
+                                    div().absolute().right(px(12.)).top(px(11.)).child(
+                                        div()
+                                            .id("nitro-offer-unacked-pill")
+                                            .py(px(1.))
+                                            .px(px(6.))
+                                            .rounded(px(8.))
+                                            .bg(gpui::linear_gradient(
+                                                90.,
+                                                gpui::linear_color_stop(gpui::rgb(0xdb00a4), 0.),
+                                                gpui::linear_color_stop(gpui::rgb(0x5968f0), 1.),
+                                            ))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(label),
+                                    ),
+                                )
+                            }
+                            Some(dc_state::premium::UserOfferBadge::Acknowledged(cd)) => {
                                 let label = if cd.is_discount {
                                     match cd.discount_percent {
                                         Some(pct) => dc_intl::format(
@@ -829,7 +890,8 @@ impl Root {
                                     }
                                 } else {
                                     dc_intl::t("IBYG5U").to_owned()
-                                };
+                                }
+                                .to_uppercase();
                                 let tip = if cd.days > 0 {
                                     dc_intl::format(
                                         "qVGNkU",
@@ -849,50 +911,48 @@ impl Root {
                                         &[("minutes", dc_intl::Arg::Num(cd.minutes.max(1) as f64))],
                                     )
                                 };
-                                (label, tip)
-                            });
-                        let row = self
-                            .home_link("nitro", "home_nitro", dc_intl::tr("Nitro"), nitro_selected)
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx)))
-                            .relative();
-                        if let Some((badge_label, tip_text)) = offer_badge {
-                            row.child(
-                                div().absolute().right(px(16.)).top(px(10.)).child(
-                                    self.with_tip(
-                                        "nitro-offer-countdown-tip",
-                                        super::tooltip::Tip::body(
-                                            super::tooltip::Body::Text(tip_text.into()),
-                                            super::tooltip::Side::Right,
+                                let is_light = super::theme() == dc_tokens::Theme::Light;
+                                let pill_bg = if nitro_selected {
+                                    color("--background-base-lower")
+                                } else if is_light {
+                                    color("--background-base-lowest")
+                                } else {
+                                    color("--background-mod-strong")
+                                };
+                                // `.premiumTrialBadge_gLFXov.premiumOfferWithTimerAcknowledgedBadge_gLFXov`
+                                row.child(
+                                    div().absolute().right(px(12.)).top(px(11.)).child(
+                                        self.with_tip(
+                                            "nitro-offer-countdown-tip",
+                                            super::tooltip::Tip::body(
+                                                super::tooltip::Body::Text(tip.into()),
+                                                super::tooltip::Side::Right,
+                                            ),
+                                            div()
+                                                .id("nitro-offer-countdown-pill")
+                                                .py(px(1.))
+                                                .px(px(6.))
+                                                .rounded(px(8.))
+                                                .bg(pill_bg)
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(4.))
+                                                .text_size(px(12.))
+                                                .line_height(px(16.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .child(icon(
+                                                    "oauth_entry_clock",
+                                                    12.,
+                                                    "--text-strong",
+                                                ))
+                                                .child(label),
+                                            cx,
                                         ),
-                                        div()
-                                            .id("nitro-offer-countdown-pill")
-                                            .h(px(20.))
-                                            .px(px(8.))
-                                            .rounded_full()
-                                            .bg(if nitro_selected {
-                                                color("--white")
-                                            } else {
-                                                color("--badge-expressive-background")
-                                            })
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.))
-                                            .text_size(px(11.))
-                                            .font_weight(FontWeight(600.))
-                                            .text_color(if nitro_selected {
-                                                color("--brand-500")
-                                            } else {
-                                                color("--badge-expressive-text")
-                                            })
-                                            .child("⏱")
-                                            .child(badge_label),
-                                        cx,
                                     ),
-                                ),
-                            )
-                        } else {
-                            row
+                                )
+                            }
+                            None => row,
                         }
                     })
                     .child(

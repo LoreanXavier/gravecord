@@ -12,7 +12,7 @@ mod pipe;
 mod session;
 mod validate;
 
-pub use activity::{Outcome, activity_flags, flags};
+pub use activity::{Outcome, activity_flags, activity_join_dispatch_frame, flags};
 pub use directory::{BoxFuture, Cache, Directory};
 pub use frame::{Decoder, FrameError, MAX_BUFFER, MAX_MESSAGE, Opcode, encode};
 pub use session::{HANDSHAKE_TIMEOUT, serve};

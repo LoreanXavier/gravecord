@@ -359,7 +359,11 @@ impl Root {
     /// heading and the role pills (`rolePill_8JQJle` over the pill of 417454: 24 tall, 4px padding, the role's circle,
     /// the name in 12px semibold). GAP: when the card's content grows past 292px the official card folds it under a
     /// gradient with a details button; this card does not fold.
-    fn invite_roles_list(&self, roles: &[InviteRole]) -> Option<AnyElement> {
+    fn invite_roles_list(
+        &self,
+        roles: &[InviteRole],
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if roles.is_empty() {
             return None;
         }
@@ -398,13 +402,24 @@ impl Root {
                     .justify_center()
                     .child(div().size(px(10.)).rounded_full().bg(tint)),
             };
+            let role_id = role.id;
             div()
+                .id(SharedString::from(format!("invite-role-pill-{role_id}")))
+                .aria_label(role.name.clone())
                 .h(px(24.))
                 .p(px(4.))
                 .rounded(px(8.))
                 .bg(color("--background-base-lowest"))
                 .flex()
                 .items_center()
+                .on_mouse_up(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                        if this.open_role_chip_menu(role_id, event.position, cx) {
+                            cx.stop_propagation();
+                        }
+                    }),
+                )
                 .child(
                     div()
                         .mr(px(4.))
@@ -833,7 +848,7 @@ impl Root {
                 .child(avatar)
                 .child(header)
                 .child(div().h(px(8.)))
-                .children(self.invite_roles_list(&invite_roles(body)))
+                .children(self.invite_roles_list(&invite_roles(body), cx))
                 .child(div().px(px(16.)).pb(px(16.)).child(button))
                 .into_any_element(),
         )

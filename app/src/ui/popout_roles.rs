@@ -208,8 +208,11 @@ impl Root {
                 rgb(entry.color)
             };
             let role = entry.id;
+            let role_name = entry.name.clone();
             row = row.child(
                 div()
+                    .id(gpui::SharedString::from(format!("popout-role-chip-{role}")))
+                    .aria_label(role_name.clone())
                     .h(px(24.))
                     .max_w_full()
                     .border_1()
@@ -217,7 +220,7 @@ impl Root {
                     .rounded(px(8.))
                     .flex()
                     .items_center()
-                    // Module 166005 `K`: the chip's `dev-context` menu (Copy Role ID) in developer mode.
+                    // Module 166005 `K` / 417454 `b_`: the chip's `dev-context` menu (Copy Role ID `sMsaLg`).
                     .on_mouse_up(
                         gpui::MouseButton::Right,
                         cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
@@ -268,6 +271,10 @@ impl Root {
                                 .id(gpui::SharedString::from(format!(
                                     "popout-role-remove-{role}"
                                 )))
+                                .aria_label(dc_intl::format(
+                                    "QrxwhY",
+                                    &[("roleName", dc_intl::Arg::Str(role_name.as_str().into()))],
+                                ))
                                 .flex_none()
                                 .w(px(23.))
                                 .h(px(24.))
@@ -275,7 +282,15 @@ impl Root {
                                 .items_center()
                                 .justify_center()
                                 .cursor_pointer()
-                                .child(icon("sb_close", 12., "--interactive-icon-default"))
+                                .child(icon(
+                                    "sb_close",
+                                    12.,
+                                    if remove_icon_is_dark(entry.color) {
+                                        "--primary-630"
+                                    } else {
+                                        "--interactive-icon-default"
+                                    },
+                                ))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.remove_member_role(guild, user, role, cx);
                                 })),
@@ -307,6 +322,7 @@ impl Root {
         div()
             .parity("profile-role-add")
             .id("popout-role-add")
+            .aria_label(dc_intl::t("e3Wlyw"))
             .track_focus(&focus)
             .tab_index(0)
             .relative()
@@ -562,6 +578,185 @@ impl Root {
             .into_any_element(),
         )
     }
+
+    /// Module `417454` (`P.A.unassignGuildRoleConnection`): removes a linked role from `@me`.
+    #[allow(dead_code)]
+    pub(super) fn unassign_linked_role(&mut self, guild: Id, role: Id, cx: &mut Context<Self>) {
+        let _ = self.requests.send(crate::net::Request::Rest {
+            key: Some(format!("unassign-linked-role:{guild}:{role}")),
+            method: reqwest::Method::DELETE,
+            route: format!("/users/@me/guilds/{guild}/member/role-connections/{role}"),
+            body: None,
+        });
+        cx.notify();
+    }
+
+    /// Module `417454` (`overflowRolesPopout_nie4FD`): `+N` roles overflow popout headed by `PCs0oo`.
+    pub(super) fn role_overflow_popout_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.role_overflow_popout.as_ref()?;
+        let left = open
+            .anchor
+            .left()
+            .min((px(self.viewport.0) - px(208.)).max(px(8.)));
+        let top = open.anchor.bottom() + px(6.);
+        let header = dc_intl::format(
+            "PCs0oo",
+            &[("numRoles", dc_intl::Arg::Num(open.roles.len() as f64))],
+        );
+        let mut pills = div().flex().flex_wrap();
+        for item in &open.roles {
+            let role_id = item.id;
+            let tint = if item.color == 0 {
+                color("--primary-300")
+            } else {
+                rgb(item.color)
+            };
+            let mut border_color: gpui::Rgba = tint;
+            border_color.a *= 0.6;
+            pills = pills.child(
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "overflow-role-pill-{role_id}"
+                    )))
+                    .aria_label(item.name.clone())
+                    .h(px(22.))
+                    .p(px(4.))
+                    .mr(px(4.))
+                    .mb(px(4.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(border_color)
+                    .bg(color("--background-mod-normal"))
+                    .flex()
+                    .items_center()
+                    .on_mouse_up(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                            if this.open_role_chip_menu(role_id, event.position, cx) {
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
+                    .child(if item.linked {
+                        div()
+                            .mx(px(4.))
+                            .flex_none()
+                            .child(icon("discover_flower_check", 14., "--primary-300"))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .mx(px(4.))
+                            .size(px(12.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(tint)
+                            .into_any_element()
+                    })
+                    .child(
+                        div()
+                            .max_w(px(160.))
+                            .mr(px(4.))
+                            .truncate()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(gpui::FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(item.name.clone()),
+                    ),
+            );
+        }
+        Some(
+            deferred(
+                div()
+                    .id("role-overflow-popout")
+                    .aria_label(header.clone())
+                    .occlude()
+                    .absolute()
+                    .left(left)
+                    .top(top)
+                    .w(px(200.))
+                    .p(px(8.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-mod-normal"))
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.role_overflow_popout = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .mb(px(8.))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(icon("menu_flag", 12., "--primary-400"))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(gpui::FontWeight(500.))
+                                    .text_color(color("--primary-400"))
+                                    .child(header),
+                            ),
+                    )
+                    .child(pills),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+}
+
+/// Entry inside the `417454` (`overflowRolesPopout_nie4FD`) popout.
+#[derive(Clone, Debug)]
+pub(super) struct OverflowRoleEntry {
+    pub id: Id,
+    pub name: String,
+    pub color: u32,
+    pub linked: bool,
+}
+
+/// Open `417454` `+N` overflow roles popout state on `Root`.
+#[derive(Clone, Debug)]
+pub(super) struct RoleOverflowPopout {
+    pub roles: Vec<OverflowRoleEntry>,
+    pub anchor: gpui::Bounds<gpui::Pixels>,
+}
+
+/// Module `417454` (`m.OK(m.LX(color)) < 0.3`): returns `true` when the role color dot is bright
+/// enough that the hover remove `X` icon should use dark `--primary-630` instead of white.
+pub(crate) fn remove_icon_is_dark(rgb: u32) -> bool {
+    let r = ((rgb >> 16) & 0xff) as f32 / 255.0;
+    let g = ((rgb >> 8) & 0xff) as f32 / 255.0;
+    let b = (rgb & 0xff) as f32 / 255.0;
+    let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    lum >= 0.7
+}
+
+/// Module `417454.Ay` (`wrap == false`): computes how many role pills fit on a single row before
+/// overflowing into the `34px` `+N` overflow pill.
+#[allow(dead_code)]
+pub(crate) fn visible_role_count(estimated_widths: &[f32], container_width: f32) -> usize {
+    const GAP: f32 = 4.0;
+    const OVERFLOW_BTN: f32 = 34.0;
+    let total: f32 = estimated_widths.iter().sum::<f32>()
+        + GAP * estimated_widths.len().saturating_sub(1) as f32;
+    if total <= container_width {
+        return estimated_widths.len();
+    }
+    let budget = (container_width - OVERFLOW_BTN - GAP).max(0.0);
+    let mut used = 0.0;
+    let mut count = 0;
+    for &w in estimated_widths {
+        let next = if count == 0 { w } else { used + GAP + w };
+        if next > budget {
+            break;
+        }
+        used = next;
+        count += 1;
+    }
+    count
 }
 
 #[cfg(test)]
@@ -622,5 +817,29 @@ mod tests {
             picker_position([1240., 100., 24., 24.], [1280., 720.], 146.),
             [1000., 132.]
         );
+    }
+
+    #[test]
+    fn member_roles_list_overflow_contrast_and_intl_match_module_417454() {
+        assert_eq!(visible_role_count(&[40., 50., 60.], 200.), 3);
+        assert_eq!(visible_role_count(&[60., 60., 60., 60.], 180.), 2);
+        assert!(remove_icon_is_dark(0xffffff));
+        assert!(!remove_icon_is_dark(0x1e1f22));
+        assert_eq!(
+            dc_intl::format("PCs0oo", &[("numRoles", 0.0.into())]),
+            "No Roles"
+        );
+        assert_eq!(
+            dc_intl::format("PCs0oo", &[("numRoles", 1.0.into())]),
+            "Role"
+        );
+        assert_eq!(
+            dc_intl::format("PCs0oo", &[("numRoles", 3.0.into())]),
+            "Roles"
+        );
+        assert!(dc_intl::format("QrxwhY", &[("roleName", "Admin".into())]).contains("Admin"));
+        assert!(!dc_intl::t("sMsaLg").is_empty());
+        assert!(!dc_intl::t("e3Wlyw").is_empty());
+        assert!(!dc_intl::t("fEptJP").is_empty());
     }
 }

@@ -177,6 +177,7 @@ fn stage_header(
     title: String,
     speaking: usize,
     audience: usize,
+    audience_btn: Option<AnyElement>,
     requests: Option<AnyElement>,
 ) -> gpui::Div {
     div()
@@ -244,6 +245,8 @@ fn stage_header(
                 .flex()
                 .items_center()
                 .gap(px(24.))
+                // Module 410828 (`di`): audience toggle for all Stage users + moderator pending badge.
+                .children(audience_btn)
                 // The requests toggle of module 482877 (`stage_requests`), for someone with Mute Members.
                 .children(requests)
                 .child(icon("voice_view_chat", 24., "--interactive-icon-default")),
@@ -371,6 +374,7 @@ impl Root {
                         channel.name.clone(),
                         here.len() - audience,
                         audience,
+                        None,
                         None,
                     )),
             )
@@ -574,7 +578,14 @@ impl Root {
                 speakers.push(user);
             }
         }
+        let audience_btn = self.stage_audience_button(channel, hands.len(), cx);
         let requests = self.stage_requests_toggle(channel, hands.len(), cx);
+        let in_call = me.is_some_and(|id| {
+            self.stores
+                .voice_members(guild, target)
+                .iter()
+                .any(|s| s.user_id == id)
+        });
         let hand = self.stage_hand_button(guild, channel, cx);
         let video_full =
             self.video_stage_full_notice(channel, (speakers.len() + audience.len()) as u64, cx);
@@ -753,7 +764,13 @@ impl Root {
         };
         // stage-live and stage-live-hover: at rest the page shows neither the header nor the controls; the pointer over
         // the page brings both (`visible`).
-        let header = stage_header(topic, speakers.len(), audience.len(), requests);
+        let header = stage_header(
+            topic,
+            speakers.len(),
+            audience.len(),
+            Some(audience_btn),
+            requests,
+        );
         let round = |id: &'static str, glyph: &'static str| {
             div()
                 .id(id)
@@ -1086,6 +1103,37 @@ impl Root {
                             .text_color(color("--text-strong"))
                             .child(dc_intl::t("J5bXZU"))
                     }))
+                    // Module 410828 (`nM`): "No one is on stage yet" (`P63Z/o`) over Stage backdrop when in call with 0 speakers.
+                    .children(
+                        (!self.call_popped_out() && in_call && speakers.is_empty()).then(|| {
+                            div()
+                                .id("stage-empty-speakers")
+                                .relative()
+                                .flex_1()
+                                .min_h(px(200.))
+                                .my(px(12.))
+                                .rounded(px(12.))
+                                .overflow_hidden()
+                                .bg(gpui::linear_gradient(
+                                    180.,
+                                    gpui::linear_color_stop(rgba(0x1f2136ff), 0.),
+                                    gpui::linear_color_stop(rgba(0x111218ff), 1.),
+                                ))
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .relative()
+                                        .text_size(px(20.))
+                                        .line_height(px(24.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("P63Z/o")),
+                                )
+                        }),
+                    )
                     .children((!self.call_popped_out() && !speakers.is_empty()).then(|| {
                         section(
                             format!("{} \u{2013} {}", dc_intl::t("CduOkx"), speakers.len()),

@@ -470,6 +470,123 @@ pub(crate) struct ReviewContext {
     pub subtotal_cents: Option<i64>,
     pub discount_cents: Option<i64>,
     pub tax_cents: Option<i64>,
+    /// Module 498750: active discount offer, quantity, and editable plan flag for `241989.f7`.
+    pub discount_offer: Option<CheckoutDiscountOffer>,
+    pub quantity: u32,
+    pub can_edit_plan: bool,
+}
+
+/// Active checkout discount offer for module `498750` (`hXcaLT` + `VZ8Tvh` / `JsSin7`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CheckoutDiscountOffer {
+    pub discount_percent: u32,
+    pub interval_count: u32,
+    pub is_yearly: bool,
+}
+
+/// Formatted `PurchaseItem` (`498750._` / `241989.f7`) summary row for the Review modal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PurchaseSummaryItem {
+    pub label: String,
+    pub editable: bool,
+    pub description: String,
+    pub price: String,
+    pub inline_strikethrough: Option<String>,
+    pub sub_text: Option<String>,
+    pub sub_text_strikethrough: bool,
+}
+
+/// Pure `498750._` builder: recurring gift labels (`rstMwN`/`Vb8FaC`), quantity/edit/group labels
+/// (`kyGViz`/`BnZSW0`/`8bPDtb`), gift vs subscription (`3wsYeI`/`2zUa6I`), and discount offer price
+/// lines (`hXcaLT` + `VZ8Tvh`/`JsSin7`).
+pub(crate) fn build_purchase_summary(
+    ctx: &ReviewContext,
+    regular_price: &str,
+    discounted_price: Option<&str>,
+    is_yearly: bool,
+    is_premium_group: bool,
+    base_label: &str,
+) -> PurchaseSummaryItem {
+    let qty = ctx.quantity.max(1);
+    let label = if is_premium_group {
+        dc_intl::format(
+            "8bPDtb",
+            &[(
+                "premiumGroupProductName",
+                dc_intl::Arg::Str(base_label.into()),
+            )],
+        )
+    } else if qty > 1 {
+        dc_intl::format(
+            "kyGViz",
+            &[
+                ("quantity", dc_intl::Arg::Num(qty as f64)),
+                ("label", dc_intl::Arg::Str(base_label.into())),
+            ],
+        )
+    } else {
+        base_label.to_owned()
+    };
+    let description = if ctx.is_recurring_gift {
+        if is_yearly {
+            dc_intl::t("rstMwN").to_owned()
+        } else {
+            dc_intl::t("Vb8FaC").to_owned()
+        }
+    } else if ctx.is_gift {
+        dc_intl::t("3wsYeI").to_owned()
+    } else {
+        dc_intl::t("2zUa6I").to_owned()
+    };
+    let (price, inline_strikethrough, sub_text, sub_text_strikethrough) =
+        if let (Some(offer), Some(discounted)) = (ctx.discount_offer, discounted_price) {
+            let now_line =
+                dc_intl::format("hXcaLT", &[("price", dc_intl::Arg::Str(discounted.into()))]);
+            let after_line = if offer.is_yearly {
+                dc_intl::format(
+                    "VZ8Tvh",
+                    &[("regularPrice", dc_intl::Arg::Str(regular_price.into()))],
+                )
+            } else {
+                let runs = dc_intl::format_runs(
+                    "JsSin7",
+                    &[
+                        ("priceRate", dc_intl::Arg::Str(regular_price.into())),
+                        (
+                            "intervalCount",
+                            dc_intl::Arg::Num(offer.interval_count.max(1) as f64),
+                        ),
+                    ],
+                );
+                runs.into_iter().map(|(t, _)| t).collect()
+            };
+            (now_line, None, Some(after_line), false)
+        } else if ctx.is_trial_eligible {
+            (
+                dc_intl::format("hXcaLT", &[("price", dc_intl::Arg::Str("$0.00".into()))]),
+                None,
+                Some(regular_price.to_owned()),
+                false,
+            )
+        } else if let Some(discounted) = discounted_price.filter(|d| *d != regular_price) {
+            (
+                discounted.to_owned(),
+                Some(regular_price.to_owned()),
+                None,
+                false,
+            )
+        } else {
+            (regular_price.to_owned(), None, None, false)
+        };
+    PurchaseSummaryItem {
+        label,
+        editable: ctx.can_edit_plan,
+        description,
+        price,
+        inline_strikethrough,
+        sub_text,
+        sub_text_strikethrough,
+    }
 }
 
 /// Module 367210 (`Y`): priority promotional/discount/savings notice runs `(text, bold)`.
@@ -3068,11 +3185,40 @@ impl Root {
             | "review-trial"
             | "review-gift"
             | "review-discount"
-            | "review-gift-savings") => {
+            | "review-gift-savings"
+            | "review-recurring-gift-year"
+            | "review-recurring-gift-month"
+            | "review-discount-year"
+            | "review-discount-month"
+            | "review-gift-qty") => {
                 p.step = Step::Review;
+                let is_recurring = matches!(
+                    mode,
+                    "review-recurring-gift-year" | "review-recurring-gift-month"
+                );
+                let discount_offer = match mode {
+                    "review-discount" | "review-discount-month" => Some(CheckoutDiscountOffer {
+                        discount_percent: 30,
+                        interval_count: 3,
+                        is_yearly: false,
+                    }),
+                    "review-discount-year" => Some(CheckoutDiscountOffer {
+                        discount_percent: 30,
+                        interval_count: 1,
+                        is_yearly: true,
+                    }),
+                    _ => None,
+                };
                 p.review = ReviewContext {
-                    is_recurring_gift: false,
-                    is_gift: matches!(mode, "review-gift" | "review-gift-savings"),
+                    is_recurring_gift: is_recurring,
+                    is_gift: matches!(
+                        mode,
+                        "review-gift"
+                            | "review-gift-savings"
+                            | "review-gift-qty"
+                            | "review-recurring-gift-year"
+                            | "review-recurring-gift-month"
+                    ),
                     is_past_due: mode == "review-past-due",
                     is_prepaid: false,
                     has_active_sub: matches!(
@@ -3083,18 +3229,22 @@ impl Root {
                     is_upgrade: mode == "review-upgrade",
                     is_trial_eligible: mode == "review-trial",
                     show_back: mode != "review-past-due",
-                    plan_kind: if mode == "review-downgrade" {
-                        ReviewPlanKind::BasicMonthly
-                    } else {
-                        ReviewPlanKind::NitroYearly
+                    plan_kind: match mode {
+                        "review-downgrade" => ReviewPlanKind::BasicMonthly,
+                        "review-recurring-gift-month" | "review-discount-month" => {
+                            ReviewPlanKind::NitroMonthly
+                        }
+                        _ => ReviewPlanKind::NitroYearly,
                     },
                     has_open_invoice: mode == "review-past-due",
                     payment_restriction: (mode == "review-downgrade")
                         .then_some(PaymentRestriction::SelectPaymentMethod),
                     non_usd_currency: mode == "review-downgrade",
                     trial_days: (mode == "review-trial").then_some(14),
-                    discount_percent: (mode == "review-discount").then_some(30),
-                    discount_interval_months: (mode == "review-discount").then_some(3),
+                    discount_percent: discount_offer.map(|d| d.discount_percent as u8),
+                    discount_interval_months: discount_offer
+                        .filter(|d| !d.is_yearly)
+                        .map(|d| d.interval_count),
                     gift_savings_percent: (mode == "review-gift-savings").then_some(16),
                     gift_interval_months: (mode == "review-gift-savings").then_some(12),
                     credit_months: (mode == "review-discount").then_some(1),
@@ -3102,6 +3252,12 @@ impl Root {
                     subtotal_cents: None,
                     discount_cents: None,
                     tax_cents: None,
+                    discount_offer,
+                    quantity: if mode == "review-gift-qty" { 3 } else { 1 },
+                    can_edit_plan: matches!(
+                        mode,
+                        "review-discount-year" | "review-discount-month" | "review-gift-qty"
+                    ),
                 };
                 if mode == "review-trial" {
                     p.offer_badge = Some(PurchaseOfferBadge::FreeTrial);
@@ -3555,6 +3711,163 @@ impl Root {
                             }),
                     ),
             )
+            .child({
+                // Module 498750 (`_`) / 241989 (`f7` `PurchaseItem`, `_LDGylj`): 64x64 emblem, label + Edit,
+                // recurring/gift/subscription description, and discount/trial price lines.
+                let is_yearly = matches!(
+                    review.plan_kind,
+                    ReviewPlanKind::BasicYearly
+                        | ReviewPlanKind::ClassicYearly
+                        | ReviewPlanKind::NitroYearly
+                );
+                let is_group = matches!(review.plan_kind, ReviewPlanKind::NitroGroup);
+                let is_basic = matches!(
+                    review.plan_kind,
+                    ReviewPlanKind::BasicMonthly | ReviewPlanKind::BasicYearly
+                );
+                let discounted_str = (discount_cents > 0).then(|| format_usd_cents(total_cents));
+                let summary_item = build_purchase_summary(
+                    &review,
+                    &raw_subtotal,
+                    discounted_str.as_deref(),
+                    is_yearly,
+                    is_group,
+                    plan_summary,
+                );
+                let edit_step = if review.is_gift {
+                    Step::GiftSelect
+                } else {
+                    Step::Plans
+                };
+                let icon_box = div()
+                    .flex_none()
+                    .size(px(64.))
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .map(|d| {
+                        if is_basic {
+                            d.bg(color("--background-mod-normal"))
+                        } else {
+                            d.bg(gpui::linear_gradient(
+                                322.,
+                                gpui::linear_color_stop(gpui::rgb(0xe978e6), 0.06),
+                                gpui::linear_color_stop(gpui::rgb(0x2f3ebb), 0.80),
+                            ))
+                        }
+                    })
+                    .child(icon("nitro_wheel", 32., "--white"));
+                div()
+                    .id("purchase-item-summary")
+                    .mt(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(icon_box)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_baseline()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-default"))
+                                            .child(summary_item.label),
+                                    )
+                                    .when(summary_item.editable, |row| {
+                                        row.child(
+                                            div()
+                                                .id("purchase-item-edit")
+                                                .flex_none()
+                                                .cursor_pointer()
+                                                .text_size(px(14.))
+                                                .line_height(px(18.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-brand"))
+                                                .hover(|s| s.underline())
+                                                .child(dc_intl::t("bt75uw"))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if let Some(p) = this.nitro.purchase.as_mut() {
+                                                        p.step = edit_step;
+                                                    }
+                                                    cx.notify();
+                                                })),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-muted"))
+                                    .child(summary_item.description),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .items_end()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-default"))
+                                            .child(summary_item.price),
+                                    )
+                                    .when_some(summary_item.inline_strikethrough, |row, orig| {
+                                        row.child(
+                                            div()
+                                                .text_size(px(14.))
+                                                .line_height(px(18.))
+                                                .text_color(color("--text-subtle"))
+                                                .line_through()
+                                                .child(orig),
+                                        )
+                                    }),
+                            )
+                            .when_some(summary_item.sub_text, |col, sub| {
+                                col.child(
+                                    div()
+                                        .text_size(px(if summary_item.sub_text_strikethrough {
+                                            12.
+                                        } else {
+                                            14.
+                                        }))
+                                        .line_height(px(if summary_item.sub_text_strikethrough {
+                                            16.
+                                        } else {
+                                            18.
+                                        }))
+                                        .text_color(color("--text-muted"))
+                                        .when(summary_item.sub_text_strikethrough, |d| {
+                                            d.font_weight(FontWeight(500.)).line_through()
+                                        })
+                                        .child(sub),
+                                )
+                            }),
+                    )
+            })
             .child(
                 // Module 335056: order summary box (`invoiceSummaryContainer_v15Jql`, `eoXh7B`, `R0cZsM`/`11g67A`).
                 div()
@@ -4202,5 +4515,67 @@ mod tests {
         assert!(!dc_intl::t("Urtyu9").is_empty());
         assert!(!dc_intl::t("u+Cw58").is_empty());
         assert!(!dc_intl::t("IGU7El").is_empty());
+    }
+
+    #[test]
+    fn checkout_purchase_summary_covers_module_498750_variants() {
+        let mut ctx = super::ReviewContext {
+            is_recurring_gift: true,
+            is_gift: true,
+            ..super::ReviewContext::default()
+        };
+        let yr = super::build_purchase_summary(&ctx, "$99.99", None, true, false, "Nitro");
+        assert_eq!(yr.description, dc_intl::t("rstMwN"));
+        let mo = super::build_purchase_summary(&ctx, "$9.99", None, false, false, "Nitro");
+        assert_eq!(mo.description, dc_intl::t("Vb8FaC"));
+
+        ctx.is_recurring_gift = false;
+        ctx.quantity = 3;
+        ctx.can_edit_plan = true;
+        let qty =
+            super::build_purchase_summary(&ctx, "$29.97", Some("$24.99"), false, false, "Nitro");
+        assert_eq!(qty.description, dc_intl::t("3wsYeI"));
+        assert!(qty.label.contains("3"));
+        assert!(qty.editable);
+        assert_eq!(qty.inline_strikethrough.as_deref(), Some("$29.97"));
+
+        ctx.is_gift = false;
+        ctx.quantity = 1;
+        ctx.discount_offer = Some(super::CheckoutDiscountOffer {
+            discount_percent: 30,
+            interval_count: 1,
+            is_yearly: true,
+        });
+        let disc_yr =
+            super::build_purchase_summary(&ctx, "$99.99", Some("$70.00"), true, false, "Nitro");
+        assert_eq!(disc_yr.description, dc_intl::t("2zUa6I"));
+        assert!(disc_yr.price.contains("$70.00"));
+        assert!(disc_yr.sub_text.as_deref().unwrap().contains("$99.99"));
+
+        ctx.discount_offer = Some(super::CheckoutDiscountOffer {
+            discount_percent: 30,
+            interval_count: 3,
+            is_yearly: false,
+        });
+        let disc_mo =
+            super::build_purchase_summary(&ctx, "$9.99", Some("$6.99"), false, false, "Nitro");
+        assert!(disc_mo.price.contains("$6.99"));
+        assert!(
+            disc_mo
+                .sub_text
+                .as_deref()
+                .unwrap()
+                .contains("three months")
+        );
+
+        let grp = super::build_purchase_summary(
+            &super::ReviewContext::default(),
+            "$14.99",
+            None,
+            false,
+            true,
+            "Nitro Group",
+        );
+        assert!(grp.label.contains("Nitro Group"));
     }
 }

@@ -43,6 +43,23 @@ pub(super) fn wanted(
             continue;
         };
         media.push((format!("attachment:{}", attachment.id), url));
+        if attachment.is_clip() {
+            for user in attachment.clip_participants.iter().take(4) {
+                let (key, avatar_url) = super::avatar_source(user);
+                media.push((key, avatar_url));
+            }
+            if let (Some(app_id), Some(icon_hash)) = (
+                attachment.application_id,
+                attachment.application_icon.as_deref(),
+            ) {
+                media.push((
+                    format!("clip-app-icon:{app_id}:{icon_hash}"),
+                    format!(
+                        "https://cdn.discordapp.com/app-icons/{app_id}/{icon_hash}.png?size=32"
+                    ),
+                ));
+            }
+        }
     }
     for block in parse(&message.content) {
         for span in super::block_spans(&block) {
@@ -694,6 +711,9 @@ impl Root {
                 self.media_image_frozen(image, &key, (w, h), 8., (mosaic_cell, hidden), cx)
             }))
             .when(failed && !hidden, |this| this.child(self.image_failed(cx)))
+            .when(!hidden && attachment.is_clip(), |this| {
+                this.child(self.clip_embed_overlay_header(attachment, cx))
+            })
             .children((mosaic_cell && !hidden && attachment.is_video()).then(|| {
                 div()
                     .absolute()
@@ -961,6 +981,390 @@ impl Root {
 /// `(autoPlay || hasMouseOver) && shouldAnimate` with `autoPlay` the setting unless reduced motion overrides it.
 pub(super) fn should_play_media(setting: bool, reduced: bool, hovered: bool) -> bool {
     (setting && !reduced) || hovered
+}
+
+/// Module `478531` (`ClipEmbedOverlayHeader`): title fallback to `Cyxddp` ("Untitled").
+pub(crate) fn clip_display_title(attachment: &Attachment) -> String {
+    attachment
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| dc_intl::t("Cyxddp").to_owned())
+}
+
+/// Module `478531` / `331446`: up to 4 visible participant avatars + overflow count.
+pub(crate) fn clip_participants_split(
+    participants: &[dc_state::User],
+) -> (&[dc_state::User], usize) {
+    let shown = participants.len().min(4);
+    (&participants[..shown], participants.len().saturating_sub(4))
+}
+
+/// Module `331446` (`CJ0I6C`): `"{count, plural, one {# more participant} other {# more participants}}"`.
+pub(crate) fn clip_overflow_label(extra: usize) -> String {
+    dc_intl::format("CJ0I6C", &[("count", dc_intl::Arg::Num(extra as f64))])
+}
+
+/// Formats an ISO-8601 `clip_created_at` date as `MMM D, YYYY` for `478531` metadata.
+fn format_clip_date(raw: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%b %-d, %Y")
+                .to_string()
+        })
+        .unwrap_or_else(|_| raw.to_owned())
+}
+
+/// Open `ClipParticipantsList` popout state (`331446` inside `478531`).
+#[derive(Clone, Debug)]
+pub(super) struct ClipParticipantsPopout {
+    pub attachment_id: Id,
+    pub participants: Vec<dc_state::User>,
+    pub anchor: gpui::Bounds<gpui::Pixels>,
+}
+
+impl Root {
+    /// Module `478531` (`ClipEmbedOverlayHeader`, `_fWPGCD`): top overlay gradient over shared clip
+    /// video attachments showing the experimental clips icon (`/fgfWh` tooltip), title (`Cyxddp`),
+    /// game icon/name + date metadata, and up to 4 participant avatars + `+N` overflow pill (`331446`).
+    pub(super) fn clip_embed_overlay_header(
+        &self,
+        attachment: &Attachment,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let att_id = attachment.id;
+        let title = clip_display_title(attachment);
+        let app_icon = attachment
+            .application_id
+            .zip(attachment.application_icon.as_deref())
+            .and_then(|(id, hash)| {
+                self.images
+                    .get(&format!("clip-app-icon:{id}:{hash}"))
+                    .cloned()
+            });
+        let date_text = attachment.clip_created_at.as_deref().map(format_clip_date);
+        let has_meta = attachment.application_name.is_some() || date_text.is_some();
+        let (shown_users, extra) = clip_participants_split(&attachment.clip_participants);
+
+        let mut avatars = div()
+            .id(SharedString::from(format!("clip-participants-{att_id}")))
+            .aria_label(dc_intl::t("WTozwe"))
+            .flex_none()
+            .flex()
+            .items_center();
+        for (idx, user) in shown_users.iter().enumerate() {
+            let uid = user.id;
+            let anchor_key = format!("clip-participant-{att_id}-{uid}");
+            let anchor_click = anchor_key.clone();
+            let pic = self.images.get(&super::avatar_source(user).0).cloned();
+            let overlap = if idx + 1 < shown_users.len() || extra > 0 {
+                px(-6.)
+            } else {
+                px(0.)
+            };
+            let avatar_btn = div()
+                .id(SharedString::from(format!("clip-av-{att_id}-{uid}")))
+                .relative()
+                .mr(overlap)
+                .size(px(24.))
+                .rounded_full()
+                .border_2()
+                .border_color(gpui::rgba(0x070709ff))
+                .bg(color("--background-surface-high"))
+                .overflow_hidden()
+                .cursor_pointer()
+                .child(self.anchor_probe(anchor_key))
+                .when_some(pic, |el, pic| {
+                    el.child(gpui::img(pic).size(px(20.)).rounded_full())
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    let bounds = this
+                        .tip_anchors
+                        .borrow()
+                        .get(anchor_click.as_str())
+                        .copied();
+                    if let Some(bounds) = bounds {
+                        this.open_profile(uid, bounds, false, cx);
+                    }
+                }));
+            avatars = avatars.child(self.with_tip(
+                format!("clip-av-tip-{att_id}-{uid}"),
+                super::tooltip::Tip::body(
+                    super::tooltip::Body::Text(SharedString::from(self.dm_display_name(user))),
+                    super::tooltip::Side::Top,
+                ),
+                avatar_btn,
+                cx,
+            ));
+        }
+        if extra > 0 {
+            let all_users = attachment.clip_participants.clone();
+            let overflow_anchor = format!("clip-overflow-{att_id}");
+            let overflow_click = overflow_anchor.clone();
+            let overflow_btn = div()
+                .id(SharedString::from(format!("clip-more-{att_id}")))
+                .relative()
+                .h(px(24.))
+                .min_w(px(24.))
+                .px(px(6.))
+                .rounded_full()
+                .bg(gpui::rgba(0x00000099))
+                .border_2()
+                .border_color(gpui::rgba(0x070709ff))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .font_weight(FontWeight(500.))
+                .text_color(gpui::white())
+                .child(self.anchor_probe(overflow_anchor))
+                .child(format!("+{extra}"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    let bounds = this
+                        .tip_anchors
+                        .borrow()
+                        .get(overflow_click.as_str())
+                        .copied();
+                    if let Some(anchor) = bounds {
+                        let same = this
+                            .clip_participants_popout
+                            .as_ref()
+                            .is_some_and(|p| p.attachment_id == att_id);
+                        this.clip_participants_popout = if same {
+                            None
+                        } else {
+                            Some(ClipParticipantsPopout {
+                                attachment_id: att_id,
+                                participants: all_users.clone(),
+                                anchor,
+                            })
+                        };
+                        cx.notify();
+                    }
+                }));
+            avatars = avatars.child(self.with_tip(
+                format!("clip-more-tip-{att_id}"),
+                super::tooltip::Tip::body(
+                    super::tooltip::Body::Text(SharedString::from(clip_overflow_label(extra))),
+                    super::tooltip::Side::Top,
+                ),
+                overflow_btn,
+                cx,
+            ));
+        }
+
+        div()
+            .id(SharedString::from(format!("clip-overlay-header-{att_id}")))
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .rounded_t(px(8.))
+            .overflow_hidden()
+            .child(
+                // `.overlayGradient_fWPGCD`
+                div().absolute().inset_0().bg(gpui::linear_gradient(
+                    180.,
+                    gpui::linear_color_stop(gpui::rgba(0x070709ff), 0.),
+                    gpui::linear_color_stop(gpui::rgba(0x07070900), 1.),
+                )),
+            )
+            .child(
+                // `.overlayContent_fWPGCD`
+                div()
+                    .relative()
+                    .px(px(12.))
+                    .pt(px(12.))
+                    .pb(px(30.))
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(
+                                        self.with_tip(
+                                            format!("clip-exp-tip-{att_id}"),
+                                            super::tooltip::Tip::text(
+                                                dc_intl::t("/fgfWh"),
+                                                super::tooltip::Side::Top,
+                                            ),
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "clip-icon-{att_id}"
+                                                )))
+                                                .flex_none()
+                                                .child(
+                                                    svg()
+                                                        .path("icons/clips_clips.svg")
+                                                        .size(px(16.))
+                                                        .text_color(gpui::white()),
+                                                ),
+                                            cx,
+                                        ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-overlay-light"))
+                                            .child(title),
+                                    ),
+                            )
+                            .when(has_meta, |col| {
+                                col.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
+                                        .opacity(0.7)
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .text_color(gpui::white())
+                                        .when_some(app_icon, |row, pic| {
+                                            row.child(
+                                                gpui::img(pic)
+                                                    .flex_none()
+                                                    .size(px(16.))
+                                                    .rounded(px(4.)),
+                                            )
+                                        })
+                                        .when_some(
+                                            attachment.application_name.clone(),
+                                            |row, app| row.child(div().truncate().child(app)),
+                                        )
+                                        .when(
+                                            attachment.application_name.is_some()
+                                                && date_text.is_some(),
+                                            |row| row.child("\u{00b7}"),
+                                        )
+                                        .when_some(date_text, |row, d| row.child(d)),
+                                )
+                            }),
+                    )
+                    .when(!shown_users.is_empty(), |row| row.child(avatars)),
+            )
+            .into_any_element()
+    }
+
+    /// Module `331446` (`ClipParticipantsList` popout): full participant list opened by the `+N` pill.
+    pub(super) fn clip_participants_popout_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let open = self.clip_participants_popout.as_ref()?;
+        let left = open
+            .anchor
+            .left()
+            .min((px(self.viewport.0) - px(228.)).max(px(8.)));
+        let top = open.anchor.bottom() + px(6.);
+        let mut rows = div()
+            .id("clip-participants-popout-list")
+            .max_h(px(240.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(2.));
+        for user in &open.participants {
+            let uid = user.id;
+            let anchor = open.anchor;
+            let pic = self.images.get(&super::avatar_source(user).0).cloned();
+            let name = self.dm_display_name(user);
+            rows = rows.child(
+                div()
+                    .id(SharedString::from(format!("clip-popout-user-{uid}")))
+                    .px(px(8.))
+                    .py(px(6.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(24.))
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(color("--background-surface-higher"))
+                            .when_some(pic, |el, pic| {
+                                el.child(gpui::img(pic).size(px(24.)).rounded_full())
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(name),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.clip_participants_popout = None;
+                        this.open_profile(uid, anchor, false, cx);
+                    })),
+            );
+        }
+        Some(
+            gpui::deferred(
+                div()
+                    .id("clip-participants-popout")
+                    .aria_label(dc_intl::t("WTozwe"))
+                    .occlude()
+                    .absolute()
+                    .left(left)
+                    .top(top)
+                    .w(px(220.))
+                    .p(px(8.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.clip_participants_popout = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .pb(px(6.))
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("WTozwe")),
+                    )
+                    .child(rows),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1262,5 +1666,44 @@ mod tests {
         ] {
             let _ = color(token);
         }
+    }
+
+    #[test]
+    fn clip_overlay_header_parses_metadata_and_participant_overflow() {
+        let raw = serde_json::json!({
+            "id": "901",
+            "filename": "boss_fight.mp4",
+            "url": "https://cdn.discordapp.com/attachments/1/901/boss_fight.mp4",
+            "proxy_url": "https://media.discordapp.net/attachments/1/901/boss_fight.mp4",
+            "content_type": "video/mp4",
+            "width": 1920,
+            "height": 1080,
+            "size": 1024,
+            "flags": 4,
+            "title": "Clutch Ace",
+            "clip_created_at": "2026-10-12T18:30:00Z",
+            "application": { "id": "42", "name": "Starfall", "icon": "abc" },
+            "clip_participants": [
+                { "id": "1", "username": "a" },
+                { "id": "2", "username": "b" },
+                { "id": "3", "username": "c" },
+                { "id": "4", "username": "d" },
+                { "id": "5", "username": "e" }
+            ]
+        });
+        let att = Attachment::from_value(&raw).unwrap();
+        assert!(att.is_clip());
+        assert_eq!(clip_display_title(&att), "Clutch Ace");
+        assert_eq!(att.application_name.as_deref(), Some("Starfall"));
+        let (shown, extra) = clip_participants_split(&att.clip_participants);
+        assert_eq!(shown.len(), 4);
+        assert_eq!(extra, 1);
+        assert!(clip_overflow_label(1).contains("1"));
+        assert!(clip_overflow_label(3).contains("3"));
+        assert!(!dc_intl::t("/fgfWh").is_empty());
+
+        let mut untitled = att;
+        untitled.title = Some("   ".into());
+        assert_eq!(clip_display_title(&untitled), dc_intl::t("Cyxddp"));
     }
 }

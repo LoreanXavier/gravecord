@@ -539,6 +539,7 @@ mod tests {
             description: None,
             duration_secs: None,
             waveform: None,
+            ..Attachment::default()
         }
     }
 

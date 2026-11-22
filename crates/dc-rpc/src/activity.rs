@@ -75,6 +75,16 @@ fn invalid_secret(message: &str) -> RpcError {
     RpcError::new(codes::INVALID_ACTIVITY_SECRET, message)
 }
 
+/// Module `273626` / `468389`: builds the RPC `ACTIVITY_JOIN` dispatch frame delivered to local SDK subscribers.
+pub fn activity_join_dispatch_frame(secret: &str) -> Value {
+    json!({
+        "cmd": "DISPATCH",
+        "evt": "ACTIVITY_JOIN",
+        "data": { "secret": secret },
+        "nonce": null,
+    })
+}
+
 /// Runs a validated `SET_ACTIVITY` (`args` passed `validate::set_activity`).
 pub async fn set_activity(
     dir: &dyn Directory,
@@ -412,5 +422,13 @@ mod tests {
         assert_eq!(activity["flags"], 1 | 64 | 128);
         assert!(activity.get("instance").is_none());
         assert!(activity["party"].get("privacy").is_none());
+    }
+
+    #[test]
+    fn activity_join_dispatch_frame_carries_secret() {
+        let frame = activity_join_dispatch_frame("sec_42");
+        assert_eq!(frame["cmd"], "DISPATCH");
+        assert_eq!(frame["evt"], "ACTIVITY_JOIN");
+        assert_eq!(frame["data"]["secret"], "sec_42");
     }
 }

@@ -105,8 +105,44 @@ pub(crate) struct VideoQuestModal {
     pub bounty_orbs: Option<u64>,
     pub paused_away: bool,
     pub claim_error: bool,
+    /// Module 491147 (`VideoQuestModal` footer): reward progress ring & advertiser details.
+    pub reward_name: String,
+    pub publisher: String,
+    pub cta_subtitle: String,
+    pub reward_image: Option<String>,
+    pub claimed: bool,
+    pub progress_hovered: bool,
     /// Module 40705 `discord-web-video-player` control bar state.
     pub dvp: super::video_player::DvpControlState,
+}
+
+/// Module `491147` / `738883`: hover progress percentage (capped at 99% until `completed == true`).
+pub(crate) fn video_quest_progress_percent(watched: f64, duration: f64, completed: bool) -> u32 {
+    if completed {
+        100
+    } else if duration <= 0.0 {
+        0
+    } else {
+        ((watched / duration * 100.0).floor() as u32).min(99)
+    }
+}
+
+/// Module `491147` (`U`): `NRp4K4` ("Claim reward: {rewardName}") when completed and unclaimed,
+/// else `12IWP2` ("Reward: {rewardName}").
+pub(crate) fn video_quest_reward_tooltip(
+    completed: bool,
+    claimed: bool,
+    reward_name: &str,
+) -> String {
+    let key = if completed && !claimed {
+        "NRp4K4"
+    } else {
+        "12IWP2"
+    };
+    dc_intl::format(
+        key,
+        &[("rewardName", dc_intl::Arg::Str(reward_name.into()))],
+    )
 }
 
 pub(super) struct State {
@@ -2524,6 +2560,29 @@ impl Root {
         cta_link: String,
         cx: &mut Context<Self>,
     ) {
+        let found = self.quests.store.quests.iter().find(|q| q.id == quest_id);
+        let reward_name = found
+            .and_then(|q| q.config.rewards.first())
+            .map(|r| r.name.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| title.clone());
+        let publisher = found
+            .map(|q| q.config.game_publisher.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| subtitle.clone());
+        let cta_subtitle = cta_label.clone();
+        let reward_image = found
+            .and_then(|q| q.config.assets_reward_tile.as_deref())
+            .filter(|s| !s.is_empty())
+            .map(|asset| quest_asset(&quest_id, asset));
+        let claimed = found.is_some_and(|q| {
+            q.user_status
+                .as_ref()
+                .is_some_and(|s| s.claimed_at.is_some())
+        });
+        if let Some(url) = &reward_image {
+            self.request_image(format!("quest-reward:{quest_id}"), url.clone());
+        }
         self.quests.video_modal = Some(VideoQuestModal {
             quest_id,
             title,
@@ -2537,6 +2596,12 @@ impl Root {
             bounty_orbs: None,
             paused_away: false,
             claim_error: false,
+            reward_name,
+            publisher,
+            cta_subtitle,
+            reward_image,
+            claimed,
+            progress_hovered: false,
             dvp: super::video_player::DvpControlState::for_video(0, 30, false),
         });
         cx.notify();
@@ -3126,7 +3191,185 @@ impl Root {
                 .into_any_element()
         };
 
-        // Footer (module 579666 `738883` Promoted `o6FLcF` + module 612378 Claim Reward button)
+        // Footer: module 491147 (`U` 48x48 reward progress ring + `T` advertiser details `EQa7os` / `EuHF34`)
+        // for standard video quests; module 579666 (`o6FLcF` Promoted) for bounty ads + module 612378 Claim button.
+        let completed = remaining == 0;
+        let pct_int = video_quest_progress_percent(
+            modal.watch_secs as f64,
+            modal.duration_secs as f64,
+            completed,
+        );
+        let footer_left: AnyElement = if is_bounty {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .size(px(36.))
+                        .rounded(px(8.))
+                        .bg(rgba(0x5865f233))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("home_quests", 18., "--white")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(gpui::FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(modal.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t("o6FLcF")),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            let reward_tip =
+                video_quest_reward_tooltip(completed, modal.claimed, &modal.reward_name);
+            let can_claim_ring = completed && !modal.claimed;
+            let ring_qid = modal.quest_id.clone();
+            let reward_pic = modal
+                .reward_image
+                .as_deref()
+                .and_then(|_| self.images.get(&format!("quest-reward:{}", modal.quest_id)))
+                .cloned();
+            let ring_border = if completed {
+                color("--status-positive")
+            } else {
+                color("--control-primary-background-default")
+            };
+            let progress_ring = self.with_tip(
+                "video-quest-reward-ring-tip".to_owned(),
+                super::tooltip::Tip::body(
+                    super::tooltip::Body::Text(SharedString::from(reward_tip)),
+                    super::tooltip::Side::Top,
+                ),
+                div()
+                    .id("video-quest-reward-ring")
+                    .relative()
+                    .mt(px(5.))
+                    .size(px(48.))
+                    .rounded_full()
+                    .border_2()
+                    .border_color(ring_border)
+                    .bg(color("--background-base-lowest"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .when(can_claim_ring, |el| {
+                        el.cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.open_quest_reward_modal(&ring_qid, cx);
+                            }))
+                    })
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if let Some(v) = this.quests.video_modal.as_mut() {
+                            v.progress_hovered = *hovered;
+                            cx.notify();
+                        }
+                    }))
+                    .child(match reward_pic {
+                        Some(pic) => gpui::img(pic)
+                            .size(px(36.))
+                            .rounded_full()
+                            .into_any_element(),
+                        None => icon("home_quests", 20., "--white").into_any_element(),
+                    })
+                    .when(modal.progress_hovered, |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .bg(rgba(0x000000b3))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(gpui::FontWeight(500.))
+                                .text_color(color("--white"))
+                                .child(format!("{pct_int}%")),
+                        )
+                    }),
+                cx,
+            );
+            let adv_link = modal.cta_link.clone();
+            let adv_title = dc_intl::format(
+                "EQa7os",
+                &[("questName", dc_intl::Arg::Str(modal.title.as_str().into()))],
+            );
+            let adv_sub = if modal.publisher.is_empty() {
+                modal.cta_subtitle.clone()
+            } else if modal.cta_subtitle.is_empty() {
+                modal.publisher.clone()
+            } else {
+                format!("{} \u{00b7} {}", modal.publisher, modal.cta_subtitle)
+            };
+            let advertiser = self.with_tip(
+                "video-quest-advertiser-tip".to_owned(),
+                super::tooltip::Tip::text(dc_intl::t("EuHF34"), super::tooltip::Side::Top),
+                div()
+                    .id("video-quest-advertiser")
+                    .min_w_0()
+                    .cursor_pointer()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        if !adv_link.is_empty() {
+                            this.follow_link(&adv_link, "", cx);
+                        }
+                    }))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(gpui::FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child(adv_title),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(icon("circle_check", 16., "--icon-muted"))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(gpui::FontWeight(500.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(adv_sub),
+                            ),
+                    ),
+                cx,
+            );
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(progress_ring)
+                .child(advertiser)
+                .into_any_element()
+        };
         let footer = div()
             .px(px(20.))
             .py(px(12.))
@@ -3137,40 +3380,7 @@ impl Root {
             .items_center()
             .justify_between()
             .gap(px(12.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(
-                        div()
-                            .size(px(36.))
-                            .rounded(px(8.))
-                            .bg(rgba(0x5865f233))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon("home_quests", 18., "--white")),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(gpui::FontWeight(600.))
-                                    .text_color(color("--text-strong"))
-                                    .child(modal.title.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(color("--text-muted"))
-                                    .child(dc_intl::t("o6FLcF")),
-                            ),
-                    ),
-            )
+            .child(footer_left)
             .child(
                 div()
                     .flex()
@@ -3179,8 +3389,8 @@ impl Root {
                     .child(self.quest_claim_reward_button(
                         "video-quest-claim-btn",
                         modal.quest_id.clone(),
-                        remaining == 0,
-                        false,
+                        completed,
+                        modal.claimed,
                         is_bounty,
                         false,
                         true,
@@ -3293,6 +3503,12 @@ impl Root {
                     bounty_orbs: is_bounty.then_some(50),
                     paused_away: mode == "bounty",
                     claim_error: mode == "bounty-error",
+                    reward_name: "Starfall Avatar Decoration".to_owned(),
+                    publisher: "Nebula Studios".to_owned(),
+                    cta_subtitle: "Learn more".to_owned(),
+                    reward_image: None,
+                    claimed: false,
+                    progress_hovered: mode == "ring-hover",
                     dvp: {
                         let mut d = super::video_player::DvpControlState::for_video(
                             if earned { 30 } else { 12 },
@@ -3384,5 +3600,25 @@ mod tests {
         assert!(!opens_below(702., SORT_MENU_HEIGHT, 720.));
         assert!(!opens_below(702., FILTER_MENU_HEIGHT, 720.));
         assert!(opens_below(300., SORT_MENU_HEIGHT, 720.));
+    }
+
+    #[test]
+    fn video_quest_footer_progress_and_reward_labels_match_module_491147() {
+        assert_eq!(video_quest_progress_percent(0.0, 30.0, false), 0);
+        assert_eq!(video_quest_progress_percent(15.0, 30.0, false), 50);
+        assert_eq!(video_quest_progress_percent(29.95, 30.0, false), 99);
+        assert_eq!(video_quest_progress_percent(30.0, 30.0, true), 100);
+        assert_eq!(
+            video_quest_reward_tooltip(false, false, "Orb Crown"),
+            dc_intl::format("12IWP2", &[("rewardName", "Orb Crown".into())])
+        );
+        assert_eq!(
+            video_quest_reward_tooltip(true, false, "Orb Crown"),
+            dc_intl::format("NRp4K4", &[("rewardName", "Orb Crown".into())])
+        );
+        assert_eq!(
+            video_quest_reward_tooltip(true, true, "Orb Crown"),
+            dc_intl::format("12IWP2", &[("rewardName", "Orb Crown".into())])
+        );
     }
 }

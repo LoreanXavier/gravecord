@@ -1919,6 +1919,12 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_nitro_offer_header(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `third-party-promo [locked|unlocked|claimed|error|close]`: Partner Promotions modal (452417 / 116011).
+            ["third-party-promo", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_third_party_promo(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `overlay-voice-switcher [open|empty|search <q>|close]`: Overlay Voice Channel Switcher popout (594831).
             ["overlay-voice-switcher", rest @ ..] => {
                 let arg = rest.join(" ");

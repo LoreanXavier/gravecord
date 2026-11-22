@@ -1231,6 +1231,12 @@ pub struct Attachment {
     pub duration_secs: Option<f64>,
     /// `waveform`: the base64 bytes a voice message's player draws its bars from.
     pub waveform: Option<String>,
+    /// Shared clip metadata (`478531` `ClipEmbedOverlayHeader`): creation timestamp, participants, and game/app.
+    pub clip_created_at: Option<String>,
+    pub clip_participants: Vec<User>,
+    pub application_id: Option<Id>,
+    pub application_name: Option<String>,
+    pub application_icon: Option<String>,
 }
 
 impl Attachment {
@@ -1260,6 +1266,14 @@ impl Attachment {
             description: text(&value["description"]).filter(|text| !text.is_empty()),
             duration_secs: value["duration_secs"].as_f64(),
             waveform: text(&value["waveform"]),
+            clip_created_at: text(&value["clip_created_at"]).filter(|s| !s.is_empty()),
+            clip_participants: value["clip_participants"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(User::from_value).collect())
+                .unwrap_or_default(),
+            application_id: crate::id(&value["application"]["id"]),
+            application_name: text(&value["application"]["name"]).filter(|s| !s.is_empty()),
+            application_icon: text(&value["application"]["icon"]).filter(|s| !s.is_empty()),
         })
     }
 

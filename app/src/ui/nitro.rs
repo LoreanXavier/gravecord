@@ -693,6 +693,7 @@ impl Root {
             ),
             (PAYMENTS_KEY, "/users/@me/billing/payments?limit=20"),
             (GIFT_CODES_KEY, "/users/@me/entitlements/gift-codes"),
+            ("user-offer", "/users/@me/billing/user-offer"),
         ] {
             let _ = self.requests.send(Request::Rest {
                 key: Some(key.to_owned()),
@@ -789,6 +790,15 @@ impl Root {
         self.nitro.home_opened = None;
         self.nitro.art_logged.clear();
         self.nitro.hovered_perk = None;
+        // Module 105390 / 432458: acknowledge an unacked Nitro trial/discount offer when opening Nitro.
+        if self.unacknowledged_nitro_offer_count() > 0 && !crate::storage::is_capture_run() {
+            let _ = self.requests.send(Request::Rest {
+                key: Some("user-offer".to_owned()),
+                method: reqwest::Method::POST,
+                route: "/users/@me/billing/user-offer/ack".to_owned(),
+                body: Some(serde_json::json!({})),
+            });
+        }
         self.request_nitro();
         cx.notify();
     }
@@ -1113,10 +1123,21 @@ impl Root {
                     .size_full()
                     .object_fit(gpui::ObjectFit::Cover)
             }));
+        let promo_partner = match item.id {
+            "bento-youtube" => Some(super::third_party_promos::PartnerId::YouTube),
+            "bento-cod" => Some(super::third_party_promos::PartnerId::CallOfDuty),
+            _ => None,
+        };
         div()
             .id(item.id)
             .relative()
             .flex_none()
+            .when_some(promo_partner, |el, partner| {
+                el.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_third_party_promo_modal(partner, cx);
+                    }))
+            })
             .rounded(px(16.))
             .p(px(12.))
             .bg(color("--background-surface-high"))

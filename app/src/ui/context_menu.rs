@@ -443,13 +443,15 @@ pub(super) enum Act {
     CopyImage,
     SaveImage,
     OpenLink,
+    /// Module 468389 (`useActivityMenuItems`): Join / Ask to Join / Invite / Spotify / Embedded Activity.
+    ActivityAction(usize),
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 187] = [
+    pub(super) const ALL: [Act; 188] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -637,6 +639,7 @@ impl Act {
         Act::CopyImage,
         Act::SaveImage,
         Act::OpenLink,
+        Act::ActivityAction(0),
     ];
 
     #[cfg(test)]
@@ -829,6 +832,7 @@ impl Act {
             Act::CopyImage => 184,
             Act::SaveImage => 185,
             Act::OpenLink => 186,
+            Act::ActivityAction(_) => 187,
         }
     }
 }
@@ -1021,7 +1025,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::EntranceServer
         | Act::EntranceGlobal
         | Act::DownloadSound
-        | Act::Noop => Wired,
+        | Act::Noop
+        | Act::ActivityAction(_) => Wired,
     }
 }
 
@@ -3319,6 +3324,8 @@ pub(super) struct State {
     pub title_menu: Option<bool>,
     /// The SKU ID of the Game Shop card whose context menu is open (module 10680).
     pub game_shop_sku: Option<String>,
+    /// Module 468389 (`useActivityMenuItems`): queued activity actions indexed by `Act::ActivityAction(idx)`.
+    pub activity_actions: Vec<super::live_activity::ActivityMenuAction>,
 }
 
 const MUTE_FOR: [(i64, &str); 6] = [
@@ -4849,7 +4856,59 @@ impl Root {
                         self.stage_user_acts(guild, user, stage_channel_items)
                     }),
                 };
-                user_items(&facts)
+                let mut rows = user_items(&facts);
+                // Module 468389 (`useActivityMenuItems`): append Join / Ask to Join / Invite / Spotify items.
+                self.context.activity_actions.clear();
+                let me_id = self.stores.current_user.as_ref().map_or(0, |u| u.id);
+                let own_activities: Vec<serde_json::Value> = self
+                    .stores
+                    .presence
+                    .get(me_id, None)
+                    .map(|p| p.visible_activities().into_iter().cloned().collect())
+                    .unwrap_or_default();
+                let target_activities: Vec<serde_json::Value> = self
+                    .stores
+                    .presence
+                    .get(user, None)
+                    .map(|p| p.visible_activities().into_iter().cloned().collect())
+                    .unwrap_or_default();
+                let can_send = guild.is_none()
+                    || guild.is_some_and(|g| {
+                        self.my_permission(g, self.current_channel(), permissions::SEND_MESSAGES)
+                    });
+                let act_ctx = super::live_activity::ActivityMenuCtx {
+                    me_id,
+                    target_user_id: user,
+                    can_send_messages: can_send,
+                    is_voice_or_dm: guild.is_none() || from_voice_row,
+                    own_activities,
+                    target_activities,
+                    target_embedded_apps: Vec::new(),
+                    joining_keys: self.joining_activities.clone(),
+                    spotify_available: self.linked_platforms().contains(&"spotify"),
+                    spotify_disabled_reason: None,
+                };
+                let act_items = super::live_activity::build_activity_menu_items(&act_ctx);
+                if !act_items.is_empty() {
+                    rows.push(Entry::Separator);
+                    for item in act_items {
+                        if item.action == super::live_activity::ActivityMenuAction::Separator {
+                            rows.push(Entry::Separator);
+                        } else {
+                            let idx = self.context.activity_actions.len();
+                            self.context.activity_actions.push(item.action);
+                            let mut row = Row::new(Act::ActivityAction(idx), item.label);
+                            if item.disabled {
+                                row = row.disabled(true);
+                            }
+                            if let Some(sub) = item.subtext {
+                                row.sub = Some(sub);
+                            }
+                            rows.push(Entry::Row(row));
+                        }
+                    }
+                }
+                rows
             }
         };
         let items = self.adjust_menu_rows(target, items);
@@ -6240,6 +6299,77 @@ impl Root {
                     cx,
                 );
             }
+            (Act::ActivityAction(idx), Target::User { user, .. }) => {
+                if let Some(action) = self.context.activity_actions.get(idx).cloned() {
+                    match action {
+                        super::live_activity::ActivityMenuAction::InviteToJoin {
+                            target_user,
+                            app_id,
+                            party_id,
+                        } => {
+                            self.send_activity_invite(
+                                target_user,
+                                None,
+                                1,
+                                Some(app_id),
+                                party_id,
+                                cx,
+                            );
+                        }
+                        super::live_activity::ActivityMenuAction::InviteToListen {
+                            target_user,
+                            party_id,
+                        } => {
+                            self.send_activity_invite(target_user, None, 3, None, party_id, cx);
+                        }
+                        super::live_activity::ActivityMenuAction::Join {
+                            user_id,
+                            session_id,
+                            app_id,
+                        } => {
+                            self.join_user_activity(user_id, session_id, app_id, self.channel, cx);
+                        }
+                        super::live_activity::ActivityMenuAction::AskToJoin {
+                            user_id,
+                            app_id,
+                            party_id,
+                        } => {
+                            self.send_activity_invite(user_id, None, 5, Some(app_id), party_id, cx);
+                        }
+                        super::live_activity::ActivityMenuAction::SpotifyPlay { user_id }
+                        | super::live_activity::ActivityMenuAction::SpotifyListenAlong {
+                            user_id,
+                        } => {
+                            let sync = matches!(
+                                action,
+                                super::live_activity::ActivityMenuAction::SpotifyListenAlong { .. }
+                            );
+                            if let Some(act) =
+                                self.stores.presence.get(user_id, None).and_then(|p| {
+                                    p.visible_activities()
+                                        .into_iter()
+                                        .find(|a| a["type"].as_u64() == Some(2))
+                                        .cloned()
+                                })
+                            {
+                                self.spotify_clicked(
+                                    user,
+                                    &act,
+                                    sync,
+                                    super::live_activity::Surface::Popout,
+                                    cx,
+                                );
+                            }
+                        }
+                        super::live_activity::ActivityMenuAction::JoinEmbedded { app_id } => {
+                            if self.channel.is_some() {
+                                self.launch_activity(&app_id.to_string(), cx);
+                            }
+                        }
+                        super::live_activity::ActivityMenuAction::Separator => {}
+                    }
+                }
+            }
             (Act::Message, Target::User { user, .. }) => self.open_dm_with(user, cx),
             (Act::AddFriend, Target::User { user, .. }) => self.set_relationship(user, Some(4), cx),
             (Act::AddFriend, Target::Dm(channel) | Target::OverlayDm(channel)) => {
@@ -6675,7 +6805,7 @@ impl Root {
             .map(|user| user.id)
     }
 
-    fn dm_channel_for_user(&self, user: Id) -> Option<Id> {
+    pub(super) fn dm_channel_for_user(&self, user: Id) -> Option<Id> {
         self.stores
             .private_channels
             .iter()

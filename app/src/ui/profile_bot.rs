@@ -1784,6 +1784,212 @@ impl Root {
     }
 }
 
+/// Parsed Conjure metadata from `profile["application"]` (`827656.js` / `316980.js` inside `476897`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConjureInfo {
+    pub project_id: String,
+    pub creator_id: Option<Id>,
+    pub can_edit: bool,
+    pub can_remix: bool,
+}
+
+pub(crate) fn parse_conjure_info(
+    app: &serde_json::Value,
+    me: Option<Id>,
+    guild: Option<Id>,
+) -> Option<ConjureInfo> {
+    let project_id = app["conjure_project_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())?
+        .to_owned();
+    let creator_id = app["conjure_creator_id"]
+        .as_str()
+        .or_else(|| app["owner"]["id"].as_str())
+        .or_else(|| app["team"]["owner_user_id"].as_str())
+        .and_then(|s| s.parse::<Id>().ok());
+    let can_edit = app["conjure_can_edit"]
+        .as_bool()
+        .unwrap_or_else(|| creator_id.is_some() && creator_id == me);
+    let can_remix = app["conjure_can_remix"].as_bool().unwrap_or(false) && guild.is_some();
+    Some(ConjureInfo {
+        project_id,
+        creator_id,
+        can_edit,
+        can_remix,
+    })
+}
+
+impl Root {
+    /// Module `476897` -> `827656` / `316980` (`ConjureBotProfileFooter`, `_djJpbL`):
+    /// rendered at the bottom of a bot popout when the application carries `conjure_project_id`.
+    pub(super) fn bot_conjure_footer(
+        &self,
+        user: Id,
+        guild: Option<Id>,
+        palette: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let app = profile_app(self.fetched.get(&format!("profile:{user}")))?;
+        let me = self.stores.current_user.as_ref().map(|u| u.id);
+        let info = parse_conjure_info(app, me, guild)?;
+        let creator_user = info.creator_id.and_then(|cid| self.stores.users.get(&cid));
+        let creator_name = creator_user
+            .map(|u| u.display_name().to_owned())
+            .or_else(|| {
+                app["owner"]["global_name"]
+                    .as_str()
+                    .or_else(|| app["owner"]["username"].as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "Discord".to_owned());
+        let creator_pic =
+            creator_user.and_then(|u| self.images.get(&super::avatar_source(u).0).cloned());
+        let strong: gpui::Hsla = palette.token("--text-strong").into();
+        let muted: gpui::Hsla = palette.token("--text-muted").into();
+        let runs = dc_intl::format_runs("6/x9LD", &[("name", creator_name.as_str().into())]);
+        let mut text = String::new();
+        let mut hl = Vec::new();
+        for (chunk, hook) in runs {
+            let start = text.len();
+            text.push_str(&chunk);
+            if hook.as_deref() == Some("$b") && start < text.len() {
+                hl.push((
+                    start..text.len(),
+                    gpui::HighlightStyle {
+                        font_weight: Some(FontWeight(600.)),
+                        color: Some(strong),
+                        ..gpui::HighlightStyle::default()
+                    },
+                ));
+            }
+        }
+        let creator_id = info.creator_id;
+        let sec_bg = palette.token("--control-secondary-background-default");
+        let sec_hover = palette.token("--control-secondary-background-hover");
+        let sec_border = palette.token("--control-secondary-border-default");
+        let sec_fg = palette.token("--control-secondary-text-default");
+        let action_btn = |id: &'static str, label: &'static str, glyph: Option<&'static str>| {
+            div()
+                .id(id)
+                .h(px(28.))
+                .px(px(10.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(sec_border)
+                .bg(sec_bg)
+                .hover(move |s| s.bg(sec_hover))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .font_weight(FontWeight(500.))
+                .text_color(sec_fg)
+                .when_some(glyph, |el, g| {
+                    el.child(
+                        gpui::svg()
+                            .path(format!("icons/{g}.svg"))
+                            .size(px(16.))
+                            .text_color(sec_fg),
+                    )
+                })
+                .child(label)
+        };
+        let creator_row = div()
+            .id("bot-conjure-creator")
+            .min_w_0()
+            .flex_1()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .when_some(creator_id, |el, cid| {
+                el.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.profile = None;
+                        this.open_full_profile(cid, window, cx);
+                    }))
+            })
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(20.))
+                    .rounded_full()
+                    .overflow_hidden()
+                    .bg(palette.token("--background-mod-subtle"))
+                    .when_some(creator_pic, |el, pic| {
+                        el.child(gpui::img(pic).size(px(20.)).rounded_full())
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(muted)
+                    .child(gpui::StyledText::new(text).with_highlights(hl)),
+            );
+        Some(
+            div()
+                .id("bot-conjure-footer")
+                .relative()
+                .flex_none()
+                .overflow_hidden()
+                .mb(px(-4.))
+                .pt(px(8.))
+                .pb(px(8.))
+                .pl(px(16.))
+                .pr(px(8.))
+                .border_t_1()
+                .border_color(palette.token("--border-subtle"))
+                .child(
+                    // `.footerGlow_djJpbL`
+                    div().absolute().inset_0().bg(gpui::linear_gradient(
+                        90.,
+                        gpui::linear_color_stop(gpui::rgba(0x5865f226), 0.),
+                        gpui::linear_color_stop(gpui::rgba(0xeb459e1a), 1.),
+                    )),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .min_h(px(32.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.))
+                        .child(creator_row)
+                        .when(info.can_edit || info.can_remix, |row| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .when(info.can_edit, |btns| {
+                                        btns.child(action_btn(
+                                            "bot-conjure-edit",
+                                            dc_intl::t("bt75uw"),
+                                            Some("magic_wand"),
+                                        ))
+                                    })
+                                    .when(info.can_remix, |btns| {
+                                        btns.child(action_btn(
+                                            "bot-conjure-remix",
+                                            dc_intl::t("276ll6"),
+                                            None,
+                                        ))
+                                    }),
+                            )
+                        }),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1881,5 +2087,28 @@ mod tests {
             )),
             Some(vec![(3, Some("dj".to_owned()))])
         );
+    }
+
+    #[test]
+    fn conjure_footer_parses_project_creator_and_actions() {
+        let plain = json!({"id": "9"});
+        assert_eq!(parse_conjure_info(&plain, Some(1), Some(2)), None);
+        let app = json!({
+            "id": "9",
+            "conjure_project_id": "proj_1",
+            "owner": { "id": "42" },
+            "conjure_can_remix": true
+        });
+        let info = parse_conjure_info(&app, Some(42), Some(100)).unwrap();
+        assert_eq!(info.project_id, "proj_1");
+        assert_eq!(info.creator_id, Some(42));
+        assert!(info.can_edit);
+        assert!(info.can_remix);
+        // Remix requires a guild context.
+        let dm_info = parse_conjure_info(&app, Some(99), None).unwrap();
+        assert!(!dm_info.can_edit);
+        assert!(!dm_info.can_remix);
+        assert!(!dc_intl::t("bt75uw").is_empty());
+        assert!(!dc_intl::t("276ll6").is_empty());
     }
 }

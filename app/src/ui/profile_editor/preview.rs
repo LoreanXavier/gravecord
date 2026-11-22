@@ -778,8 +778,31 @@ impl Root {
                         ),
                 )
         });
-        let bio_section = (!nitro)
-            .then(|| section("Bio", &palette).child(div().ml(px(-7.)).px(px(7.)).child(bio)));
+        let bio_section = if !nitro {
+            Some(
+                section("Bio", &palette)
+                    .child(div().ml(px(-7.)).px(px(7.)).child(bio))
+                    .into_any_element(),
+            )
+        } else {
+            // Module 442228 in 641318 Nitro preview: clamped bio with View Full Bio disabled.
+            let preview_bio = bio.read(cx).text().to_owned();
+            let me_id = self.stores.current_user.as_ref().map_or(0, |u| u.id);
+            let strong = palette.token("--text-strong").into();
+            self.clamped_bio_with_opts(
+                me_id,
+                &preview_bio,
+                strong,
+                &palette,
+                crate::ui::profile_other::ClampedBioOpts {
+                    hide_personal_info: self.streamer_hides_personal(),
+                    view_full_bio_disabled: true,
+                    close_popout: false,
+                },
+                cx,
+            )
+            .map(|el| section("Bio", &palette).child(el).into_any_element())
+        };
         let connections = (!nitro).then(|| {
             let muted = palette.token("--text-muted");
             section("Connections", &palette).child(

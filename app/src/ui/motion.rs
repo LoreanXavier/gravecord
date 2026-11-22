@@ -2326,6 +2326,7 @@ fn open_dialog(
                 description: None,
                 duration_secs: None,
                 waveform: None,
+                ..dc_state::Attachment::default()
             };
             root.texts.insert(
                 super::files::text_key(&attachment),

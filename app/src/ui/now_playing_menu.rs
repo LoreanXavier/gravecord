@@ -148,7 +148,19 @@ pub(super) enum Act {
         user: Id,
         sync: bool,
     },
-    /// GAP: no join or invite plumbing (see the module note).
+    /// Module 468389 / 273626: join a user's joinable activity session.
+    JoinActivity {
+        user: Id,
+        session_id: String,
+        app_id: Id,
+    },
+    /// Module 468389 / 308368: send an Ask to Join (`type: 5`) request message.
+    AskToJoinActivity {
+        user: Id,
+        app_id: Id,
+        party_id: Option<String>,
+    },
+    /// Disabled display-only row (e.g., already Joined).
     Unwired,
     ConnectXbox,
     Profile(Id),
@@ -171,6 +183,7 @@ pub(super) enum Line {
 /// One activity of the party as the menu needs it.
 #[derive(Clone, Debug)]
 pub(super) struct ActivityFacts {
+    pub user: Id,
     /// `i.toString()`: the person's username.
     pub username: String,
     pub name: String,
@@ -293,22 +306,47 @@ pub(super) fn lines(facts: &Facts) -> Vec<Line> {
                 true,
                 Act::Unwired,
             )),
-            Joinability::CanJoin => actions.push(item(
-                dc_intl::t(if activity.joining { "bf6Ci7" } else { "VJlc0S" }).to_owned(),
-                Some(activity.name.clone()),
-                activity.joining,
-                Act::Unwired,
-            )),
-            Joinability::CannotJoin if joinable_kind(&activity.value) => actions.push(item(
-                if multiple {
-                    dc_intl::format("wFAvxM", &[("name", activity.username.clone().into())])
-                } else {
-                    dc_intl::t("OKsSCR").to_owned()
-                },
-                Some(activity.name.clone()),
-                false,
-                Act::Unwired,
-            )),
+            Joinability::CanJoin => {
+                let session_id = activity.value["session_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                let app_id = activity.value["application_id"]
+                    .as_str()
+                    .and_then(|s| s.parse::<Id>().ok())
+                    .unwrap_or(0);
+                actions.push(item(
+                    dc_intl::t(if activity.joining { "bf6Ci7" } else { "VJlc0S" }).to_owned(),
+                    Some(activity.name.clone()),
+                    activity.joining,
+                    Act::JoinActivity {
+                        user: activity.user,
+                        session_id,
+                        app_id,
+                    },
+                ));
+            }
+            Joinability::CannotJoin if joinable_kind(&activity.value) => {
+                let app_id = activity.value["application_id"]
+                    .as_str()
+                    .and_then(|s| s.parse::<Id>().ok())
+                    .unwrap_or(0);
+                let party_id = activity.value["party"]["id"].as_str().map(str::to_owned);
+                actions.push(item(
+                    if multiple {
+                        dc_intl::format("wFAvxM", &[("name", activity.username.clone().into())])
+                    } else {
+                        dc_intl::t("OKsSCR").to_owned()
+                    },
+                    Some(activity.name.clone()),
+                    false,
+                    Act::AskToJoinActivity {
+                        user: activity.user,
+                        app_id,
+                        party_id,
+                    },
+                ));
+            }
             Joinability::CannotJoin => {}
         }
     }
@@ -540,7 +578,10 @@ impl Root {
                     friend: self.stores.relationships.get(&activity.user) == Some(&1),
                     shared_voice,
                 };
+                let app_id_str = value["application_id"].as_str().unwrap_or_default();
+                let join_key = format!("{}:{app_id_str}", activity.user);
                 ActivityFacts {
+                    user: activity.user,
                     username: self
                         .stores
                         .users
@@ -550,7 +591,7 @@ impl Root {
                     name: value["name"].as_str().unwrap_or_default().to_owned(),
                     value: value.clone(),
                     joinability: joinability(value, &facts),
-                    joining: false,
+                    joining: self.joining_activities.contains(&join_key),
                 }
             })
             .collect();
@@ -609,9 +650,21 @@ impl Root {
                     );
                 }
             }
-            Act::Unwired => {
-                tracing::info!("now playing menu: join / ask to join is not built in this client");
+            Act::JoinActivity {
+                user,
+                session_id,
+                app_id,
+            } => {
+                self.join_user_activity(user, session_id, app_id, self.channel, cx);
             }
+            Act::AskToJoinActivity {
+                user,
+                app_id,
+                party_id,
+            } => {
+                self.send_activity_invite(user, None, 5, Some(app_id), party_id, cx);
+            }
+            Act::Unwired => {}
             Act::ConnectXbox => self.open_settings_page("connected-apps", cx),
             // `openUserProfileModal`.
             Act::Profile(user) => self.open_full_profile(user, window, cx),
@@ -884,6 +937,7 @@ mod tests {
             streams: Vec::new(),
             spotify: None,
             activities: vec![ActivityFacts {
+                user: 7,
                 username: "mira".to_owned(),
                 name: "Halo".to_owned(),
                 value: json!({"type": 0, "flags": 2}),

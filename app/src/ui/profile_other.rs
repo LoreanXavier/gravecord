@@ -614,7 +614,18 @@ impl Root {
                 ))
             })
             .when_some(bio, |this, bio| {
-                this.child(self.clamped_bio(id, &bio, strong, &palette, cx))
+                this.children(self.clamped_bio_with_opts(
+                    id,
+                    &bio,
+                    strong,
+                    &palette,
+                    ClampedBioOpts {
+                        hide_personal_info: self.streamer_hides_personal(),
+                        view_full_bio_disabled: false,
+                        close_popout: true,
+                    },
+                    cx,
+                ))
             })
             .children(self.live_activity_cards(
                 id,
@@ -698,6 +709,10 @@ impl Root {
         let card = div()
             .parity("user-popout")
             .id("profile-popout")
+            .aria_label(dc_intl::format(
+                "KRe1Fk",
+                &[("name", dc_intl::Arg::Str(display_name.as_str().into()))],
+            ))
             .on_hover(cx.listener(|this, inside: &bool, _, cx| {
                 this.profile_effect_hover("popout", *inside, cx);
             }))
@@ -792,6 +807,9 @@ impl Root {
                             .child(content),
                     )
                     .children(message.map(|message| div().flex_none().child(message)))
+                    .when(bot, |c| {
+                        c.children(self.bot_conjure_footer(id, self.guild, &palette, cx))
+                    })
                     .children(effect)
                     .child(actions),
             )
@@ -968,6 +986,20 @@ fn bio_key(user: Id, bio: &str) -> (Id, u64) {
     (user, hasher.finish())
 }
 
+/// Module `442228` display options: Streamer Mode hide guard, disabled View Full Bio (for editor preview `641318`),
+/// and closing the popout on click (`onClose`).
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ClampedBioOpts {
+    pub hide_personal_info: bool,
+    pub view_full_bio_disabled: bool,
+    pub close_popout: bool,
+}
+
+/// `442228.js`: returns `false` when Streamer Mode hides personal info or bio is empty.
+pub(super) fn should_show_clamped_bio(hide_personal_info: bool, bio: &str) -> bool {
+    !hide_personal_info && !bio.trim().is_empty()
+}
+
 /// Module 559506 shows its warning for a failed profile read unless the user is a friend or asked to be one
 /// (module 83931 `W`: `FRIEND` or `PENDING_INCOMING`).
 pub(super) fn fetch_warning_shown(failed: bool, relationship: Option<u64>) -> bool {
@@ -1015,9 +1047,89 @@ impl Root {
         )
     }
 
-    /// The bio of module 442228 (the popout and the redesigned DM profile): clamped to three lines, the third ending
-    /// in "…", and with View Full Bio (`viewFullBio_BcddaK`, 8px above, a `sm` secondary button in `body-xs/normal`)
-    /// once it is cut, which opens the full profile.
+    /// The bio of module 442228 (the popout, redesigned DM profile, and profile editor preview `641318`): clamped to
+    /// three lines, the third ending in "…", and with View Full Bio (`viewFullBio_BcddaK`, 8px above, a `sm` secondary
+    /// button in `body-xs/normal`) once it is cut, which opens the full profile.
+    pub(super) fn clamped_bio_with_opts(
+        &self,
+        user: Id,
+        bio: &str,
+        strong: Hsla,
+        palette: &super::dm_profile::Palette,
+        opts: ClampedBioOpts,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !should_show_clamped_bio(opts.hide_personal_info, bio) {
+            return None;
+        }
+        let key = bio_key(user, bio);
+        let truncated = TRUNCATED_BIOS.with(|set| set.borrow().contains(&key));
+        let root = cx.weak_entity();
+        let cut = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = cut.clone();
+        let disabled = opts.view_full_bio_disabled;
+        let close_popout = opts.close_popout;
+        Some(
+            div()
+                .id(gpui::SharedString::from(format!("clamped-bio-{user}")))
+                .aria_label(dc_intl::t("ZzAR2Y"))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        // `maxBioHeight_BcddaK` once the box was found taller than 57.75px.
+                        .when(truncated, |this| this.max_h(px(BIO_MAX_HEIGHT)))
+                        .overflow_hidden()
+                        .child(self.bio_clamped(bio, strong, BIO_CLAMP_LINES, cut, cx))
+                        .on_children_prepainted(move |bounds, _, cx| {
+                            let Some(height) =
+                                bounds.first().map(|bounds| f32::from(bounds.size.height))
+                            else {
+                                return;
+                            };
+                            if (seen.get() || height > BIO_TALL)
+                                && TRUNCATED_BIOS.with(|set| set.borrow_mut().insert(key))
+                            {
+                                let _ = root.update(cx, |_, cx| cx.notify());
+                            }
+                        }),
+                )
+                .when(truncated, |this| {
+                    let btn = div()
+                        .id("view-full-bio")
+                        .h(px(32.))
+                        .px(px(11.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(palette.token("--control-secondary-border-default"))
+                        .bg(palette.token("--control-secondary-background-default"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(palette.token("--control-secondary-text-default"))
+                        .child(dc_intl::t("YDiPq8"))
+                        .when(disabled, |b| b.opacity(0.5).cursor_not_allowed())
+                        .when(!disabled, |b| {
+                            b.cursor_pointer()
+                                .hover(|style| {
+                                    style.bg(palette.token("--control-secondary-background-hover"))
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if close_popout {
+                                        this.profile = None;
+                                    }
+                                    this.open_full_profile(user, window, cx);
+                                }))
+                        });
+                    // The button keeps its own width (`viewFullBio_BcddaK` is a block, the button inline).
+                    this.child(div().mt(px(8.)).flex().child(btn))
+                })
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn clamped_bio(
         &self,
         user: Id,
@@ -1025,64 +1137,19 @@ impl Root {
         strong: Hsla,
         palette: &super::dm_profile::Palette,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let key = bio_key(user, bio);
-        let truncated = TRUNCATED_BIOS.with(|set| set.borrow().contains(&key));
-        let root = cx.weak_entity();
-        let cut = std::rc::Rc::new(std::cell::Cell::new(false));
-        let seen = cut.clone();
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    // `maxBioHeight_BcddaK` once the box was found taller than 57.75px.
-                    .when(truncated, |this| this.max_h(px(BIO_MAX_HEIGHT)))
-                    .overflow_hidden()
-                    .child(self.bio_clamped(bio, strong, BIO_CLAMP_LINES, cut, cx))
-                    .on_children_prepainted(move |bounds, _, cx| {
-                        let Some(height) =
-                            bounds.first().map(|bounds| f32::from(bounds.size.height))
-                        else {
-                            return;
-                        };
-                        if (seen.get() || height > BIO_TALL)
-                            && TRUNCATED_BIOS.with(|set| set.borrow_mut().insert(key))
-                        {
-                            let _ = root.update(cx, |_, cx| cx.notify());
-                        }
-                    }),
-            )
-            .when(truncated, |this| {
-                this.child(
-                    // The button keeps its own width (`viewFullBio_BcddaK` is a block, the button inline).
-                    div().mt(px(8.)).flex().child(
-                        div()
-                            .id("view-full-bio")
-                            .h(px(32.))
-                            .px(px(11.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(palette.token("--control-secondary-border-default"))
-                            .bg(palette.token("--control-secondary-background-default"))
-                            .hover(|style| {
-                                style.bg(palette.token("--control-secondary-background-hover"))
-                            })
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .text_color(palette.token("--control-secondary-text-default"))
-                            .child(dc_intl::t("YDiPq8"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_full_profile(user, window, cx);
-                            })),
-                    ),
-                )
-            })
-            .into_any_element()
+    ) -> Option<AnyElement> {
+        self.clamped_bio_with_opts(
+            user,
+            bio,
+            strong,
+            palette,
+            ClampedBioOpts {
+                hide_personal_info: self.streamer_hides_personal(),
+                view_full_bio_disabled: false,
+                close_popout: false,
+            },
+            cx,
+        )
     }
 }
 
@@ -1097,5 +1164,12 @@ mod bio_tests {
         assert!(!fetch_warning_shown(true, Some(1)));
         assert!(!fetch_warning_shown(true, Some(3)));
         assert!(!fetch_warning_shown(false, None));
+    }
+
+    #[test]
+    fn clamped_bio_respects_streamer_mode_and_empty_bio() {
+        assert!(should_show_clamped_bio(false, "Hello world"));
+        assert!(!should_show_clamped_bio(true, "Hello world"));
+        assert!(!should_show_clamped_bio(false, "   "));
     }
 }

@@ -73,7 +73,93 @@ pub(super) fn member_kind(
     }
 }
 
+/// Module `410828` (`di`): tooltip and `aria-label` of the Stage call header audience toggle button.
+pub(crate) fn stage_audience_label(open: bool, is_mod: bool, pending: usize) -> String {
+    if open {
+        dc_intl::t("ZSmz+r").to_owned()
+    } else if is_mod && pending > 0 {
+        dc_intl::format("IQmRBE", &[("count", dc_intl::Arg::Num(pending as f64))])
+    } else {
+        dc_intl::t("Ds8IST").to_owned()
+    }
+}
+
+/// Module `410828` (`audienceButtonBadge_lSEyls`): `"99+"` above 99 pending requests.
+pub(crate) fn stage_audience_badge_text(pending: usize) -> String {
+    if pending > 99 {
+        "99+".to_owned()
+    } else {
+        pending.to_string()
+    }
+}
+
 impl Root {
+    /// Module `410828` (`di`): Stage call header audience toggle shown to all Stage users (`members.svg` 24px),
+    /// with bottom-centered red count badge when a moderator has pending requests to speak.
+    pub(super) fn stage_audience_button(
+        &self,
+        channel: &Channel,
+        hands: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let is_mod = self
+            .guild
+            .is_some_and(|g| self.my_permission(g, Some(channel), permissions::MUTE_MEMBERS));
+        let label = stage_audience_label(self.stage_requests_open, is_mod, hands);
+        let badge = (!self.stage_requests_open && is_mod && hands > 0).then(|| {
+            div()
+                .absolute()
+                .bottom(px(-4.))
+                .left(gpui::relative(0.5))
+                .h(px(16.))
+                .min_w(px(16.))
+                .px(px(4.))
+                .rounded_full()
+                .bg(color("--background-feedback-notification"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .font_weight(FontWeight(600.))
+                .text_color(color("--white"))
+                .child(stage_audience_badge_text(hands))
+        });
+        let icon_color = if self.stage_requests_open {
+            "--interactive-icon-active"
+        } else {
+            "--interactive-icon-default"
+        };
+        let button = div()
+            .id("stage-audience-button")
+            .aria_label(label.clone())
+            .relative()
+            .size(px(24.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .child(icon("members", 24., icon_color))
+            .children(badge)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.stage_requests_open = !this.stage_requests_open;
+                if this.stage_requests_open {
+                    this.request_stage_requests_art();
+                }
+                cx.notify();
+            }));
+        self.with_tip(
+            "stage-audience-button-tip",
+            super::tooltip::Tip::body(
+                super::tooltip::Body::Text(gpui::SharedString::from(label)),
+                super::tooltip::Side::Bottom,
+            ),
+            button,
+            cx,
+        )
+        .into_any_element()
+    }
+
     /// The header's toggle, or `None` without Mute Members or while the sidebar is open.
     pub(super) fn stage_requests_toggle(
         &self,
@@ -659,5 +745,18 @@ mod tests {
         assert_eq!(member_kind(false, Some(0), true, 2 * day), "97/NdO");
         assert_eq!(member_kind(false, Some(day), false, day + 10), "IKE48n");
         assert_eq!(member_kind(false, Some(0), false, 2 * day), "u0gUWt");
+    }
+
+    #[test]
+    fn stage_audience_button_labels_and_badges_match_module_410828() {
+        assert_eq!(stage_audience_label(true, false, 0), dc_intl::t("ZSmz+r"));
+        assert_eq!(stage_audience_label(true, true, 5), dc_intl::t("ZSmz+r"));
+        assert_eq!(stage_audience_label(false, false, 3), dc_intl::t("Ds8IST"));
+        assert_eq!(stage_audience_label(false, true, 0), dc_intl::t("Ds8IST"));
+        assert!(stage_audience_label(false, true, 1).contains("1"));
+        assert!(stage_audience_label(false, true, 3).contains("3"));
+        assert_eq!(stage_audience_badge_text(1), "1");
+        assert_eq!(stage_audience_badge_text(99), "99");
+        assert_eq!(stage_audience_badge_text(100), "99+");
     }
 }

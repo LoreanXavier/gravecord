@@ -1517,13 +1517,15 @@ impl Root {
         // The redesign draws module 442228 (three lines and View Full Bio); the classic sidebar module 501925's
         // `lineClamp` of six lines.
         let redesign = self.sidebar_redesign();
-        let bio = bio.map(|bio| {
+        let bio = bio.and_then(|bio| {
             let strong = palette.token("--text-strong").into();
             if redesign {
                 self.clamped_bio(user_id, &bio, strong, palette, cx)
+            } else if self.streamer_hides_personal() {
+                None
             } else {
                 let cut = std::rc::Rc::new(std::cell::Cell::new(false));
-                self.bio_clamped(&bio, strong, CLASSIC_BIO_LINES, cut, cx)
+                Some(self.bio_clamped(&bio, strong, CLASSIC_BIO_LINES, cut, cx))
             }
         });
         // `rK.A` heading `text-strong` over `rq.A` (module 743987) in `body-sm/normal`.

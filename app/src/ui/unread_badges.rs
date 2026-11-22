@@ -64,13 +64,26 @@ pub(super) fn rail_number(count: u64, low_importance: bool, probe: Option<&'stat
 }
 
 /// The Home button's badge (module 396655 `nO`): `E = n + o + u`, the pending friend and game requests (module 912309
-/// `kX`), the unacknowledged Nitro offers and the message requests (module 411976). GAP: no TrialOfferStore here, so
-/// `o` (and the Nitro Home link it brings when it is the whole count) is 0.
+/// `kX`), the unacknowledged Nitro offers (`432458` / `105390`) and the message requests (module 411976).
 pub(super) fn home_badge(requests: u64, offers: u64, message_requests: u64) -> u64 {
     requests + offers + message_requests
 }
 
 impl Root {
+    /// Unacknowledged Nitro trial/discount offer count `o` (`396655` `nO`, 0 when subscribed or fractional active).
+    pub(super) fn unacknowledged_nitro_offer_count(&self) -> u64 {
+        let Some(offer) = self.fetched.get("user-offer") else {
+            return 0;
+        };
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let is_subscribed = self.premium() != dc_state::premium::PremiumType::None;
+        let fractional = offer["fractional_premium_active"] == true;
+        dc_state::premium::unacknowledged_offer_count(offer, now_secs, is_subscribed, fractional)
+    }
+
     /// What the Home button counts (`home_badge`).
     pub(super) fn home_badge_count(&self) -> u64 {
         let message_requests = if super::plugin_hooks::hide_message_request_count() {
@@ -83,7 +96,11 @@ impl Root {
         } else {
             self.stores.game_relationships.pending_incoming_count()
         };
-        home_badge(self.friend_request_count() + game, 0, message_requests)
+        home_badge(
+            self.friend_request_count() + game,
+            self.unacknowledged_nitro_offer_count(),
+            message_requests,
+        )
     }
 
     pub(super) fn friend_request_count(&self) -> u64 {

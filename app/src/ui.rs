@@ -325,6 +325,7 @@ mod splash;
 pub(crate) mod start_cache;
 mod status_menu;
 mod stream_failed;
+mod third_party_promos;
 mod video_pip;
 pub(crate) use plugin_hooks::expression_sticker_url;
 pub(crate) use plugin_hooks::more_commands_outgoing;
@@ -975,6 +976,10 @@ pub struct Root {
     stage_welcome_seen: bool,
     /// Stage channel where the user clicked "Continue without starting" (`!isOnStartStageScreen`, module 717965/394412).
     stage_left_start_screen: Option<Id>,
+    clip_participants_popout: Option<media_image::ClipParticipantsPopout>,
+    role_overflow_popout: Option<popout_roles::RoleOverflowPopout>,
+    joining_activities: std::collections::HashSet<String>,
+    third_party_promos: third_party_promos::State,
     /// The caret of the Stage's leave button is open (its "End Stage for Everyone" menu), and the confirm question
     /// for that Stage channel.
     stage_leave_menu: bool,
@@ -1587,6 +1592,10 @@ impl Root {
             stage_welcome: None,
             stage_welcome_seen: false,
             stage_left_start_screen: None,
+            clip_participants_popout: None,
+            role_overflow_popout: None,
+            joining_activities: std::collections::HashSet::new(),
+            third_party_promos: third_party_promos::State::default(),
             stage_leave_menu: false,
             stage_end_confirm: None,
             voice_alert: None,
@@ -2911,6 +2920,14 @@ impl Root {
                 if key.starts_with(discover::FETCH_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.discover_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(third_party_promos::PROMOS_PREFIX) {
+                    self.third_party_promos_fetched(&key, &body, cx);
+                    return;
+                }
+                if key.starts_with(live_activity::ACTIVITY_JOIN_PREFIX) {
+                    self.activity_join_answered(&key, &body, cx);
                     return;
                 }
                 if key.starts_with(quests::FETCH_PREFIX) {
@@ -13386,6 +13403,9 @@ impl Render for Root {
             .children(self.modify_attachment_modal(cx))
             .children(self.report_issue_modal(cx))
             .children(self.game_profile_layer(cx))
+            .children(self.clip_participants_popout_layer(cx))
+            .children(self.role_overflow_popout_layer(cx))
+            .children(self.third_party_promo_modal_layer(cx))
             .children(self.upload_error_modal(cx))
             .children(self.try_it_out_upsell(cx))
             .children(self.animated_upload_upsell(cx))

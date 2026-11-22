@@ -869,6 +869,106 @@ impl OfferCountdown {
     }
 }
 
+/// Nitro tab offer badge state (`105390` / `432458` `_gLFXov` + `396655` `nO`):
+/// either an unacknowledged trial/discount offer (gradient pill, counts toward Home rail badge `o`)
+/// or an acknowledged offer with an active expiry countdown (clock pill + expiry tooltip).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserOfferBadge {
+    Unacknowledged {
+        is_discount: bool,
+        discount_percent: Option<u64>,
+        is_tier0: bool,
+        is_yearly: bool,
+    },
+    Acknowledged(OfferCountdown),
+}
+
+impl UserOfferBadge {
+    /// Parses `GET /users/@me/billing/user-offer` JSON relative to `now_secs`.
+    /// Returns `None` if already subscribed, fractional premium is active, or offer is expired/absent.
+    pub fn from_user_offer(
+        offer: &Value,
+        now_secs: i64,
+        is_subscribed: bool,
+        fractional_active: bool,
+    ) -> Option<Self> {
+        if is_subscribed || fractional_active {
+            return None;
+        }
+        let (obj, is_discount) = if offer["user_discount_offer"].is_object() {
+            (&offer["user_discount_offer"], true)
+        } else if offer["user_discount"].is_object() {
+            (&offer["user_discount"], true)
+        } else if offer["user_trial_offer"].is_object() {
+            (&offer["user_trial_offer"], false)
+        } else {
+            return None;
+        };
+        if let Some(expires) = obj["expires_at"].as_str().filter(|s| !s.is_empty()) {
+            let expires_secs = parse_rfc3339_epoch_secs(expires)?;
+            let rem = expires_secs - now_secs;
+            if rem <= 0 {
+                return None;
+            }
+            let rem = rem as u64;
+            let days = rem / 86_400;
+            let hours = (rem % 86_400) / 3_600;
+            let minutes = ((rem % 3_600) / 60).max(if days == 0 && hours == 0 { 1 } else { 0 });
+            let discount_percent = is_discount
+                .then(|| obj["discount"]["amount"].as_u64())
+                .flatten();
+            let plan_ids = obj["discount"]["plan_ids"]
+                .as_array()
+                .or_else(|| obj["subscription_trial"]["sku_id"].as_array());
+            let is_tier0 =
+                obj["subscription_trial"]["sku_id"].as_str() == Some("978380684370378762");
+            let is_yearly = plan_ids.is_some_and(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .any(|s| s == "511651885459963904")
+            });
+            return Some(Self::Acknowledged(OfferCountdown {
+                days,
+                hours,
+                minutes,
+                is_discount,
+                discount_percent,
+                is_tier0,
+                is_yearly,
+            }));
+        }
+        let discount_percent = is_discount
+            .then(|| obj["discount"]["amount"].as_u64())
+            .flatten();
+        let plan_ids = obj["discount"]["plan_ids"].as_array();
+        let is_tier0 = obj["subscription_trial"]["sku_id"].as_str() == Some("978380684370378762");
+        let is_yearly = plan_ids.is_some_and(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .any(|s| s == "511651885459963904")
+        });
+        Some(Self::Unacknowledged {
+            is_discount,
+            discount_percent,
+            is_tier0,
+            is_yearly,
+        })
+    }
+}
+
+/// Home rail unacknowledged Nitro offer count `o` (`396655` `nO`): `1` iff an unacknowledged offer is active.
+pub fn unacknowledged_offer_count(
+    offer: &Value,
+    now_secs: i64,
+    is_subscribed: bool,
+    fractional_active: bool,
+) -> u64 {
+    u64::from(matches!(
+        UserOfferBadge::from_user_offer(offer, now_secs, is_subscribed, fractional_active),
+        Some(UserOfferBadge::Unacknowledged { .. })
+    ))
+}
+
 /// Minimal ISO-8601 / RFC-3339 UTC timestamp parser (`YYYY-MM-DDTHH:MM:SS...`) -> epoch seconds.
 fn parse_rfc3339_epoch_secs(s: &str) -> Option<i64> {
     let b = s.as_bytes();
@@ -1290,5 +1390,55 @@ mod tests {
         let plans = parse_plans(&json!([{"id": "x"}, basic_monthly(), 5]));
         assert_eq!(plans.len(), 1);
         assert!(parse_plans(&json!({"message": "nope"})).is_empty());
+    }
+
+    #[test]
+    fn user_offer_badge_distinguishes_unacknowledged_acked_expired_and_subscribed() {
+        let now = 1_700_000_000i64;
+        let trial_unacked = json!({
+            "user_trial_offer": { "id": "t1", "expires_at": null, "subscription_trial": { "sku_id": "521847234246082599" } }
+        });
+        assert_eq!(
+            unacknowledged_offer_count(&trial_unacked, now, false, false),
+            1
+        );
+        assert_eq!(
+            unacknowledged_offer_count(&trial_unacked, now, true, false),
+            0
+        );
+        assert_eq!(
+            unacknowledged_offer_count(&trial_unacked, now, false, true),
+            0
+        );
+        let discount_unacked = json!({
+            "user_discount_offer": { "id": "d1", "discount": { "amount": 30, "plan_ids": ["511651885459963904"] } }
+        });
+        assert!(matches!(
+            UserOfferBadge::from_user_offer(&discount_unacked, now, false, false),
+            Some(UserOfferBadge::Unacknowledged {
+                is_discount: true,
+                discount_percent: Some(30),
+                is_yearly: true,
+                ..
+            })
+        ));
+        let acked_future = json!({
+            "user_trial_offer": { "id": "t2", "expires_at": "2030-01-01T00:00:00Z" }
+        });
+        assert_eq!(
+            unacknowledged_offer_count(&acked_future, now, false, false),
+            0
+        );
+        assert!(matches!(
+            UserOfferBadge::from_user_offer(&acked_future, now, false, false),
+            Some(UserOfferBadge::Acknowledged(_))
+        ));
+        let expired = json!({
+            "user_trial_offer": { "id": "t3", "expires_at": "2020-01-01T00:00:00Z" }
+        });
+        assert_eq!(
+            UserOfferBadge::from_user_offer(&expired, now, false, false),
+            None
+        );
     }
 }

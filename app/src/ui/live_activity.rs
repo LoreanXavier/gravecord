@@ -1123,6 +1123,304 @@ impl Root {
     }
 }
 
+pub(super) const ACTIVITY_JOIN_PREFIX: &str = "activity-join:";
+
+/// Action attached to an item produced by `build_activity_menu_items` (module `468389`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ActivityMenuAction {
+    Separator,
+    InviteToJoin {
+        target_user: Id,
+        app_id: Id,
+        party_id: Option<String>,
+    },
+    InviteToListen {
+        target_user: Id,
+        party_id: Option<String>,
+    },
+    Join {
+        user_id: Id,
+        session_id: String,
+        app_id: Id,
+    },
+    AskToJoin {
+        user_id: Id,
+        app_id: Id,
+        party_id: Option<String>,
+    },
+    SpotifyPlay {
+        user_id: Id,
+    },
+    SpotifyListenAlong {
+        user_id: Id,
+    },
+    JoinEmbedded {
+        app_id: Id,
+    },
+}
+
+/// One row emitted by `468389` (`useActivityMenuItems`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActivityMenuItem {
+    pub label: String,
+    pub subtext: Option<String>,
+    pub disabled: bool,
+    pub action: ActivityMenuAction,
+}
+
+/// Inputs to the pure `468389` activity context menu builder.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ActivityMenuCtx {
+    pub me_id: Id,
+    pub target_user_id: Id,
+    pub can_send_messages: bool,
+    pub is_voice_or_dm: bool,
+    pub own_activities: Vec<Value>,
+    pub target_activities: Vec<Value>,
+    pub target_embedded_apps: Vec<(Id, String)>,
+    pub joining_keys: std::collections::HashSet<String>,
+    pub spotify_available: bool,
+    pub spotify_disabled_reason: Option<String>,
+}
+
+const FLAG_JOIN: u64 = 1 << 1;
+const FLAG_SYNC: u64 = 1 << 4;
+const FLAG_EMBEDDED: u64 = 1 << 7;
+const FLAG_CONTEXTLESS: u64 = 1 << 8;
+
+/// Module `468389` (`useActivityMenuItems`): builds self-invite items, optional separator, and target
+/// user Join / Joining / Joined / Ask to Join / Spotify / Embedded Activity items.
+pub(crate) fn build_activity_menu_items(ctx: &ActivityMenuCtx) -> Vec<ActivityMenuItem> {
+    if ctx.target_user_id == 0
+        || ctx.target_user_id == ctx.me_id
+        || (!ctx.can_send_messages && !ctx.is_voice_or_dm)
+    {
+        return Vec::new();
+    }
+    let mut group1 = Vec::new();
+    for act in &ctx.own_activities {
+        let kind = act["type"].as_u64().unwrap_or(0);
+        let flags = act["flags"].as_u64().unwrap_or(0);
+        let name = act["name"].as_str().unwrap_or_default().to_owned();
+        let app_id = act["application_id"]
+            .as_str()
+            .and_then(|s| s.parse::<Id>().ok())
+            .unwrap_or(0);
+        let party_id = act["party"]["id"].as_str().map(str::to_owned);
+        if kind == 0 && (flags & FLAG_JOIN != 0 || flags & FLAG_EMBEDDED != 0) && app_id != 0 {
+            group1.push(ActivityMenuItem {
+                label: dc_intl::t("3fRySx").to_owned(),
+                subtext: (!name.is_empty()).then_some(name),
+                disabled: false,
+                action: ActivityMenuAction::InviteToJoin {
+                    target_user: ctx.target_user_id,
+                    app_id,
+                    party_id,
+                },
+            });
+        } else if kind == 2 && flags & FLAG_SYNC != 0 {
+            group1.push(ActivityMenuItem {
+                label: dc_intl::t("5vvGpV").to_owned(),
+                subtext: (!name.is_empty()).then_some(name),
+                disabled: false,
+                action: ActivityMenuAction::InviteToListen {
+                    target_user: ctx.target_user_id,
+                    party_id,
+                },
+            });
+        }
+    }
+
+    let mut group2 = Vec::new();
+    for act in &ctx.target_activities {
+        let kind = act["type"].as_u64().unwrap_or(0);
+        let flags = act["flags"].as_u64().unwrap_or(0);
+        let name = act["name"].as_str().unwrap_or_default().to_owned();
+        let app_id = act["application_id"]
+            .as_str()
+            .and_then(|s| s.parse::<Id>().ok())
+            .unwrap_or(0);
+        let session_id = act["session_id"].as_str().unwrap_or_default().to_owned();
+        let party_id = act["party"]["id"].as_str().map(str::to_owned);
+        let embedded = flags & FLAG_EMBEDDED != 0;
+        let contextless = flags & FLAG_CONTEXTLESS != 0;
+
+        if kind == 0 && flags & FLAG_JOIN != 0 && (!embedded || contextless) && app_id != 0 {
+            let same_party = party_id.as_deref().is_some_and(|pid| {
+                ctx.own_activities.iter().any(|own| {
+                    own["application_id"]
+                        .as_str()
+                        .and_then(|s| s.parse::<Id>().ok())
+                        == Some(app_id)
+                        && own["party"]["id"].as_str() == Some(pid)
+                })
+            });
+            let join_key = format!("{}:{app_id}", ctx.target_user_id);
+            let joining = ctx.joining_keys.contains(&join_key);
+            if same_party {
+                group2.push(ActivityMenuItem {
+                    label: dc_intl::t("DPfdsq").to_owned(),
+                    subtext: (!name.is_empty()).then_some(name),
+                    disabled: true,
+                    action: ActivityMenuAction::Join {
+                        user_id: ctx.target_user_id,
+                        session_id,
+                        app_id,
+                    },
+                });
+            } else if party_id.is_some() && !session_id.is_empty() {
+                group2.push(ActivityMenuItem {
+                    label: dc_intl::t(if joining { "bf6Ci7" } else { "VJlc0S" }).to_owned(),
+                    subtext: (!name.is_empty()).then_some(name),
+                    disabled: joining,
+                    action: ActivityMenuAction::Join {
+                        user_id: ctx.target_user_id,
+                        session_id,
+                        app_id,
+                    },
+                });
+            } else {
+                group2.push(ActivityMenuItem {
+                    label: dc_intl::t("OKsSCR").to_owned(),
+                    subtext: (!name.is_empty()).then_some(name),
+                    disabled: false,
+                    action: ActivityMenuAction::AskToJoin {
+                        user_id: ctx.target_user_id,
+                        app_id,
+                        party_id,
+                    },
+                });
+            }
+        } else if kind == 2 && flags & FLAG_SYNC != 0 {
+            group2.push(ActivityMenuItem {
+                label: dc_intl::t("rRffNz").to_owned(),
+                subtext: ctx.spotify_disabled_reason.clone(),
+                disabled: !ctx.spotify_available,
+                action: ActivityMenuAction::SpotifyPlay {
+                    user_id: ctx.target_user_id,
+                },
+            });
+            group2.push(ActivityMenuItem {
+                label: dc_intl::t("gXYoq2").to_owned(),
+                subtext: ctx.spotify_disabled_reason.clone(),
+                disabled: !ctx.spotify_available,
+                action: ActivityMenuAction::SpotifyListenAlong {
+                    user_id: ctx.target_user_id,
+                },
+            });
+        }
+    }
+    for (app_id, app_name) in &ctx.target_embedded_apps {
+        let join_key = format!("{}:{app_id}", ctx.target_user_id);
+        let joining = ctx.joining_keys.contains(&join_key);
+        group2.push(ActivityMenuItem {
+            label: dc_intl::t(if joining { "bf6Ci7" } else { "4i2vj+" }).to_owned(),
+            subtext: (!app_name.is_empty()).then_some(app_name.clone()),
+            disabled: joining,
+            action: ActivityMenuAction::JoinEmbedded { app_id: *app_id },
+        });
+    }
+
+    let mut out = group1;
+    if !out.is_empty() && !group2.is_empty() {
+        out.push(ActivityMenuItem {
+            label: String::new(),
+            subtext: None,
+            disabled: true,
+            action: ActivityMenuAction::Separator,
+        });
+    }
+    out.extend(group2);
+    out
+}
+
+impl Root {
+    /// Module `273626` / `468389`: fetches join secret via `GET /users/{u}/sessions/{s}/activities/{a}/1`
+    /// and dispatches `ACTIVITY_JOIN` or opens `join_url`.
+    pub(super) fn join_user_activity(
+        &mut self,
+        user_id: Id,
+        session_id: String,
+        app_id: Id,
+        channel_id: Option<Id>,
+        cx: &mut Context<Self>,
+    ) {
+        if session_id.is_empty() || app_id == 0 {
+            return;
+        }
+        let key = format!("{ACTIVITY_JOIN_PREFIX}{user_id}:{app_id}");
+        self.joining_activities
+            .insert(format!("{user_id}:{app_id}"));
+        let mut route = format!(
+            "/users/{user_id}/sessions/{}/activities/{app_id}/1",
+            component(&session_id)
+        );
+        if let Some(cid) = channel_id {
+            route.push_str(&format!("?channel_id={cid}"));
+        }
+        let _ = self.requests.send(Request::Rest {
+            key: Some(key),
+            method: reqwest::Method::GET,
+            route,
+            body: None,
+        });
+        cx.notify();
+    }
+
+    pub(super) fn activity_join_answered(
+        &mut self,
+        key: &str,
+        body: &Value,
+        cx: &mut Context<Self>,
+    ) {
+        let suffix = key.strip_prefix(ACTIVITY_JOIN_PREFIX).unwrap_or_default();
+        self.joining_activities.remove(suffix);
+        if let Some(url) = body["join_url"].as_str().filter(|s| !s.is_empty()) {
+            self.follow_link(url, "", cx);
+        } else if let Some(secret) = body["secret"].as_str().filter(|s| !s.is_empty()) {
+            let frame = dc_rpc::activity_join_dispatch_frame(secret);
+            tracing::info!(event = %frame["evt"], "dispatched RPC ACTIVITY_JOIN frame");
+        }
+        cx.notify();
+    }
+
+    /// Module `308368` / `468389`: sends a JOIN (`1`), LISTEN (`3`), or JOIN_REQUEST (`5` Ask to Join)
+    /// activity invite message to a DM or channel.
+    pub(super) fn send_activity_invite(
+        &mut self,
+        target_user: Id,
+        channel_id: Option<Id>,
+        invite_type: u8,
+        app_id: Option<Id>,
+        party_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let dest = channel_id.or_else(|| self.dm_channel_for_user(target_user));
+        let Some(cid) = dest else {
+            self.open_dm_with(target_user, cx);
+            return;
+        };
+        let mut activity = serde_json::json!({ "type": invite_type });
+        if let Some(pid) = party_id.filter(|s| !s.is_empty()) {
+            activity["party_id"] = serde_json::json!(pid);
+        }
+        let mut payload = serde_json::json!({
+            "content": "",
+            "activity": activity,
+        });
+        if let Some(aid) = app_id.filter(|id| *id != 0) {
+            payload["application_id"] = serde_json::json!(aid.to_string());
+        }
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::POST,
+            route: format!("/channels/{cid}/messages"),
+            body: Some(payload),
+        });
+        cx.notify();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1254,5 +1552,58 @@ mod tests {
         for index in 1..4 {
             assert!(button_url(&metadata, index).is_none());
         }
+    }
+
+    #[test]
+    fn activity_menu_items_cover_module_468389_branches() {
+        // Self user or lacking permission returns empty.
+        let mut ctx = ActivityMenuCtx {
+            me_id: 1,
+            target_user_id: 1,
+            can_send_messages: true,
+            ..Default::default()
+        };
+        assert!(build_activity_menu_items(&ctx).is_empty());
+
+        ctx.target_user_id = 2;
+        ctx.can_send_messages = false;
+        assert!(build_activity_menu_items(&ctx).is_empty());
+
+        // Self PLAYING+JOIN & LISTENING+SYNC + target Joinable + Spotify + Embedded -> separator between groups.
+        ctx.can_send_messages = true;
+        ctx.own_activities = vec![
+            json!({"type": 0, "flags": 2, "application_id": "10", "name": "GameA", "party": {"id": "p1"}}),
+            json!({"type": 2, "flags": 16, "name": "Spotify", "party": {"id": "sp1"}}),
+        ];
+        ctx.target_activities = vec![
+            json!({"type": 0, "flags": 2, "application_id": "20", "session_id": "s2", "name": "GameB", "party": {"id": "p2"}}),
+            json!({"type": 0, "flags": 2, "application_id": "30", "name": "GameC"}),
+            json!({"type": 2, "flags": 16, "name": "Spotify"}),
+        ];
+        ctx.target_embedded_apps = vec![(40, "Chess".into())];
+        ctx.spotify_available = true;
+        let items = build_activity_menu_items(&ctx);
+        assert!(items.iter().any(|i| i.label == dc_intl::t("3fRySx")));
+        assert!(items.iter().any(|i| i.label == dc_intl::t("5vvGpV")));
+        assert!(
+            items
+                .iter()
+                .any(|i| i.action == ActivityMenuAction::Separator)
+        );
+        assert!(items.iter().any(|i| i.label == dc_intl::t("VJlc0S")));
+        assert!(items.iter().any(|i| i.label == dc_intl::t("OKsSCR")));
+        assert!(items.iter().any(|i| i.label == dc_intl::t("rRffNz")));
+        assert!(items.iter().any(|i| i.label == dc_intl::t("gXYoq2")));
+        assert!(items.iter().any(|i| i.label == dc_intl::t("4i2vj+")));
+        assert!(!dc_intl::t("0OiwfH").is_empty());
+
+        // Joining state disables Join with bf6Ci7 ("Joining").
+        ctx.joining_keys.insert("2:20".into());
+        let joining_items = build_activity_menu_items(&ctx);
+        assert!(
+            joining_items
+                .iter()
+                .any(|i| i.label == dc_intl::t("bf6Ci7") && i.disabled)
+        );
     }
 }
