@@ -67,6 +67,34 @@ const THEMES: [(&str, &str, &str); 10] = [
     ),
 ];
 
+/// Module 812760 (`LimitedTimeBadge`): formats remaining days badge when `unpublished_at` is
+/// within `<= 60` days (`8gsP5M` `"{days} days left in Shop"` when `days > 1`, `Bc13HF` `"Last day to buy"` when `<= 1`).
+pub(super) fn catalog_limited_time_badge_label(
+    unpublished_at: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    let raw = unpublished_at?;
+    let end = chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let secs = (end - now).num_seconds();
+    if secs <= 0 {
+        return None;
+    }
+    let days = (secs + 86_399) / 86_400;
+    if days > 60 {
+        return None;
+    }
+    if days > 1 {
+        Some(dc_intl::format(
+            "8gsP5M",
+            &[("days", dc_intl::Arg::Num(days as f64))],
+        ))
+    } else {
+        Some(dc_intl::t("Bc13HF").to_owned())
+    }
+}
+
 impl Root {
     /// Starts the reads the Browse page needs: the first catalog page, or the search for the chosen filters.
     pub(super) fn shop_browse_enter(&mut self) {
@@ -265,9 +293,37 @@ impl Root {
             .hero_logo_url
             .as_deref()
             .and_then(|url| self.shop_img(url));
+        // Module 812760: LimitedTimeBadge (<= 60 days) + View Collection (`o1ol+T`) round arrow button.
+        let limited_badge = catalog_limited_time_badge_label(
+            category.unpublished_at.as_deref(),
+            chrono::Utc::now(),
+        );
         let id = category.sku_id.clone();
+        let arrow_id = id.clone();
         let skus: Vec<String> = category.products.iter().map(|p| p.sku_id.clone()).collect();
         let grid = self.shop_grid(&skus, filters_open, window, cx);
+        let view_collection_btn = self.with_tip(
+            format!("shop-category-view-tip-{arrow_id}"),
+            crate::ui::tooltip::Tip::text(dc_intl::t("o1ol+T"), crate::ui::tooltip::Side::Top),
+            div()
+                .id(SharedString::from(format!("shop-category-view-{arrow_id}")))
+                .size(px(32.))
+                .rounded_full()
+                .bg(gpui::rgba(0x00000099))
+                .hover(|s| s.bg(gpui::rgba(0x000000cc)))
+                .border_1()
+                .border_color(gpui::rgba(0xffffff33))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.shop_open_collection(&arrow_id, cx);
+                }))
+                .child(icon("chevron_right", 18., "--white")),
+            cx,
+        );
         div()
             .parity("shop-category")
             .flex()
@@ -300,7 +356,34 @@ impl Root {
                                     .h(px(92.))
                                     .object_fit(gpui::ObjectFit::Contain),
                             )
-                    })),
+                    }))
+                    .children(limited_badge.map(|badge| {
+                        div()
+                            .absolute()
+                            .top(px(12.))
+                            .right(px(16.))
+                            .px(px(10.))
+                            .py(px(4.))
+                            .rounded(px(999.))
+                            .bg(gpui::rgba(0x000000b3))
+                            .border_1()
+                            .border_color(gpui::rgba(0xffffff29))
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(gpui::FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(badge)
+                    }))
+                    .child(
+                        div()
+                            .absolute()
+                            .right(px(16.))
+                            .top_0()
+                            .bottom_0()
+                            .flex()
+                            .items_center()
+                            .child(view_collection_btn),
+                    ),
             )
             .child(grid)
             .into_any_element()
@@ -651,4 +734,30 @@ fn hash(text: &str) -> u64 {
     text.bytes().fold(1469598103934665603u64, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(1099511628211)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_banner_812760_limited_time_badge_and_keys() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-22T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let in_10_days = (now + chrono::Duration::days(10)).to_rfc3339();
+        let lbl = catalog_limited_time_badge_label(Some(&in_10_days), now).unwrap();
+        assert!(lbl.contains("10"), "got {lbl}");
+        let in_6_hours = (now + chrono::Duration::hours(6)).to_rfc3339();
+        assert_eq!(
+            catalog_limited_time_badge_label(Some(&in_6_hours), now).as_deref(),
+            Some(dc_intl::t("Bc13HF"))
+        );
+        let in_70_days = (now + chrono::Duration::days(70)).to_rfc3339();
+        assert_eq!(
+            catalog_limited_time_badge_label(Some(&in_70_days), now),
+            None
+        );
+        assert_eq!(dc_intl::t("o1ol+T"), "View Collection");
+    }
 }

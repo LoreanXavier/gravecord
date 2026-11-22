@@ -105,6 +105,7 @@ mod friend_accept;
 mod friend_nickname;
 mod friend_request_notice;
 mod friends;
+mod friends_popout;
 mod full_profile;
 mod full_profile_recent;
 mod game_add_to_profile;
@@ -1097,6 +1098,8 @@ pub struct Root {
     new_thread: Option<threads::NewThread>,
     pending_thread_message: Option<String>,
     inbox: Option<inbox::InboxTab>,
+    /// App Title Bar Friends List Popout (module 824042).
+    friends_popout: friends_popout::FriendsPopoutState,
     inbox_read: HashSet<Id>,
     inbox_collapsed: HashSet<Id>,
     gifs: Option<gifs::Gifs>,
@@ -1708,6 +1711,7 @@ impl Root {
             new_thread: None,
             pending_thread_message: None,
             inbox: None,
+            friends_popout: friends_popout::FriendsPopoutState::default(),
             inbox_read: HashSet::new(),
             inbox_collapsed: HashSet::new(),
             gifs: None,
@@ -5766,6 +5770,55 @@ impl Root {
                     .flex()
                     .items_center()
                     .child({
+                        // Module 824042: App Title Bar Friends List Popout trigger (`TdEu5X`, red dot when pending > 0).
+                        let friends_open = self.friends_popout.open;
+                        let pending = friends_popout::pending_incoming_friend_count(
+                            &self.stores.relationships,
+                        );
+                        let friends_btn = self
+                            .title_stop(
+                                bar_button("friends", "friends_header", friends_open),
+                                "friends",
+                                6.,
+                                cx,
+                            )
+                            .relative()
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_friends_popout(cx)))
+                            .when(pending > 0, |button| {
+                                button.child(
+                                    div()
+                                        .absolute()
+                                        .right(px(3.))
+                                        .bottom(px(3.))
+                                        .size(px(9.))
+                                        .rounded_full()
+                                        .bg(color("--background-base-lowest"))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            div()
+                                                .size(px(6.))
+                                                .rounded_full()
+                                                .bg(color("--background-feedback-notification")),
+                                        ),
+                                )
+                            });
+                        if friends_open {
+                            friends_btn.occlude().mr(px(12.)).into_any_element()
+                        } else {
+                            self.with_tip(
+                                "title-friends",
+                                Tip::text(dc_intl::t("TdEu5X"), Side::Bottom),
+                                friends_btn,
+                                cx,
+                            )
+                            .occlude()
+                            .mr(px(12.))
+                            .into_any_element()
+                        }
+                    })
+                    .child({
                         let inbox_open = self.inbox.is_some();
                         let overdue = self.has_overdue_reminder();
                         let inbox = self
@@ -6849,6 +6902,7 @@ impl Root {
             .children(self.live_now_card(cx))
             .child(div().flex_none().h(px(12.)))
             .children(self.guild_guide_rows(cx))
+            .children(self.hub_sidebar_action_rows(cx))
             .children(self.boost_progress_row(cx))
             .children(self.channel_browser_row(cx))
             .when(self.sidebar_has_events(), |sidebar| {
@@ -12169,6 +12223,7 @@ impl Render for Root {
                         || this.activity_invite_modal.is_some()
                         || this.shop.wishlist_nux_sku.is_some()
                         || this.shop.coupon_complete.is_some()
+                        || this.friends_popout.open
                         || this.orb_wallet.delivered_modal.is_some()
                         || this.nitro_upsell_modal.is_some()
                         || this.gift_ready_modal.is_some()
@@ -12267,7 +12322,8 @@ impl Render for Root {
                         || this.quests.menus.disclosure.is_some()
                         || this.quests.menus.alert.is_some()
                         || this.library.game_menu.is_some()
-                        || this.library.hide_confirm.is_some())
+                        || this.library.hide_confirm.is_some()
+                        || this.library.uninstall_confirm.is_some())
                 {
                     this.billing_address_modal = None;
                     this.clear_activity_history_modal = None;
@@ -12285,6 +12341,7 @@ impl Render for Root {
                     this.activity_invite_modal = None;
                     this.shop.wishlist_nux_sku = None;
                     this.shop.coupon_complete = None;
+                    this.friends_popout.open = false;
                     this.orb_wallet.delivered_modal = None;
                     this.nitro_upsell_modal = None;
                     this.gift_ready_modal = None;
@@ -13634,6 +13691,7 @@ impl Render for Root {
             .children(self.pick_guild_settings_layer(cx))
             .children(self.orb_wallet_layer(cx))
             .children(self.coupon_complete_layer(cx))
+            .children(self.friends_popout_layer(cx))
             .children(self.research_survey_layer(cx))
             .children(self.guild_theme_nux_layer(cx))
             .children(self.conjure_actions_layer(cx))

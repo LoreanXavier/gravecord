@@ -173,6 +173,8 @@ pub(super) enum Target {
     OverlayModReportChannel(Id),
     /// Overlay Voice / Stage channel context menu (`overlay-channel-context`, module 769192).
     OverlayVoiceChannel(Id),
+    /// Overlay Guild Text channel context menu (`overlay-channel-context`, module 813407).
+    OverlayChannel(Id),
     /// Member Application context menu (`member-application-context-menu`, module 772063).
     MemberApplication {
         guild: Id,
@@ -2223,7 +2225,7 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::DmListMore => Some(dc_intl::t("/QQnjy")),
         Target::GdmCleanupSort => Some(dc_intl::t("yySzqH")),
         Target::OverlayModReportChannel(_) => Some(dc_intl::t("zp+z/E")),
-        Target::OverlayVoiceChannel(_) => Some(dc_intl::t("Xm41aV")),
+        Target::OverlayVoiceChannel(_) | Target::OverlayChannel(_) => Some(dc_intl::t("Xm41aV")),
         Target::MemberApplication { .. } => Some(dc_intl::t("liqwPJ")),
         Target::ChannelTab(_) => Some(dc_intl::t("dd5Eyn")),
         Target::OverlayUser { .. } => Some(dc_intl::t("ogxXGq")),
@@ -3129,6 +3131,64 @@ pub(super) fn channel_tab_items(pinned: bool) -> Vec<Entry> {
         &mut out,
         vec![Row::new(Act::CloseChannelTab, dc_intl::t("In6PEK"))],
     );
+    tidy(out)
+}
+
+/// Overlay Guild Text channel context menu (`overlay-channel-context`, module 813407, aria-label
+/// `Xm41aV` "Channel Actions"): 5 groups — Mark As Read + Overlay chat toggle + Overlay favorites toggle |
+/// Copy Link | Mute Channel + Notification Settings | Invite People (activity) | Copy Channel ID (dev mode).
+pub(super) fn overlay_text_channel_items(
+    unread: bool,
+    chat_open: bool,
+    overlay_favorite: bool,
+    level: &'static str,
+    can_invite: bool,
+    developer: bool,
+) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let chat_row = if chat_open {
+        Row::new(Act::OverlayCloseChat, dc_intl::t("ERApc4"))
+    } else {
+        Row::new(Act::OverlayOpenChat, dc_intl::t("KWrMk5"))
+    };
+    let fav_row = if overlay_favorite {
+        Row::new(Act::OverlayFavoriteChannel, dc_intl::t("Bou7lT")).danger()
+    } else {
+        Row::new(Act::OverlayFavoriteChannel, dc_intl::t("4wcdE/"))
+    };
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
+            chat_row,
+            fav_row,
+        ],
+    );
+    group(
+        &mut out,
+        vec![Row::new(Act::CopyLink, dc_intl::t("WqhZss"))],
+    );
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::Mute, dc_intl::tr("Mute Channel")).caret(),
+            Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
+                .sub(level)
+                .caret(),
+        ],
+    );
+    if can_invite {
+        group(
+            &mut out,
+            vec![Row::new(Act::Invite, dc_intl::tr("Invite People"))],
+        );
+    }
+    if developer {
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::t("gFHI3k")).icon("menu_id")],
+        );
+    }
     tidy(out)
 }
 
@@ -4419,7 +4479,8 @@ impl Root {
             Target::Channel(id)
             | Target::Category(id)
             | Target::OverlayModReportChannel(id)
-            | Target::OverlayVoiceChannel(id) => match self.guild_of_channel(id) {
+            | Target::OverlayVoiceChannel(id)
+            | Target::OverlayChannel(id) => match self.guild_of_channel(id) {
                 Some(guild) => {
                     let entry = self.stores.guild_settings.channel(guild, id);
                     (entry.muted, entry.mute_end)
@@ -5143,6 +5204,34 @@ impl Root {
                     .find(|t| t.id == tab_id)
                     .is_some_and(|t| t.pinned);
                 channel_tab_items(pinned)
+            }
+            Target::OverlayChannel(channel) => {
+                let Some(guild) = self.guild_of_channel(channel) else {
+                    return;
+                };
+                let chat_open = self.overlay.text_chat.is_tracked(channel)
+                    || self.overlay.text_chat.selected() == Some(channel);
+                let level = level_label(
+                    self.stores
+                        .guild_settings
+                        .channel(guild, channel)
+                        .message_notifications,
+                );
+                let can_invite = self
+                    .stores
+                    .guild(guild)
+                    .and_then(|g| g.channels.iter().find(|c| c.id == channel))
+                    .is_some_and(|ch| {
+                        self.can_in_channel(ch, dc_state::permissions::CREATE_INSTANT_INVITE)
+                    });
+                overlay_text_channel_items(
+                    self.has_unread_or_mentions(channel),
+                    chat_open,
+                    self.overlay.favorite_channels.contains(&channel),
+                    level,
+                    can_invite,
+                    developer,
+                )
             }
             Target::OverlayModReportChannel(channel) => {
                 let Some(guild) = self.guild_of_channel(channel) else {
@@ -6227,7 +6316,8 @@ impl Root {
                 | Target::Dm(channel)
                 | Target::OverlayDm(channel)
                 | Target::OverlayModReportChannel(channel)
-                | Target::OverlayVoiceChannel(channel),
+                | Target::OverlayVoiceChannel(channel)
+                | Target::OverlayChannel(channel),
             ) => {
                 self.mark_channel_read(channel);
             }
@@ -6235,7 +6325,8 @@ impl Root {
                 Act::OverlayCloseChat,
                 Target::OverlayDm(channel)
                 | Target::OverlayModReportChannel(channel)
-                | Target::OverlayVoiceChannel(channel),
+                | Target::OverlayVoiceChannel(channel)
+                | Target::OverlayChannel(channel),
             ) => {
                 let voice = self.call.as_ref().map(|call| call.channel);
                 self.overlay.text_chat.remove(channel, voice);
@@ -6244,7 +6335,8 @@ impl Root {
                 Act::OverlayOpenChat,
                 Target::OverlayDm(channel)
                 | Target::OverlayModReportChannel(channel)
-                | Target::OverlayVoiceChannel(channel),
+                | Target::OverlayVoiceChannel(channel)
+                | Target::OverlayChannel(channel),
             ) => {
                 self.overlay_chat_select(channel, cx);
             }
@@ -6259,13 +6351,17 @@ impl Root {
                 Act::OverlayFavoriteChannel,
                 Target::OverlayDm(channel)
                 | Target::OverlayModReportChannel(channel)
-                | Target::OverlayVoiceChannel(channel),
+                | Target::OverlayVoiceChannel(channel)
+                | Target::OverlayChannel(channel),
             ) => {
                 if !self.overlay.favorite_channels.remove(&channel) {
                     self.overlay.favorite_channels.insert(channel);
                 }
             }
-            (Act::Invite, Target::OverlayVoiceChannel(channel)) => {
+            (
+                Act::Invite,
+                Target::OverlayVoiceChannel(channel) | Target::OverlayChannel(channel),
+            ) => {
                 if let Some(guild) = self.guild_of_channel(channel) {
                     self.select(guild, Some(channel));
                     self.open_invite(cx);
@@ -6428,7 +6524,8 @@ impl Root {
                 Target::Channel(channel)
                 | Target::Thread(channel)
                 | Target::OverlayModReportChannel(channel)
-                | Target::OverlayVoiceChannel(channel),
+                | Target::OverlayVoiceChannel(channel)
+                | Target::OverlayChannel(channel),
             ) => {
                 let guild = self.guild_of_channel(channel).unwrap_or_default();
                 cx.write_to_clipboard(ClipboardItem::new_string(format!(
@@ -6450,6 +6547,7 @@ impl Root {
                     | Target::OverlayDm(id)
                     | Target::OverlayModReportChannel(id)
                     | Target::OverlayVoiceChannel(id)
+                    | Target::OverlayChannel(id)
                     | Target::FavoriteCategory(id)
                     | Target::ChannelMention(id)
                     | Target::GameMention(id)
@@ -7224,7 +7322,8 @@ impl Root {
                 | Target::Dm(_)
                 | Target::OverlayDm(_)
                 | Target::OverlayModReportChannel(_)
-                | Target::OverlayVoiceChannel(_),
+                | Target::OverlayVoiceChannel(_)
+                | Target::OverlayChannel(_),
             ) => match target {
                 Target::Guild(guild) => {
                     self.patch_guild_setting(guild, "muted", json!(false));
@@ -7239,7 +7338,8 @@ impl Root {
                 Target::Channel(id)
                 | Target::Category(id)
                 | Target::OverlayModReportChannel(id)
-                | Target::OverlayVoiceChannel(id) => {
+                | Target::OverlayVoiceChannel(id)
+                | Target::OverlayChannel(id) => {
                     if let Some(guild) = self.guild_of_channel(id) {
                         self.patch_channel_override(
                             guild,
@@ -7659,12 +7759,14 @@ impl Root {
                         | Target::Thread(_)
                         | Target::OverlayModReportChannel(_)
                         | Target::OverlayVoiceChannel(_)
+                        | Target::OverlayChannel(_)
                 );
                 let current = match target {
                     Target::Channel(id)
                     | Target::Thread(id)
                     | Target::OverlayModReportChannel(id)
-                    | Target::OverlayVoiceChannel(id) => self
+                    | Target::OverlayVoiceChannel(id)
+                    | Target::OverlayChannel(id) => self
                         .guild_of_channel(id)
                         .map_or(INHERIT, |guild| self.channel_level(guild, id)),
                     Target::Guild(guild) => self
@@ -7682,7 +7784,8 @@ impl Root {
                         Target::Channel(id)
                         | Target::Thread(id)
                         | Target::OverlayModReportChannel(id)
-                        | Target::OverlayVoiceChannel(id) => self.inherited_level_label(id),
+                        | Target::OverlayVoiceChannel(id)
+                        | Target::OverlayChannel(id) => self.inherited_level_label(id),
                         _ => dc_intl::t!("n/bTaY"),
                     };
                     rows.push(SubRow {
@@ -8045,7 +8148,8 @@ impl Root {
                     Target::Channel(id)
                     | Target::Category(id)
                     | Target::OverlayModReportChannel(id)
-                    | Target::OverlayVoiceChannel(id) => {
+                    | Target::OverlayVoiceChannel(id)
+                    | Target::OverlayChannel(id) => {
                         if let Some(guild) = self.guild_of_channel(id) {
                             self.patch_channel_override(
                                 guild,
@@ -8077,12 +8181,14 @@ impl Root {
                 Target::Channel(id)
                 | Target::Category(id)
                 | Target::OverlayModReportChannel(id)
-                | Target::OverlayVoiceChannel(id) => {
+                | Target::OverlayVoiceChannel(id)
+                | Target::OverlayChannel(id) => {
                     let channel = matches!(
                         target,
                         Target::Channel(_)
                             | Target::OverlayModReportChannel(_)
                             | Target::OverlayVoiceChannel(_)
+                            | Target::OverlayChannel(_)
                     );
                     let value = if channel && index == 0 {
                         INHERIT
@@ -10397,5 +10503,19 @@ mod tests {
             labels(&channel_tab_items(true)),
             vec!["Unpin Tab", "-", "Close Tab"]
         );
+
+        // Module 813407: overlay-channel-context (guild text channel).
+        assert_eq!(
+            menu_aria_label(Target::OverlayChannel(1)),
+            Some("Channel Actions")
+        );
+        let overlay_text = labels(&overlay_text_channel_items(
+            true, false, false, "All", true, true,
+        ));
+        assert!(overlay_text.iter().any(|l| l == dc_intl::t("KWrMk5")));
+        assert!(overlay_text.iter().any(|l| l == "Copy Link"));
+        assert!(overlay_text.iter().any(|l| l == "Mute Channel"));
+        assert!(overlay_text.iter().any(|l| l == "Invite People"));
+        assert!(overlay_text.iter().any(|l| l == "Copy Channel ID"));
     }
 }

@@ -194,8 +194,8 @@ pub(crate) struct Forward {
     pub message: Option<Message>,
     /// Share Profile (module 627664): the same modal, sending the profile link instead.
     pub(super) profile: Option<dc_state::User>,
-    /// Share Clip (module 243258): the same modal, sending the clip's trimmed video.
-    pub(super) clip: Option<super::clips::ShareClip>,
+    /// Share Clip (module 243258 + 829903): the same modal, sending one or more clips' trimmed videos.
+    pub(super) clips: Vec<super::clips::ShareClip>,
     /// Share Activity / Frame (`SHARE_LINK` & `SHARE_CONTENT`, module 529999).
     pub(super) activity: Option<ShareActivity>,
     /// Module 714892: Share in-game item (`SOCIAL_LAYER_STOREFRONT`, up to 6 SKUs).
@@ -242,16 +242,16 @@ impl Root {
         self.open_forward_with(None, Some(user), window, cx);
     }
 
-    /// Share Clip: the forward modal titled "Share Clip" with the clip as preview.
-    pub(super) fn open_share_clip(
+    /// Share Clip(s) (module 243258 + 829903): the forward modal titled "Share Clip" with the clip(s) as preview.
+    pub(super) fn open_share_clips(
         &mut self,
-        clip: super::clips::ShareClip,
+        clips: Vec<super::clips::ShareClip>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.open_forward_with(None, None, window, cx);
         if let Some(forward) = self.forward.as_mut() {
-            forward.clip = Some(clip);
+            forward.clips = clips;
         }
     }
 
@@ -305,7 +305,7 @@ impl Root {
         self.forward = Some(Forward {
             message: None,
             profile: None,
-            clip: None,
+            clips: Vec::new(),
             activity: Some(share),
             storefront: None,
             search,
@@ -382,7 +382,7 @@ impl Root {
         self.forward = Some(Forward {
             message,
             profile,
-            clip: None,
+            clips: Vec::new(),
             activity: None,
             storefront: None,
             search,
@@ -531,13 +531,11 @@ impl Root {
             return;
         }
         let note = note.unwrap_or_else(|| forward.note.read(cx).text().trim().to_owned());
-        if forward.clip.is_some() {
-            // `customSendHandler` of module 243258: the video to each destination, then the note.
+        if !forward.clips.is_empty() {
+            // `customSendHandler` of module 243258 + 829903: export and upload clip(s) to each destination.
             let channels: Vec<Id> = forward.selected.iter().map(|d| d.channel()).collect();
             self.go_to_destination(&forward.selected);
-            if let Some(share) = forward.clip {
-                self.clips_send_share(share, channels, note, cx);
-            }
+            self.clips_send_share_batch(forward.clips, channels, note, None, cx);
             return;
         }
         if let Some(act) = forward.activity {
@@ -1206,12 +1204,17 @@ impl Root {
                 .preview_text(&super::first_spans(&message.content), false)
                 .into_any_element(),
             (None, Some(user)) => self.profile_preview(user, cx),
-            (None, None) => match (&forward.clip, &forward.activity, &forward.storefront) {
-                (Some(clip), _, _) => self.clips_share_preview(clip),
-                (None, Some(act), _) => self.activity_share_preview(act),
-                (None, None, Some(sf)) => self.storefront_share_preview(sf),
-                (None, None, None) => div().into_any_element(),
-            },
+            (None, None) => {
+                if !forward.clips.is_empty() {
+                    self.clips_share_preview(&forward.clips)
+                } else if let Some(act) = &forward.activity {
+                    self.activity_share_preview(act)
+                } else if let Some(sf) = &forward.storefront {
+                    self.storefront_share_preview(sf)
+                } else {
+                    div().into_any_element()
+                }
+            }
         };
         let attached = forward
             .message
@@ -1274,7 +1277,7 @@ impl Root {
                                     .line_height(px(24.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .child(if forward.clip.is_some() {
+                                    .child(if !forward.clips.is_empty() {
                                         "Share Clip".to_owned()
                                     } else if let Some(act) = forward.activity.as_ref() {
                                         act.preview_title
@@ -1319,7 +1322,7 @@ impl Root {
                                 format!("Maximum {MAX_DESTINATIONS} places at once.")
                             } else if forward.storefront.is_some() {
                                 dc_intl::t("yiaXeN").to_owned()
-                            } else if forward.clip.is_some() {
+                            } else if !forward.clips.is_empty() {
                                 // `Ey7mOU`.
                                 "Share your clip to a channel or directly with friends!".to_owned()
                             } else {
@@ -1396,7 +1399,7 @@ impl Root {
                             .pl(px(16.))
                             .when(
                                 sharing.is_none()
-                                    && forward.clip.is_none()
+                                    && forward.clips.is_empty()
                                     && forward.activity.is_none(),
                                 |this| this.py(px(4.)),
                             )
@@ -1480,7 +1483,7 @@ impl Root {
                                                 .bg(gpui::rgba(0x0000000a)),
                                         )
                                 } else if sharing.is_some()
-                                    || forward.clip.is_some()
+                                    || !forward.clips.is_empty()
                                     || forward.activity.is_some()
                                     || forward.storefront.is_some()
                                 {

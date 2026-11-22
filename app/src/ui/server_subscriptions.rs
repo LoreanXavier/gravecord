@@ -36,9 +36,21 @@ pub(crate) struct StorefrontTier {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PendingTierChange {
+    pub subscription_id: Option<String>,
     pub current_listing: String,
     pub next_listing: String,
     pub change_date: String,
+    pub error: Option<String>,
+}
+
+/// Module 815332 (`PATCH /users/@me/billing/subscriptions/{id}`): undo a scheduled role-subscription plan change.
+pub(crate) fn undo_plan_change_request(subscription_id: &str) -> Request {
+    Request::Rest {
+        key: Some(format!("role-subs:undo-change:{subscription_id}")),
+        method: reqwest::Method::PATCH,
+        route: format!("/users/@me/billing/subscriptions/{subscription_id}"),
+        body: Some(serde_json::json!({ "items": [] })),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,7 +308,8 @@ impl Root {
             });
 
             let pending_banner = page.pending_change.as_ref().map(|pc| {
-                // Module 815332: pending tier change notice (`chw89X`, `De4wI8`)
+                // Module 815332 (`container_aTj-E2`): neutral `--background-base-lower` 4px-radius box,
+                // `CircleErrorIcon`, `chw89X` copy + optional error line, `critical-secondary` `"Undo Change"` (`De4wI8`).
                 let runs = dc_intl::format_runs(
                     "chw89X",
                     &[
@@ -308,11 +321,13 @@ impl Root {
                         ("changeDate", Arg::Str(Cow::Borrowed(&pc.change_date))),
                     ],
                 );
+                let sub_id = pc.subscription_id.clone();
+                let err_line = pc.error.clone();
                 div()
-                    .rounded(px(8.))
+                    .rounded(px(4.))
                     .border_1()
-                    .border_color(color("--status-warning"))
-                    .bg(rgba(0xf0b2321f))
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-base-lower"))
                     .px(px(16.))
                     .py(px(12.))
                     .flex()
@@ -323,10 +338,34 @@ impl Root {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(px(13.))
-                            .line_height(px(18.))
-                            .text_color(color("--text-default"))
-                            .child(bold_styled(runs)),
+                            .flex()
+                            .items_start()
+                            .gap(px(10.))
+                            .child(icon("standing_circle_error", 18., "--text-muted"))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .line_height(px(18.))
+                                            .text_color(color("--text-default"))
+                                            .child(bold_styled(runs)),
+                                    )
+                                    .when_some(err_line, |col, msg| {
+                                        col.child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .line_height(px(16.))
+                                                .text_color(color("--text-feedback-critical"))
+                                                .child(msg),
+                                        )
+                                    }),
+                            ),
                     )
                     .child(
                         div()
@@ -336,14 +375,20 @@ impl Root {
                             .px(px(14.))
                             .h(px(32.))
                             .rounded(px(6.))
+                            .border_1()
+                            .border_color(color("--text-feedback-critical"))
                             .bg(color("--control-secondary-background-default"))
+                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
                             .flex()
                             .items_center()
                             .text_size(px(13.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--control-secondary-text-default"))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-feedback-critical"))
                             .child(dc_intl::t("De4wI8"))
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(ref sid) = sub_id {
+                                    let _ = this.requests.send(undo_plan_change_request(sid));
+                                }
                                 if let Some(p) = this.server_subscriptions_page.as_mut() {
                                     p.pending_change = None;
                                 }
@@ -629,9 +674,11 @@ impl Root {
         match arg.trim() {
             "" | "storefront" => {
                 page.pending_change = Some(PendingTierChange {
+                    subscription_id: Some("sub_demo_1".to_owned()),
                     current_listing: "Supporter".to_owned(),
                     next_listing: "VIP Creator".to_owned(),
                     change_date: "Dec 1, 2026".to_owned(),
+                    error: None,
                 });
                 self.server_subscriptions_page = Some(page);
                 cx.notify();
@@ -668,5 +715,29 @@ impl Root {
             }
             other => format!("server-subs: unknown {other}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_plan_change_815332_request_and_keys() {
+        let Request::Rest { method, route, .. } = undo_plan_change_request("sub_99") else {
+            panic!("expected rest");
+        };
+        assert_eq!(method, reqwest::Method::PATCH);
+        assert_eq!(route, "/users/@me/billing/subscriptions/sub_99");
+        assert_eq!(dc_intl::t("De4wI8"), "Undo Change");
+        let text = dc_intl::format(
+            "chw89X",
+            &[
+                ("currentListing", Arg::Str("Supporter".into())),
+                ("nextListing", Arg::Str("VIP".into())),
+                ("changeDate", Arg::Str("Dec 1, 2026".into())),
+            ],
+        );
+        assert!(text.contains("Supporter") && text.contains("VIP") && text.contains("Dec 1, 2026"));
     }
 }

@@ -54,6 +54,23 @@ pub(super) struct LibraryHideConfirm {
     pub next_flags: u64,
 }
 
+/// Game Library uninstall confirmation modal state (module 831120 `f/BAbC`/`FP+NKV`/`RVy6Vl`/`96dwMR`).
+#[derive(Clone, Debug)]
+pub(super) struct LibraryUninstallConfirm {
+    pub app_id: String,
+    pub name: String,
+}
+
+/// Module 831120: uninstall confirm modal title `"Uninstall {gameName}?"` (`f/BAbC`).
+pub(super) fn uninstall_confirm_title(game_name: &str) -> String {
+    dc_intl::format("f/BAbC", &[("gameName", game_name.into())])
+}
+
+/// Module 831120: uninstall confirm modal subtitle (`FP+NKV`).
+pub(super) fn uninstall_confirm_subtitle(game_name: &str) -> String {
+    dc_intl::format("FP+NKV", &[("gameName", game_name.into())])
+}
+
 /// Official `LIBRARY_APPLICATION_BRANCH` flags update (`59636` `V`, `652215`).
 pub(super) fn library_flags_request(app_id: &str, branch_id: &str, flags: u64) -> Request {
     Request::Rest {
@@ -212,6 +229,8 @@ pub(super) struct Library {
     pub(super) game_menu: Option<LibraryGameMenu>,
     /// First-time hide confirmation modal (module 873079).
     pub(super) hide_confirm: Option<LibraryHideConfirm>,
+    /// Game uninstall confirmation modal (module 831120).
+    pub(super) uninstall_confirm: Option<LibraryUninstallConfirm>,
     /// Tracks `hasRemovedLibraryApplicationThisSession` (module 873079).
     removed_this_session: bool,
 }
@@ -1539,6 +1558,9 @@ impl Root {
         if self.library.hide_confirm.take().is_some() {
             closed = true;
         }
+        if self.library.uninstall_confirm.take().is_some() {
+            closed = true;
+        }
         closed
     }
 
@@ -1686,20 +1708,22 @@ impl Root {
                     }),
                 ));
             }
-            // `Z`: Uninstall (`DwgfOM`) or Install (`N+XVnt`)
+            // `Z`: Uninstall (`DwgfOM`) -> opens module 831120 confirm modal, or Install (`N+XVnt`)
             if menu.installed {
                 if !menu.running {
                     let app_id = menu.app_id.clone();
+                    let name = menu.name.clone();
                     items.push(row(
                         "lib-ctx-uninstall".into(),
                         dc_intl::t("DwgfOM").to_owned(),
                         None,
                         false,
                         Box::new(move |this, _, cx| {
-                            this.library
-                                .action_overrides
-                                .insert(app_id.clone(), AppButtonState::Uninstalling);
                             this.library.game_menu = None;
+                            this.library.uninstall_confirm = Some(LibraryUninstallConfirm {
+                                app_id: app_id.clone(),
+                                name: name.clone(),
+                            });
                             cx.notify();
                         }),
                     ));
@@ -1980,8 +2004,47 @@ impl Root {
         )
     }
 
-    /// First-time hide game confirmation modal (module 873079: `oB7isi`, `HXfjKt`, `OWjIiV`).
+    /// First-time hide game confirmation modal (module 873079: `oB7isi`, `HXfjKt`, `OWjIiV`)
+    /// and uninstall game confirmation modal (module 831120: `f/BAbC`, `FP+NKV`, `RVy6Vl`, `96dwMR`).
     pub(super) fn library_hide_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if let Some(uninstall) = self.library.uninstall_confirm.clone() {
+            let close = |this: &mut Root, _: &mut Window, _: &mut Context<Root>| {
+                this.library.uninstall_confirm = None;
+            };
+            let app_id = uninstall.app_id;
+            let spec = super::modal::Spec {
+                id: "library-uninstall-game",
+                title: uninstall_confirm_title(&uninstall.name).into(),
+                subtitle: Some(
+                    div()
+                        .child(uninstall_confirm_subtitle(&uninstall.name))
+                        .into_any_element(),
+                ),
+                body: None,
+                buttons: vec![
+                    super::modal::button(
+                        "library-uninstall-confirm",
+                        dc_intl::t("RVy6Vl"),
+                        super::modal::Tone::Critical,
+                        move |this, _, cx| {
+                            this.library.uninstall_confirm = None;
+                            this.library
+                                .action_overrides
+                                .insert(app_id.clone(), AppButtonState::Uninstalling);
+                            cx.notify();
+                        },
+                    ),
+                    super::modal::button(
+                        "library-uninstall-cancel",
+                        dc_intl::t("96dwMR"),
+                        super::modal::Tone::Secondary,
+                        close,
+                    ),
+                ],
+                close: Box::new(close),
+            };
+            return Some(super::modal::render_small(spec, cx));
+        }
         let confirm = self.library.hide_confirm.clone()?;
         let subtitle = dc_intl::format(
             "HXfjKt",
@@ -2069,6 +2132,7 @@ impl Root {
     pub(crate) fn script_library_game_menu(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         if arg == "hide" {
             self.library.game_menu = None;
+            self.library.uninstall_confirm = None;
             self.library.hide_confirm = Some(LibraryHideConfirm {
                 app_id: "1001".to_owned(),
                 branch_id: "2001".to_owned(),
@@ -2078,7 +2142,18 @@ impl Root {
             cx.notify();
             return "library-game-menu: hide".to_owned();
         }
+        if arg == "uninstall" {
+            self.library.game_menu = None;
+            self.library.hide_confirm = None;
+            self.library.uninstall_confirm = Some(LibraryUninstallConfirm {
+                app_id: "1001".to_owned(),
+                name: "Hades II".to_owned(),
+            });
+            cx.notify();
+            return "library-game-menu: uninstall".to_owned();
+        }
         self.library.hide_confirm = None;
+        self.library.uninstall_confirm = None;
         self.library.game_menu = Some(LibraryGameMenu {
             app_id: "1001".to_owned(),
             branch_id: "2001".to_owned(),
@@ -2192,5 +2267,9 @@ mod tests {
         assert_eq!(dc_intl::t("T4tecH"), "Create Desktop Shortcut");
         assert_eq!(dc_intl::t("TuJXLx"), "Hide Game from Library");
         assert_eq!(dc_intl::t("0dnEUJ"), "Show Game in Library");
+        assert!(uninstall_confirm_title("Hades II").contains("Hades II"));
+        assert!(uninstall_confirm_subtitle("Hades II").contains("Hades II"));
+        assert_eq!(dc_intl::t("RVy6Vl"), "Uninstall");
+        assert_eq!(dc_intl::t("96dwMR"), "Nevermind");
     }
 }

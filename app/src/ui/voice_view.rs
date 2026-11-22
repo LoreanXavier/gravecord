@@ -208,6 +208,9 @@ pub(super) struct State {
     /// Bumped by every enter and leave of the button or the popup: a pending show or hide that finds another
     /// number was cancelled.
     pub suggest_timer: u64,
+    /// Module 807067: Activities Mini Shelf hover popout over `call-activity` (200ms show / 300ms hide).
+    pub activity_mini: bool,
+    pub activity_mini_timer: u64,
     /// The focused tile, if any (`selectedParticipant`).
     pub focus: video_tiles::Focus,
     /// Full Screen: the call fills the window and the window fills the screen.
@@ -263,6 +266,8 @@ impl Default for State {
             quality_open: false,
             suggest: false,
             suggest_timer: 0,
+            activity_mini: false,
+            activity_mini_timer: 0,
             focus: Default::default(),
             fullscreen: false,
             members_hidden: false,
@@ -1531,6 +1536,7 @@ impl Root {
             .children(self.event_prompts(guild, channel, self.call_idle_t(shown), cx))
             .children(self.voice_menus(channel, width, height, cx))
             .children(self.soundboard_suggest(cx))
+            .children(self.activity_mini_shelf(cx))
             .into_any_element()
     }
 
@@ -3408,28 +3414,39 @@ impl Root {
                     )
                     .into_any_element()
                 },
-                self.with_tip(
-                    "call-activity-tip",
-                    Tip::text(dc_intl::tr("Start An Activity"), Side::Top),
-                    // Module 168754: the hover events, and `play()` (the `click` marker) on click.
-                    animated(
-                        "call-activity",
-                        &activity_id,
-                        Anim::Activity,
-                        None,
-                        "--white",
-                    )
-                    .on_hover(lottie_hover(activity_id.clone(), cx))
-                    .on_click({
+                div()
+                    .id("call-activity-hover")
+                    .on_hover({
                         let id = activity_id.clone();
-                        cx.listener(move |this, _, window, cx| {
-                            lottie_icon::click(&id);
-                            this.voice_activity_clicked(window, cx);
+                        cx.listener(move |this, inside: &bool, _, cx| {
+                            lottie_icon::hover(&id, *inside);
+                            this.activity_mini_hover(*inside, cx);
                         })
-                    }),
-                    cx,
-                )
-                .into_any_element(),
+                    })
+                    .child(
+                        self.with_tip(
+                            "call-activity-tip",
+                            Tip::text(dc_intl::tr("Start An Activity"), Side::Top),
+                            // Module 168754: the hover events, and `play()` (the `click` marker) on click.
+                            animated(
+                                "call-activity",
+                                &activity_id,
+                                Anim::Activity,
+                                None,
+                                "--white",
+                            )
+                            .on_click({
+                                let id = activity_id.clone();
+                                cx.listener(move |this, _, window, cx| {
+                                    lottie_icon::click(&id);
+                                    this.vv.activity_mini = false;
+                                    this.voice_activity_clicked(window, cx);
+                                })
+                            }),
+                            cx,
+                        ),
+                    )
+                    .into_any_element(),
                 div()
                     .id("call-soundboard-hover")
                     .on_hover({

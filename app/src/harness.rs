@@ -2013,6 +2013,24 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_coupon_complete(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `friends-popout [open|all|pending|close]`: Title Bar Friends List Popout (824042).
+            ["friends-popout", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_friends_popout(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `gift-promo-notice [open|close]`: Gift Promotion Reminder Nagbar (823901).
+            ["gift-promo-notice", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_gift_promo_notice(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `shop-nagbar [default|nitro|close]`: Collectibles Shop Nagbar (814124).
+            ["shop-nagbar", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_shop_nagbar(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `partner-reward [locked|claimed|error|close]`: Recurring Partner Reward Code Card (116011).
             ["partner-reward", rest @ ..] => {
                 let arg = rest.join(" ");

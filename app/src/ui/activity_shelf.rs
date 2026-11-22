@@ -22,6 +22,11 @@ pub(super) const SHELF_PREFIX: &str = "activity-shelf:";
 const RECENTS_KEY: &str = "activities.recent";
 /// Application flag bit 29, `PROMOTED`.
 const PROMOTED_FLAG: u64 = 1 << 29;
+/// Module 807067 (`APP_LAUNCHER_IN_VOICE_BANNER`): static application-directory collections route.
+pub(super) const APP_LAUNCHER_COLLECTIONS_ROUTE: &str = "/application-directory-static/collections";
+/// Module 807067: maximum number of `13:11` cards shown in the Activities Mini Shelf row.
+pub(super) const MINI_SHELF_MAX_CARDS: usize = 5;
+
 const RECENTS_SHOWN: usize = 8;
 
 pub(crate) struct ActivityShelf {
@@ -737,6 +742,248 @@ impl Root {
             }))
             .into_any_element()
     }
+
+    /// Module 807067: 200ms show / 300ms hide hover timer for the Activities Mini Shelf over `call-activity`.
+    pub(super) fn activity_mini_hover(&mut self, inside: bool, cx: &mut Context<Self>) {
+        self.vv.activity_mini_timer += 1;
+        let ticket = self.vv.activity_mini_timer;
+        let wait = if inside { 200 } else { 300 };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(wait))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.vv.activity_mini_timer == ticket && this.vv.activity_mini != inside {
+                    this.vv.activity_mini = inside;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        if inside && !self.vv.activity_mini {
+            let guild = self
+                .call
+                .as_ref()
+                .map(|call| call.guild)
+                .filter(|guild| *guild != 0)
+                .or(self.guild);
+            let key = shelf_key(guild);
+            if !self.fetched.contains_key(&key) && self.requested.insert(key.clone()) {
+                let route = match guild {
+                    Some(g) => format!("/activities/shelf?guild_id={g}"),
+                    None => "/activities/shelf".to_owned(),
+                };
+                let _ = self.requests.send(Request::Fetch { key, route });
+            }
+            if self.requested.insert("app-launcher-collections".to_owned()) {
+                let _ = self.requests.send(Request::Fetch {
+                    key: "app-launcher-collections".to_owned(),
+                    route: APP_LAUNCHER_COLLECTIONS_ROUTE.to_owned(),
+                });
+            }
+        }
+    }
+
+    /// Module 807067 (`ActivitiesMiniShelf`): hover popout over `call-activity` (`584px` min-width,
+    /// `16px` radius, `"Suggested Activities"` `f3Cz25` + `"See All"` `K8+z4S`, optional promo poster
+    /// `2lnYtB`, top-5 `13:11` `88px`-tall cards with `Join`/`Leave` hover overlays).
+    pub(super) fn activity_mini_shelf(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.vv.activity_mini || self.activity_shelf.is_some() {
+            return None;
+        }
+        let guild = self
+            .call
+            .as_ref()
+            .map(|call| call.guild)
+            .filter(|guild| *guild != 0)
+            .or(self.guild);
+        let key = shelf_key(guild);
+        let cards: Vec<ShelfCard> = match self.fetched.get(&key).map(Shelf::from_body) {
+            Some(Shelf::Cards(list)) => list.iter().take(MINI_SHELF_MAX_CARDS).cloned().collect(),
+            _ => Vec::new(),
+        };
+        let running_app = self
+            .activities
+            .running
+            .as_ref()
+            .map(|r| r.application_id.clone());
+
+        let card_row = if cards.is_empty() {
+            div()
+                .h(px(88.))
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(13.))
+                .text_color(color("--text-muted"))
+                .child(dc_intl::t("2lnYtB"))
+                .into_any_element()
+        } else {
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .children(cards.into_iter().map(|card| {
+                    let app_id = card.app_id.clone();
+                    let is_running = running_app.as_deref() == Some(app_id.as_str());
+                    let group = SharedString::from(format!("mini-act-card-{app_id}"));
+                    let cover = card.banner.as_ref().and_then(|b| {
+                        self.images
+                            .get(&format!("activity-banner:{app_id}:{b}"))
+                            .cloned()
+                    });
+                    div()
+                        .id(SharedString::from(format!("mini-shelf-card-{app_id}")))
+                        .group(group.clone())
+                        .relative()
+                        .w(px(104.))
+                        .h(px(88.))
+                        .flex_none()
+                        .rounded(px(8.))
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-base-lower"))
+                        .cursor_pointer()
+                        .children(cover.map(|image| {
+                            img(image)
+                                .absolute()
+                                .inset_0()
+                                .size_full()
+                                .object_fit(ObjectFit::Cover)
+                        }))
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .bg(rgba(0x00000066))
+                                .p(px(8.))
+                                .flex()
+                                .flex_col()
+                                .justify_end()
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(15.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgba(0xffffffff))
+                                        .truncate()
+                                        .child(card.name),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .bg(rgba(0x00000099))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .invisible()
+                                .group_hover(group, |ov| ov.visible())
+                                .child(
+                                    div()
+                                        .h(px(28.))
+                                        .px(px(12.))
+                                        .rounded(px(6.))
+                                        .bg(if is_running {
+                                            color("--control-critical-primary-background-default")
+                                        } else {
+                                            color("--control-primary-background-default")
+                                        })
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(rgba(0xffffffff))
+                                        .child(if is_running {
+                                            dc_intl::tr("Leave")
+                                        } else {
+                                            dc_intl::tr("Join")
+                                        }),
+                                ),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.vv.activity_mini = false;
+                            if is_running {
+                                this.leave_activity_by_hand(cx);
+                            } else {
+                                this.launch_activity(&app_id, cx);
+                            }
+                        }))
+                }))
+                .into_any_element()
+        };
+
+        Some(
+            deferred(
+                div()
+                    .id("activity-mini-shelf")
+                    .occlude()
+                    .absolute()
+                    .bottom(px(88.))
+                    .left(px(0.))
+                    .right(px(0.))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .id("activity-mini-shelf-card")
+                            .min_w(px(584.))
+                            .p(px(14.))
+                            .rounded(px(16.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                                this.activity_mini_hover(*inside, cx);
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(18.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("f3Cz25")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("activity-mini-shelf-see-all")
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(2.))
+                                            .cursor_pointer()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-link"))
+                                            .hover(|s| s.underline())
+                                            .child(dc_intl::t("K8+z4S"))
+                                            .child(icon("chevron_right", 14., "--text-link"))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.vv.activity_mini = false;
+                                                this.open_activity_shelf(window, cx);
+                                            })),
+                                    ),
+                            )
+                            .child(card_row),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -881,5 +1128,17 @@ mod tests {
         assert!(activity_notification_label(0, false).is_none());
         assert!(activity_notification_label(1, true).is_some());
         assert!(activity_notification_label(2, false).is_some());
+    }
+
+    #[test]
+    fn activity_mini_shelf_807067_keys_and_constants() {
+        assert_eq!(MINI_SHELF_MAX_CARDS, 5);
+        assert_eq!(
+            APP_LAUNCHER_COLLECTIONS_ROUTE,
+            "/application-directory-static/collections"
+        );
+        for key in ["f3Cz25", "K8+z4S", "2lnYtB"] {
+            assert!(!dc_intl::t(key).is_empty(), "missing 807067 key {key}");
+        }
     }
 }

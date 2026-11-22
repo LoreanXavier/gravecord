@@ -451,7 +451,13 @@ impl Root {
     }
 }
 
-/// What a Share sends (module 243258 `CLIPS_SHARE_MODAL`): the clip's trimmed video, exported when the message goes.
+/// Module 829903 / 243258: formats multi-clip video count label (`SJ6pPX` `"{count} videos"`).
+pub(in crate::ui) fn share_clips_count_label(count: usize) -> String {
+    dc_intl::format("SJ6pPX", &[("count", dc_intl::Arg::Num(count as f64))])
+}
+
+/// What a Share sends (module 243258 `CLIPS_SHARE_MODAL`, module 829903 `shareClips`): the clip's
+/// trimmed video (or screenshot), exported when the message goes.
 pub(in crate::ui) struct ShareClip {
     pub source: PathBuf,
     pub start_ms: u64,
@@ -494,28 +500,50 @@ impl Root {
                 .cloned()
                 .flatten(),
         };
-        self.open_share_clip(share, window, cx);
+        self.share_clips_dispatch(vec![share], None, None, window, cx);
     }
 
-    /// Exports the clip to a temporary file, then sends it with the note to each channel (`sendFiles` per
-    /// destination, then the note as its own message). The editor closes when it is done (`onShareComplete`).
-    pub(in crate::ui) fn clips_send_share(
+    /// Module 829903 (`shareClips` dispatcher): when `direct_channel` is `Some(ch)` and valid in
+    /// stores, directly exports and uploads all clips to that channel (with optional `reply` ref);
+    /// otherwise opens the `243258` Share Clip modal with the full `Vec<ShareClip>`.
+    pub(in crate::ui) fn share_clips_dispatch(
         &mut self,
-        share: ShareClip,
+        clips: Vec<ShareClip>,
+        direct_channel: Option<dc_state::Id>,
+        reply: Option<(Option<dc_state::Id>, dc_state::Id, bool)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if clips.is_empty() {
+            return;
+        }
+        let valid_direct = direct_channel.filter(|&cid| {
+            self.stores.private_channels.iter().any(|c| c.id == cid)
+                || self
+                    .stores
+                    .guilds
+                    .iter()
+                    .any(|g| g.channels.iter().any(|c| c.id == cid))
+        });
+        if let Some(channel) = valid_direct {
+            self.clips_send_share_batch(clips, vec![channel], String::new(), reply, cx);
+        } else {
+            self.open_share_clips(clips, window, cx);
+        }
+    }
+
+    /// Exports one or more clips (module 829903 `shareClips`) to temporary files, then sends them
+    /// with the optional note & reply reference to each destination channel.
+    pub(in crate::ui) fn clips_send_share_batch(
+        &mut self,
+        shares: Vec<ShareClip>,
         channels: Vec<dc_state::Id>,
         note: String,
+        reply: Option<(Option<dc_state::Id>, dc_state::Id, bool)>,
         cx: &mut Context<Self>,
     ) {
         let folder = share_folder();
         cx.spawn(async move |this, cx| {
-            let ShareClip {
-                source,
-                start_ms,
-                end_ms,
-                keep,
-                stem,
-                ..
-            } = share;
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -533,36 +561,58 @@ impl Root {
                             }
                         }
                     }
-                    export_trimmed(&source, start_ms, end_ms, &keep, &folder, &stem)
+                    let mut exported = Vec::with_capacity(shares.len());
+                    for ShareClip {
+                        source,
+                        start_ms,
+                        end_ms,
+                        keep,
+                        stem,
+                        ..
+                    } in shares
+                    {
+                        exported.push(export_trimmed(
+                            &source, start_ms, end_ms, &keep, &folder, &stem,
+                        )?);
+                    }
+                    Ok::<Vec<Exported>, std::io::Error>(exported)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 match result {
-                    Ok(done) => {
-                        this.clips.engine.ui.last_export =
-                            format!("shared {}", done.path.display());
-                        let name = done
-                            .path
-                            .file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_default();
+                    Ok(done_list) => {
+                        if let Some(first) = done_list.first() {
+                            this.clips.engine.ui.last_export =
+                                format!("shared {}", first.path.display());
+                        }
+                        let uploads: Vec<crate::net::Upload> = done_list
+                            .into_iter()
+                            .map(|done| {
+                                let name = done
+                                    .path
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_default();
+                                crate::net::Upload {
+                                    path: done.path,
+                                    name,
+                                    description: None,
+                                }
+                            })
+                            .collect();
                         for channel in channels {
                             let _ = this.requests.send(crate::net::Request::Send {
                                 channel,
                                 content: note.clone(),
-                                files: vec![crate::net::Upload {
-                                    path: done.path.clone(),
-                                    name: name.clone(),
-                                    description: None,
-                                }],
-                                reply: None,
+                                files: uploads.clone(),
+                                reply,
                             });
                         }
                     }
                     Err(error) => {
                         this.clips.engine.ui.last_export = format!("share failed {error}");
-                        // `iufib1`.
-                        this.show_app_toast("Oh no! Something went wrong.", cx);
+                        // `iufib1` (module 829903).
+                        this.show_app_toast(dc_intl::t("iufib1"), cx);
                     }
                 }
                 cx.notify();
@@ -574,9 +624,19 @@ impl Root {
 }
 
 impl Root {
-    /// The preview of Share Clip (`forwardPreview` in stylesheet N34jMW; the modal draws its 4 px bar): the clips glyph
-    /// with the title, and the 56 px thumbnail on a black tile at 60% with a play glyph.
-    pub(in crate::ui) fn clips_share_preview(&self, clip: &ShareClip) -> AnyElement {
+    /// The preview of Share Clip (`forwardPreview` in stylesheet N34jMW; module 243258 + 829903):
+    /// shows single clip title or `SJ6pPX` `"{count} videos"` for multi-clip batches, with a 56 px
+    /// thumbnail and `+N` overflow badge when more than one clip is attached.
+    pub(in crate::ui) fn clips_share_preview(&self, clips: &[ShareClip]) -> AnyElement {
+        let Some(first) = clips.first() else {
+            return div().into_any_element();
+        };
+        let extra = clips.len().saturating_sub(1);
+        let label = if extra > 0 {
+            share_clips_count_label(clips.len())
+        } else {
+            first.title.clone()
+        };
         div()
             .flex()
             .items_center()
@@ -596,7 +656,7 @@ impl Root {
                                 .line_height(px(20.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-muted"))
-                                .child(clip.title.clone()),
+                                .child(label),
                         ),
                 ),
             )
@@ -608,7 +668,7 @@ impl Root {
                     .rounded(px(8.))
                     .overflow_hidden()
                     .bg(gpui::black())
-                    .children(clip.thumbnail.clone().map(|picture| {
+                    .children(first.thumbnail.clone().map(|picture| {
                         gpui::img(picture)
                             .size_full()
                             .object_fit(gpui::ObjectFit::Cover)
@@ -622,7 +682,23 @@ impl Root {
                             .items_center()
                             .justify_center()
                             .child(icon("clips_play", 20., "--white")),
-                    ),
+                    )
+                    .when(extra > 0, |tile| {
+                        tile.child(
+                            div()
+                                .absolute()
+                                .right(px(4.))
+                                .bottom(px(4.))
+                                .px(px(5.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .bg(gpui::rgba(0x000000cc))
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(gpui::rgba(0xffffffff))
+                                .child(format!("+{extra}")),
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -925,5 +1001,12 @@ mod tests {
         ] {
             assert!(dc_intl::has_key(k), "missing 707116 key {k}");
         }
+    }
+
+    #[test]
+    fn share_clips_dispatcher_829903_strings() {
+        let count_lbl = share_clips_count_label(3);
+        assert!(count_lbl.contains('3'), "got {count_lbl}");
+        assert!(!dc_intl::t("iufib1").is_empty());
     }
 }

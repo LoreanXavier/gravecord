@@ -155,6 +155,31 @@ pub(super) struct State {
     pub variant_selections: HashMap<String, usize>,
     /// Module 784054: currently hovered product variant swatch `(parent_sku_id, variant_index)`.
     pub variant_hover: Option<(String, usize)>,
+    /// Module 814124: active Collectibles Shop Nagbar (`Some(nagbar)` between `<ShopHeader>` and scroller).
+    pub nagbar: Option<ShopNagbar>,
+}
+
+/// Visual gradient theme for `CollectiblesShopNagbar` (module 814124).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) enum ShopNagbarKind {
+    Default,
+    Nitro,
+}
+
+/// Module 814124: Collectibles Shop Nagbar state (`54px`, hidden on Orbs/GameShop/Wishlist).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ShopNagbar {
+    pub kind: ShopNagbarKind,
+    pub body: String,
+    pub terms_label: Option<String>,
+    pub terms_url: Option<String>,
+    pub cta_label: String,
+}
+
+/// Module 814124: whether the Shop nagbar should render for the current Shop sub-surface.
+pub(super) fn shop_nagbar_visible(tab: Tab, in_game_shop: bool, wishlist_open: bool) -> bool {
+    tab != Tab::Orbs && !in_game_shop && !wishlist_open
 }
 
 /// Origin of the Shop load error view (module 599062 `A`: `SHOP_PAGE = 0`, `GIFT_MODAL = 1`).
@@ -1008,6 +1033,9 @@ impl Root {
                         .child(message),
                 )
         });
+        let nagbar = shop_nagbar_visible(self.shop.tab, in_game_shop, self.shop.wishlist_open)
+            .then(|| self.shop_nagbar_bar(cx))
+            .flatten();
         div()
             .flex_1()
             .min_w(px(0.))
@@ -1022,6 +1050,7 @@ impl Root {
                     .flex_col()
                     .bg(color("--background-base-lower"))
                     .child(header)
+                    .children(nagbar)
                     .child(
                         div()
                             .parity("shop-view")
@@ -1034,6 +1063,160 @@ impl Root {
                     .children(notice),
             )
             .into_any_element()
+    }
+
+    /// Capture only: `shop-nagbar [default|nitro|close]` (module 814124).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_shop_nagbar(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let mode = arg.trim();
+        if mode == "close" {
+            self.shop.nagbar = None;
+            cx.notify();
+            return "shop-nagbar: closed".to_owned();
+        }
+        self.open_shop(cx);
+        let nitro = mode == "nitro";
+        self.shop.nagbar = Some(ShopNagbar {
+            kind: if nitro {
+                ShopNagbarKind::Nitro
+            } else {
+                ShopNagbarKind::Default
+            },
+            body: if nitro {
+                "Nitro members save up to 25% on Shop Avatar Decorations and Profile Effects."
+                    .to_owned()
+            } else {
+                "Spring Collection is here for a limited time — browse new Profile Effects!"
+                    .to_owned()
+            },
+            terms_label: None,
+            terms_url: None,
+            cta_label: if nitro {
+                "Get Nitro".to_owned()
+            } else {
+                "Browse Shop".to_owned()
+            },
+        });
+        cx.notify();
+        format!("shop-nagbar: {mode}")
+    }
+
+    /// Module 814124 (`CollectiblesShopNagbar`): 54px dark-forced promo bar (`Default` `#212259 -> #343d88`
+    /// or `Nitro` `#8547c6 -> #b845c1`), Tag/Nitro icon, body + underlined `"Terms apply."` (`WQdkbb`),
+    /// `overlay-primary` sm CTA, and `X` dismiss (`WAI6xu`).
+    fn shop_nagbar_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let nag = self.shop.nagbar.as_ref()?.clone();
+        let bg = match nag.kind {
+            ShopNagbarKind::Default => gpui::linear_gradient(
+                90.,
+                gpui::linear_color_stop(gpui::rgba(0x212259ff), 0.),
+                gpui::linear_color_stop(gpui::rgba(0x343d88ff), 1.),
+            ),
+            ShopNagbarKind::Nitro => gpui::linear_gradient(
+                90.,
+                gpui::linear_color_stop(gpui::rgba(0x8547c6ff), 0.),
+                gpui::linear_color_stop(gpui::rgba(0xb845c1ff), 1.),
+            ),
+        };
+        let lead_icon = match nag.kind {
+            ShopNagbarKind::Default => "shop_header",
+            ShopNagbarKind::Nitro => "nitro_wheel",
+        };
+        let terms_text = nag
+            .terms_label
+            .unwrap_or_else(|| dc_intl::t("WQdkbb").to_owned());
+        let terms_url = nag.terms_url.unwrap_or_else(|| {
+            "https://support.discord.com/hc/en-us/articles/13410113109911".to_owned()
+        });
+        let is_nitro = nag.kind == ShopNagbarKind::Nitro;
+
+        Some(
+            div()
+                .id("shop-nagbar")
+                .relative()
+                .flex_none()
+                .w_full()
+                .h(px(54.))
+                .px(px(20.))
+                .bg(bg)
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(12.))
+                .child(icon(lead_icon, 20., "--white"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .font_weight(gpui::FontWeight(600.))
+                                .text_color(gpui::rgba(0xffffffff))
+                                .child(nag.body),
+                        )
+                        .child(
+                            div()
+                                .id("shop-nagbar-terms")
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(gpui::rgba(0xe3e5e8ff))
+                                .underline()
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.open_url(&terms_url);
+                                }))
+                                .child(terms_text),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("shop-nagbar-cta")
+                        .h(px(32.))
+                        .px(px(14.))
+                        .rounded(px(8.))
+                        .bg(gpui::rgba(0xffffffff))
+                        .hover(|s| s.bg(gpui::rgba(0xe3e5e8ff)))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(13.))
+                        .font_weight(gpui::FontWeight(600.))
+                        .text_color(gpui::rgba(0x111214ff))
+                        .child(nag.cta_label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.shop.nagbar = None;
+                            if is_nitro {
+                                this.open_purchase(false, cx);
+                            } else {
+                                this.shop_set_tab(Tab::Browse, cx);
+                            }
+                        })),
+                )
+                .child(
+                    div()
+                        .id("shop-nagbar-close")
+                        .aria_label(dc_intl::t("WAI6xu"))
+                        .absolute()
+                        .right(px(12.))
+                        .size(px(32.))
+                        .rounded(px(6.))
+                        .hover(|s| s.bg(gpui::rgba(0xffffff20)))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.shop.nagbar = None;
+                            cx.notify();
+                        }))
+                        .child(icon("mod_close", 16., "--white")),
+                )
+                .into_any_element(),
+        )
     }
 
     // ---- the header ----
@@ -1763,4 +1946,20 @@ fn beta_badge() -> impl IntoElement {
         .flex()
         .items_center()
         .child(text(10., 12., 700., "--text-default").child("BETA"))
+}
+
+#[cfg(test)]
+mod nagbar_tests {
+    use super::*;
+
+    #[test]
+    fn shop_nagbar_814124_visibility_and_keys() {
+        assert!(shop_nagbar_visible(Tab::Featured, false, false));
+        assert!(shop_nagbar_visible(Tab::Browse, false, false));
+        assert!(!shop_nagbar_visible(Tab::Orbs, false, false));
+        assert!(!shop_nagbar_visible(Tab::Featured, true, false));
+        assert!(!shop_nagbar_visible(Tab::Featured, false, true));
+        assert_eq!(dc_intl::t("WQdkbb"), "Terms apply.");
+        assert!(!dc_intl::t("WAI6xu").is_empty());
+    }
 }

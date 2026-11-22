@@ -954,7 +954,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         if let Some(job) = self.clips_stored_job(id) {
-            self.open_share_clip(job, window, cx);
+            self.share_clips_dispatch(vec![job], None, None, window, cx);
         }
     }
 

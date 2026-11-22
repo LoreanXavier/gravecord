@@ -319,7 +319,8 @@ impl Root {
             // Module 769192 (`overlay-channel-context`): voice & stage channels in overlay chat/friends widgets.
             super::context_menu::Target::OverlayVoiceChannel(channel)
         } else {
-            super::context_menu::Target::Channel(channel)
+            // Module 813407 (`overlay-channel-context`): guild text channels in overlay chat/friends widgets.
+            super::context_menu::Target::OverlayChannel(channel)
         };
         self.open_context_menu(target, at, cx);
         self.context.in_overlay = true;

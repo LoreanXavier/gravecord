@@ -529,6 +529,127 @@ fn terms_text() -> AnyElement {
     .into_any_element()
 }
 
+/// Module 814255: caps the Student Hub `"Join Servers"` unread badge at 5 (`MAX_HUB_UNREAD_PILL`).
+pub(in crate::ui) fn hub_unread_pill_count(unread: usize) -> Option<usize> {
+    (unread > 0).then(|| unread.min(5))
+}
+
+impl Root {
+    /// Module 814255 (`StudentHubSidebarActions`): for `"HUB"` guilds, renders the 3 sidebar action
+    /// rows (`JOIN_SERVERS` `K50GHd` + unread pill max 5, `ADD_SERVERS` `emRpdS` -> `open_hub_add_server_modal`,
+    /// `INVITE_MEMBERS` `MJQOuJ` -> `open_invite`).
+    pub(in crate::ui) fn hub_sidebar_action_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(guild) = self.current_guild() else {
+            return Vec::new();
+        };
+        if !guild.features.iter().any(|f| f == "HUB") {
+            return Vec::new();
+        }
+        let guild_id = guild.id;
+        let guild_name = guild.name.clone();
+        let dir_channel = guild
+            .channels
+            .iter()
+            .find(|c| matches!(c.kind, dc_state::ChannelKind::Other(14)))
+            .or_else(|| guild.channels.first())
+            .map(|c| c.id)
+            .unwrap_or(0);
+        let unread_pill = hub_unread_pill_count(
+            guild
+                .channels
+                .iter()
+                .filter(|c| self.has_unread_or_mentions(c.id))
+                .count(),
+        );
+
+        let row = |id: &'static str,
+                   icon_name: &'static str,
+                   label: &'static str,
+                   badge: Option<usize>| {
+            div()
+                .id(id)
+                .mx(px(8.))
+                .px(px(8.))
+                .h(px(34.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(|s| s.bg(color("--background-mod-subtle")))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon(icon_name, 18., "--channels-default"))
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .line_height(px(20.))
+                                .font_weight(gpui::FontWeight(500.))
+                                .text_color(color("--channels-default"))
+                                .child(label),
+                        ),
+                )
+                .when_some(badge, |r, count| {
+                    r.child(
+                        div()
+                            .min_w(px(18.))
+                            .h(px(18.))
+                            .px(px(5.))
+                            .rounded_full()
+                            .bg(color("--status-danger"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(11.))
+                            .font_weight(gpui::FontWeight(700.))
+                            .text_color(color("--white"))
+                            .child(format!("{count}")),
+                    )
+                })
+        };
+
+        let join_row = row(
+            "hub-action-join-servers",
+            "discover_compass",
+            dc_intl::t("K50GHd"),
+            unread_pill,
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            if dir_channel != 0 {
+                this.select(guild_id, Some(dir_channel));
+                cx.notify();
+            }
+        }))
+        .into_any_element();
+        let add_name = guild_name.clone();
+        let add_row = row(
+            "hub-action-add-servers",
+            "user_plus",
+            dc_intl::t("emRpdS"),
+            None,
+        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.open_hub_add_server_modal(dir_channel, guild_id, add_name.clone(), window, cx);
+        }))
+        .into_any_element();
+        let invite_row = row(
+            "hub-action-invite-members",
+            "invite",
+            dc_intl::t("MJQOuJ"),
+            None,
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.open_invite(cx);
+        }))
+        .into_any_element();
+
+        vec![join_row, add_row, invite_row]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,5 +711,15 @@ mod tests {
             &reqwest::Method::GET,
             "/guilds/1/profile"
         ));
+    }
+
+    #[test]
+    fn student_hub_sidebar_actions_814255_keys_and_unread_cap() {
+        assert_eq!(hub_unread_pill_count(0), None);
+        assert_eq!(hub_unread_pill_count(3), Some(3));
+        assert_eq!(hub_unread_pill_count(12), Some(5));
+        for key in ["K50GHd", "emRpdS", "MJQOuJ"] {
+            assert!(!dc_intl::t(key).is_empty(), "missing 814255 key {key}");
+        }
     }
 }

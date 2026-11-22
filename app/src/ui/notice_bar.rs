@@ -72,23 +72,28 @@ fn block_feedback_dismissed(now: chrono::DateTime<chrono::Utc>) -> bool {
 }
 
 /// The notice types this client shows, in the order of the table in module 596339 (`H.kqX`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Notice {
     /// `VOICE_DISABLED`: the voice call was taken over by another session of this account; (guild, channel).
     VoiceDisabled(Id, Id),
     /// `PREMIUM_UNCANCEL`: a canceled Nitro subscription ending within 7 days (modules 596339 & 174705).
     PremiumUncancel(i64, dc_state::premium::PremiumType),
+    /// `GIFT_PROMOTION_REMINDER` (module 823901): gradient nagbar with 20px gift icon, promo body,
+    /// `"Check it out"` (`RzWDqY`) CTA opening Nitro gift flow, and `X` dismiss (`WAI6xu`).
+    GiftPromotionReminder(String),
     /// `BLOCK_USER_FEEDBACK_NAGBAR`.
     BlockFeedback,
 }
 
 /// `getRemoteDisconnectVoiceChannelId` and the notices it drives.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct State {
     /// The voice channel (and its guild, 0 for a DM) that another session took the call from.
     pub remote_disconnect: Option<(Id, Id)>,
     /// Capture/demo override for `PREMIUM_UNCANCEL` (days_left, premium_type).
     pub uncancel_demo: Option<(i64, dc_state::premium::PremiumType)>,
+    /// Active Gift Promotion Reminder nagbar body (module 823901), cleared when dismissed.
+    pub gift_promo_body: Option<String>,
 }
 
 impl State {
@@ -121,6 +126,9 @@ impl Root {
         }
         if let Some((days_left, tier)) = self.premium_uncancel_holds() {
             return Some(Notice::PremiumUncancel(days_left, tier));
+        }
+        if let Some(body) = self.vv.notices.gift_promo_body.clone() {
+            return Some(Notice::GiftPromotionReminder(body));
         }
         self.block_feedback_holds().then_some(Notice::BlockFeedback)
     }
@@ -187,6 +195,9 @@ impl Root {
             Notice::VoiceDisabled(guild, channel) => (guild, channel),
             Notice::PremiumUncancel(days_left, tier) => {
                 return Some(self.premium_uncancel_bar(days_left, tier, cx));
+            }
+            Notice::GiftPromotionReminder(body) => {
+                return Some(self.gift_promotion_reminder_bar(body, cx));
             }
             Notice::BlockFeedback => return Some(self.block_feedback_bar(cx)),
         };
@@ -335,6 +346,78 @@ impl Root {
             .into_any_element()
     }
 
+    /// Module 823901 (`GiftPromotionReminderNotice`): 36px `colorPremiumTier2_Q02kKo` gradient bar,
+    /// 20px gift icon, dynamic promo body, `"Check it out"` (`RzWDqY`) CTA opening Nitro gift flow,
+    /// and dismiss `X` (`WAI6xu`).
+    fn gift_promotion_reminder_bar(&self, body: String, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("app-notice-gift-promo")
+            .relative()
+            .flex_none()
+            .w_full()
+            .h(px(36.))
+            .pl(px(8.))
+            .pr(px(36.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(8.))
+            .bg(gpui::linear_gradient(
+                90.,
+                gpui::linear_color_stop(gpui::rgba(0x8547c6ff), 0.),
+                gpui::linear_color_stop(gpui::rgba(0xb845c1ff), 1.),
+            ))
+            .border_t_1()
+            .border_l_1()
+            .border_color(color("--app-frame-border"))
+            .rounded_tl(px(8.))
+            .text_size(px(14.))
+            .line_height(px(36.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--white"))
+            .child(icon("gift", 20., "--white"))
+            .child(body)
+            .child(
+                div()
+                    .id("app-notice-gift-promo-cta")
+                    .ml(px(6.))
+                    .h(px(24.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .border_1()
+                    .border_color(color("--white"))
+                    .rounded(px(4.))
+                    .line_height(px(22.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(gpui::rgba(0xffffff24)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.vv.notices.gift_promo_body = None;
+                        this.open_purchase(true, cx);
+                    }))
+                    .child(dc_intl::t("RzWDqY")),
+            )
+            .child(
+                div()
+                    .id("app-notice-gift-promo-close")
+                    .aria_label(dc_intl::t("WAI6xu"))
+                    .absolute()
+                    .top(px(0.))
+                    .right(px(0.))
+                    .size(px(36.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.vv.notices.gift_promo_body = None;
+                        cx.notify();
+                    }))
+                    .child(icon("mod_close", 18., "--white")),
+            )
+            .into_any_element()
+    }
+
     /// `colorBrand_Q02kKo`: `--brand-500` behind white text, the button white on hover with brand text.
     fn block_feedback_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
@@ -399,6 +482,20 @@ impl Root {
             .into_any_element()
     }
 
+    /// Capture only: `gift-promo-notice [open|close]` (module 823901).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_gift_promo_notice(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.vv.notices.gift_promo_body = None;
+            cx.notify();
+            return "gift-promo-notice: closed".to_owned();
+        }
+        self.vv.notices.gift_promo_body =
+            Some("Gift a friend Nitro this week and get a bonus Avatar Decoration!".to_owned());
+        cx.notify();
+        "gift-promo-notice: open".to_owned()
+    }
+
     /// Capture only: `notice block-feedback`, the block survey's bar as if its predicate held in a sampled session
     /// (the predicate's cache is set and a stored dismissal is cleared).
     #[cfg(feature = "capture")]
@@ -457,5 +554,11 @@ mod tests {
         assert_eq!(notices.shown(), Some(Notice::VoiceDisabled(0, 9)));
         notices.clear();
         assert_eq!(notices.shown(), None);
+    }
+
+    #[test]
+    fn gift_promotion_reminder_823901_keys_resolve() {
+        assert_eq!(dc_intl::t("RzWDqY"), "Check it out");
+        assert!(!dc_intl::t("WAI6xu").is_empty());
     }
 }
