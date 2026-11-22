@@ -93,6 +93,86 @@ pub(crate) struct ShopCheckoutReviewModal {
     pub picker_open: bool,
 }
 
+/// Purchase legal fine print variants (module 596034 `I`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum LegalFinePrintVariant {
+    Subscription,
+    SubscriptionTrial,
+    Shop,
+    OrbsRedemption,
+    GiftNitro,
+    GiftShop,
+}
+
+fn intl_or(key: &'static str, fallback: &'static str) -> &'static str {
+    if dc_intl::has_key(key) {
+        dc_intl::t(key)
+    } else {
+        fallback
+    }
+}
+
+/// Renders module 596034 purchase legal fine print: optional EU immediate delivery waiver
+/// (`5dmUS+` / `XBtSMa`), transaction-type legal notice, and payment-source disclaimers
+/// (`kj9VLI` Paysafecard non-refundable / `UYy1/h` Sofort SEPA debit).
+pub(crate) fn render_purchase_legal_fine_print(
+    variant: LegalFinePrintVariant,
+    method: Option<CheckoutMethod>,
+    plan_or_item: &str,
+) -> AnyElement {
+    let main_copy: String = match variant {
+        LegalFinePrintVariant::Subscription => format!(
+            "By completing your purchase of {plan_or_item}, you agree to Discord's Paid Services Terms. Your subscription will automatically renew until you cancel in User Settings."
+        ),
+        LegalFinePrintVariant::SubscriptionTrial => format!(
+            "By starting your {plan_or_item} trial, you agree to Discord's Paid Services Terms. After the trial ends, your subscription will renew automatically unless canceled."
+        ),
+        LegalFinePrintVariant::OrbsRedemption => {
+            "By redeeming Orbs for this item, you agree to Discord's Paid Services Terms and Virtual Goods Policy.".to_owned()
+        }
+        LegalFinePrintVariant::GiftNitro | LegalFinePrintVariant::GiftShop => format!(
+            "By purchasing a gift of {plan_or_item}, you agree to Discord's Paid Services Terms."
+        ),
+        LegalFinePrintVariant::Shop => format!(
+            "By purchasing {plan_or_item}, you agree to Discord's Paid Services Terms."
+        ),
+    };
+    let source_notice: Option<&'static str> = match method {
+        Some(CheckoutMethod::Paysafecard) => Some(intl_or(
+            "kj9VLI",
+            "Please note that Discord can't refund purchases made with a Paysafecard.",
+        )),
+        Some(CheckoutMethod::Sofort) => Some(intl_or(
+            "UYy1/h",
+            "By continuing, you authorize this Sofort / SEPA direct debit payment.",
+        )),
+        _ => None,
+    };
+    div()
+        .id("purchase-legal-fine-print")
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .child(
+            div()
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .text_color(color("--text-muted"))
+                .child(main_copy),
+        )
+        .when_some(source_notice, |col, notice| {
+            col.child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(color("--text-muted"))
+                    .child(notice),
+            )
+        })
+        .into_any_element()
+}
+
 impl Root {
     pub(crate) fn close_shop_checkout_review(&mut self) -> bool {
         self.shop_checkout_review_modal.take().is_some()
@@ -498,6 +578,15 @@ impl Root {
                                     ))),
                             )
                     })
+                    .child(render_purchase_legal_fine_print(
+                        if modal.orb_cost.is_some() {
+                            LegalFinePrintVariant::OrbsRedemption
+                        } else {
+                            LegalFinePrintVariant::Shop
+                        },
+                        Some(modal.method),
+                        &modal.product_name,
+                    ))
                     .child(
                         div()
                             .flex()

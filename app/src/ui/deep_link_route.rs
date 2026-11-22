@@ -442,7 +442,12 @@ impl Root {
                 Outcome::Opened("invite modal")
             }
             Route::Gift(_) => Outcome::NotBuilt("gift modal"),
-            Route::Template(_) => Outcome::NotBuilt("server template modal"),
+            Route::Template(code) => {
+                self.with_window(cx, move |root, window, cx| {
+                    root.open_template_accept_modal(&code, window, cx)
+                });
+                Outcome::Opened("server template modal")
+            }
             Route::PickGuildSettings { section } => {
                 let feature = if matches!(
                     section.as_deref(),

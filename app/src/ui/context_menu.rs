@@ -161,6 +161,12 @@ pub(super) enum Target {
     GameShopSku,
     /// Overlay DM / Group DM context menu (`overlay-user-context` module 92016 / `overlay-gdm-context` module 320442).
     OverlayDm(Id),
+    /// Overlay User context menu (module 588860: voice widget & overlay member right-click menu).
+    OverlayUser {
+        user: Id,
+        guild: Option<Id>,
+        channel: Option<Id>,
+    },
     /// Overlay Report-to-Mod channel context menu (`overlay-report-to-mod-channel-context`, module 95616).
     OverlayModReportChannel(Id),
     /// Favorites server category context menu (`FAVORITE_CATEGORY`, module 250737 `"Rename Category"`).
@@ -2093,6 +2099,7 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::DmListMore => Some(dc_intl::t("/QQnjy")),
         Target::GdmCleanupSort => Some(dc_intl::t("yySzqH")),
         Target::OverlayModReportChannel(_) => Some(dc_intl::t("zp+z/E")),
+        Target::OverlayUser { .. } => Some(dc_intl::t("ogxXGq")),
         Target::Image => Some(dc_intl::t("Zow2V5")),
         _ => None,
     }
@@ -3007,6 +3014,133 @@ pub(super) fn overlay_dm_user_items(
     tidy(out)
 }
 
+/// Module 588860 — Overlay User Context Menu (`overlay-user-context` for voice/overlay participants):
+/// Profile (`LYju5J`), Call (`ZeP+kK`), Watch Stream / voice controls (`m7TNdF` User Volume, Mute,
+/// Mute Soundboard, Disable Video), social actions (Invite to Server, Add/Remove Friend, Ignore, Block),
+/// guild moderation group (only when `guild.is_some() && channel.is_some()`), and Copy User ID (`/AXYnE`).
+pub(super) fn overlay_user_items(facts: &UserFacts, has_guild_channel: bool) -> Vec<Entry> {
+    let mut out = Vec::new();
+    // Group 1: Profile, Call, Ring / Stop Ringing.
+    let mut g1 = vec![Row::new(Act::Profile, dc_intl::t("LYju5J"))];
+    if !facts.me && !facts.bot {
+        if !facts.hide_call {
+            g1.push(Row::new(Act::Call, dc_intl::t("ZeP+kK")).disabled(facts.blocked));
+        }
+        match facts.ring {
+            Some(false) => g1.push(Row::new(
+                Act::RingUser,
+                if facts.in_guild {
+                    dc_intl::t!("3Hv9qQ")
+                } else {
+                    dc_intl::t!("RDheZm")
+                },
+            )),
+            Some(true) => g1.push(Row::new(Act::StopRinging, dc_intl::t!("ygslb0"))),
+            None => {}
+        }
+    }
+    group(&mut out, g1);
+
+    // Group 2: Self Mute/Deafen OR per-user call controls (User Volume, Mute, Mute Soundboard, Disable Video).
+    if let Some((muted, deafened)) = facts.self_voice {
+        group(
+            &mut out,
+            vec![
+                Row::new(Act::VoiceMute, dc_intl::tr("Mute")).check(muted),
+                Row::new(Act::VoiceDeafen, dc_intl::tr("Deafen")).check(deafened),
+            ],
+        );
+    } else if facts.in_call && !facts.me {
+        let mut voice_rows = vec![
+            Row::new(Act::Volume, dc_intl::t!("m7TNdF")),
+            Row::new(Act::VoiceMute, dc_intl::tr("Mute")).check(facts.voice_muted),
+            Row::new(Act::SoundboardMute, dc_intl::tr("Mute Soundboard"))
+                .check(facts.soundboard_muted),
+            Row::new(Act::DisableVideo, dc_intl::tr("Disable Video")).check(facts.video_disabled),
+        ];
+        voice_rows[0].caret = false;
+        group(&mut out, voice_rows);
+    }
+
+    // Group 3: Invite to Server, Friend, Ignore, Block.
+    if !facts.me {
+        let mut social = Vec::new();
+        if facts.invite_servers {
+            social.push(Row::new(Act::InviteToServer, dc_intl::tr("Invite to Server")).caret());
+        }
+        if !facts.bot {
+            social.push(if facts.friend {
+                Row::new(Act::RemoveFriend, dc_intl::tr("Remove Friend"))
+            } else {
+                Row::new(Act::AddFriend, dc_intl::tr("Add Friend")).disabled(facts.blocked)
+            });
+        }
+        social.push(Row::new(
+            Act::Ignore,
+            if facts.ignored {
+                dc_intl::t!("8wXU9B")
+            } else {
+                dc_intl::t!("ytCpKs")
+            },
+        ));
+        social.push(if facts.blocked {
+            Row::new(Act::Block, dc_intl::tr("Unblock"))
+        } else {
+            Row::new(Act::Block, dc_intl::tr("Block")).danger()
+        });
+        group(&mut out, social);
+    }
+
+    // Group 4: Guild moderation (only when `guild.is_some() && channel.is_some()`, per module 588860).
+    if has_guild_channel && facts.in_guild {
+        let mut moderation = Vec::new();
+        if let Some(voice) = facts.server_voice {
+            if voice.can_mute {
+                moderation.push(
+                    Row::new(Act::ServerMute, dc_intl::tr("Server Mute"))
+                        .check(voice.mute)
+                        .danger(),
+                );
+            }
+            if voice.can_deafen {
+                moderation.push(
+                    Row::new(Act::ServerDeafen, dc_intl::tr("Server Deafen"))
+                        .check(voice.deaf)
+                        .danger(),
+                );
+            }
+            if voice.can_disconnect {
+                moderation.push(Row::new(Act::Disconnect, dc_intl::tr("Disconnect")).danger());
+            }
+        }
+        if !facts.me && facts.can_moderate {
+            moderation.push(if facts.in_timeout {
+                Row::new(
+                    Act::RemoveTimeout,
+                    dc_intl::t!("csKeta", user = &facts.name),
+                )
+                .danger()
+            } else {
+                Row::new(Act::Timeout, dc_intl::t!("OhsOy0", user = &facts.name)).danger()
+            });
+        }
+        if !facts.me && facts.can_kick {
+            moderation
+                .push(Row::new(Act::Kick, dc_intl::t!("9l/iTS", user = &facts.name)).danger());
+        }
+        if !facts.me && facts.can_ban {
+            moderation.push(Row::new(Act::Ban, dc_intl::t!("WnpUBi", user = &facts.name)).danger());
+        }
+        group(&mut out, moderation);
+    }
+
+    // Group 5: Developer Copy User ID (`/AXYnE`).
+    if facts.developer {
+        group(&mut out, vec![Row::new(Act::CopyId, dc_intl::t("/AXYnE"))]);
+    }
+    tidy(out)
+}
+
 pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
     if let Some(unread) = facts.dm {
@@ -3789,6 +3923,23 @@ impl Root {
                     return "no direct message".to_owned();
                 };
                 Target::OverlayDm(channel)
+            }
+            "overlay-user" => {
+                let Some(user) = self
+                    .stores
+                    .users
+                    .keys()
+                    .copied()
+                    .filter(|id| Some(*id) != me)
+                    .min()
+                else {
+                    return "no other person known".to_owned();
+                };
+                Target::OverlayUser {
+                    user,
+                    guild: self.guild.or_else(|| self.stores.guilds.first().map(|g| g.id)),
+                    channel: self.channel,
+                }
             }
             "game-shop-sku" => {
                 self.context.game_shop_sku = Some("1346069614634864772".to_owned());
@@ -4766,6 +4917,61 @@ impl Root {
                 }
                 items
             }
+            Target::OverlayUser {
+                user,
+                guild,
+                channel,
+            } => {
+                let Some(known) = self
+                    .stores
+                    .users
+                    .get(&user)
+                    .cloned()
+                    .or_else(|| self.stores.current_user.clone().filter(|me| me.id == user))
+                else {
+                    return;
+                };
+                let me = self
+                    .stores
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|me| me.id == user);
+                let facts = UserFacts {
+                    name: known.username.clone(),
+                    me,
+                    bot: known.bot,
+                    in_guild: guild.is_some(),
+                    friend: self.stores.relationships.get(&user) == Some(&1),
+                    nickname: self.nickname_for(user).is_some(),
+                    blocked: self.stores.relationships.get(&user) == Some(&2),
+                    ignored: self.stores.is_ignored(user),
+                    can_moderate: guild.is_some_and(|guild| {
+                        self.my_permission(guild, None, permissions::MODERATE_MEMBERS)
+                    }),
+                    can_kick: guild.is_some_and(|guild| {
+                        self.my_permission(guild, None, permissions::KICK_MEMBERS)
+                    }),
+                    can_ban: guild.is_some_and(|guild| {
+                        self.my_permission(guild, None, permissions::BAN_MEMBERS)
+                    }),
+                    developer,
+                    invite_servers: !me && !self.invite_servers(Some(user)).is_empty(),
+                    ring: self.ring_row_for(user, guild),
+                    server_voice: guild.and_then(|guild| self.server_voice_of(guild, user, me)),
+                    in_timeout: guild.is_some_and(|guild| self.is_in_timeout(guild, user))
+                        && guild.is_some_and(|guild| {
+                            self.my_permission(guild, None, permissions::MODERATE_MEMBERS)
+                        }),
+                    in_call: true,
+                    self_voice: me.then(|| (self.engine_mute(), self.self_deaf)),
+                    voice_muted: self.context.mix.get(&user).is_some_and(|mix| mix.1),
+                    soundboard_muted: self.context.soundboard_muted.contains(&user),
+                    video_disabled: super::call_menus::video_disabled(user),
+                    hide_call: known.bot || self.vv.popout_render,
+                    ..UserFacts::default()
+                };
+                overlay_user_items(&facts, guild.is_some() && channel.is_some())
+            }
             Target::User { user, guild } => {
                 // The Apps submenu lists the user commands of the channel's index (module 173500).
                 self.request_command_index();
@@ -4914,7 +5120,7 @@ impl Root {
         let items = self.adjust_menu_rows(target, items);
         // Not in the pinned client: CopyUserURLs' row (`plugin_hooks.rs`).
         let user_url = match target {
-            Target::User { user, .. } => Some(user),
+            Target::User { user, .. } | Target::OverlayUser { user, .. } => Some(user),
             Target::Dm(channel) => self.dm_user(channel),
             _ => None,
         };
@@ -5814,6 +6020,7 @@ impl Root {
                     | Target::ChannelMention(id)
                     | Target::AuditChannel(id) => id,
                     Target::User { user, .. }
+                    | Target::OverlayUser { user, .. }
                     | Target::ModerationUser { user, .. }
                     | Target::InventoryAuthor { user }
                     | Target::SpotifyActivity { user, .. }
@@ -6130,7 +6337,12 @@ impl Root {
                     channel, target, ..
                 },
             ) => self.confirm_remove_permission(channel, target, cx),
-            (Act::Profile, Target::User { user, .. } | Target::InventoryAuthor { user }) => {
+            (
+                Act::Profile,
+                Target::User { user, .. }
+                | Target::OverlayUser { user, .. }
+                | Target::InventoryAuthor { user },
+            ) => {
                 self.close_inventory_popout();
                 self.open_full_profile(user, window, cx)
             }
@@ -6156,7 +6368,7 @@ impl Root {
                 self.start_call_or_ask(super::voice_alerts::CallTarget::Dm(channel), cx)
             }
             // "Start a Call" of a person's menu: their DM opens and the voice call rings there.
-            (Act::Call, Target::User { user, .. }) => {
+            (Act::Call, Target::User { user, .. } | Target::OverlayUser { user, .. }) => {
                 self.start_call_or_ask(super::voice_alerts::CallTarget::User(user), cx)
             }
             // 313998: `ring(channel, [user], "user_context_menu")` and `stopRinging(channel, [user])`.
@@ -6166,7 +6378,10 @@ impl Root {
             ) => {
                 self.toggle_ring_channel(channel, cx);
             }
-            (Act::RingUser | Act::StopRinging, Target::User { user, guild }) => {
+            (
+                Act::RingUser | Act::StopRinging,
+                Target::User { user, guild } | Target::OverlayUser { user, guild, .. },
+            ) => {
                 if guild.is_none()
                     && let Some(channel) = self
                         .dm_channel_for_user(user)
@@ -6236,6 +6451,11 @@ impl Root {
                 Target::User {
                     user,
                     guild: Some(guild),
+                }
+                | Target::OverlayUser {
+                    user,
+                    guild: Some(guild),
+                    ..
                 },
             ) => self.open_remove_timeout(guild, user, window, cx),
             (Act::CreateEvent, Target::Guild(guild)) => {
@@ -6248,6 +6468,11 @@ impl Root {
                 Target::User {
                     user,
                     guild: Some(guild),
+                }
+                | Target::OverlayUser {
+                    user,
+                    guild: Some(guild),
+                    ..
                 },
             ) => {
                 let kind = match act {
@@ -6262,6 +6487,11 @@ impl Root {
                 Target::User {
                     user,
                     guild: Some(guild),
+                }
+                | Target::OverlayUser {
+                    user,
+                    guild: Some(guild),
+                    ..
                 },
             ) => {
                 let state = self
@@ -6371,13 +6601,15 @@ impl Root {
                 }
             }
             (Act::Message, Target::User { user, .. }) => self.open_dm_with(user, cx),
-            (Act::AddFriend, Target::User { user, .. }) => self.set_relationship(user, Some(4), cx),
+            (Act::AddFriend, Target::User { user, .. } | Target::OverlayUser { user, .. }) => {
+                self.set_relationship(user, Some(4), cx)
+            }
             (Act::AddFriend, Target::Dm(channel) | Target::OverlayDm(channel)) => {
                 if let Some(user) = self.dm_user(channel) {
                     self.set_relationship(user, Some(4), cx);
                 }
             }
-            (Act::RemoveFriend, Target::User { user, .. }) => {
+            (Act::RemoveFriend, Target::User { user, .. } | Target::OverlayUser { user, .. }) => {
                 self.confirm_remove_friend = Some(super::friends::RemoveFriend::Menu(user));
             }
             (Act::FriendNickname, Target::User { user, .. }) => {
@@ -6394,13 +6626,17 @@ impl Root {
                 }
             }
             // Modules 399476 and 239211: Ignore and Block open their confirmation first; Unignore and Unblock are at once.
-            (Act::Ignore, Target::User { user, .. }) => self.toggle_ignore(user, cx),
+            (Act::Ignore, Target::User { user, .. } | Target::OverlayUser { user, .. }) => {
+                self.toggle_ignore(user, cx)
+            }
             (Act::Ignore, Target::Dm(channel)) => {
                 if let Some(user) = self.dm_user(channel) {
                     self.toggle_ignore(user, cx);
                 }
             }
-            (Act::Block, Target::User { user, .. }) => self.toggle_block(user, cx),
+            (Act::Block, Target::User { user, .. } | Target::OverlayUser { user, .. }) => {
+                self.toggle_block(user, cx)
+            }
             (Act::Block, Target::Dm(channel)) => {
                 if let Some(user) = self.dm_user(channel) {
                     self.toggle_block(user, cx);
@@ -6420,12 +6656,14 @@ impl Root {
             (Act::LeaveGroup, Target::Dm(channel) | Target::OverlayDm(channel)) => {
                 self.open_group_leave(channel, false, cx)
             }
-            (Act::VoiceMute | Act::VoiceDeafen, Target::User { user, .. })
-                if self
-                    .stores
-                    .current_user
-                    .as_ref()
-                    .is_some_and(|me| me.id == user) =>
+            (
+                Act::VoiceMute | Act::VoiceDeafen,
+                Target::User { user, .. } | Target::OverlayUser { user, .. },
+            ) if self
+                .stores
+                .current_user
+                .as_ref()
+                .is_some_and(|me| me.id == user) =>
             {
                 if act == Act::VoiceDeafen {
                     self.toggle_self_deaf(cx);
@@ -6433,18 +6671,18 @@ impl Root {
                     self.toggle_self_mute(cx);
                 }
             }
-            (Act::VoiceMute, Target::User { user, .. }) => {
+            (Act::VoiceMute, Target::User { user, .. } | Target::OverlayUser { user, .. }) => {
                 let (volume, muted) = self.context.mix.get(&user).copied().unwrap_or((1., false));
                 self.set_user_mix(user, volume, !muted);
             }
-            (Act::SoundboardMute, Target::User { user, .. }) => {
+            (Act::SoundboardMute, Target::User { user, .. } | Target::OverlayUser { user, .. }) => {
                 if self.context.soundboard_muted.contains(&user) {
                     self.context.soundboard_muted.remove(&user);
                 } else {
                     self.context.soundboard_muted.insert(user);
                 }
             }
-            (Act::DisableVideo, Target::User { user, .. }) => {
+            (Act::DisableVideo, Target::User { user, .. } | Target::OverlayUser { user, .. }) => {
                 let disabled = !super::call_menus::video_disabled(user);
                 super::call_menus::set_video_disabled(user, disabled);
             }
@@ -6928,7 +7166,7 @@ impl Root {
             Act::InviteToServer => self
                 .invite_servers(match target {
                     Target::Dm(channel) => self.dm_user(channel),
-                    Target::User { user, .. } => Some(user),
+                    Target::User { user, .. } | Target::OverlayUser { user, .. } => Some(user),
                     _ => None,
                 })
                 .into_iter()
@@ -7313,7 +7551,7 @@ impl Root {
             Act::InviteToServer => {
                 let user = match target {
                     Target::Dm(channel) => self.dm_user(channel),
-                    Target::User { user, .. } => Some(user),
+                    Target::User { user, .. } | Target::OverlayUser { user, .. } => Some(user),
                     _ => None,
                 };
                 let (Some(row), Some(user)) = (row, user) else {
@@ -7833,7 +8071,7 @@ impl Root {
     /// User Volume: shared `58px` menu slider (`0..=200%` perceptual curve) with live `%` thumb bubble.
     fn volume_row(&self, row: &Row, target: Target, cx: &mut Context<Self>) -> AnyElement {
         let user = match target {
-            Target::User { user, .. } => user,
+            Target::User { user, .. } | Target::OverlayUser { user, .. } => user,
             Target::Dm(channel) => match self.dm_user(channel) {
                 Some(user) => user,
                 None => return div().into_any_element(),
@@ -9457,5 +9695,38 @@ mod tests {
             plain,
             ["Copy Image", "Save Image", "-", "Copy Link", "Open Link"]
         );
+    }
+
+    #[test]
+    fn overlay_user_context_menu_588860_groups_and_gating() {
+        let mut facts = UserFacts {
+            name: "Alice".to_owned(),
+            in_guild: true,
+            in_call: true,
+            can_kick: true,
+            can_ban: true,
+            developer: true,
+            ..UserFacts::default()
+        };
+        let with_channel = labels(&overlay_user_items(&facts, true));
+        assert!(with_channel.contains(&dc_intl::t("LYju5J").to_owned()));
+        assert!(with_channel.contains(&dc_intl::t("ZeP+kK").to_owned()));
+        assert!(with_channel.contains(&dc_intl::t("m7TNdF").to_owned()));
+        assert!(with_channel.contains(&dc_intl::t("/AXYnE").to_owned()));
+        assert!(with_channel.iter().any(|l| l.contains("Kick")));
+        assert!(with_channel.iter().any(|l| l.contains("Ban")));
+
+        // Without channel, moderation group is hidden per module 588860.
+        let without_channel = labels(&overlay_user_items(&facts, false));
+        assert!(!without_channel.iter().any(|l| l.contains("Kick")));
+        assert!(!without_channel.iter().any(|l| l.contains("Ban")));
+
+        // Self voice switches replace per-user volume/mute controls.
+        facts.me = true;
+        facts.self_voice = Some((true, false));
+        let self_rows = labels(&overlay_user_items(&facts, true));
+        assert!(self_rows.contains(&"Mute".to_owned()));
+        assert!(self_rows.contains(&"Deafen".to_owned()));
+        assert!(!self_rows.contains(&dc_intl::t("m7TNdF").to_owned()));
     }
 }

@@ -2992,6 +2992,29 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_sticker_upsell(mode, cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["nitro-required", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_nitro_required(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["template-accept", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_template_accept(&arg, window, cx))
+                    })
+                    .unwrap_or_else(|_| "template-accept: window closed".to_owned());
+                let _ = writeln!(output, "{msg}");
+            }
+            ["shop-error", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_shop_error(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["stage-preview"] => {
+                let msg = root.update(cx, |root, cx| root.script_stage_preview(cx));
+                let _ = writeln!(output, "{msg}");
+            }
             ["content-warning", mode] => {
                 let msg = root.update(cx, |root, cx| root.script_content_warning(mode, cx));
                 let _ = writeln!(output, "{msg}");

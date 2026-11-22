@@ -2125,6 +2125,31 @@ impl Root {
         rows.into_iter().map(|(_, row)| row).collect()
     }
 
+    /// Module 588860: opens the Overlay User context menu on right-clicking a voice row in the overlay.
+    pub(super) fn open_overlay_user_menu(
+        &mut self,
+        user: Id,
+        at: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let (guild, channel) = self
+            .call
+            .as_ref()
+            .map(|c| (Some(c.guild), Some(c.channel)))
+            .unwrap_or((self.guild, self.channel));
+        self.open_context_menu(
+            super::context_menu::Target::OverlayUser {
+                user,
+                guild,
+                channel,
+            },
+            at,
+            cx,
+        );
+        self.context.in_overlay = true;
+        cx.notify();
+    }
+
     /// The voice widget's content: the list, or unlocked with nobody to list the empty state (`O.g`: the voice icon at
     /// 24% under "Connect to a voice channel to see a list of users here.").
     fn overlay_voice_content(
@@ -2133,6 +2158,7 @@ impl Root {
         locked: bool,
         flipped: bool,
         show_empty: bool,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let settings = self.overlay_settings();
         let rows = self.overlay_call_rows();
@@ -2157,7 +2183,64 @@ impl Root {
                 names: settings.display_name_mode,
                 flipped,
             };
-            return voice_list(&rows, &settings, max, look, &joined, &self.overlay.bounds);
+            let members: Vec<voice::Member> = rows
+                .iter()
+                .map(|row| voice::Member {
+                    id: row.id,
+                    speaking: row.speaking,
+                    current: row.current,
+                })
+                .collect();
+            let ordered = voice::order(&members, max);
+            let split = voice::split(&ordered, max, settings.display_user_mode);
+            let find = |id: u64| rows.iter().find(|row| row.id == id);
+            let pictures = [
+                split
+                    .others
+                    .first()
+                    .and_then(|id| find(*id))
+                    .and_then(|row| row.avatar.clone()),
+                split
+                    .others
+                    .get(1)
+                    .and_then(|id| find(*id))
+                    .and_then(|row| row.avatar.clone()),
+            ];
+            let bounds = &self.overlay.bounds;
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(voice::ROW_GAP))
+                .children(
+                    split
+                        .rows
+                        .iter()
+                        .filter_map(|id| find(*id))
+                        .filter(|row| {
+                            voice::row_shown(
+                                look.locked || look.preview,
+                                settings.display_user_mode,
+                                row.speaking,
+                            )
+                        })
+                        .map(|row| {
+                            let uid = row.id;
+                            div()
+                                .id(gpui::SharedString::from(format!("overlay-voice-row-{uid}")))
+                                .on_mouse_down(
+                                    gpui::MouseButton::Right,
+                                    cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        this.open_overlay_user_menu(uid, ev.position, cx);
+                                    }),
+                                )
+                                .child(voice_row(row, look, joined.get(&uid).copied(), bounds))
+                        }),
+                )
+                .when(split.others.len() > 1, |this| {
+                    this.child(others_pill(split.others.len(), pictures, look))
+                })
+                .into_any_element();
         }
         if voice::shows_empty_state(drawn, locked, show_empty) {
             return div()
@@ -2243,7 +2326,7 @@ impl Root {
             let (title, content) = match widget.kind.as_str() {
                 layout::VOICE => (
                     dc_intl::tr("Voice"),
-                    self.overlay_voice_content(&widget, locked, !anchored_left, show_empty),
+                    self.overlay_voice_content(&widget, locked, !anchored_left, show_empty, cx),
                 ),
                 layout::NOTIFICATIONS => (
                     dc_intl::tr("Notifications"),

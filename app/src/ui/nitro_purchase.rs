@@ -112,6 +112,8 @@ pub(crate) struct ConfirmState {
     pub followup_sku_name: Option<String>,
     pub post_success_guild: Option<(dc_state::Id, String)>,
     pub deeplink: bool,
+    /// Module 585121 "Wow Moment" confirmation with 320px nameplate preview (`75Wt0E`/`QWljxE`/`X79Az5`).
+    pub wow_moment: bool,
 }
 
 /// `MVz.FRACTIONAL_PREMIUM_ABOUT` (module 652215 / 975571).
@@ -1025,7 +1027,7 @@ impl Root {
         cx.notify();
     }
 
-    fn close_purchase(&mut self) {
+    pub(super) fn close_purchase(&mut self) {
         self.nitro.purchase = None;
         self.soundboard.gift_picker = None;
         if self
@@ -2631,24 +2633,19 @@ impl Root {
                             )),
                     ),
             )
-            .child(
-                div()
-                    .mt(px(8.))
-                    .h(px(20.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(icon("circle_info", 20., "--status-warning"))
-                    .child(Self::nitro_text(
-                        format!(
-                            "{name} is a recurring subscription. Cancel anytime in your settings."
-                        ),
-                        14.,
-                        18.,
-                        400.,
-                        "--text-default",
-                    )),
-            );
+            .child(div().mt(px(8.)).child(
+                super::shop::checkout_review::render_purchase_legal_fine_print(
+                    if purchase.gift {
+                        super::shop::checkout_review::LegalFinePrintVariant::GiftNitro
+                    } else if purchase.offer_badge.is_some() {
+                        super::shop::checkout_review::LegalFinePrintVariant::SubscriptionTrial
+                    } else {
+                        super::shop::checkout_review::LegalFinePrintVariant::Subscription
+                    },
+                    None,
+                    name,
+                ),
+            ));
         let fractional = purchase.fractional_banner.as_ref().and_then(|fb| {
             let styled = fb.format_styled()?;
             Some(match fb.variant {
@@ -2945,7 +2942,7 @@ impl Root {
         )
     }
 
-    /// Post-purchase confirmation modal (`G` + `B` + `b` of module 231308; CSS `13792`, `896554`).
+    /// Post-purchase confirmation modal (`G` + `B` + `b` of module 231308; Wow-Moment branch of module 585121).
     fn confirm_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(purchase) = self.nitro.purchase.as_ref() else {
             return div().into_any_element();
@@ -2956,6 +2953,174 @@ impl Root {
         let paragraphs = confirm_paragraphs(plan, state);
         let button_label = confirm_button_label(state);
         let post_guild = state.post_success_guild.as_ref().map(|(id, _)| *id);
+
+        if state.wow_moment {
+            // Module 585121 (`p`, `_3XOBE8`): `75Wt0E` Nitro Updated, `QWljxE` Nitro Activated, `X79Az5` Nitro,
+            // 320px nameplate preview over ambient Nitro glow, full-width expressive CTA button.
+            let title = if state.pending_payment {
+                dc_intl::t("X79Az5")
+            } else if state.starting_plan.is_some() {
+                dc_intl::t("75Wt0E")
+            } else {
+                dc_intl::t("QWljxE")
+            };
+            let me_name = self
+                .stores
+                .current_user
+                .as_ref()
+                .map(|u| u.display_name().to_owned())
+                .unwrap_or_else(|| "You".to_owned());
+            let me_pic = self.stores.current_user.as_ref().and_then(|u| {
+                let (k, _) = super::avatar_source(u);
+                self.images.get(&k).cloned()
+            });
+            let mut text_col = div()
+                .min_h(px(40.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(6.));
+            for para in paragraphs {
+                text_col = text_col.child(
+                    div()
+                        .text_center()
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(para),
+                );
+            }
+            let body = div()
+                .id("nitro-wow-moment-confirm")
+                .pt(px(28.))
+                .px(px(24.))
+                .pb(px(16.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(
+                    div()
+                        .px(px(16.))
+                        .text_center()
+                        .text_size(px(28.))
+                        .line_height(px(34.))
+                        .font_weight(FontWeight(800.))
+                        .text_color(color("--text-strong"))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .w(px(320.))
+                        .p(px(24.))
+                        .my(px(12.))
+                        .rounded(px(16.))
+                        .bg(linear_gradient(
+                            135.,
+                            linear_color_stop(gpui::rgba(0x9b1da544), 0.),
+                            linear_color_stop(gpui::rgba(0x5865f244), 1.),
+                        ))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .w_full()
+                                .px(px(14.))
+                                .py(px(12.))
+                                .rounded(px(12.))
+                                .bg(color("--background-surface-highest"))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .size(px(40.))
+                                        .rounded_full()
+                                        .bg(color("--background-brand"))
+                                        .overflow_hidden()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(match me_pic {
+                                            Some(pic) => gpui::img(pic)
+                                                .size_full()
+                                                .object_fit(gpui::ObjectFit::Cover)
+                                                .into_any_element(),
+                                            None => icon("nitro_wheel", 20., "--white")
+                                                .into_any_element(),
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .text_size(px(15.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(color("--text-strong"))
+                                                .truncate()
+                                                .child(me_name),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(4.))
+                                                .child(icon("nitro_wheel", 12., "--text-brand"))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(dc_intl::t("X79Az5")),
+                                                ),
+                                        ),
+                                ),
+                        ),
+                )
+                .child(text_col)
+                .child(
+                    div()
+                        .id("nitro-wow-confirm-cta")
+                        .mt(px(24.))
+                        .w_full()
+                        .h(px(40.))
+                        .rounded(px(8.))
+                        .bg(gpui::rgba(0xffffffff))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(6.))
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(gpui::rgba(0x000000ff))
+                        .child(icon("nitro_wheel", 18., "--black"))
+                        .child(button_label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.close_purchase();
+                            if let Some(gid) = post_guild {
+                                this.select(gid, None);
+                            }
+                            cx.notify();
+                        })),
+                );
+            return self.purchase_shell(
+                "nitro-purchase-confirm",
+                480.,
+                "",
+                false,
+                body.into_any_element(),
+                None,
+                window,
+                cx,
+            );
+        }
 
         // `gradientOuterBorder_JXikcP` + `gradientInnerBorder_JXikcP` (CSS 13792).
         let badge = div()
@@ -3044,7 +3209,8 @@ impl Root {
         )
     }
 
-    /// Capture helper: `nitro-confirm [activated|updated|basic|credits|guild|pending]` opens module 231308.
+    /// Capture helper: `nitro-confirm [activated|updated|wow-activated|wow-updated|basic|credits|guild|pending]`
+    /// opens module 231308 / module 585121 ("wow moment").
     #[cfg(feature = "capture")]
     pub(crate) fn script_nitro_confirm(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         let mut confirm = ConfirmState::default();
@@ -3053,6 +3219,9 @@ impl Root {
         } else {
             (sku::TIER_2, true)
         };
+        if arg.contains("wow") {
+            confirm.wow_moment = true;
+        }
         if arg.contains("updated") {
             confirm.starting_plan = Some(ConfirmPlan::NitroMonth);
         } else if arg.contains("credits") {

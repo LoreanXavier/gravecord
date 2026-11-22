@@ -719,6 +719,12 @@ pub struct Root {
     claim_before_purchase_modal: Option<claim_account::ClaimBeforePurchaseModal>,
     /// Upload-size Nitro upsell modal ("This video was shared with Nitro", module 232118).
     nitro_upload_badge_upsell: bool,
+    /// Compact Nitro Required modal (module 633772, `premium_upsell::nitro_required_modal`).
+    nitro_required_modal: bool,
+    /// Guild Template Accept Form & Preview modal (module 584265, `add_server::TemplateAcceptModal`).
+    template_accept: Option<add_server::TemplateAcceptModal>,
+    /// Open Play-on-Distributor "Store options" menu key (module 607781, `live_activity`).
+    distributor_menu: Option<String>,
     /// "Invite to Play" ActivityInviteManager modal (module 196492 + 333189, `activity_invite_embed`).
     activity_invite_modal: Option<activity_invite_embed::ActivityInviteModalState>,
     /// Nitro offer countdown & feature upsell modal (module 811611, `nitro_upsell`).
@@ -1447,6 +1453,9 @@ impl Root {
             partner_reward_modal: None,
             claim_before_purchase_modal: None,
             nitro_upload_badge_upsell: false,
+            nitro_required_modal: false,
+            template_accept: None,
+            distributor_menu: None,
             activity_invite_modal: None,
             nitro_upsell_modal: None,
             gift_ready_modal: None,
@@ -2689,6 +2698,16 @@ impl Root {
                 }
                 if key == discover::hub_add_server::HUB_ADD_ENTRY_KEY {
                     self.hub_add_server_fetched(&body);
+                    cx.notify();
+                    return;
+                }
+                if key.starts_with(add_server::TEMPLATE_FETCH_PREFIX) {
+                    self.template_accept_fetched(&key, &body);
+                    cx.notify();
+                    return;
+                }
+                if key.starts_with(add_server::TEMPLATE_CREATE_PREFIX) {
+                    self.template_accept_created(&key, &body);
                     cx.notify();
                     return;
                 }
@@ -11904,6 +11923,10 @@ impl Render for Root {
                         || this.partner_reward_modal.is_some()
                         || this.claim_before_purchase_modal.is_some()
                         || this.nitro_upload_badge_upsell
+                        || this.nitro_required_modal
+                        || this.nitro.purchase.is_some()
+                        || this.template_accept.is_some()
+                        || this.distributor_menu.is_some()
                         || this.try_it_out_upsell
                         || this.activity_invite_modal.is_some()
                         || this.shop.wishlist_nux_sku.is_some()
@@ -12003,6 +12026,10 @@ impl Render for Root {
                     this.partner_reward_modal = None;
                     this.claim_before_purchase_modal = None;
                     this.nitro_upload_badge_upsell = false;
+                    this.nitro_required_modal = false;
+                    this.close_purchase();
+                    this.template_accept = None;
+                    this.distributor_menu = None;
                     this.try_it_out_upsell = false;
                     this.activity_invite_modal = None;
                     this.shop.wishlist_nux_sku = None;
@@ -13414,6 +13441,8 @@ impl Render for Root {
             .children(self.partner_reward_overlay(cx))
             .children(self.claim_before_purchase_layer(cx))
             .children(self.nitro_upload_badge_upsell(cx))
+            .children(self.nitro_required_modal(cx))
+            .children(self.template_accept_modal_layer(cx))
             .children(self.activity_invite_modal_layer(cx))
             .children(self.wishlist_nux_overlay(cx))
             .children(self.nitro_upsell_overlay(cx))

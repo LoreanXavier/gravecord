@@ -709,6 +709,207 @@ impl Root {
             }
         }
     }
+
+    /// Module 633772 — Nitro Required Modal: compact 440px dialog (`BNg1ir` "Nitro Required",
+    /// 267x120 theme-aware artwork, tier-dependent body `mKA9OJ` for Classic or `sqSlm4` otherwise,
+    /// and `P3etAv` "Get Nitro!" primary CTA that opens the Nitro purchase flow).
+    #[allow(dead_code)]
+    pub(super) fn open_nitro_required_modal(&mut self, cx: &mut Context<Self>) {
+        self.nitro_required_modal = true;
+        let url = nitro_required_art_url(super::theme() == dc_tokens::Theme::Light);
+        self.request_image(url.to_owned(), url.to_owned());
+        cx.notify();
+    }
+
+    pub(super) fn nitro_required_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.nitro_required_modal {
+            return None;
+        }
+        let premium = self.premium();
+        let art_url = nitro_required_art_url(super::theme() == dc_tokens::Theme::Light);
+        let art = self.images.get(art_url).cloned();
+        let body_text = nitro_required_body(premium);
+        let pose = crate::ui::motion::modal_pose("nitro-required-modal");
+        let layer = div()
+            .id("nitro-required-modal-layer")
+            .occlude()
+            .absolute()
+            .inset_0()
+            .bg(pose.dim(rgba(0x000000b8)))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.nitro_required_modal = false;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .posed(pose)
+                    .parity_with_border("nitro-required-modal", 1.)
+                    .id("nitro-required-modal")
+                    .occlude()
+                    .relative()
+                    .w(px(440.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.24),
+                        offset: gpui::point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .flex()
+                    .flex_col()
+                    .child(
+                        // Header with centered title + top-right close button
+                        div()
+                            .relative()
+                            .px(px(24.))
+                            .pt(px(20.))
+                            .pb(px(12.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("BNg1ir")),
+                            )
+                            .child(
+                                div()
+                                    .id("nitro-required-close")
+                                    .absolute()
+                                    .top(px(16.))
+                                    .right(px(16.))
+                                    .size(px(32.))
+                                    .rounded(px(8.))
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("close", 20., "--interactive-icon-default"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.nitro_required_modal = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        // 267x120 theme-aware hero art + description body
+                        div()
+                            .px(px(24.))
+                            .pb(px(20.))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(16.))
+                            .child(
+                                div()
+                                    .w(px(267.))
+                                    .h(px(120.))
+                                    .rounded(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .when_some(art, |d, picture| {
+                                        d.child(img(picture).w(px(267.)).h(px(120.)))
+                                    })
+                                    .when(self.images.get(art_url).is_none(), |d| {
+                                        d.bg(color("--background-mod-subtle")).child(icon(
+                                            "nitro_wheel",
+                                            56.,
+                                            "--brand-500",
+                                        ))
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_center()
+                                    .text_size(px(14.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-default"))
+                                    .child(body_text),
+                            ),
+                    )
+                    .child(
+                        // Footer with Get Nitro! primary button (`P3etAv`)
+                        div()
+                            .px(px(24.))
+                            .py(px(16.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-base-lower"))
+                            .rounded_b(px(12.))
+                            .flex()
+                            .justify_end()
+                            .child(
+                                div()
+                                    .id("nitro-required-cta")
+                                    .h(px(38.))
+                                    .px(px(20.))
+                                    .rounded(px(8.))
+                                    .bg(color("--brand-500"))
+                                    .hover(|s| s.bg(color("--brand-560")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(6.))
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--white"))
+                                    .child(icon("nitro_wheel", 18., "--white"))
+                                    .child(dc_intl::t("P3etAv"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.nitro_required_modal = false;
+                                        this.open_purchase(false, cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            );
+        Some(deferred(layer).with_priority(3).into_any_element())
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_nitro_required(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.nitro_required_modal = false;
+            cx.notify();
+            return "nitro-required: closed".to_owned();
+        }
+        self.open_nitro_required_modal(cx);
+        "nitro-required: opened".to_owned()
+    }
+}
+
+/// Theme-aware hero illustration for module 633772 (267x120 SVG asset on Discord CDN).
+pub(super) fn nitro_required_art_url(light: bool) -> &'static str {
+    if light {
+        "https://discord.com/assets/4290a31884b6c920.svg"
+    } else {
+        "https://discord.com/assets/711e1f277360806b.svg"
+    }
+}
+
+/// Tier-dependent body copy for module 633772 (`mKA9OJ` for Classic, `sqSlm4` otherwise).
+pub(super) fn nitro_required_body(premium: dc_state::premium::PremiumType) -> String {
+    if premium == dc_state::premium::PremiumType::Classic {
+        dc_intl::t("mKA9OJ").to_owned()
+    } else {
+        dc_intl::t("sqSlm4").to_owned()
+    }
 }
 
 /// Subtitle selector for module 232118 (`TaT999` for Basic/Classic vs `2op/Su` for Free).
@@ -805,5 +1006,17 @@ mod tests {
         let (d_label, d_badge) = resolve_upsell_offer(Some(&disc), tier);
         assert!(d_label.contains("30%"), "got {d_label}");
         assert_eq!(d_badge, None);
+    }
+
+    #[test]
+    fn nitro_required_modal_633772_copy_and_assets() {
+        for k in ["BNg1ir", "mKA9OJ", "sqSlm4", "P3etAv"] {
+            assert!(dc_intl::has_key(k), "missing 633772 key {k}");
+        }
+        let classic = nitro_required_body(PremiumType::Classic);
+        let free = nitro_required_body(PremiumType::None);
+        assert_ne!(classic, free);
+        assert!(nitro_required_art_url(false).contains("711e1f277360806b.svg"));
+        assert!(nitro_required_art_url(true).contains("4290a31884b6c920.svg"));
     }
 }

@@ -1501,6 +1501,659 @@ impl Root {
             }
         }
     }
+
+    /// Module 584265 — Guild Template Accept Form & Preview (`GET` / `POST /guilds/templates/{code}`).
+    pub(super) fn open_template_accept_modal(
+        &mut self,
+        code: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let code = code.trim().to_owned();
+        let default_name = self
+            .stores
+            .current_user
+            .as_ref()
+            .map(|u| {
+                let name = u
+                    .global_name
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&u.username);
+                dc_intl::format("Y6Qfju", &[("username", name.into())])
+            })
+            .unwrap_or_else(|| "My Server".to_owned());
+        let name_editor = cx.new(|cx| {
+            let mut ed = Editor::new(editor_style(), cx);
+            ed.set_placeholder(dc_intl::t("dBih7e").to_owned());
+            ed.set_text(&default_name);
+            ed
+        });
+        let sub = cx.subscribe(&name_editor, |this, ed, ev: &EditorEvent, cx| {
+            if matches!(ev, EditorEvent::Edited) {
+                let text = ed.read(cx).text().to_owned();
+                if text.chars().count() > 100 {
+                    let clipped: String = text.chars().take(100).collect();
+                    ed.update(cx, |e, _| e.set_text(&clipped));
+                }
+                if let Some(modal) = this.template_accept.as_mut() {
+                    modal.error = None;
+                }
+                cx.notify();
+            }
+        });
+        let _ = self.requests.send(Request::Fetch {
+            key: format!("{TEMPLATE_FETCH_PREFIX}{code}"),
+            route: format!("/guilds/templates/{code}"),
+        });
+        self.template_accept = Some(TemplateAcceptModal {
+            code,
+            loading: true,
+            submitting: false,
+            error: None,
+            preview: None,
+            name: name_editor.clone(),
+            scroll: ScrollHandle::new(),
+            _sub: sub,
+        });
+        name_editor.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn template_accept_fetched(&mut self, key: &str, body: &Value) {
+        let Some(code) = key.strip_prefix(TEMPLATE_FETCH_PREFIX) else {
+            return;
+        };
+        let Some(modal) = self.template_accept.as_mut() else {
+            return;
+        };
+        if modal.code != code {
+            return;
+        }
+        modal.loading = false;
+        if let Some(preview) = GuildTemplatePreview::from_json(body) {
+            modal.preview = Some(preview);
+            modal.error = None;
+        } else if modal.preview.is_none() {
+            modal.error = Some(
+                body["message"]
+                    .as_str()
+                    .unwrap_or("Unable to load server template.")
+                    .to_owned(),
+            );
+        }
+    }
+
+    pub(super) fn template_accept_created(&mut self, key: &str, body: &Value) {
+        let Some(code) = key.strip_prefix(TEMPLATE_CREATE_PREFIX) else {
+            return;
+        };
+        let Some(modal) = self.template_accept.as_mut() else {
+            return;
+        };
+        if modal.code != code {
+            return;
+        }
+        modal.submitting = false;
+        if let Some(gid) = body["id"]
+            .as_str()
+            .and_then(|s| s.parse::<dc_state::Id>().ok())
+        {
+            self.template_accept = None;
+            self.select(gid, None);
+        } else {
+            modal.error = Some(
+                body["message"]
+                    .as_str()
+                    .unwrap_or("Could not create server from template.")
+                    .to_owned(),
+            );
+        }
+    }
+
+    fn submit_template_accept(&mut self, cx: &mut Context<Self>) {
+        let Some(modal) = self.template_accept.as_mut() else {
+            return;
+        };
+        if modal.submitting {
+            return;
+        }
+        let name = modal.name.read(cx).text().trim().to_owned();
+        if name.is_empty() {
+            modal.error = Some("Server name is required.".to_owned());
+            cx.notify();
+            return;
+        }
+        let code = modal.code.clone();
+        modal.submitting = true;
+        modal.error = None;
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{TEMPLATE_CREATE_PREFIX}{code}")),
+            method: reqwest::Method::POST,
+            route: format!("/guilds/templates/{code}"),
+            body: Some(json!({
+                "name": name,
+                "icon": Value::Null,
+            })),
+        });
+        cx.notify();
+    }
+
+    /// Module 584265 modal overlay renderer.
+    pub(super) fn template_accept_modal_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.template_accept.as_ref()?;
+        let pose = crate::ui::motion::modal_pose("template-accept-modal");
+        let preview = modal.preview.as_ref();
+        let template_name = preview
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| modal.code.clone());
+        let usage_copy = preview.map(|p| p.usage_copy()).unwrap_or_default();
+        let guidelines_copy = dc_intl::format(
+            "2bprXx",
+            &[("guidelinesURL", "https://discord.com/guidelines".into())],
+        );
+
+        let left_form = div()
+            .flex_1()
+            .min_w(px(0.))
+            .p(px(24.))
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("h+vyO6").to_uppercase()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(22.))
+                            .line_height(px(28.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(template_name),
+                    )
+                    .when(!usage_copy.is_empty(), |col| {
+                        col.child(
+                            div()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-subtle"))
+                                .child(usage_copy),
+                        )
+                    })
+                    .when_some(
+                        preview
+                            .and_then(|p| p.description.as_ref())
+                            .filter(|d| !d.is_empty()),
+                        |col, desc| {
+                            col.child(
+                                div()
+                                    .pt(px(2.))
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-default"))
+                                    .child(desc.clone()),
+                            )
+                        },
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("dBih7e").to_uppercase()),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(40.))
+                            .px(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--input-border-default"))
+                            .bg(color("--input-background-default"))
+                            .flex()
+                            .items_center()
+                            .child(modal.name.clone()),
+                    ),
+            )
+            .when_some(modal.error.clone(), |col, err| {
+                col.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(color("--text-feedback-critical"))
+                        .child(err),
+                )
+            })
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(color("--text-muted"))
+                    .child(guidelines_copy),
+            );
+
+        let right_preview = div()
+            .w(px(280.))
+            .flex_none()
+            .border_l_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-base-lower"))
+            .p(px(20.))
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .id("template-accept-preview-scroll")
+            .track_scroll(&modal.scroll)
+            .overflow_y_scroll()
+            .max_h(px(420.))
+            .when(modal.loading && preview.is_none(), |col| {
+                col.child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(color("--text-muted"))
+                        .child("Loading template..."),
+                )
+            })
+            .when_some(preview, |col, p| {
+                col.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t("Zxk1OF").to_uppercase()),
+                        )
+                        .children(p.channels.iter().map(|ch| {
+                            let is_cat = ch.kind == CATEGORY;
+                            let glyph = if ch.kind == VOICE {
+                                "voice_channel"
+                            } else {
+                                "text_channel"
+                            };
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .when(!is_cat, |row| row.pl(px(12.)))
+                                .when(!is_cat, |row| row.child(icon(glyph, 14., "--icon-muted")))
+                                .child(
+                                    div()
+                                        .text_size(px(if is_cat { 11. } else { 13. }))
+                                        .font_weight(FontWeight(if is_cat { 700. } else { 500. }))
+                                        .text_color(color(if is_cat {
+                                            "--text-muted"
+                                        } else {
+                                            "--text-default"
+                                        }))
+                                        .child(if is_cat {
+                                            ch.name.to_uppercase()
+                                        } else {
+                                            ch.name.clone()
+                                        }),
+                                )
+                        })),
+                )
+                .when(!p.roles.is_empty(), |col| {
+                    col.child(div().h(px(1.)).bg(color("--border-subtle")))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-muted"))
+                                        .child(dc_intl::t("RJ1e/r").to_uppercase()),
+                                )
+                                .child(div().flex().flex_wrap().gap(px(6.)).children(
+                                    p.roles.iter().map(|role| {
+                                        let dot = if role.color != 0 {
+                                            gpui::rgb(role.color)
+                                        } else {
+                                            color("--text-muted")
+                                        };
+                                        div()
+                                            .px(px(8.))
+                                            .py(px(3.))
+                                            .rounded(px(10.))
+                                            .border_1()
+                                            .border_color(color("--border-subtle"))
+                                            .bg(color("--background-surface-high"))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(5.))
+                                            .child(div().size(px(8.)).rounded_full().bg(dot))
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .text_color(color("--text-default"))
+                                                    .child(role.name.clone()),
+                                            )
+                                    }),
+                                )),
+                        )
+                })
+                .child(
+                    div()
+                        .pt(px(4.))
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("de7DpI")),
+                )
+            });
+
+        let layer = div()
+            .id("template-accept-modal-layer")
+            .occlude()
+            .absolute()
+            .inset_0()
+            .bg(pose.dim(rgba(0x000000b8)))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.template_accept = None;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .posed(pose)
+                    .parity_with_border("template-accept-modal", 1.)
+                    .id("template-accept-modal")
+                    .occlude()
+                    .relative()
+                    .w(px(640.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.28),
+                        offset: gpui::point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(div().flex().child(left_form).child(right_preview))
+                    .child(
+                        div()
+                            .id("template-accept-close")
+                            .absolute()
+                            .top(px(12.))
+                            .right(px(12.))
+                            .size(px(32.))
+                            .rounded(px(8.))
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("close", 20., "--interactive-icon-default"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.template_accept = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .py(px(14.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-base-lower"))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .id("template-accept-cancel")
+                                    .px(px(12.))
+                                    .py(px(8.))
+                                    .rounded(px(8.))
+                                    .cursor_pointer()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("ETE/oC"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.template_accept = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("template-accept-create")
+                                    .h(px(38.))
+                                    .px(px(20.))
+                                    .rounded(px(8.))
+                                    .bg(color("--brand-500"))
+                                    .hover(|s| s.bg(color("--brand-560")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--white"))
+                                    .child(if modal.submitting {
+                                        "Creating..."
+                                    } else {
+                                        "Create"
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.submit_template_accept(cx);
+                                    })),
+                            ),
+                    ),
+            );
+        Some(deferred(layer).with_priority(3).into_any_element())
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_template_accept(
+        &mut self,
+        arg: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.template_accept = None;
+            cx.notify();
+            return "template-accept: closed".to_owned();
+        }
+        self.open_template_accept_modal("hvtBQMfw6uSJ", window, cx);
+        let sample = json!({
+            "code": "hvtBQMfw6uSJ",
+            "name": "Gaming Squad HQ",
+            "description": "Pre-built channels and roles for competitive squads and nightly customs.",
+            "usage_count": 482,
+            "creator": { "username": "Lorean" },
+            "serialized_source_guild": {
+                "channels": [
+                    {"id": 1, "parent_id": null, "name": "Information", "type": 4},
+                    {"id": 2, "parent_id": 1, "name": "welcome-and-rules", "type": 0},
+                    {"id": 3, "parent_id": 1, "name": "announcements", "type": 0},
+                    {"id": 4, "parent_id": null, "name": "Squad Chat", "type": 4},
+                    {"id": 5, "parent_id": 4, "name": "general", "type": 0},
+                    {"id": 6, "parent_id": 4, "name": "clips-and-highlights", "type": 0},
+                    {"id": 7, "parent_id": null, "name": "Voice Comms", "type": 4},
+                    {"id": 8, "parent_id": 7, "name": "Lobby", "type": 2},
+                    {"id": 9, "parent_id": 7, "name": "Ranked Stack", "type": 2}
+                ],
+                "roles": [
+                    {"id": 0, "name": "@everyone", "color": 0},
+                    {"id": 1, "name": "Member", "color": 0x57f287},
+                    {"id": 2, "name": "Moderator", "color": 0x5865f2},
+                    {"id": 3, "name": "Captain", "color": 0xfee75c}
+                ]
+            }
+        });
+        self.template_accept_fetched("guild-template:hvtBQMfw6uSJ", &sample);
+        cx.notify();
+        "template-accept: opened".to_owned()
+    }
+}
+
+pub(crate) const TEMPLATE_FETCH_PREFIX: &str = "guild-template:";
+pub(crate) const TEMPLATE_CREATE_PREFIX: &str = "guild-template-create:";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TemplatePreviewChannel {
+    pub id: u64,
+    pub parent_id: Option<u64>,
+    pub name: String,
+    pub kind: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TemplatePreviewRole {
+    pub name: String,
+    pub color: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GuildTemplatePreview {
+    #[allow(dead_code)]
+    pub code: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub usage_count: u64,
+    pub creator_name: Option<String>,
+    pub channels: Vec<TemplatePreviewChannel>,
+    pub roles: Vec<TemplatePreviewRole>,
+}
+
+impl GuildTemplatePreview {
+    /// Parses `GET /guilds/templates/{code}` payload per module 584265:
+    /// - Channels sorted by `parent_id.is_none() ? 10_000 * id : 10_000 * parent_id + id`
+    /// - Roles filter out `@everyone` (`id == 0` or `name == "@everyone"`) and reverse order.
+    pub(crate) fn from_json(body: &Value) -> Option<Self> {
+        let code = body["code"].as_str()?.to_owned();
+        let name = body["name"].as_str().unwrap_or(&code).to_owned();
+        let description = body["description"].as_str().map(str::to_owned);
+        let usage_count = body["usage_count"].as_u64().unwrap_or(0);
+        let creator_name = body["creator"]["username"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let source = &body["serialized_source_guild"];
+        let mut channels: Vec<TemplatePreviewChannel> = source["channels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                let id = c["id"]
+                    .as_u64()
+                    .or_else(|| c["id"].as_str()?.parse().ok())?;
+                let parent_id = c["parent_id"]
+                    .as_u64()
+                    .or_else(|| c["parent_id"].as_str().and_then(|s| s.parse().ok()));
+                let name = c["name"].as_str()?.to_owned();
+                let kind = c["type"].as_u64().unwrap_or(0) as u8;
+                Some(TemplatePreviewChannel {
+                    id,
+                    parent_id,
+                    name,
+                    kind,
+                })
+            })
+            .collect();
+        channels.sort_by_key(|c| template_channel_sort_key(c.id, c.parent_id));
+
+        let mut roles: Vec<TemplatePreviewRole> = source["roles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                let id = r["id"]
+                    .as_u64()
+                    .or_else(|| r["id"].as_str().and_then(|s| s.parse().ok()));
+                let name = r["name"].as_str()?;
+                if id == Some(0) || name == "@everyone" {
+                    return None;
+                }
+                let color = r["color"].as_u64().unwrap_or(0) as u32;
+                Some(TemplatePreviewRole {
+                    name: name.to_owned(),
+                    color,
+                })
+            })
+            .collect();
+        roles.reverse();
+
+        Some(Self {
+            code,
+            name,
+            description,
+            usage_count,
+            creator_name,
+            channels,
+            roles,
+        })
+    }
+
+    pub(crate) fn usage_copy(&self) -> String {
+        if let Some(creator) = self.creator_name.as_deref() {
+            dc_intl::format(
+                "TTcKAw",
+                &[
+                    ("usageCount", (self.usage_count as f64).into()),
+                    ("creator", creator.into()),
+                ],
+            )
+        } else {
+            dc_intl::format(
+                "cGXXHL",
+                &[("usageCount", (self.usage_count as f64).into())],
+            )
+        }
+    }
+}
+
+/// Module 584265 exact channel sort key: `parent_id == null ? 1e4 * id : 1e4 * parent_id + id`.
+pub(crate) fn template_channel_sort_key(id: u64, parent_id: Option<u64>) -> u64 {
+    match parent_id {
+        None => id.saturating_mul(10_000),
+        Some(parent) => parent.saturating_mul(10_000).saturating_add(id),
+    }
+}
+
+pub(crate) struct TemplateAcceptModal {
+    pub code: String,
+    pub loading: bool,
+    pub submitting: bool,
+    pub error: Option<String>,
+    pub preview: Option<GuildTemplatePreview>,
+    pub name: Entity<Editor>,
+    scroll: ScrollHandle,
+    _sub: Subscription,
 }
 
 #[cfg(test)]
@@ -1575,5 +2228,40 @@ mod tests {
                 "Artists & Creators"
             ]
         );
+    }
+
+    #[test]
+    fn template_accept_584265_sorting_roles_and_intl() {
+        for k in [
+            "h+vyO6", "TTcKAw", "cGXXHL", "dBih7e", "Y6Qfju", "2bprXx", "Zxk1OF", "RJ1e/r",
+            "de7DpI",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 584265 key {k}");
+        }
+        let body = json!({
+            "code": "abc123",
+            "name": "Study Hub",
+            "usage_count": 5,
+            "creator": {"username": "Lorean"},
+            "serialized_source_guild": {
+                "channels": [
+                    {"id": 2, "parent_id": 1, "name": "general", "type": 0},
+                    {"id": 1, "parent_id": null, "name": "Text", "type": 4},
+                    {"id": 4, "parent_id": 3, "name": "Voice", "type": 2},
+                    {"id": 3, "parent_id": null, "name": "Voice Cat", "type": 4}
+                ],
+                "roles": [
+                    {"id": 0, "name": "@everyone", "color": 0},
+                    {"id": 1, "name": "Student", "color": 0x123456},
+                    {"id": 2, "name": "Tutor", "color": 0x654321}
+                ]
+            }
+        });
+        let p = GuildTemplatePreview::from_json(&body).unwrap();
+        let ch_names: Vec<&str> = p.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(ch_names, ["Text", "general", "Voice Cat", "Voice"]);
+        let role_names: Vec<&str> = p.roles.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(role_names, ["Tutor", "Student"]);
+        assert!(p.usage_copy().contains("5"));
     }
 }

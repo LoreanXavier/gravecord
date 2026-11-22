@@ -145,6 +145,16 @@ pub(super) struct State {
     pub absent: HashSet<String>,
     /// A sideways shelf scroll in progress: from, to, and when it started on the motion clock.
     pub shelf_glide: HashMap<String, (f32, f32, f64, Option<f32>)>,
+    /// Module 599062: forced/observed Shop load error message (for error state rendering & retry).
+    pub load_error: Option<String>,
+}
+
+/// Origin of the Shop load error view (module 599062 `A`: `SHOP_PAGE = 0`, `GIFT_MODAL = 1`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) enum ShopErrorOrigin {
+    ShopPage,
+    GiftModal,
 }
 
 impl Root {
@@ -754,6 +764,23 @@ impl Root {
     }
 
     #[cfg(feature = "capture")]
+    pub(crate) fn script_shop_error(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "clear" {
+            self.shop.load_error = None;
+            cx.notify();
+            return "shop-error: cleared".to_owned();
+        }
+        self.set_shop_open(cx);
+        self.shop.load_error = Some(if arg.trim().is_empty() {
+            "HTTP 503 Service Unavailable (collectibles-categories)".to_owned()
+        } else {
+            arg.trim().to_owned()
+        });
+        cx.notify();
+        "shop-error: opened".to_owned()
+    }
+
+    #[cfg(feature = "capture")]
     pub(super) fn shop_search_editors(&self) -> Vec<Entity<Editor>> {
         if self.shop_active() {
             self.shop.search.iter().cloned().collect()
@@ -817,6 +844,110 @@ impl Root {
 
     // ---- the page ----
 
+    /// Module 599062 (`h`): Shop Load Error View (`i5SQ74` "Well, this is awkward.", `LuhKs2` / `+2QBZX`,
+    /// staff-only debug message when `flags & 1 != 0`, and primary `+hivLW` "Reload" button).
+    pub(super) fn shop_load_error_view(
+        &self,
+        origin: ShopErrorOrigin,
+        error_message: Option<&str>,
+        retry_key: &'static str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let light = super::theme() == dc_tokens::Theme::Light;
+        let art_url = if light {
+            "https://discord.com/assets/9afc0a2d5f56c719.svg"
+        } else {
+            "https://discord.com/assets/fe8bf3ee09628502.svg"
+        };
+        let art = self.images.get(art_url).cloned();
+        let desc = match origin {
+            ShopErrorOrigin::GiftModal => dc_intl::t("+2QBZX"),
+            ShopErrorOrigin::ShopPage => dc_intl::t("LuhKs2"),
+        };
+        let is_staff = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|u| u.flags & 1 != 0);
+        let debug_line = (is_staff || cfg!(feature = "capture"))
+            .then_some(error_message)
+            .flatten()
+            .filter(|m| !m.is_empty())
+            .map(|m| format!("staff-only debug: {m}"));
+        let mut container = div()
+            .id("shop-load-error")
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center();
+        container = match origin {
+            ShopErrorOrigin::ShopPage => container.mt(px(80.)).min_h(px(300.)),
+            ShopErrorOrigin::GiftModal => container.p(px(24.)),
+        };
+        container
+            .child(match art {
+                Some(image) => img(image)
+                    .h(px(140.))
+                    .object_fit(gpui::ObjectFit::Contain)
+                    .into_any_element(),
+                None => icon("storefront_store", 56., "--icon-muted").into_any_element(),
+            })
+            .child(
+                div()
+                    .mt(px(24.))
+                    .mb(px(12.))
+                    .text_size(px(24.))
+                    .line_height(px(30.))
+                    .font_weight(gpui::FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child(dc_intl::t("i5SQ74")),
+            )
+            .child(
+                div()
+                    .max_w(px(420.))
+                    .text_center()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(desc),
+            )
+            .when_some(debug_line, |col, line| {
+                col.child(
+                    div()
+                        .mt(px(8.))
+                        .text_size(px(12.))
+                        .text_color(color("--text-muted"))
+                        .child(line),
+                )
+            })
+            .child(
+                div()
+                    .id("shop-load-error-reload")
+                    .mt(px(24.))
+                    .h(px(38.))
+                    .px(px(20.))
+                    .rounded(px(8.))
+                    .bg(color("--control-primary-background-default"))
+                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(gpui::FontWeight(600.))
+                    .text_color(color("--white"))
+                    .child(dc_intl::t("+hivLW"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.shop.load_error = None;
+                        this.shop_forget(retry_key);
+                        this.fetch_failures.remove(retry_key);
+                        this.open_shop(cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn shop_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let in_game_shop = self.shop.game_shop.is_some() && !self.shop.wishlist_open;
         let header = if in_game_shop {
@@ -825,12 +956,25 @@ impl Root {
             self.shop_header(window, cx)
         };
         let scroll = self.shop.scroll.clone();
-        let body = match self.shop.tab {
-            _ if self.shop.wishlist_open => self.shop_wishlist_page(window, cx),
-            _ if in_game_shop => self.shop_game_body(window, cx),
-            Tab::Featured => self.shop_featured(false, window, cx),
-            Tab::Orbs => self.shop_featured(true, window, cx),
-            Tab::Browse => self.shop_browse(window, cx),
+        let active_key = match self.shop.tab {
+            Tab::Featured => "shop:home",
+            Tab::Orbs => "shop:orbs",
+            Tab::Browse => "shop:collections:0",
+        };
+        let has_load_error = self.shop.load_error.is_some()
+            || (self.fetch_failures.contains_key(active_key)
+                && !self.fetched.contains_key(active_key));
+        let body = if has_load_error {
+            let msg = self.shop.load_error.clone();
+            self.shop_load_error_view(ShopErrorOrigin::ShopPage, msg.as_deref(), active_key, cx)
+        } else {
+            match self.shop.tab {
+                _ if self.shop.wishlist_open => self.shop_wishlist_page(window, cx),
+                _ if in_game_shop => self.shop_game_body(window, cx),
+                Tab::Featured => self.shop_featured(false, window, cx),
+                Tab::Orbs => self.shop_featured(true, window, cx),
+                Tab::Browse => self.shop_browse(window, cx),
+            }
         };
         let scroller = div()
             .id("shop-scroll")

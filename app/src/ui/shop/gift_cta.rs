@@ -205,6 +205,7 @@ impl Root {
                                 .gap(px(10.))
                                 .child(
                                     div()
+                                        .relative()
                                         .h(px(72.))
                                         .rounded(px(8.))
                                         .bg(color("--background-surface-higher"))
@@ -215,7 +216,40 @@ impl Root {
                                             "gift",
                                             28.,
                                             "--control-primary-background-default",
-                                        )),
+                                        ))
+                                        // Module 627001 (`P`): top-left 20px In-Game Item app badge (`4yiU7x` tooltip).
+                                        .when(!modal.application_name.is_empty(), |box_el| {
+                                            let badge = div()
+                                                .id(SharedString::from(format!(
+                                                    "shop-gift-ingame-badge-{idx}-{}",
+                                                    item.id
+                                                )))
+                                                .size(px(20.))
+                                                .rounded(px(6.))
+                                                .border_1()
+                                                .border_color(color("--border-normal"))
+                                                .bg(color("--background-base-lowest"))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon("activity_game", 13., "--text-strong"));
+                                            let tipped = self.with_tip(
+                                                format!("shop-gift-ingame-tip-{idx}-{}", item.id),
+                                                crate::ui::tooltip::Tip::text(
+                                                    dc_intl::t("4yiU7x"),
+                                                    crate::ui::tooltip::Side::Top,
+                                                ),
+                                                badge,
+                                                cx,
+                                            );
+                                            box_el.child(
+                                                div()
+                                                    .absolute()
+                                                    .top(px(6.))
+                                                    .left(px(6.))
+                                                    .child(tipped),
+                                            )
+                                        }),
                                 )
                                 .child(
                                     div()

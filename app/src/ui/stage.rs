@@ -341,9 +341,382 @@ impl Root {
             }
             Some(instance) => {
                 let topic = instance.topic.clone();
-                self.stage_live(channel, topic, true, cx)
+                let connected_here = self
+                    .call
+                    .as_ref()
+                    .is_some_and(|call| call.channel == channel.id);
+                if connected_here {
+                    self.stage_live(channel, topic, true, cx)
+                } else {
+                    self.stage_not_connected_card(channel, &topic, cx)
+                }
             }
         }
+    }
+
+    /// Module 623413 — Not-Connected Stage Channel Card (`_mBjXoo`): shown when viewing a live
+    /// Stage channel before joining. Renders ambient glow backdrop, up to 5 speaker tiles
+    /// (`160x90` with `48px` avatars in a `168 * (len == 4 ? 2 : 3)` grid), topic heading,
+    /// speaking summary (`FUVhyC` / `EQwZlN` / `zBcKoA` / `3AqFaG`), primary `"Join Stage"`
+    /// (`7vb2cc`) or disabled `"Channel Locked"` (`TVBCKZ`) button, and Invite button.
+    fn stage_not_connected_card(
+        &self,
+        channel: &Channel,
+        topic: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let guild = self.guild.unwrap_or_default();
+        let target = channel.id;
+        let here = self.stores.voice_members(guild, target);
+        let mut speakers = Vec::new();
+        let mut audience_count = 0usize;
+        for state in &here {
+            if state.suppress {
+                audience_count += 1;
+            } else {
+                let user = self
+                    .stores
+                    .users
+                    .get(&state.user_id)
+                    .cloned()
+                    .or_else(|| {
+                        self.stores
+                            .current_user
+                            .clone()
+                            .filter(|u| u.id == state.user_id)
+                    })
+                    .unwrap_or_else(|| dc_state::User {
+                        id: state.user_id,
+                        username: format!("Speaker {}", state.user_id),
+                        ..Default::default()
+                    });
+                speakers.push((user, self.speaking.contains(&state.user_id)));
+            }
+        }
+        let speaker_names: Vec<String> = speakers
+            .iter()
+            .map(|(u, _)| {
+                u.global_name
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&u.username)
+                    .to_owned()
+            })
+            .collect();
+        let summary = stage_speaking_summary(&speaker_names);
+        let shown_speakers: Vec<_> = speakers.into_iter().take(5).collect();
+        let grid_w = stage_speaker_grid_width(shown_speakers.len());
+        let can_connect = self.can_in_channel(channel, permissions::CONNECT);
+        let can_invite = self.can_in_channel(channel, permissions::CREATE_INSTANT_INVITE);
+        let heading = if topic.trim().is_empty() {
+            channel.name.clone()
+        } else {
+            topic.to_owned()
+        };
+
+        div()
+            .parity("stage-not-connected-card")
+            .relative()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .bg(color("--black"))
+            .overflow_hidden()
+            .child(img(backdrop()).absolute().top_0().left_0().size_full())
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .child(stage_header(
+                        channel.name.clone(),
+                        here.len().saturating_sub(audience_count),
+                        audience_count,
+                        None,
+                        None,
+                    )),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .px(px(24.))
+                    .child(
+                        div()
+                            .max_w(px(560.))
+                            .w_full()
+                            .p(px(24.))
+                            .rounded(px(16.))
+                            .border_1()
+                            .border_color(rgba(0xffffff1a))
+                            .bg(Rgba {
+                                a: 0.62,
+                                ..rgba(0x111218ff)
+                            })
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(16.))
+                            .when(!shown_speakers.is_empty(), |card| {
+                                card.child(
+                                    div()
+                                        .w(px(grid_w))
+                                        .flex()
+                                        .flex_wrap()
+                                        .justify_center()
+                                        .gap(px(8.))
+                                        .children(shown_speakers.into_iter().map(
+                                            |(user, active)| {
+                                                let picture = self
+                                                    .images
+                                                    .get(&super::avatar_source(&user).0)
+                                                    .cloned();
+                                                let display = user
+                                                    .global_name
+                                                    .as_deref()
+                                                    .filter(|s| !s.is_empty())
+                                                    .unwrap_or(&user.username)
+                                                    .to_owned();
+                                                div()
+                                                    .w(px(160.))
+                                                    .h(px(90.))
+                                                    .rounded(px(10.))
+                                                    .border_1()
+                                                    .border_color(if active {
+                                                        color("--green-360")
+                                                    } else {
+                                                        rgba(0xffffff18)
+                                                    })
+                                                    .bg(Rgba {
+                                                        a: 0.72,
+                                                        ..rgba(0x1b1d26ff)
+                                                    })
+                                                    .flex()
+                                                    .flex_col()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .gap(px(6.))
+                                                    .child(
+                                                        div()
+                                                            .size(px(48.))
+                                                            .rounded_full()
+                                                            .bg(color("--brand-500"))
+                                                            .overflow_hidden()
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .children(picture.map(|pic| {
+                                                                img(pic)
+                                                                    .size(px(48.))
+                                                                    .rounded_full()
+                                                                    .object_fit(
+                                                                        gpui::ObjectFit::Cover,
+                                                                    )
+                                                            })),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .max_w(px(140.))
+                                                            .text_ellipsis()
+                                                            .text_size(px(12.))
+                                                            .line_height(px(16.))
+                                                            .font_weight(FontWeight(500.))
+                                                            .text_color(color("--white"))
+                                                            .child(display),
+                                                    )
+                                            },
+                                        )),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_center()
+                                            .text_size(px(22.))
+                                            .line_height(px(28.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--white"))
+                                            .child(heading),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_center()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-muted"))
+                                            .child(summary),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .pt(px(4.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .id("stage-not-connected-join")
+                                            .h(px(40.))
+                                            .px(px(20.))
+                                            .rounded(px(8.))
+                                            .bg(if can_connect {
+                                                color("--green-360")
+                                            } else {
+                                                color("--background-mod-subtle")
+                                            })
+                                            .when(can_connect, |d| {
+                                                d.hover(|s| s.bg(color("--green-400")))
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        if let Some(gid) = this.guild {
+                                                            this.request_join_voice(
+                                                                gid, target, cx,
+                                                            );
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                            })
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .gap(px(8.))
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(if can_connect {
+                                                color("--white")
+                                            } else {
+                                                color("--text-muted")
+                                            })
+                                            .child(icon(
+                                                if can_connect {
+                                                    "stage_channel"
+                                                } else {
+                                                    "channel_lock"
+                                                },
+                                                16.,
+                                                if can_connect {
+                                                    "--white"
+                                                } else {
+                                                    "--text-muted"
+                                                },
+                                            ))
+                                            .child(if can_connect {
+                                                dc_intl::t("7vb2cc")
+                                            } else {
+                                                dc_intl::t("TVBCKZ")
+                                            }),
+                                    )
+                                    .when(can_invite, |row| {
+                                        row.child(
+                                            div()
+                                                .id("stage-not-connected-invite")
+                                                .h(px(40.))
+                                                .px(px(16.))
+                                                .rounded(px(8.))
+                                                .border_1()
+                                                .border_color(rgba(0xffffff24))
+                                                .bg(Rgba {
+                                                    a: 0.45,
+                                                    ..rgba(0x2b2d31ff)
+                                                })
+                                                .hover(|s| s.bg(color("--background-mod-normal")))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap(px(6.))
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--white"))
+                                                .child(icon("invite", 16., "--white"))
+                                                .child(dc_intl::t("VINpSK"))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.open_invite_for(
+                                                        target,
+                                                        super::invite::InviteTarget::Stage,
+                                                        cx,
+                                                    );
+                                                    cx.notify();
+                                                })),
+                                        )
+                                    }),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_stage_preview(&mut self, cx: &mut Context<Self>) -> String {
+        let Some(gid) = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id))
+        else {
+            return "stage-preview: no guild".to_owned();
+        };
+        let stage_id: Id = 9_999_000_062_3413;
+        if let Some(guild) = self.stores.guilds.iter_mut().find(|g| g.id == gid)
+            && !guild.channels.iter().any(|c| c.id == stage_id)
+        {
+            guild.channels.push(Channel {
+                id: stage_id,
+                name: "town-hall".to_owned(),
+                kind: STAGE,
+                position: 0,
+                parent_id: None,
+                last_message_id: None,
+                overwrites: Vec::new(),
+                user_limit: 0,
+                topic: Some("Community Q&A & Roadmap".to_owned()),
+                rate_limit_per_user: 0,
+                flags: 0,
+                nsfw: false,
+                default_auto_archive_duration: None,
+                available_tags: Vec::new(),
+                default_sort_order: None,
+                default_forum_layout: 0,
+                default_reaction_emoji: None,
+                linked_lobby_application_id: None,
+            });
+        }
+        self.stores.stage_instances.dispatch(
+            "STAGE_INSTANCE_CREATE",
+            &json!({
+                "id": (stage_id + 1).to_string(),
+                "guild_id": gid.to_string(),
+                "channel_id": stage_id.to_string(),
+                "topic": "Community Q&A & Roadmap",
+                "privacy_level": 2,
+                "discoverable_disabled": false,
+                "guild_scheduled_event_id": null
+            }),
+        );
+        let sample_users: Vec<Id> = self.stores.users.keys().copied().take(3).collect();
+        let entry = self.stores.voice_states.entry(gid).or_default();
+        entry.retain(|s| s.channel_id != stage_id);
+        for (i, uid) in sample_users.into_iter().enumerate() {
+            entry.push(dc_state::VoiceState {
+                user_id: uid,
+                channel_id: stage_id,
+                session_id: format!("stage-preview-{i}"),
+                suppress: false,
+                ..Default::default()
+            });
+        }
+        self.call = None;
+        self.select(gid, Some(stage_id));
+        cx.notify();
+        "stage-preview: opened".to_owned()
     }
 
     /// `content_YMXX4L`: 400 wide, centred in the page; the header (24px above, 72 high: a 32/40 title and a 20/24
@@ -2367,6 +2740,38 @@ impl Root {
     }
 }
 
+/// Module 623413: grid width for up to 5 speaker tiles (`168px` per column, 2 columns when 4
+/// speakers else up to 3 columns).
+pub(super) fn stage_speaker_grid_width(count: usize) -> f32 {
+    let cols = match count {
+        0 => 1,
+        1..=3 => count,
+        4 => 2,
+        _ => 3,
+    };
+    168. * (cols as f32)
+}
+
+/// Module 623413: speaking summary copy (`FUVhyC` / `EQwZlN` / `zBcKoA` / `3AqFaG`).
+pub(super) fn stage_speaking_summary(speakers: &[String]) -> String {
+    match speakers {
+        [] => dc_intl::t("FUVhyC").to_owned(),
+        [a] => dc_intl::format("EQwZlN", &[("a", a.as_str().into())]),
+        [a, b] => dc_intl::format(
+            "zBcKoA",
+            &[("a", a.as_str().into()), ("b", b.as_str().into())],
+        ),
+        [a, b, rest @ ..] => dc_intl::format(
+            "3AqFaG",
+            &[
+                ("a", a.as_str().into()),
+                ("b", b.as_str().into()),
+                ("n", (rest.len() as f64).into()),
+            ],
+        ),
+    }
+}
+
 /// The label of the hand button (`label` of `eI`).
 pub(super) fn hand_label(age_gate: bool, raised: bool, may_ask: bool) -> &'static str {
     if age_gate {
@@ -2438,5 +2843,29 @@ mod hand_tests {
             super::hand_label(false, false, false),
             "Raise Hand Disabled"
         );
+    }
+
+    #[test]
+    fn not_connected_stage_card_623413_summary_and_grid() {
+        for k in ["FUVhyC", "EQwZlN", "zBcKoA", "3AqFaG", "7vb2cc", "TVBCKZ"] {
+            assert!(dc_intl::has_key(k), "missing 623413 key {k}");
+        }
+        assert_eq!(
+            super::stage_speaking_summary(&[]),
+            "No one is currently speaking"
+        );
+        assert!(super::stage_speaking_summary(&["Alice".into()]).contains("Alice"));
+        let two = super::stage_speaking_summary(&["Alice".into(), "Bob".into()]);
+        assert!(two.contains("Alice") && two.contains("Bob"));
+        let many = super::stage_speaking_summary(&[
+            "Alice".into(),
+            "Bob".into(),
+            "Carol".into(),
+            "Dave".into(),
+        ]);
+        assert!(many.contains("Alice") && many.contains("Bob") && many.contains("2"));
+        assert_eq!(super::stage_speaker_grid_width(3), 504.);
+        assert_eq!(super::stage_speaker_grid_width(4), 336.);
+        assert_eq!(super::stage_speaker_grid_width(5), 504.);
     }
 }

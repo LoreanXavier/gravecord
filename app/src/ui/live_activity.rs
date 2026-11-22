@@ -180,16 +180,88 @@ pub(super) fn needs_account_link(application: &Value, tokens: Option<&Value>) ->
     (!linked).then_some(url)
 }
 
+/// Module 607781: distributor storefronts parsed from `application.third_party_skus` in official
+/// priority order `[xbox_game_pass, steam]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DistributorOption {
+    pub distributor: &'static str,
+    pub single_label: String,
+    pub menu_label: String,
+    pub icon_name: &'static str,
+    pub url: String,
+}
+
+/// Resolves all available Play-on-Distributor storefronts in priority order (module 607781):
+/// 1. `xbox_game_pass` -> `"Play with Xbox Game Pass"` (`s7+3um`) / menu `"Xbox Game Pass"` (`QpN/Iz`)
+/// 2. `steam` -> `"Get on Steam"` (`L1N2gh`) / menu `"Steam"` (`FsANs4`)
+pub(super) fn distributor_options(application: &Value) -> Vec<DistributorOption> {
+    let Some(skus) = application["third_party_skus"].as_array() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (dist, single_key, menu_key, icon_name) in [
+        (
+            "xbox_game_pass",
+            "s7+3um",
+            "QpN/Iz",
+            "activity_connect_xbox",
+        ),
+        ("steam", "L1N2gh", "FsANs4", "activity_steam"),
+    ] {
+        if let Some(sku) = skus.iter().find(|s| s["distributor"] == dist)
+            && let Some(id) = field(sku, "id").or_else(|| field(sku, "sku"))
+        {
+            let encoded = component(id);
+            let url = if dist == "xbox_game_pass" {
+                format!("https://www.xbox.com/games/store/title/{encoded}?ocid=discord7937464")
+            } else {
+                format!("https://store.steampowered.com/app/{encoded}")
+            };
+            out.push(DistributorOption {
+                distributor: dist,
+                single_label: dc_intl::t(single_key).to_owned(),
+                menu_label: dc_intl::t(menu_key).to_owned(),
+                icon_name,
+                url,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
 fn steam_url(application: &Value) -> Option<String> {
-    let sku = application["third_party_skus"]
-        .as_array()?
-        .iter()
-        .find(|sku| sku["distributor"] == "steam")?;
-    let id = field(sku, "id").or_else(|| field(sku, "sku"))?;
-    Some(format!(
-        "https://store.steampowered.com/app/{}",
-        component(id)
-    ))
+    distributor_options(application)
+        .into_iter()
+        .find(|d| d.distributor == "steam")
+        .map(|d| d.url)
+}
+
+/// Module 623671: Activity / App `ContentImage` sizing spec (`SIZE_60`, `SIZE_72`, `SIZE_100`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ContentImageSize {
+    Size60,
+    #[allow(dead_code)]
+    Size72,
+    Size100,
+}
+
+impl ContentImageSize {
+    pub(super) fn main_px(self) -> f32 {
+        match self {
+            Self::Size60 => 60.,
+            Self::Size72 => 72.,
+            Self::Size100 => 100.,
+        }
+    }
+
+    /// Module 623671: small sub-image diameter (`24px` for SIZE_60, `32px` for SIZE_72 / SIZE_100).
+    pub(super) fn small_px(self) -> f32 {
+        match self {
+            Self::Size60 => 24.,
+            Self::Size72 | Self::Size100 => 32.,
+        }
+    }
 }
 
 fn metadata_route(user: Id, activity: &Value) -> Option<String> {
@@ -574,8 +646,16 @@ impl Root {
                 } else {
                     field(&activity["assets"], "large_text")
                 };
-                let image_size = if large { 100. } else { 60. };
+                let content_size = if large {
+                    ContentImageSize::Size100
+                } else {
+                    ContentImageSize::Size60
+                };
+                let image_size = content_size.main_px();
+                let small_size = content_size.small_px();
                 let poster_height = poster_height(activity, image_size);
+                let large_tip = field(&activity["assets"], "large_text").map(str::to_owned);
+                let small_tip = field(&activity["assets"], "small_text").map(str::to_owned);
                 let glyph = if kind == 2 {
                     "activity_music"
                 } else if matches!(kind, 1 | 3) {
@@ -797,7 +877,13 @@ impl Root {
                             .children(buttons)
                             .into_any_element(),
                     );
-                } else if application.and_then(steam_url).is_some() || connect_url.is_some() {
+                } else if !application
+                    .map(distributor_options)
+                    .unwrap_or_default()
+                    .is_empty()
+                    || connect_url.is_some()
+                {
+                    let distributors = application.map(distributor_options).unwrap_or_default();
                     let mut stack = div().flex().flex_col().gap(px(8.));
                     // 802880 `th`: Connect Account, when the application has a connection entry point and this
                     // account has no linked account for it (the token fetch is not made: an unlinked account is
@@ -831,13 +917,20 @@ impl Root {
                                 ),
                         );
                     }
-                    if let Some(url) = application.and_then(steam_url) {
+                    // Module 607781: single distributor -> direct storefront CTA; multiple distributors ->
+                    // "Play" (`nSHoxC`) dropdown button opening "Store options" (`3XhYOS`) menu.
+                    if distributors.len() == 1 {
+                        let opt = distributors[0].clone();
+                        let url = opt.url.clone();
+                        let label_for_click = opt.single_label.clone();
                         stack = stack.child(
                             div()
                                 .id(SharedString::from(format!(
-                                    "activity-steam-{user}-{index}-{large}"
+                                    "activity-dist-{}-{user}-{index}-{large}",
+                                    opt.distributor
                                 )))
                                 .h(px(32.))
+                                .px(px(11.))
                                 .rounded(px(8.))
                                 .border_1()
                                 .border_color(color("--control-secondary-border-default"))
@@ -849,17 +942,132 @@ impl Root {
                                 .gap(px(4.))
                                 .cursor_pointer()
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.follow_link(&url, "Get on Steam", cx)
+                                    this.follow_link(&url, &label_for_click, cx)
                                 }))
-                                .child(icon("activity_steam", 16., "--text-strong"))
+                                .child(icon(opt.icon_name, 16., "--text-strong"))
                                 .child(
                                     div()
                                         .text_size(px(14.))
                                         .line_height(px(18.))
                                         .font_weight(FontWeight(500.))
                                         .text_color(strong)
-                                        .child("Get on Steam"),
+                                        .child(opt.single_label),
                                 ),
+                        );
+                    } else if distributors.len() > 1 {
+                        let menu_key = format!("activity-dist-menu-{user}-{index}-{large}");
+                        let menu_open = self.distributor_menu.as_deref() == Some(menu_key.as_str());
+                        let key_click = menu_key.clone();
+                        stack = stack.child(
+                            div()
+                                .relative()
+                                .child(
+                                    div()
+                                        .id(SharedString::from(menu_key.clone()))
+                                        .h(px(32.))
+                                        .px(px(11.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--control-secondary-border-default"))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap(px(4.))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            if this.distributor_menu.as_deref()
+                                                == Some(key_click.as_str())
+                                            {
+                                                this.distributor_menu = None;
+                                            } else {
+                                                this.distributor_menu = Some(key_click.clone());
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .text_size(px(14.))
+                                                .line_height(px(18.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(strong)
+                                                .child(dc_intl::t("nSHoxC")),
+                                        )
+                                        .child(icon("chevron_down", 14., "--text-strong")),
+                                )
+                                .when(menu_open, |wrap| {
+                                    wrap.child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "{menu_key}-popover"
+                                            )))
+                                            .occlude()
+                                            .absolute()
+                                            .left_0()
+                                            .right_0()
+                                            .top(px(36.))
+                                            .p(px(6.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-subtle"))
+                                            .bg(color("--background-surface-highest"))
+                                            .shadow(vec![gpui::BoxShadow {
+                                                color: gpui::hsla(0., 0., 0., 0.32),
+                                                offset: gpui::point(px(0.), px(6.)),
+                                                blur_radius: px(14.),
+                                                spread_radius: px(0.),
+                                                inset: false,
+                                            }])
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(2.))
+                                            .child(
+                                                div()
+                                                    .px(px(8.))
+                                                    .py(px(4.))
+                                                    .text_size(px(11.))
+                                                    .font_weight(FontWeight(600.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(dc_intl::t("3XhYOS")),
+                                            )
+                                            .children(distributors.into_iter().map(|opt| {
+                                                let url = opt.url.clone();
+                                                let lbl = opt.menu_label.clone();
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "{menu_key}-{}",
+                                                        opt.distributor
+                                                    )))
+                                                    .px(px(8.))
+                                                    .py(px(6.))
+                                                    .rounded(px(4.))
+                                                    .hover(|s| {
+                                                        s.bg(color("--background-mod-subtle"))
+                                                    })
+                                                    .cursor_pointer()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(8.))
+                                                    .text_size(px(13.))
+                                                    .font_weight(FontWeight(500.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(icon(opt.icon_name, 16., "--text-strong"))
+                                                    .child(opt.menu_label)
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            cx.stop_propagation();
+                                                            this.distributor_menu = None;
+                                                            this.follow_link(&url, &lbl, cx);
+                                                            cx.notify();
+                                                        },
+                                                    ))
+                                            })),
+                                    )
+                                }),
                         );
                     }
                     actions = Some(stack.into_any_element());
@@ -1049,34 +1257,99 @@ impl Root {
                             .gap(px(if large { 12. } else { 8. }))
                             .items_center()
                             .when(!bot, |this| {
+                                // Module 623671: Activity / App ContentImage tile.
+                                // - No `overflow_hidden` on outer box so `small_image` protrudes `-4px, -4px`
+                                //   with a 2px card-background cutout border (`24px` at SIZE_60, `32px` at SIZE_72/100).
+                                // - Fallback `inventory_unknown_game` icon shown whenever `art.is_none()`
+                                //   with `2B/phM` ("App icon") accessible label.
+                                let show_fallback = missing_spotify_art || art.is_none();
+                                let large_box = div()
+                                    .w(px(image_size))
+                                    .h(px(poster_height))
+                                    .rounded(px(8.))
+                                    .overflow_hidden()
+                                    .when(show_fallback, |image| {
+                                        image
+                                            .when(missing_spotify_art, |d| {
+                                                d.parity("live-spotify-art-fallback")
+                                            })
+                                            .child(icon(
+                                                "inventory_unknown_game",
+                                                image_size,
+                                                if profile_theme == dc_tokens::Theme::Light {
+                                                    "--black"
+                                                } else {
+                                                    "--white"
+                                                },
+                                            ))
+                                    })
+                                    .children(art.map(|picture| {
+                                        img(picture)
+                                            .w(px(image_size))
+                                            .h(px(poster_height))
+                                            .object_fit(gpui::ObjectFit::Cover)
+                                            .rounded(px(8.))
+                                    }));
+                                let large_el = if let Some(tip) = large_tip.clone() {
+                                    self.with_tip(
+                                        SharedString::from(format!(
+                                            "activity-large-art-{user}-{index}-{large}"
+                                        )),
+                                        super::tooltip::Tip::body(
+                                            super::tooltip::Body::Text(tip.into()),
+                                            super::tooltip::Side::Top,
+                                        ),
+                                        large_box,
+                                        cx,
+                                    )
+                                    .into_any_element()
+                                } else {
+                                    large_box.into_any_element()
+                                };
+                                let small_el = small.map(|picture| {
+                                    let badge = div()
+                                        .size(px(small_size))
+                                        .rounded_full()
+                                        .border_2()
+                                        .border_color(card_background)
+                                        .bg(card_background)
+                                        .overflow_hidden()
+                                        .child(
+                                            img(picture)
+                                                .size_full()
+                                                .object_fit(gpui::ObjectFit::Cover)
+                                                .rounded_full(),
+                                        );
+                                    let inner = if let Some(tip) = small_tip.clone() {
+                                        self.with_tip(
+                                            SharedString::from(format!(
+                                                "activity-small-art-{user}-{index}-{large}"
+                                            )),
+                                            super::tooltip::Tip::body(
+                                                super::tooltip::Body::Text(tip.into()),
+                                                super::tooltip::Side::Top,
+                                            ),
+                                            badge,
+                                            cx,
+                                        )
+                                        .into_any_element()
+                                    } else {
+                                        badge.into_any_element()
+                                    };
+                                    div()
+                                        .absolute()
+                                        .right(px(-4.))
+                                        .bottom(px(-4.))
+                                        .child(inner)
+                                });
                                 this.child(
                                     div()
                                         .relative()
                                         .w(px(image_size))
                                         .h(px(poster_height))
                                         .flex_none()
-                                        .rounded(px(8.))
-                                        .overflow_hidden()
-                                        .when(missing_spotify_art, |image| {
-                                            image.parity("live-spotify-art-fallback").child(
-                                                icon("inventory_unknown_game", image_size, if profile_theme == dc_tokens::Theme::Light { "--black" } else { "--white" }),
-                                            )
-                                        })
-                                        .children(art.map(|picture| {
-                                            img(picture)
-                                                .w(px(image_size))
-                                                .h(px(poster_height))
-                                                .object_fit(gpui::ObjectFit::Cover)
-                                                .rounded(px(8.))
-                                        }))
-                                        .children(small.map(|picture| {
-                                            img(picture)
-                                                .absolute()
-                                                .right(px(0.))
-                                                .bottom(px(0.))
-                                                .size(px(20.))
-                                                .rounded_full()
-                                        })),
+                                        .child(large_el)
+                                        .children(small_el),
                                 )
                             })
                             .child(details),
@@ -1605,5 +1878,39 @@ mod tests {
                 .iter()
                 .any(|i| i.label == dc_intl::t("bf6Ci7") && i.disabled)
         );
+    }
+
+    #[test]
+    fn distributor_options_607781_priority_and_urls() {
+        for k in ["s7+3um", "QpN/Iz", "L1N2gh", "FsANs4", "nSHoxC", "3XhYOS"] {
+            assert!(dc_intl::has_key(k), "missing 607781 key {k}");
+        }
+        let app = json!({
+            "third_party_skus": [
+                {"distributor": "steam", "id": "730"},
+                {"distributor": "xbox_game_pass", "id": "9NBLGGH2JHXJ"}
+            ]
+        });
+        let opts = distributor_options(&app);
+        assert_eq!(opts.len(), 2);
+        // Priority order: Xbox Game Pass before Steam.
+        assert_eq!(opts[0].distributor, "xbox_game_pass");
+        assert_eq!(
+            opts[0].url,
+            "https://www.xbox.com/games/store/title/9NBLGGH2JHXJ?ocid=discord7937464"
+        );
+        assert_eq!(opts[1].distributor, "steam");
+        assert_eq!(opts[1].url, "https://store.steampowered.com/app/730");
+    }
+
+    #[test]
+    fn content_image_623671_sizes_and_intl() {
+        assert!(dc_intl::has_key("2B/phM"));
+        assert_eq!(ContentImageSize::Size60.main_px(), 60.);
+        assert_eq!(ContentImageSize::Size60.small_px(), 24.);
+        assert_eq!(ContentImageSize::Size72.main_px(), 72.);
+        assert_eq!(ContentImageSize::Size72.small_px(), 32.);
+        assert_eq!(ContentImageSize::Size100.main_px(), 100.);
+        assert_eq!(ContentImageSize::Size100.small_px(), 32.);
     }
 }
