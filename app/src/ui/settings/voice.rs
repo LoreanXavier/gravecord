@@ -716,6 +716,10 @@ pub(in crate::ui) struct VoiceState {
     page_shown: bool,
     /// The switches, slider and buttons that act on a call or the machine (`extra.rs`).
     extra: extra::Extra,
+    /// Module 687021 (`444550`): searchable "Choose a Server" filter input and current query.
+    pub(super) soundboard_server_search:
+        Option<(gpui::Entity<crate::editor::Editor>, gpui::Subscription)>,
+    pub(super) soundboard_server_query: String,
 }
 
 impl VoiceState {
@@ -741,6 +745,8 @@ impl VoiceState {
             camera: Default::default(),
             page_shown: false,
             extra: extra::Extra::restore(),
+            soundboard_server_search: None,
+            soundboard_server_query: String::new(),
         }
     }
 

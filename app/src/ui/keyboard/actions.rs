@@ -90,8 +90,18 @@ impl Root {
                 self.list.scroll_by(px(page));
                 cx.notify();
             }
-            Action::QuickSwitcherShow | Action::OpenChannelTab => {
+            Action::QuickSwitcherShow => {
                 self.open_quick_switcher(window, cx);
+            }
+            Action::OpenChannelTab => {
+                if self.channel_tabs.enabled
+                    && let Some(cid) = self.channel
+                {
+                    self.channel_tabs.open_channel(self.guild, cid);
+                    cx.notify();
+                } else {
+                    self.open_quick_switcher(window, cx);
+                }
             }
             Action::CreateDmGroup => {
                 if self.guild.is_some() {
@@ -143,10 +153,29 @@ impl Root {
             | Action::CallStart => {
                 return false;
             }
-            Action::VibeWithWumpus
-            | Action::CloseChannelTab
-            | Action::ToggleChannelTabPin
-            | Action::OpenAppDirectory => return false,
+            Action::CloseChannelTab => {
+                if let Some(active_id) = self.channel_tabs.active_tab_id {
+                    self.channel_tabs.close_tab(active_id);
+                    if let Some(next_id) = self.channel_tabs.active_tab_id
+                        && let Some(tab) = self.channel_tabs.set_active(next_id).cloned()
+                    {
+                        self.guild = tab.guild_id;
+                        self.channel = Some(tab.channel_id);
+                    }
+                    cx.notify();
+                    return true;
+                }
+                return false;
+            }
+            Action::ToggleChannelTabPin => {
+                if let Some(active_id) = self.channel_tabs.active_tab_id {
+                    self.channel_tabs.toggle_pin(active_id);
+                    cx.notify();
+                    return true;
+                }
+                return false;
+            }
+            Action::VibeWithWumpus | Action::OpenAppDirectory => return false,
             Action::RecordVoiceMessage => {
                 let started = self.voice_recording_enabled() && self.voice_record_shortcut(cx);
                 if started {

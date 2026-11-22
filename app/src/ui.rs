@@ -1275,6 +1275,8 @@ pub struct Root {
     header_popout: Option<message_header::HeaderPopout>,
     /// The voice hover cards (modules 75604 and 772800).
     voice_hover: voice_badge::VoiceHover,
+    /// Module 687340 (`ChannelTabsStore`): open channel tabs (max 25, pin/unpin, active focus).
+    channel_tabs: context_menu::ChannelTabsState,
     /// Code blocks whose copy button was pressed (`code_copy`).
     copied_code: HashSet<(u64, u32)>,
     pub ready: bool,
@@ -1802,6 +1804,7 @@ impl Root {
             role_popout: None,
             header_popout: None,
             voice_hover: Default::default(),
+            channel_tabs: context_menu::ChannelTabsState::default(),
             copied_code: HashSet::new(),
             ready: false,
             hydrated_from_cache: false,

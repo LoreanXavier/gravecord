@@ -45,6 +45,172 @@ pub(crate) enum Step {
     Confirm,
     /// Post-purchase tier activated celebration (module 115623: `wLFT6z`, `OsAK9h`, `JtWl+a`).
     TierActivated,
+    /// Module 671334: Add Payment Method step manager (Credit Card form, PayPal/Venmo/CashApp/P24/EPS).
+    AddPaymentCard,
+    /// Module 677959: Gift Card Balance Redemption modal (`26tjwd`, `POST /billing/gift-card/redeem`).
+    GiftCardRedeem,
+    /// Module 677959 / 544036: Gift Card Balance Redemption success confirmation (`Afx5yS`).
+    GiftCardRedeemSuccess,
+}
+
+/// Module 675219 (`UnifiedCheckoutFlow`): all 12 official checkout flow identifiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, clippy::enum_variant_names)]
+pub(crate) enum UnifiedCheckoutFlow {
+    PremiumCheckout,
+    CollectiblesCheckout,
+    SlayerStorefrontCheckout,
+    PremiumAppsOtpCheckout,
+    PremiumAppsSubCheckout,
+    GuildBoostCheckout,
+    GuildProductCheckout,
+    GuildRoleSubCheckout,
+    OrbCheckout,
+    InboundPremiumPromotionCheckout,
+    GiftCardRedeemCheckout,
+    ApplicationSubscriptionCheckout,
+}
+
+impl UnifiedCheckoutFlow {
+    /// Module 675219: flows that include the `xl` `"Select gift card"` (`W685+b`) customization step.
+    pub(crate) fn allow_gift_customization(self) -> bool {
+        matches!(
+            self,
+            Self::CollectiblesCheckout
+                | Self::SlayerStorefrontCheckout
+                | Self::PremiumAppsOtpCheckout
+        )
+    }
+
+    /// Module 675219: Orb checkout skips payment/authentication steps.
+    pub(crate) fn exclude_payment_auth_steps(self) -> bool {
+        matches!(self, Self::OrbCheckout)
+    }
+}
+
+/// Module 675219: one step configuration produced by `generate_checkout_step_configs`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CheckoutStepConfig {
+    pub key: &'static str,
+    pub breadcrumb: &'static str,
+    pub modal_size: &'static str,
+}
+
+/// Module 675219 (`generateCheckoutStepConfigs`): builds the ordered step configs for a flow.
+pub(crate) fn generate_checkout_step_configs(
+    flow: UnifiedCheckoutFlow,
+    is_gift: bool,
+) -> Vec<CheckoutStepConfig> {
+    let mut steps = Vec::new();
+    if is_gift && flow.allow_gift_customization() {
+        steps.push(CheckoutStepConfig {
+            key: "gift_customization",
+            breadcrumb: dc_intl::t("W685+b"),
+            modal_size: "xl",
+        });
+    }
+    if !flow.exclude_payment_auth_steps() {
+        steps.push(CheckoutStepConfig {
+            key: "payment",
+            breadcrumb: dc_intl::t("vHqbJE"),
+            modal_size: "md",
+        });
+    }
+    steps.push(CheckoutStepConfig {
+        key: "review",
+        breadcrumb: dc_intl::t("QBnNHq"),
+        modal_size: "md",
+    });
+    steps
+}
+
+/// Module 677959 (`premiumTierLabel`): maps official PremiumType tier to localized plan label.
+pub(crate) fn premium_tier_label(tier: u8) -> &'static str {
+    match tier {
+        0 => dc_intl::t("t9uG/o"),
+        1 => dc_intl::t("FSOz78"),
+        _ => dc_intl::t("lG6a5x"),
+    }
+}
+
+/// Module 671334: supported payment provider sub-steps inside Add Payment Method.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum PaymentProviderStep {
+    #[default]
+    CreditCard,
+    PayPal,
+    Venmo,
+    CashApp,
+    Przelewy24,
+    Eps,
+    BrowserHandoff,
+}
+
+/// Module 671334: client-side credit card form validation returning exact official intl errors.
+pub(crate) fn validate_card_form(
+    number: &str,
+    expiry: &str,
+    cvc: &str,
+    name: &str,
+) -> Vec<&'static str> {
+    let mut errors = Vec::new();
+    let digits: String = number.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        errors.push(dc_intl::t("eOIfuy"));
+    } else if digits.len() < 12 || digits.len() > 19 {
+        errors.push(dc_intl::t("x4pWtJ"));
+    }
+    let exp_ok = expiry
+        .trim()
+        .split_once('/')
+        .and_then(|(m, y)| {
+            let mm: u32 = m.trim().parse().ok()?;
+            let yy: u32 = y.trim().parse().ok()?;
+            Some((1..=12).contains(&mm) && (24..=99).contains(&yy))
+        })
+        .unwrap_or(false);
+    if !exp_ok {
+        errors.push(dc_intl::t("9/zZdl"));
+    }
+    let cvc_digits: String = cvc.chars().filter(|c| c.is_ascii_digit()).collect();
+    if !(3..=4).contains(&cvc_digits.len()) {
+        errors.push(dc_intl::t("ro4isZ"));
+    }
+    if name.trim().is_empty() {
+        errors.push(dc_intl::t("lIkVsi"));
+    }
+    errors
+}
+
+/// Module 671334: provider-specific title and instructional copy (PayPal, Venmo, Cash App, P24, EPS, Browser).
+pub(crate) fn payment_provider_copy(provider: PaymentProviderStep) -> (&'static str, &'static str) {
+    match provider {
+        PaymentProviderStep::CreditCard => (dc_intl::t("cVyJ3o"), dc_intl::t("gPRHfw")),
+        PaymentProviderStep::PayPal => (dc_intl::t("QQBAos"), dc_intl::t("dte2M9")),
+        PaymentProviderStep::Venmo => (dc_intl::t("4KoTLM"), dc_intl::t("DowIre")),
+        PaymentProviderStep::CashApp => (dc_intl::t("9ALP8w"), dc_intl::t("ze/1yE")),
+        PaymentProviderStep::Przelewy24 => (dc_intl::t("w/qqKK"), dc_intl::t("De3b8t")),
+        PaymentProviderStep::Eps => (dc_intl::t("sN3wrd"), dc_intl::t("dFyV07")),
+        PaymentProviderStep::BrowserHandoff => (dc_intl::t("C4HYfy"), dc_intl::t("xfG7Jp")),
+    }
+}
+
+/// Module 671334 + 677959: interactive state for the Add Payment Card form and Gift Card Balance Redemption modal.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CheckoutExtraState {
+    pub provider: PaymentProviderStep,
+    pub card_number: String,
+    pub card_expiry: String,
+    pub card_cvc: String,
+    pub card_name: String,
+    pub card_error_banner: Option<String>,
+    pub address_error: Option<String>,
+    pub gift_pin: String,
+    pub gift_postal: String,
+    pub gift_country: String,
+    pub gift_error: Option<String>,
+    pub gift_added_price: String,
 }
 
 /// Plan tier/interval identity used by module 231308's confirmation copy (`B`, `G`).
@@ -342,6 +508,8 @@ pub(crate) struct Purchase {
     pub show_progress_header: bool,
     /// Whether this checkout is for Nitro Squad / Premium Group (`aFBQ3d` + BETA pill in module 332030).
     pub is_premium_group: bool,
+    /// Modules 671334 & 677959: Add Payment Card provider/validation and Gift Card Balance Redeem state.
+    pub extra: CheckoutExtraState,
 }
 
 /// Billing error rendered by `PaymentErrorBlock` (module 901930: `iWvwQS`, `ypuSd8`, `mXMmWE`,
@@ -942,6 +1110,7 @@ impl Root {
             payment_error: None,
             show_progress_header: false,
             is_premium_group: false,
+            extra: CheckoutExtraState::default(),
         });
         cx.notify();
     }
@@ -1023,6 +1192,7 @@ impl Root {
             payment_error: None,
             show_progress_header: false,
             is_premium_group: false,
+            extra: CheckoutExtraState::default(),
         });
         cx.notify();
     }
@@ -1132,18 +1302,34 @@ impl Root {
             oklab(0.45, 0.17, -0.09, 0.55)
         };
         let breadcrumbs = show_progress.then(|| {
-            // Module 332030: `<nav aria-label="Payment progress">` (`TfxqUO`) step trail.
+            // Module 332030 & 675219: `<nav aria-label="Payment progress">` (`TfxqUO`) step trail
+            // backed by `generate_checkout_step_configs`.
             let _nav_aria = dc_intl::t("TfxqUO");
+            let is_gift = self.nitro.purchase.as_ref().is_some_and(|p| p.gift);
+            let flow = if is_gift {
+                UnifiedCheckoutFlow::CollectiblesCheckout
+            } else {
+                UnifiedCheckoutFlow::PremiumCheckout
+            };
+            let step_configs = generate_checkout_step_configs(flow, is_gift);
+            let review_label = step_configs
+                .last()
+                .map_or(dc_intl::t("QBnNHq"), |s| s.breadcrumb);
             let active_idx: usize = match current_step {
                 Some(Step::Plans) => 0,
                 Some(Step::Checkout | Step::GiftSelect) => 1,
-                Some(Step::Payment | Step::AwaitingEmailAuth) => 2,
+                Some(Step::Payment | Step::AddPaymentCard | Step::AwaitingEmailAuth) => 2,
                 _ => 3,
             };
             let steps: Vec<(usize, &str)> = if is_group {
-                vec![(1, "Checkout"), (2, "Payment"), (3, "Review")]
+                vec![(1, "Checkout"), (2, "Payment"), (3, review_label)]
             } else {
-                vec![(0, "Plan"), (1, "Checkout"), (2, "Payment"), (3, "Review")]
+                vec![
+                    (0, "Plan"),
+                    (1, "Checkout"),
+                    (2, "Payment"),
+                    (3, review_label),
+                ]
             };
             let mut trail: Vec<AnyElement> = Vec::new();
             for (pos, (step_idx, label)) in steps.into_iter().enumerate() {
@@ -1340,6 +1526,9 @@ impl Root {
             (Step::PredicateError, _) => self.predicate_error_modal(window, cx),
             (Step::Confirm, _) => self.confirm_modal(window, cx),
             (Step::TierActivated, _) => self.tier_activated_modal(window, cx),
+            (Step::AddPaymentCard, _) => self.add_payment_card_modal(window, cx),
+            (Step::GiftCardRedeem, _) => self.gift_card_redeem_modal(window, cx),
+            (Step::GiftCardRedeemSuccess, _) => self.gift_card_redeem_success_modal(window, cx),
         })
     }
 
@@ -2570,7 +2759,11 @@ impl Root {
             .zip(month_price.as_ref())
             .and_then(|(year, month)| premium::yearly_savings(month, year));
         let total = if yearly { &year_price } else { &month_price };
-        let name = if nitro { "Nitro" } else { "Nitro Basic" };
+        let name = if nitro {
+            premium_tier_label(2)
+        } else {
+            premium_tier_label(0)
+        };
         let rows = div()
             .mt(px(13.))
             .flex()
@@ -2839,6 +3032,609 @@ impl Root {
             480.,
             "Add Payment Method",
             true,
+            body.into_any_element(),
+            Some(footer),
+            window,
+            cx,
+        )
+    }
+
+    /// Module 671334 — Add Payment Method step manager: 7 card brand badges, 3-row card form
+    /// (`cVyJ3o`/`gPRHfw`, `CeBa/4`/`xeEWQ6` + `wZz04F`/`Fd3rOz`, `VUlFdU`/`yf7ms+`), client-side
+    /// validation (`eOIfuy`/`x4pWtJ`/`9/zZdl`/`ro4isZ`/`lIkVsi`), card/address error banners
+    /// (`4vnhKV`/`vZ8y7l`/`Pg2hU0`), and provider sub-step tabs (PayPal/Venmo/Cash App/P24/EPS/Browser).
+    fn add_payment_card_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let extra = self
+            .nitro
+            .purchase
+            .as_ref()
+            .map(|p| p.extra.clone())
+            .unwrap_or_default();
+        let provider = extra.provider;
+        let (prov_title, prov_desc) = payment_provider_copy(provider);
+        // Reference full provider/toast/error key set of module 671334.
+        let _provider_keys = (
+            dc_intl::t("hopw7X"),
+            dc_intl::t("Djzd7L"),
+            dc_intl::t("kmEvnR"),
+            dc_intl::t("VPOx7N"),
+            dc_intl::t("TJ8dDB"),
+            dc_intl::t("4Qvmmj"),
+            dc_intl::t("Pg2hU0"),
+            dc_intl::t("VJPg+l"),
+        );
+
+        let provider_tabs: Vec<AnyElement> = [
+            (PaymentProviderStep::CreditCard, "Card"),
+            (PaymentProviderStep::PayPal, "PayPal"),
+            (PaymentProviderStep::Venmo, "Venmo"),
+            (PaymentProviderStep::CashApp, "Cash App"),
+            (PaymentProviderStep::BrowserHandoff, "Browser"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (step, label))| {
+            let active = provider == step;
+            div()
+                .id(("add-payment-provider-tab", idx))
+                .h(px(30.))
+                .px(px(10.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(color(if active {
+                    "--background-brand"
+                } else {
+                    "--border-subtle"
+                }))
+                .bg(color(if active {
+                    "--background-mod-normal"
+                } else {
+                    "--background-base-lower"
+                }))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .text_size(px(12.))
+                .font_weight(FontWeight(if active { 600. } else { 500. }))
+                .text_color(color(if active {
+                    "--text-strong"
+                } else {
+                    "--text-muted"
+                }))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(p) = this.nitro.purchase.as_mut() {
+                        p.extra.provider = step;
+                        p.extra.card_error_banner = None;
+                    }
+                    cx.notify();
+                }))
+                .into_any_element()
+        })
+        .collect();
+
+        let brand_pills: Vec<AnyElement> = [
+            "VISA", "MC", "DISCOVER", "AMEX", "JCB", "DINERS", "UNIONPAY",
+        ]
+        .into_iter()
+        .map(|brand| {
+            div()
+                .h(px(22.))
+                .px(px(7.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-base-lower"))
+                .flex()
+                .items_center()
+                .text_size(px(10.))
+                .font_weight(FontWeight(700.))
+                .text_color(color("--text-muted"))
+                .child(brand)
+                .into_any_element()
+        })
+        .collect();
+
+        let field_box = |label: &'static str, placeholder: &'static str, value: &str| {
+            let shown = if value.is_empty() { placeholder } else { value };
+            let muted = value.is_empty();
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-default"))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .h(px(40.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--input-border-default"))
+                        .bg(color("--input-background-default"))
+                        .flex()
+                        .items_center()
+                        .text_size(px(14.))
+                        .text_color(color(if muted {
+                            "--text-muted"
+                        } else {
+                            "--text-strong"
+                        }))
+                        .child(shown.to_owned()),
+                )
+        };
+
+        let content_body = if provider == PaymentProviderStep::CreditCard {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(div().flex().flex_wrap().gap(px(6.)).children(brand_pills))
+                .when_some(extra.card_error_banner.clone(), |col, err| {
+                    col.child(
+                        div()
+                            .p(px(10.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--status-danger"))
+                            .bg(rgba(0xda373c22))
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-feedback-critical"))
+                                    .child(dc_intl::t("4vnhKV")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(color("--text-default"))
+                                    .child(err),
+                            ),
+                    )
+                })
+                .when_some(extra.address_error.clone(), |col, err| {
+                    col.child(
+                        div()
+                            .p(px(10.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--status-danger"))
+                            .bg(rgba(0xda373c22))
+                            .text_size(px(12.))
+                            .text_color(color("--text-feedback-critical"))
+                            .child(format!("{} — {err}", dc_intl::t("vZ8y7l"))),
+                    )
+                })
+                .child(field_box(
+                    dc_intl::t("cVyJ3o"),
+                    dc_intl::t("gPRHfw"),
+                    &extra.card_number,
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(12.))
+                        .child(field_box(
+                            dc_intl::t("CeBa/4"),
+                            dc_intl::t("xeEWQ6"),
+                            &extra.card_expiry,
+                        ))
+                        .child(field_box(
+                            dc_intl::t("wZz04F"),
+                            dc_intl::t("Fd3rOz"),
+                            &extra.card_cvc,
+                        )),
+                )
+                .child(field_box(
+                    dc_intl::t("VUlFdU"),
+                    dc_intl::t("yf7ms+"),
+                    &extra.card_name,
+                ))
+        } else {
+            div()
+                .p(px(16.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-base-lower"))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(prov_title),
+                )
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(prov_desc),
+                )
+        };
+
+        let body = div()
+            .px(px(24.))
+            .pt(px(12.))
+            .pb(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(div().flex().flex_wrap().gap(px(6.)).children(provider_tabs))
+            .child(content_body);
+
+        let footer = div()
+            .px(px(24.))
+            .py(px(16.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(self.back_link(cx, Step::Review))
+            .child(
+                div()
+                    .id("add-payment-card-submit")
+                    .h(px(38.))
+                    .px(px(18.))
+                    .rounded(px(8.))
+                    .bg(color("--control-primary-background-default"))
+                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--white"))
+                    .child(if provider == PaymentProviderStep::BrowserHandoff {
+                        dc_intl::t("4Qvmmj")
+                    } else {
+                        dc_intl::t("PDTjLN")
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if provider == PaymentProviderStep::CreditCard {
+                            if let Some(p) = this.nitro.purchase.as_mut() {
+                                let errs = validate_card_form(
+                                    &p.extra.card_number,
+                                    &p.extra.card_expiry,
+                                    &p.extra.card_cvc,
+                                    &p.extra.card_name,
+                                );
+                                if let Some(first) = errs.first() {
+                                    p.extra.card_error_banner = Some((*first).to_owned());
+                                } else {
+                                    p.extra.card_error_banner = None;
+                                    p.step = Step::Review;
+                                }
+                            }
+                        } else if provider == PaymentProviderStep::PayPal {
+                            let _ = this.requests.send(crate::net::Request::Rest {
+                                key: Some("billing:paypal-agreement".to_owned()),
+                                method: reqwest::Method::POST,
+                                route: "/users/@me/billing/paypal/billing-agreement-tokens"
+                                    .to_owned(),
+                                body: Some(serde_json::json!({})),
+                            });
+                            this.start_checkout_handoff();
+                        } else {
+                            this.start_checkout_handoff();
+                        }
+                        cx.notify();
+                    })),
+            )
+            .into_any_element();
+
+        self.purchase_shell(
+            "nitro-add-payment-card",
+            480.,
+            dc_intl::t("vHqbJE"),
+            true,
+            body.into_any_element(),
+            Some(footer),
+            window,
+            cx,
+        )
+    }
+
+    /// Module 677959 — Gift Card Balance Redemption modal (`26tjwd`, `Bn/CZQ`, `3jjweL`, `eDdrAD`,
+    /// `hnRau6`, `POST /billing/gift-card/redeem`, errors `uo9YsP` / `EUKPip`).
+    fn gift_card_redeem_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let extra = self
+            .nitro
+            .purchase
+            .as_ref()
+            .map(|p| p.extra.clone())
+            .unwrap_or_default();
+        let _err_keys = (dc_intl::t("uo9YsP"), dc_intl::t("EUKPip"));
+
+        let input_row = |label: &'static str, value: &str, placeholder: &str| {
+            let shown = if value.is_empty() { placeholder } else { value };
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-default"))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .h(px(40.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--input-border-default"))
+                        .bg(color("--input-background-default"))
+                        .flex()
+                        .items_center()
+                        .text_size(px(14.))
+                        .text_color(color(if value.is_empty() {
+                            "--text-muted"
+                        } else {
+                            "--text-strong"
+                        }))
+                        .child(shown.to_owned()),
+                )
+        };
+
+        let body = div()
+            .px(px(24.))
+            .pt(px(12.))
+            .pb(px(18.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .when_some(extra.gift_error.clone(), |col, err| {
+                col.child(
+                    div()
+                        .p(px(10.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--status-danger"))
+                        .bg(rgba(0xda373c22))
+                        .text_size(px(13.))
+                        .text_color(color("--text-feedback-critical"))
+                        .child(err),
+                )
+            })
+            .child(input_row(
+                dc_intl::t("Bn/CZQ"),
+                &extra.gift_pin,
+                "XXXX-XXXX-XXXX-XXXX",
+            ))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(12.))
+                    .child(div().flex_1().min_w(px(0.)).child(input_row(
+                        dc_intl::t("3jjweL"),
+                        &extra.gift_postal,
+                        "94107",
+                    )))
+                    .child(div().flex_1().min_w(px(0.)).child(input_row(
+                        dc_intl::t("eDdrAD"),
+                        if extra.gift_country.is_empty() {
+                            "US"
+                        } else {
+                            &extra.gift_country
+                        },
+                        "US",
+                    ))),
+            );
+
+        let footer = div()
+            .px(px(24.))
+            .py(px(16.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(self.back_link(cx, Step::Review))
+            .child(
+                div()
+                    .id("gift-card-redeem-submit")
+                    .h(px(38.))
+                    .px(px(20.))
+                    .rounded(px(8.))
+                    .bg(color("--control-primary-background-default"))
+                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--white"))
+                    .child(dc_intl::t("hnRau6"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let Some(p) = this.nitro.purchase.as_mut() else {
+                            return;
+                        };
+                        let pin = p.extra.gift_pin.trim().to_owned();
+                        if pin.is_empty() {
+                            p.extra.gift_error = Some(dc_intl::t("uo9YsP").to_owned());
+                            cx.notify();
+                            return;
+                        }
+                        let postal = p.extra.gift_postal.trim().to_owned();
+                        let country = if p.extra.gift_country.trim().is_empty() {
+                            "US".to_owned()
+                        } else {
+                            p.extra.gift_country.trim().to_owned()
+                        };
+                        p.extra.gift_error = None;
+                        let _ = this.requests.send(crate::net::Request::Rest {
+                            key: Some("billing:gift-card-redeem".to_owned()),
+                            method: reqwest::Method::POST,
+                            route: "/billing/gift-card/redeem".to_owned(),
+                            body: Some(serde_json::json!({
+                                "pin": pin,
+                                "postal_code": postal,
+                                "country_code": country,
+                            })),
+                        });
+                        cx.notify();
+                    })),
+            )
+            .into_any_element();
+
+        self.purchase_shell(
+            "nitro-gift-card-redeem",
+            440.,
+            dc_intl::t("26tjwd"),
+            false,
+            body.into_any_element(),
+            Some(footer),
+            window,
+            cx,
+        )
+    }
+
+    /// Module 677959 / 544036 — Gift Card Balance Redemption Success modal (`Afx5yS` "{price} was
+    /// added to your account", `VJXTzd`/`+fIPjg`, `WAI6xu` "Dismiss", `9OxfNK` "Explore Shop" if
+    /// Nitro else `8x0jKT` "Get Nitro").
+    fn gift_card_redeem_success_modal(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let price = self
+            .nitro
+            .purchase
+            .as_ref()
+            .map(|p| p.extra.gift_added_price.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("$25.00");
+        let is_nitro = self.premium().is_subscriber();
+        let heading = dc_intl::format(
+            "Afx5yS",
+            &[(
+                "price",
+                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(price)),
+            )],
+        );
+        let subtitle = if is_nitro {
+            dc_intl::t("VJXTzd")
+        } else {
+            dc_intl::t("+fIPjg")
+        };
+        let primary_label = if is_nitro {
+            dc_intl::t("9OxfNK")
+        } else {
+            dc_intl::t("8x0jKT")
+        };
+
+        let body = div()
+            .px(px(24.))
+            .pt(px(20.))
+            .pb(px(20.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .text_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .size(px(56.))
+                    .rounded_full()
+                    .bg(color("--status-positive-background"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("gift", 28., "--white")),
+            )
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .line_height(px(26.))
+                    .font_weight(FontWeight(700.))
+                    .text_color(color("--text-strong"))
+                    .child(heading),
+            )
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(subtitle),
+            );
+
+        let footer = div()
+            .px(px(24.))
+            .py(px(16.))
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(10.))
+            .child(
+                div()
+                    .id("gift-card-success-dismiss")
+                    .h(px(38.))
+                    .px(px(16.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-default"))
+                    .child(dc_intl::t("WAI6xu"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_purchase();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("gift-card-success-cta")
+                    .h(px(38.))
+                    .px(px(18.))
+                    .rounded(px(8.))
+                    .bg(color("--control-primary-background-default"))
+                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--white"))
+                    .child(primary_label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.close_purchase();
+                        if is_nitro {
+                            this.shop.open = true;
+                        } else {
+                            this.nitro_open = true;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .into_any_element();
+
+        self.purchase_shell(
+            "nitro-gift-card-success",
+            440.,
+            dc_intl::t("26tjwd"),
+            false,
             body.into_any_element(),
             Some(footer),
             window,
@@ -3261,6 +4057,7 @@ impl Root {
             payment_error: None,
             show_progress_header: false,
             is_premium_group: false,
+            extra: CheckoutExtraState::default(),
         });
         cx.notify();
         format!("nitro-confirm: opened ({arg})")
@@ -3294,6 +4091,7 @@ impl Root {
             payment_error: None,
             show_progress_header: false,
             is_premium_group: false,
+            extra: CheckoutExtraState::default(),
         };
         match arg.trim() {
             "" | "trial" => {
@@ -3440,6 +4238,33 @@ impl Root {
                 self.nitro.purchase = Some(p);
                 cx.notify();
                 "nitro-offer-header: tier-activated".to_owned()
+            }
+            "add-card" | "add-card-error" => {
+                p.step = Step::AddPaymentCard;
+                p.extra.provider = PaymentProviderStep::CreditCard;
+                if arg.trim() == "add-card-error" {
+                    p.extra.card_number = "4242".to_owned();
+                    p.extra.card_expiry = "13/20".to_owned();
+                    p.extra.card_cvc = "12".to_owned();
+                    p.extra.card_error_banner = Some(dc_intl::t("x4pWtJ").to_owned());
+                }
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                format!("nitro-offer-header: {}", arg.trim())
+            }
+            "gift-card-redeem" => {
+                p.step = Step::GiftCardRedeem;
+                p.extra.gift_country = "US".to_owned();
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: gift-card-redeem".to_owned()
+            }
+            "gift-card-success" => {
+                p.step = Step::GiftCardRedeemSuccess;
+                p.extra.gift_added_price = "$25.00".to_owned();
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: gift-card-success".to_owned()
             }
             "trial-fine-print" => {
                 p.offer_badge = Some(PurchaseOfferBadge::FreeTrial);
@@ -4176,6 +5001,55 @@ impl Root {
                                     .child(formatted_total),
                             ),
                     ),
+            )
+            .child(
+                div()
+                    .pt(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .id("purchase-review-redeem-gift-card")
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-link"))
+                            .hover(|s| s.underline())
+                            .child(icon("gift", 15., "--text-link"))
+                            .child(if dc_intl::has_key("iBFPMf") {
+                                dc_intl::t("iBFPMf")
+                            } else {
+                                "Redeem gift card"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(p) = this.nitro.purchase.as_mut() {
+                                    p.step = Step::GiftCardRedeem;
+                                    p.extra.gift_error = None;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("purchase-review-add-card-method")
+                            .cursor_pointer()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-link"))
+                            .hover(|s| s.underline())
+                            .child(dc_intl::t("vHqbJE"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(p) = this.nitro.purchase.as_mut() {
+                                    p.step = Step::AddPaymentCard;
+                                    p.extra.provider = PaymentProviderStep::CreditCard;
+                                }
+                                cx.notify();
+                            })),
+                    ),
             );
         let primary_btn = div()
             .id("purchase-review-submit")
@@ -4391,6 +5265,7 @@ impl Root {
             payment_error: None,
             show_progress_header: false,
             is_premium_group: false,
+            extra: CheckoutExtraState::default(),
         };
         match arg.trim() {
             "close" => {
@@ -4746,5 +5621,66 @@ mod tests {
             "Nitro Group",
         );
         assert!(grp.label.contains("Nitro Group"));
+    }
+
+    #[test]
+    fn card_validation_unified_flow_and_gift_card_match_modules_671334_675219_677959() {
+        // Module 671334 validation
+        assert_eq!(
+            super::validate_card_form("", "12/28", "123", "Alex"),
+            vec![dc_intl::t("eOIfuy")]
+        );
+        assert_eq!(
+            super::validate_card_form("1234", "12/28", "123", "Alex"),
+            vec![dc_intl::t("x4pWtJ")]
+        );
+        assert_eq!(
+            super::validate_card_form("4242424242424242", "13/28", "123", "Alex"),
+            vec![dc_intl::t("9/zZdl")]
+        );
+        assert_eq!(
+            super::validate_card_form("4242424242424242", "12/28", "12", "Alex"),
+            vec![dc_intl::t("ro4isZ")]
+        );
+        assert_eq!(
+            super::validate_card_form("4242424242424242", "12/28", "123", "   "),
+            vec![dc_intl::t("lIkVsi")]
+        );
+        assert!(
+            super::validate_card_form("4242 4242 4242 4242", "12/28", "123", "Alex").is_empty()
+        );
+
+        // Module 675219 unified checkout flows
+        assert!(super::UnifiedCheckoutFlow::CollectiblesCheckout.allow_gift_customization());
+        assert!(super::UnifiedCheckoutFlow::SlayerStorefrontCheckout.allow_gift_customization());
+        assert!(super::UnifiedCheckoutFlow::PremiumAppsOtpCheckout.allow_gift_customization());
+        assert!(!super::UnifiedCheckoutFlow::OrbCheckout.allow_gift_customization());
+        assert!(super::UnifiedCheckoutFlow::OrbCheckout.exclude_payment_auth_steps());
+
+        let gift_steps = super::generate_checkout_step_configs(
+            super::UnifiedCheckoutFlow::CollectiblesCheckout,
+            true,
+        );
+        assert_eq!(gift_steps.len(), 3);
+        assert_eq!(gift_steps[0].key, "gift_customization");
+        assert_eq!(gift_steps[0].modal_size, "xl");
+        assert_eq!(gift_steps[0].breadcrumb, dc_intl::t("W685+b"));
+        assert_eq!(gift_steps[2].breadcrumb, dc_intl::t("QBnNHq"));
+
+        let orb_steps =
+            super::generate_checkout_step_configs(super::UnifiedCheckoutFlow::OrbCheckout, false);
+        assert_eq!(orb_steps.len(), 1);
+        assert_eq!(orb_steps[0].key, "review");
+
+        // Module 677959 tier labels & gift card intl keys
+        assert_eq!(super::premium_tier_label(0), dc_intl::t("t9uG/o"));
+        assert_eq!(super::premium_tier_label(1), dc_intl::t("FSOz78"));
+        assert_eq!(super::premium_tier_label(2), dc_intl::t("lG6a5x"));
+        for k in [
+            "26tjwd", "Bn/CZQ", "3jjweL", "eDdrAD", "hnRau6", "uo9YsP", "EUKPip", "Afx5yS",
+            "VJXTzd", "+fIPjg", "WAI6xu", "9OxfNK", "8x0jKT",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 677959 key {k}");
+        }
     }
 }

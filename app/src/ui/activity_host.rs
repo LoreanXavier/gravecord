@@ -5,7 +5,7 @@
 //! (a menu, a modal, the shelf) is open, and when the call view is not the page on screen.
 
 use super::activity_launch::ACTIVITY_PREFIX;
-use super::tooltip::{Side, Tip};
+use super::tooltip::{Body, Side, Tip};
 use super::{Root, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
@@ -77,6 +77,40 @@ impl ActivityHost {
             self.visible,
             self.seen.join(",")
         )
+    }
+}
+
+/// Module 677793: secondary-bundle (`590467.js`) intl helper with English fallback when the key
+/// is not present in the primary `177354.js` table.
+pub(crate) fn pip_intl_or(key: &'static str, fallback: &'static str) -> String {
+    if dc_intl::has_key(key) {
+        dc_intl::t(key).to_owned()
+    } else {
+        fallback.to_owned()
+    }
+}
+
+/// Module 677793 (`dPf03z` "Open {appName}"): tooltip for maximizing the Activity PiP back into stage.
+pub(crate) fn pip_open_label(app_name: &str) -> String {
+    if dc_intl::has_key("dPf03z") {
+        dc_intl::format(
+            "dPf03z",
+            &[(
+                "appName",
+                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(app_name)),
+            )],
+        )
+    } else {
+        format!("Open {app_name}")
+    }
+}
+
+/// Module 677793: audio mute toggle label (`dxBzpe` "Turn off sound" / `bd0Ufh` "Turn on sound").
+pub(crate) fn pip_mute_label(muted: bool) -> String {
+    if muted {
+        pip_intl_or("bd0Ufh", "Turn on sound")
+    } else {
+        pip_intl_or("dxBzpe", "Turn off sound")
     }
 }
 
@@ -221,8 +255,10 @@ impl Root {
         )
     }
 
-    /// What shows in the picture-in-picture window until the page paints over it: the application's cover on the
-    /// card's own ground. Drawn above the consent scrim, like the window.
+    /// Module 677793 — Floating Activity / Conjure Frame PiP window (`card_SX_Cl2`, 320x180):
+    /// renders the activity's cover art, a 40px top hover toolbar (`toolbar_SX_Cl2`, mini guild
+    /// icon, app name, Open/Maximize, Hide overlay, and `VkMnR2` "Close App"), plus the
+    /// bottom-right audio mute pill (`dxBzpe` / `bd0Ufh`). Drawn above the consent scrim.
     pub(super) fn activity_pip_layer(
         &self,
         window: &Window,
@@ -230,33 +266,254 @@ impl Root {
     ) -> Option<AnyElement> {
         // The video window takes the place first (`pipVideoWindow ?? pipActivityWindow`, module 197808), unless the
         // user switched to Activity via module 6155 (`PictureInPictureStore`).
-        if !self.activities.pip || self.video_pip_shown() {
+        if !self.activities.pip || self.activities.pip_hidden || self.video_pip_shown() {
             return None;
         }
         let running = self.activities.running.as_ref()?;
         let (x, y, width, height) = pip_bounds(window);
-        let cover = self
-            .images
-            .get(&format!("shelf-banner:{}", running.application_id))
-            .cloned();
+        let app_id = running.application_id.clone();
+        let app_name = if running.name.is_empty() {
+            self.activities
+                .names
+                .get(&app_id)
+                .cloned()
+                .unwrap_or_else(|| "Activity".to_owned())
+        } else {
+            running.name.clone()
+        };
+        let target_guild = running.guild;
+        let target_channel = running.channel;
+        let cover = self.images.get(&format!("shelf-banner:{app_id}")).cloned();
+        let guild_icon_img = self.images.get(&format!("guild:{target_guild}")).cloned();
+        let guild_acronym: String = self
+            .stores
+            .guild(target_guild)
+            .map(|g| {
+                g.name
+                    .split_whitespace()
+                    .filter_map(|w| w.chars().next())
+                    .take(2)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let guild_badge = (target_guild != 0).then(|| match guild_icon_img {
+            Some(pic) => img(pic)
+                .size(px(20.))
+                .rounded(px(4.))
+                .flex_none()
+                .into_any_element(),
+            None => div()
+                .size(px(20.))
+                .rounded(px(4.))
+                .flex_none()
+                .bg(color("--background-brand"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(9.))
+                .font_weight(FontWeight(600.))
+                .text_color(color("--white"))
+                .child(guild_acronym)
+                .into_any_element(),
+        });
+        let muted = self.activities.pip_muted;
+        let open_tip = pip_open_label(&app_name);
+        let hide_tip = pip_intl_or("tfKtLw", "Hide overlay");
+        let close_tip = dc_intl::t("VkMnR2");
+        let mute_tip = pip_mute_label(muted);
+        #[cfg(feature = "capture")]
+        let controls_always_visible = self.activities.pip_controls_pinned;
+        #[cfg(not(feature = "capture"))]
+        let controls_always_visible = false;
+
+        let toolbar_btn = |id: &'static str, glyph: &'static str, tint: &'static str| {
+            div()
+                .id(id)
+                .size(px(26.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|s| s.bg(color("--interactive-background-hover")))
+                .child(icon(glyph, 16., tint))
+        };
+
+        let open_btn = self.with_tip(
+            "activity-pip-open-tip",
+            Tip::body(Body::Text(open_tip.into()), Side::Top),
+            toolbar_btn(
+                "activity-pip-open",
+                "maximize",
+                "--interactive-icon-default",
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.activities.pip = false;
+                if target_guild != 0 {
+                    this.guild = Some(target_guild);
+                }
+                if target_channel != 0 {
+                    this.channel = Some(target_channel);
+                }
+                cx.notify();
+            })),
+            cx,
+        );
+        let hide_btn = self.with_tip(
+            "activity-pip-hide-tip",
+            Tip::body(Body::Text(hide_tip.into()), Side::Top),
+            toolbar_btn(
+                "activity-pip-hide",
+                "minimize",
+                "--interactive-icon-default",
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.activities.pip_hidden = true;
+                cx.notify();
+            })),
+            cx,
+        );
+        let close_btn = self.with_tip(
+            "activity-pip-close-tip",
+            Tip::text(close_tip, Side::Top),
+            toolbar_btn("activity-pip-close", "close", "--interactive-icon-default").on_click(
+                cx.listener(|this, _, _, cx| {
+                    this.leave_activity_by_hand(cx);
+                    cx.notify();
+                }),
+            ),
+            cx,
+        );
+
+        let toolbar = div()
+            .parity("activity-pip-toolbar")
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(40.))
+            .px(px(10.))
+            .bg(color("--background-surface-high"))
+            .border_b_1()
+            .border_color(color("--border-subtle"))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(8.))
+            .when(!controls_always_visible, |bar| {
+                bar.invisible()
+                    .group_hover("activity-pip-card", |s| s.visible())
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .children(guild_badge)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child(app_name),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(open_btn)
+                    .child(hide_btn)
+                    .child(close_btn),
+            );
+
+        let mute_badge = div().absolute().bottom(px(8.)).right(px(8.)).child(
+            self.with_tip(
+                "activity-pip-mute-tip",
+                Tip::body(Body::Text(mute_tip.into()), Side::Top),
+                div()
+                    .id("activity-pip-mute")
+                    .size(px(28.))
+                    .rounded_full()
+                    .bg(gpui::rgba(0x111214cc))
+                    .border_1()
+                    .border_color(gpui::rgba(0xffffff22))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(gpui::rgba(0x111214ee)))
+                    .child(icon(
+                        if muted {
+                            "clips_voice_off"
+                        } else {
+                            "clips_voice_on"
+                        },
+                        16.,
+                        if muted { "--status-danger" } else { "--white" },
+                    ))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.activities.pip_muted = !this.activities.pip_muted;
+                        cx.notify();
+                    })),
+                cx,
+            ),
+        );
+
         let switcher = self.activity_pip_switcher_overlay(cx);
         Some(
             deferred(
                 div()
                     .parity("activity-pip")
                     .id("activity-pip")
+                    .group("activity-pip-card")
+                    .occlude()
                     .absolute()
                     .left(px(x))
                     .top(px(y))
                     .w(px(width))
                     .h(px(height))
                     .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
                     .overflow_hidden()
                     .bg(color("--background-surface-high"))
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.32),
+                        offset: gpui::point(px(0.), px(8.)),
+                        blur_radius: px(20.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
                     .children(
                         cover
                             .map(|cover| img(cover).size_full().object_fit(gpui::ObjectFit::Cover)),
                     )
+                    .when(
+                        self.images.get(&format!("shelf-banner:{app_id}")).is_none(),
+                        |card| {
+                            card.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .bg(gpui::rgba(0x1b1e2bff))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("activity_game", 44., "--text-muted")),
+                            )
+                        },
+                    )
+                    .child(toolbar)
+                    .child(mute_badge)
                     .children(switcher),
             )
             .with_priority(2)
@@ -801,16 +1058,67 @@ impl Root {
         let action = host.bridge.answer(&cmd, nonce, result);
         self.activity_actions(vec![action], cx);
     }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_activity_pip(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.eq_ignore_ascii_case("close") {
+            self.activities.pip = false;
+            self.activities.pip_controls_pinned = false;
+            self.activities.running = None;
+            cx.notify();
+            return "activity-pip: closed".to_owned();
+        }
+        let gid = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id))
+            .unwrap_or(1);
+        let cid = self.channel.unwrap_or(1);
+        self.activities.running = Some(super::activity_launch::Running {
+            application_id: "880218394199220334".to_owned(),
+            name: "Watch Together".to_owned(),
+            launch_id: "capture-launch".to_owned(),
+            location_id: "capture-loc".to_owned(),
+            channel: cid,
+            guild: gid,
+            instance: super::activity_launch::Instance {
+                application_id: "880218394199220334".to_owned(),
+                launch_id: "capture-launch".to_owned(),
+                composite_instance_id: "capture-comp".to_owned(),
+                location_id: "capture-loc".to_owned(),
+                channel_id: Some(cid.to_string()),
+                guild_id: Some(gid.to_string()),
+                participants: Vec::new(),
+            },
+            ticket: None,
+            url: None,
+            frame_id: "capture-frame".to_owned(),
+            started: std::time::Instant::now(),
+        });
+        self.activities.pip = true;
+        self.activities.pip_hidden = false;
+        self.activities.pip_muted = arg.eq_ignore_ascii_case("muted");
+        self.activities.pip_controls_pinned = true;
+        cx.notify();
+        format!("activity-pip: open muted={}", self.activities.pip_muted)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::elapsed_text;
+    use super::{elapsed_text, pip_mute_label, pip_open_label};
 
     #[test]
     fn the_counter_reads_like_the_official_one() {
         assert_eq!(elapsed_text(3), "00:03 elapsed");
         assert_eq!(elapsed_text(75), "01:15 elapsed");
         assert_eq!(elapsed_text(3600 + 61), "01:01:01 elapsed");
+    }
+
+    #[test]
+    fn pip_toolbar_labels_match_module_677793() {
+        assert!(pip_open_label("Watch Together").contains("Watch Together"));
+        assert_eq!(pip_mute_label(false), "Turn off sound");
+        assert_eq!(pip_mute_label(true), "Turn on sound");
+        assert_eq!(dc_intl::t("VkMnR2"), "Close App");
     }
 }

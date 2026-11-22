@@ -211,6 +211,8 @@ pub(super) enum Act {
     DeleteChannel,
     CollapseCategory,
     CollapseAll,
+    /// Module 687340 (`5Qo0S6` "Open in New Tab"): opens the channel in a new `ChannelTabsStore` tab.
+    OpenInNewTab,
     PinChannel,
     Favorite,
     OpenChat,
@@ -459,7 +461,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 188] = [
+    pub(super) const ALL: [Act; 189] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -482,6 +484,7 @@ impl Act {
         Act::DeleteChannel,
         Act::CollapseCategory,
         Act::CollapseAll,
+        Act::OpenInNewTab,
         Act::PinChannel,
         Act::Favorite,
         Act::OpenChat,
@@ -841,6 +844,7 @@ impl Act {
             Act::SaveImage => 185,
             Act::OpenLink => 186,
             Act::ActivityAction(_) => 187,
+            Act::OpenInNewTab => 188,
         }
     }
 }
@@ -856,7 +860,12 @@ pub(super) enum Status {
 pub(super) fn status(act: Act) -> Status {
     use Status::Wired;
     match act {
-        Act::PinDm | Act::Favorite | Act::MoveTo | Act::PinChannel | Act::HideNames => Wired,
+        Act::PinDm
+        | Act::Favorite
+        | Act::MoveTo
+        | Act::OpenInNewTab
+        | Act::PinChannel
+        | Act::HideNames => Wired,
         Act::JoinQuiet | Act::ReportStage => Wired,
         Act::Apps => Wired,
         Act::ModView => Wired,
@@ -1778,6 +1787,81 @@ pub(super) struct ChannelFacts {
     pub list_opt_in: Option<ListOptIn>,
     /// Re-hide Spoiler Channel (module 823255 `v`): a spoiler channel the account agreed to.
     pub rehide_spoiler: bool,
+    /// Module 687340 (`ChannelTabsStore`): shows "Open in New Tab" (`5Qo0S6`) between Invite and Pin.
+    pub channel_tabs_enabled: bool,
+}
+
+/// Module 687340 (`ChannelTabsStore`): one open channel tab (max 25).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ChannelTab {
+    pub id: u64,
+    pub guild_id: Option<Id>,
+    pub channel_id: Id,
+    pub pinned: bool,
+}
+
+/// Module 687340 (`ChannelTabsStore`): manages open channel tabs (cap 25, pin/unpin, active focus).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ChannelTabsState {
+    pub enabled: bool,
+    pub tabs: Vec<ChannelTab>,
+    pub active_tab_id: Option<u64>,
+    next_id: u64,
+}
+
+impl ChannelTabsState {
+    pub const MAX_TABS: usize = 25;
+
+    pub fn open_channel(&mut self, guild_id: Option<Id>, channel_id: Id) -> u64 {
+        if let Some(existing) = self.tabs.iter().find(|t| t.channel_id == channel_id) {
+            self.active_tab_id = Some(existing.id);
+            return existing.id;
+        }
+        if self.tabs.len() >= Self::MAX_TABS {
+            if let Some(unpinned_idx) = self.tabs.iter().position(|t| !t.pinned) {
+                self.tabs.remove(unpinned_idx);
+            } else {
+                self.tabs.remove(0);
+            }
+        }
+        self.next_id += 1;
+        let id = self.next_id;
+        self.tabs.push(ChannelTab {
+            id,
+            guild_id,
+            channel_id,
+            pinned: false,
+        });
+        self.active_tab_id = Some(id);
+        id
+    }
+
+    pub fn close_tab(&mut self, tab_id: u64) -> Option<ChannelTab> {
+        let pos = self.tabs.iter().position(|t| t.id == tab_id)?;
+        let removed = self.tabs.remove(pos);
+        if self.active_tab_id == Some(tab_id) {
+            self.active_tab_id = self
+                .tabs
+                .get(pos.min(self.tabs.len().saturating_sub(1)))
+                .map(|t| t.id);
+        }
+        Some(removed)
+    }
+
+    pub fn toggle_pin(&mut self, tab_id: u64) -> Option<bool> {
+        let tab = self.tabs.iter_mut().find(|t| t.id == tab_id)?;
+        tab.pinned = !tab.pinned;
+        Some(tab.pinned)
+    }
+
+    pub fn set_active(&mut self, tab_id: u64) -> Option<&ChannelTab> {
+        if let Some(tab) = self.tabs.iter().find(|t| t.id == tab_id) {
+            self.active_tab_id = Some(tab.id);
+            Some(tab)
+        } else {
+            None
+        }
+    }
 }
 
 /// Module 969128's row: Add to / Remove from Channel List by the channel's own opt-in, or Unfollow Channel Category
@@ -1837,6 +1921,9 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
                 dc_intl::tr("Invite to Channel")
             },
         ));
+    }
+    if facts.channel_tabs_enabled {
+        share.push(Row::new(Act::OpenInNewTab, dc_intl::t("5Qo0S6")));
     }
     share.push(Row::new(Act::PinChannel, dc_intl::tr("Pin Channel to Top")));
     // `channel-actions` of module 823255: Invite, Open in New Tab, Pin, the opt-in row (969128), Copy Link.
@@ -4694,6 +4781,7 @@ impl Root {
                             && self.stores.stage_instances.get_by_channel(id).is_some(),
                         list_opt_in: self.list_opt_in_for(guild, &known),
                         rehide_spoiler: self.spoiler_rehide_shown(&known),
+                        channel_tabs_enabled: self.channel_tabs.enabled,
                     };
                     channel_items(facts, level)
                 }
@@ -6822,6 +6910,16 @@ impl Root {
                 }
                 _ => {}
             },
+            // Module 687340 (`5Qo0S6`): opens the channel in a new `ChannelTabsStore` tab and selects it.
+            (Act::OpenInNewTab, Target::Channel(id)) => {
+                let guild = self.guild_of_channel(id);
+                self.channel_tabs.open_channel(guild, id);
+                if let Some(gid) = guild {
+                    self.guild = Some(gid);
+                }
+                self.channel = Some(id);
+                cx.notify();
+            }
             // Pinning also opts the channel in (`jA` of module 816662); unpinning only clears the pin.
             (Act::PinChannel, Target::Channel(id)) => {
                 if let Some(guild) = self.guild_of_channel(id) {
@@ -9776,5 +9874,50 @@ mod tests {
         assert!(dev.contains(&dc_intl::t("SHQGPj").to_owned()));
         let non_dev = labels(&game_mention_items(false));
         assert!(!non_dev.contains(&dc_intl::t("SHQGPj").to_owned()));
+    }
+
+    #[test]
+    fn open_in_new_tab_687340_menu_placement_and_tabs_store() {
+        assert_eq!(dc_intl::t("5Qo0S6"), "Open in New Tab");
+        let with_tabs = labels(&channel_items(
+            ChannelFacts {
+                can_invite: true,
+                channel_tabs_enabled: true,
+                ..ChannelFacts::default()
+            },
+            "All Messages",
+        ));
+        let inv = with_tabs
+            .iter()
+            .position(|l| l == "Invite to Channel")
+            .unwrap();
+        assert_eq!(with_tabs[inv + 1], "Open in New Tab");
+        assert_eq!(with_tabs[inv + 2], "Pin Channel to Top");
+        let without_tabs = labels(&channel_items(
+            ChannelFacts {
+                can_invite: true,
+                channel_tabs_enabled: false,
+                ..ChannelFacts::default()
+            },
+            "All Messages",
+        ));
+        assert!(!without_tabs.iter().any(|l| l == "Open in New Tab"));
+
+        let mut store = ChannelTabsState {
+            enabled: true,
+            ..Default::default()
+        };
+        let first = store.open_channel(Some(1), 100);
+        assert_eq!(store.active_tab_id, Some(first));
+        assert_eq!(store.open_channel(Some(1), 100), first);
+        assert_eq!(store.toggle_pin(first), Some(true));
+        for ch in 101..130 {
+            store.open_channel(Some(1), ch);
+        }
+        assert_eq!(store.tabs.len(), ChannelTabsState::MAX_TABS);
+        assert!(store.tabs.iter().any(|t| t.id == first && t.pinned));
+        let active = store.active_tab_id.unwrap();
+        assert!(store.close_tab(active).is_some());
+        assert_eq!(store.tabs.len(), ChannelTabsState::MAX_TABS - 1);
     }
 }

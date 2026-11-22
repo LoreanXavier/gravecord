@@ -12,6 +12,7 @@
 use super::game_genres::genre_name;
 use super::{Root, color, icon};
 use crate::net::Request;
+use crate::parity::Parity;
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, ScrollHandle, SharedString, deferred, div, img,
     prelude::*, px, rgb,
@@ -34,6 +35,11 @@ pub(super) struct GameProfile {
     scroll: ScrollHandle,
     /// The media item shown in the trailer frame (`n` of `lJ`), an index into [`media_items`].
     media: usize,
+    /// Module 679361: when the game has 3+ store platforms and the user clicks "Get Now" (`/hMurx`),
+    /// opens the 440px "Choose your platform" (`/4gj6r`) modal.
+    pub(super) platform_picker_open: bool,
+    /// Capture/override platforms list for multi-platform modal preview.
+    pub(super) platform_picker_override: Option<(String, Vec<(u64, String)>)>,
 }
 
 /// One item of the trailer frame (`f` of `lJ` in module 581745): the trailers first, then the screenshots.
@@ -109,30 +115,56 @@ fn frame_picture(url: &str) -> String {
     format!("{url}?width=900&height=900&keep_aspect_ratio=true&format=webp")
 }
 
+/// Synthetic website category for Xbox Game Pass third-party SKU (module 679361).
+const STORE_XBOX_GAME_PASS: u64 = 100;
+
 /// `iV`: the store button of a website category, its label and its icon.
-/// Only Epic's glyph has been captured (`EpicGamesNeutralIcon`); the other stores show their name alone for now.
 fn store_button(category: u64) -> Option<(&'static str, Option<&'static str>)> {
     match category {
-        13 => Some(("Steam", None)),
+        13 => Some(("Steam", Some("activity_steam"))),
         16 => Some(("Epic Games", Some("epic_games"))),
         22 => Some(("Roblox", None)),
         20 => Some(("Battle.net", None)),
         21 => Some(("Riot Games", None)),
         23 => Some(("Minecraft", None)),
+        STORE_XBOX_GAME_PASS => Some(("Xbox Game Pass", Some("platform_xbox"))),
         _ => None,
     }
 }
 
+/// Module 679361: all store websites of a game in `STORE_ORDER` (plus Xbox Game Pass when present
+/// in `third_party_skus`).
+pub(crate) fn store_websites(game: &Value) -> Vec<(u64, String)> {
+    let mut out = Vec::new();
+    if let Some(websites) = game["websites"].as_array() {
+        for &category in &STORE_ORDER {
+            if let Some(url) = websites
+                .iter()
+                .find(|site| site["category"].as_u64() == Some(category))
+                .and_then(|site| site["url"].as_str())
+            {
+                out.push((category, url.to_owned()));
+            }
+        }
+    }
+    if let Some(skus) = game["third_party_skus"].as_array()
+        && skus.iter().any(|s| {
+            let dist = s["distributor"].as_str().unwrap_or_default();
+            dist.eq_ignore_ascii_case("xbox") || dist.eq_ignore_ascii_case("game_pass")
+        })
+    {
+        out.push((
+            STORE_XBOX_GAME_PASS,
+            "https://www.xbox.com/xbox-game-pass".to_owned(),
+        ));
+    }
+    out
+}
+
 /// The first store website in `iR`'s order.
+#[cfg(test)]
 fn store_website(game: &Value) -> Option<(u64, String)> {
-    let websites = game["websites"].as_array()?;
-    STORE_ORDER.iter().find_map(|category| {
-        websites
-            .iter()
-            .find(|site| site["category"].as_u64() == Some(*category))
-            .and_then(|site| site["url"].as_str())
-            .map(|url| (*category, url.to_owned()))
-    })
+    store_websites(game).into_iter().next()
 }
 
 /// The mobile store reviews (`l1`): App Store (category 10 or 11) then Play Store (12), each with a store page.
@@ -542,6 +574,8 @@ impl Root {
             tab: Tab::Overview,
             scroll: ScrollHandle::new(),
             media: 0,
+            platform_picker_open: false,
+            platform_picker_override: None,
         });
         cx.notify();
     }
@@ -690,7 +724,9 @@ impl Root {
             .and_then(|game| game["description"].as_str())
             .unwrap_or_default()
             .to_owned();
-        let store = game.as_ref().and_then(store_website);
+        let stores = game.as_ref().map(store_websites).unwrap_or_default();
+        let platform_picker_open = open.platform_picker_open;
+        let platform_picker_override = open.platform_picker_override.clone();
         let thumbs: Vec<Option<std::sync::Arc<gpui::Image>>> = game
             .as_ref()
             .map(|game| thumbnails(&id, game))
@@ -1058,6 +1094,93 @@ impl Root {
         {
             review_rows.push(row);
         }
+        let render_store_btn = |id: SharedString, category: u64, url: String, flex_fill: bool| {
+            let (label, glyph) = store_button(category)?;
+            Some(
+                div()
+                    .id(id)
+                    .when(flex_fill, |d| d.flex_1().min_w(px(0.)))
+                    .h(px(40.))
+                    .px(px(12.))
+                    .rounded(px(8.))
+                    .bg(color("--control-secondary-background-default"))
+                    .hover(|style| style.bg(color("--control-secondary-background-hover")))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .cursor_pointer()
+                    .children(
+                        glyph.map(|glyph| icon(glyph, 20., "--control-secondary-text-default")),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--control-secondary-text-default"))
+                            .child(label),
+                    )
+                    .on_click(move |_, _, cx| cx.open_url(&url))
+                    .into_any_element(),
+            )
+        };
+        let store_section: Option<AnyElement> = match stores.len() {
+            0 => None,
+            1 => {
+                let (category, url) = stores[0].clone();
+                render_store_btn("game-profile-store".into(), category, url, false)
+            }
+            2 => {
+                let btns: Vec<AnyElement> = stores
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, (cat, url))| {
+                        render_store_btn(
+                            SharedString::from(format!("game-profile-store-{i}")),
+                            *cat,
+                            url.clone(),
+                            true,
+                        )
+                    })
+                    .collect();
+                Some(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .children(btns)
+                        .into_any_element(),
+                )
+            }
+            _ => Some(
+                div()
+                    .id("game-profile-get-now")
+                    .h(px(40.))
+                    .rounded(px(8.))
+                    .bg(color("--control-primary-background-default"))
+                    .hover(|style| style.bg(color("--control-primary-background-hover")))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .cursor_pointer()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--white"))
+                    .child(dc_intl::t("/hMurx"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(gp) = this.game_profile.as_mut() {
+                            gp.platform_picker_open = true;
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ),
+        };
         let sidebar = div()
             .w(px(359.34))
             .ml(px(24.))
@@ -1065,34 +1188,7 @@ impl Root {
             .flex()
             .flex_col()
             .gap(px(32.))
-            .children(store.and_then(|(category, url)| {
-                let (label, glyph) = store_button(category)?;
-                Some(
-                    div()
-                        .id("game-profile-store")
-                        .h(px(40.))
-                        .rounded(px(8.))
-                        .bg(color("--control-secondary-background-default"))
-                        .hover(|style| style.bg(color("--control-secondary-background-hover")))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(4.))
-                        .cursor_pointer()
-                        .children(
-                            glyph.map(|glyph| icon(glyph, 20., "--control-secondary-text-default")),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .line_height(px(20.))
-                                .font_weight(FontWeight(500.))
-                                .text_color(color("--control-secondary-text-default"))
-                                .child(label),
-                        )
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                )
-            }))
+            .children(store_section)
             .when(!review_rows.is_empty(), |this| {
                 this.child(
                     div()
@@ -1289,6 +1385,150 @@ impl Root {
             .overflow_hidden()
             .child(content)
             .child(bar);
+        let platform_picker_overlay = platform_picker_open.then(|| {
+            let (picker_game_name, picker_stores) =
+                platform_picker_override.unwrap_or_else(|| (name.clone(), stores.clone()));
+            let subtitle = dc_intl::format(
+                "0acM2Y",
+                &[(
+                    "gameName",
+                    dc_intl::Arg::Str(std::borrow::Cow::Owned(picker_game_name)),
+                )],
+            );
+            let rows: Vec<AnyElement> = picker_stores
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, (cat, url))| {
+                    let (label, glyph) = store_button(cat)?;
+                    Some(
+                        div()
+                            .id(("game-platform-option", i))
+                            .w_full()
+                            .h(px(44.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--control-secondary-background-default"))
+                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(8.))
+                            .children(
+                                glyph.map(|g| icon(g, 20., "--control-secondary-text-default")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(15.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--control-secondary-text-default"))
+                                    .child(label),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.open_url(&url);
+                                if let Some(gp) = this.game_profile.as_mut() {
+                                    gp.platform_picker_open = false;
+                                }
+                                cx.notify();
+                            }))
+                            .into_any_element(),
+                    )
+                })
+                .collect();
+            div()
+                .id("game-platform-picker-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(gpui::rgba(0x000000aa))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    if let Some(gp) = this.game_profile.as_mut() {
+                        gp.platform_picker_open = false;
+                    }
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .parity("game-platform-picker-modal")
+                        .id("game-platform-picker-modal")
+                        .occlude()
+                        .w(px(440.))
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-surface-high"))
+                        .shadow_lg()
+                        .overflow_hidden()
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .px(px(24.))
+                                .pt(px(24.))
+                                .pb(px(12.))
+                                .flex()
+                                .items_start()
+                                .justify_between()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(20.))
+                                                .line_height(px(24.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::t("/4gj6r")),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(14.))
+                                                .line_height(px(20.))
+                                                .text_color(color("--text-default"))
+                                                .child(subtitle),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("game-platform-picker-close")
+                                        .size(px(24.))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor_pointer()
+                                        .child(icon("lb_close", 20., "--text-muted"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(gp) = this.game_profile.as_mut() {
+                                                gp.platform_picker_open = false;
+                                            }
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .px(px(24.))
+                                .pt(px(8.))
+                                .pb(px(24.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(10.))
+                                .children(rows),
+                        ),
+                )
+        });
         Some(
             deferred(
                 div()
@@ -1304,7 +1544,8 @@ impl Root {
                         this.game_profile = None;
                         cx.notify();
                     }))
-                    .child(panel.on_click(|_, _, cx| cx.stop_propagation())),
+                    .child(panel.on_click(|_, _, cx| cx.stop_propagation()))
+                    .children(platform_picker_overlay),
             )
             .with_priority(1)
             .into_any_element(),
@@ -1397,6 +1638,39 @@ impl Root {
             PromoBannerTheme::parse(flavor),
             ends_at_ms.and_then(|end| compute_promo_countdown(end, now_ms)),
         ))
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_game_platform_picker(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.eq_ignore_ascii_case("close") {
+            self.game_profile = None;
+            cx.notify();
+            return "game-platform-picker: closed".to_owned();
+        }
+        self.game_profile = Some(GameProfile {
+            game: "capture-multi-platform".to_owned(),
+            tab: Tab::Overview,
+            scroll: ScrollHandle::new(),
+            media: 0,
+            platform_picker_open: true,
+            platform_picker_override: Some((
+                "Apex Legends".to_owned(),
+                vec![
+                    (13, "https://store.steampowered.com/app/1172470".to_owned()),
+                    (16, "https://store.epicgames.com/p/apex-legends".to_owned()),
+                    (
+                        STORE_XBOX_GAME_PASS,
+                        "https://www.xbox.com/xbox-game-pass".to_owned(),
+                    ),
+                ],
+            )),
+        });
+        cx.notify();
+        "game-platform-picker: open".to_owned()
     }
 }
 
@@ -1704,5 +1978,27 @@ mod tests {
             })
         );
         assert_eq!(super::compute_promo_countdown(now - 1000, now), None);
+    }
+
+    #[test]
+    fn multi_platform_store_picker_matches_module_679361() {
+        let game = serde_json::json!({
+            "websites": [
+                {"category": 13, "url": "https://store.steampowered.com/app/1"},
+                {"category": 16, "url": "https://store.epicgames.com/p/1"},
+                {"category": 20, "url": "https://shop.battle.net/product/1"}
+            ],
+            "third_party_skus": [
+                {"distributor": "xbox", "sku": "123"}
+            ]
+        });
+        let stores = super::store_websites(&game);
+        assert_eq!(stores.len(), 4);
+        assert_eq!(stores[0].0, 16);
+        assert_eq!(stores[1].0, 13);
+        assert_eq!(stores[2].0, 20);
+        assert_eq!(stores[3].0, super::STORE_XBOX_GAME_PASS);
+        assert_eq!(dc_intl::t("/4gj6r"), "Choose your platform");
+        assert_eq!(dc_intl::t("/hMurx"), "Get Now");
     }
 }

@@ -3037,6 +3037,21 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_video_quest(mode, cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["event-rsvp-picker", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_event_rsvp_picker(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["activity-pip", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_activity_pip(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["game-platform-picker", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_game_platform_picker(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
             ["rail-overflow"] => {
                 let msg = root.update(cx, |root, cx| root.script_rail_overflow(cx));
                 let _ = writeln!(output, "{msg}");

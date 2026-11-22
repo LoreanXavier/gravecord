@@ -78,6 +78,49 @@ fn flag_bits(application: &Value) -> u64 {
     }
 }
 
+/// Module 697675 (`ActivityNotificationLabel`): returns the uppercase badge label for an activity
+/// shelf `label_type` (`1` = `"NEW"`, `2` = `/qdhkk` `"UPDATED"`, else `None`).
+pub(crate) fn activity_notification_label_text(label_type: u64) -> Option<String> {
+    match label_type {
+        1 => Some("NEW".to_owned()),
+        2 => Some(dc_intl::t("/qdhkk").to_uppercase()),
+        _ => None,
+    }
+}
+
+/// Module 697675 (`ActivityNotificationLabel`): renders either a 10x10 circular notification dot
+/// (`--badge-notification-background`) when collapsed, or a bordered uppercase `"NEW"` / `"UPDATED"`
+/// (`--badge-primary-*`) pill when expanded.
+pub(crate) fn activity_notification_label(label_type: u64, collapsed: bool) -> Option<AnyElement> {
+    let text = activity_notification_label_text(label_type)?;
+    if collapsed {
+        return Some(
+            div()
+                .size(px(10.))
+                .rounded_full()
+                .bg(color("--badge-notification-background"))
+                .into_any_element(),
+        );
+    }
+    Some(
+        div()
+            .h(px(20.))
+            .px(px(6.))
+            .rounded(px(4.))
+            .border_1()
+            .flex()
+            .items_center()
+            .bg(color("--badge-primary-background"))
+            .border_color(color("--badge-primary-border"))
+            .text_color(color("--badge-primary-text"))
+            .text_size(px(12.))
+            .line_height(px(16.))
+            .font_weight(FontWeight(600.))
+            .child(text)
+            .into_any_element(),
+    )
+}
+
 /// Whether `now` is inside a `client_platform_config.web` label window (`label_from`, `label_until`).
 fn label_active(web: &Value, now: chrono::DateTime<chrono::Utc>) -> bool {
     let at = |name: &str| {
@@ -410,20 +453,7 @@ impl Root {
                                         "--badge-expressive-text",
                                     ))
                                 })
-                                .when(card.label != 0, |row| {
-                                    // Module 697675: NEW is the badge's own `type: "new"` ("New"), UPDATED the
-                                    // "updated" string (`/qdhkk`); the badge sets them in capitals.
-                                    row.child(pill(
-                                        if card.label == 1 {
-                                            "NEW".into()
-                                        } else {
-                                            dc_intl::t("/qdhkk").to_uppercase().into()
-                                        },
-                                        "--badge-primary-background",
-                                        "--badge-primary-border",
-                                        "--badge-primary-text",
-                                    ))
-                                }),
+                                .children(activity_notification_label(card.label, false)),
                         )
                     }),
             )
@@ -838,5 +868,18 @@ mod tests {
     fn the_shelf_key_names_the_guild_or_zero() {
         assert_eq!(shelf_key(Some(7)), "activity-shelf:7");
         assert_eq!(shelf_key(None), "activity-shelf:0");
+    }
+
+    #[test]
+    fn activity_notification_label_697675_modes() {
+        assert_eq!(activity_notification_label_text(0), None);
+        assert_eq!(activity_notification_label_text(1).as_deref(), Some("NEW"));
+        assert_eq!(
+            activity_notification_label_text(2).as_deref(),
+            Some("UPDATED")
+        );
+        assert!(activity_notification_label(0, false).is_none());
+        assert!(activity_notification_label(1, true).is_some());
+        assert!(activity_notification_label(2, false).is_some());
     }
 }

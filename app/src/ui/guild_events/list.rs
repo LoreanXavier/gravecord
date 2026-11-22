@@ -12,14 +12,60 @@ use chrono::NaiveDateTime;
 use dc_state::{
     ChannelKind, Id, User, permissions,
     scheduled_events::{
-        ENTITY_EXTERNAL, ENTITY_STAGE_INSTANCE, EventUser, RESPONSE_INTERESTED, STATUS_ACTIVE,
-        STATUS_CANCELED, STATUS_COMPLETED, ScheduledEvent,
+        ENTITY_EXTERNAL, ENTITY_STAGE_INSTANCE, EventUser, RESPONSE_INTERESTED,
+        RESPONSE_UNINTERESTED, STATUS_ACTIVE, STATUS_CANCELED, STATUS_COMPLETED, ScheduledEvent,
     },
 };
 use gpui::{
     AnyElement, Context, ElementId, FontWeight, IntoElement, Stateful, div, img, prelude::*, px,
 };
 use serde_json::Value;
+
+/// Module 666394 (`EventRsvpPickerModal`): state for picking series vs single-occurrence RSVP.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RsvpPicker {
+    pub event: Id,
+    pub recurrence_id: String,
+    /// True when the user is currently interested in the series (`8MPCVr` "I am not interested in..."),
+    /// false when not yet interested (`WtORed` "I am interested in...").
+    pub interested_in_series: bool,
+    /// `false` = SERIES (`0`, `uoorxi`), `true` = RECURRENCE (`1`, `lwZCFT`). Defaults to `false`.
+    pub selected_recurrence: bool,
+}
+
+/// Module 666394 (`929267.QC`): decides whether clicking Interested toggles the series directly,
+/// toggles an existing recurrence-level RSVP directly, or opens the series-vs-recurrence picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum RsvpAction {
+    ToggleSeries,
+    ToggleRecurrence(String),
+    OpenPicker {
+        recurrence_id: String,
+        interested_in_series: bool,
+    },
+}
+
+pub(super) fn decide_rsvp_action(
+    is_recurring: bool,
+    recurrence_status: u64,
+    recurrence_id: Option<String>,
+    has_recurrence_rsvp: bool,
+    interested_in_series: bool,
+) -> RsvpAction {
+    if !is_recurring || matches!(recurrence_status, STATUS_COMPLETED | STATUS_CANCELED) {
+        return RsvpAction::ToggleSeries;
+    }
+    let Some(rid) = recurrence_id.filter(|s| !s.is_empty()) else {
+        return RsvpAction::ToggleSeries;
+    };
+    if has_recurrence_rsvp {
+        return RsvpAction::ToggleRecurrence(rid);
+    }
+    RsvpAction::OpenPicker {
+        recurrence_id: rid,
+        interested_in_series,
+    }
+}
 
 /// `rsvp` answers come back under this key, then the guild, the event and the answer (`1` put, `0` delete).
 pub(super) const RSVP_KEY: &str = "guild-events-rsvp:";
@@ -355,44 +401,410 @@ impl Root {
         })
     }
 
-    /// `updateRsvp` of a series: the answer is set or taken back at once, then asked of the server; a refusal puts
-    /// it back (`RSVP_KEY` answer).
+    /// `updateRsvp` of a series or recurrence (`666394` / `929267.QC`): if the event is recurring
+    /// and a recurrence is selected without an existing recurrence-level RSVP, opens the RSVP picker
+    /// modal; otherwise sends `PUT` / `DELETE /guilds/{guild}/scheduled-events/{event}[/{recurrence}]/users/@me`.
     pub(super) fn toggle_event_interest(&mut self, event: Id, cx: &mut Context<Self>) {
+        let Some(me) = self.stores.me() else {
+            return;
+        };
+        let known = self
+            .stores
+            .scheduled_events
+            .get_guild_scheduled_event(event)
+            .cloned();
+        let is_recurring = known.as_ref().is_some_and(|e| !e.recurrence_rule.is_null());
+        let recurrence_id = self
+            .guild_events
+            .as_ref()
+            .and_then(|open| open.detail.as_ref())
+            .filter(|d| d.event == event)
+            .and_then(|d| d.recurrence)
+            .map(|ms| ((ms - 1_420_070_400_000) << 22).to_string())
+            .or_else(|| {
+                known
+                    .as_ref()
+                    .filter(|e| !e.recurrence_rule.is_null())
+                    .and_then(|e| e.start())
+                    .map(|dt| ((dt.timestamp_millis() - 1_420_070_400_000) << 22).to_string())
+            });
+        let status = known.as_ref().map_or(0, |e| e.status);
+        let has_recurrence_rsvp = recurrence_id.as_deref().is_some_and(|rid| {
+            self.stores
+                .scheduled_events
+                .get_rsvp(event, Some(rid), me.id)
+                .is_some()
+        });
+        let interested_in_series = self
+            .stores
+            .scheduled_events
+            .get_rsvp(event, None, me.id)
+            .is_some_and(|r| r.response == RESPONSE_INTERESTED);
+
+        match decide_rsvp_action(
+            is_recurring,
+            status,
+            recurrence_id,
+            has_recurrence_rsvp,
+            interested_in_series,
+        ) {
+            RsvpAction::ToggleSeries => self.toggle_event_interest_target(event, None, cx),
+            RsvpAction::ToggleRecurrence(rid) => {
+                self.toggle_event_interest_target(event, Some(rid), cx)
+            }
+            RsvpAction::OpenPicker {
+                recurrence_id,
+                interested_in_series,
+            } => {
+                if let Some(open) = self.guild_events.as_mut() {
+                    open.rsvp_picker = Some(RsvpPicker {
+                        event,
+                        recurrence_id,
+                        interested_in_series,
+                        selected_recurrence: false,
+                    });
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn toggle_event_interest_target(
+        &mut self,
+        event: Id,
+        recurrence_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let (Some(guild), Some(me)) = (
             self.guild_events.as_ref().map(|open| open.guild),
             self.stores.me(),
         ) else {
             return;
         };
-        let interested = self.event_interested(event);
-        let (method, body, answer) = if interested {
+        let rid = recurrence_id.as_deref();
+        let interested = self
+            .stores
+            .scheduled_events
+            .is_interested_in_event_recurrence(event, rid, me.id);
+        let response_value = if rid.is_some() && interested {
+            RESPONSE_UNINTERESTED
+        } else {
+            RESPONSE_INTERESTED
+        };
+        let (method, body, answer) = if interested && rid.is_none() {
             self.stores
                 .scheduled_events
                 .remove_rsvp(event, None, me.id, RESPONSE_INTERESTED);
             (reqwest::Method::DELETE, None, 0)
+        } else if interested && rid.is_some() {
+            // Opt out of a single occurrence while remaining interested in the series (`response: 0`),
+            // or delete the recurrence-level positive RSVP if the user was not interested in the series.
+            let in_series = self
+                .stores
+                .scheduled_events
+                .get_rsvp(event, None, me.id)
+                .is_some_and(|r| r.response == RESPONSE_INTERESTED);
+            if in_series {
+                self.stores.scheduled_events.add_rsvp(
+                    event,
+                    rid,
+                    EventUser {
+                        user_id: me.id,
+                        response: RESPONSE_UNINTERESTED,
+                        nick: None,
+                    },
+                );
+                (
+                    reqwest::Method::PUT,
+                    Some(serde_json::json!({"response": RESPONSE_UNINTERESTED})),
+                    1,
+                )
+            } else {
+                self.stores
+                    .scheduled_events
+                    .remove_rsvp(event, rid, me.id, RESPONSE_INTERESTED);
+                (reqwest::Method::DELETE, None, 0)
+            }
         } else {
             self.stores.scheduled_events.add_rsvp(
                 event,
-                None,
+                rid,
                 EventUser {
                     user_id: me.id,
-                    response: RESPONSE_INTERESTED,
+                    response: response_value,
                     nick: None,
                 },
             );
             (
                 reqwest::Method::PUT,
-                Some(serde_json::json!({"response": RESPONSE_INTERESTED})),
+                Some(serde_json::json!({"response": response_value})),
                 1,
             )
+        };
+        let route = match rid {
+            Some(rid) => format!("/guilds/{guild}/scheduled-events/{event}/{rid}/users/@me"),
+            None => format!("/guilds/{guild}/scheduled-events/{event}/users/@me"),
         };
         let _ = self.requests.send(Request::Rest {
             key: Some(format!("{RSVP_KEY}{guild}:{event}:{answer}")),
             method,
-            route: format!("/guilds/{guild}/scheduled-events/{event}/users/@me"),
+            route,
             body,
         });
         cx.notify();
+    }
+
+    /// Module 666394 (`EventRsvpPickerModal`): 440px dialog asking whether the RSVP applies to
+    /// `"All events in this series"` (`uoorxi`, 0) or `"Only this event"` (`lwZCFT`, 1).
+    pub(super) fn event_rsvp_picker_layer(
+        &self,
+        picker: &RsvpPicker,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let title = if picker.interested_in_series {
+            dc_intl::t("8MPCVr")
+        } else {
+            dc_intl::t("WtORed")
+        };
+        let selected_recurrence = picker.selected_recurrence;
+        let event = picker.event;
+        let recurrence_id = picker.recurrence_id.clone();
+
+        let radio_option = |id: &'static str, label: &'static str, is_recurrence: bool| {
+            let active = selected_recurrence == is_recurrence;
+            div()
+                .id(id)
+                .w_full()
+                .px(px(12.))
+                .py(px(12.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color(if active {
+                    "--background-brand"
+                } else {
+                    "--border-subtle"
+                }))
+                .bg(color(if active {
+                    "--background-mod-subtle"
+                } else {
+                    "--background-surface-higher"
+                }))
+                .hover(|s| s.bg(color("--background-mod-subtle")))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .size(px(20.))
+                        .flex_none()
+                        .rounded_full()
+                        .border_2()
+                        .border_color(color(if active {
+                            "--background-brand"
+                        } else {
+                            "--interactive-icon-default"
+                        }))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(active, |dot| {
+                            dot.child(
+                                div()
+                                    .size(px(10.))
+                                    .rounded_full()
+                                    .bg(color("--background-brand")),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(label),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(p) = this
+                        .guild_events
+                        .as_mut()
+                        .and_then(|open| open.rsvp_picker.as_mut())
+                    {
+                        p.selected_recurrence = is_recurrence;
+                    }
+                    cx.notify();
+                }))
+        };
+
+        let card = div()
+            .parity("event-rsvp-picker-modal")
+            .id("event-rsvp-picker-modal")
+            .occlude()
+            .w(px(440.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .shadow(super::modal_shadow())
+            .overflow_hidden()
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .px(px(24.))
+                    .pt(px(24.))
+                    .pb(px(16.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .line_height(px(24.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .id("event-rsvp-picker-close")
+                            .size(px(24.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .child(icon("lb_close", 20., "--text-muted"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(open) = this.guild_events.as_mut() {
+                                    open.rsvp_picker = None;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .pb(px(20.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(radio_option(
+                        "event-rsvp-series",
+                        dc_intl::t("uoorxi"),
+                        false,
+                    ))
+                    .child(radio_option(
+                        "event-rsvp-recurrence",
+                        dc_intl::t("lwZCFT"),
+                        true,
+                    )),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .py(px(16.))
+                    .bg(color("--background-base-lower"))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("event-rsvp-cancel")
+                            .h(px(38.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::t("ETE/oC"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(open) = this.guild_events.as_mut() {
+                                    open.rsvp_picker = None;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("event-rsvp-ok")
+                            .h(px(38.))
+                            .px(px(20.))
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .hover(|s| s.bg(color("--control-primary-background-hover")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("TyCVIq"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let target_rec = if selected_recurrence {
+                                    Some(recurrence_id.clone())
+                                } else {
+                                    None
+                                };
+                                if let Some(open) = this.guild_events.as_mut() {
+                                    open.rsvp_picker = None;
+                                }
+                                this.toggle_event_interest_target(event, target_rec, cx);
+                            })),
+                    ),
+            );
+
+        super::layer(
+            "event-rsvp-picker-layer",
+            0.,
+            card,
+            |this, _, _| {
+                if let Some(open) = this.guild_events.as_mut() {
+                    open.rsvp_picker = None;
+                }
+            },
+            cx,
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_event_rsvp_picker(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.eq_ignore_ascii_case("close") {
+            self.guild_events = None;
+            cx.notify();
+            return "event-rsvp-picker: closed".to_owned();
+        }
+        let guild = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id))
+            .unwrap_or(1);
+        let uninterested = arg.eq_ignore_ascii_case("uninterested");
+        let open = self.guild_events.get_or_insert_with(|| super::GuildEvents {
+            guild,
+            create: None,
+            detail: None,
+            menu: None,
+            confirm: None,
+            rsvp_picker: None,
+            asked: std::collections::HashSet::new(),
+        });
+        open.rsvp_picker = Some(RsvpPicker {
+            event: 99_666_394,
+            recurrence_id: "1300000000000000000".to_owned(),
+            interested_in_series: uninterested,
+            selected_recurrence: false,
+        });
+        cx.notify();
+        format!("event-rsvp-picker: open uninterested={uninterested}")
     }
 
     /// The answer to an interested request: a refusal undoes what was shown.
@@ -836,5 +1248,41 @@ impl Root {
                 .child(footer),
         )
         .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rsvp_picker_decision_matches_module_666394() {
+        assert_eq!(
+            decide_rsvp_action(false, 1, Some("123".into()), false, false),
+            RsvpAction::ToggleSeries
+        );
+        assert_eq!(
+            decide_rsvp_action(true, STATUS_CANCELED, Some("123".into()), false, false),
+            RsvpAction::ToggleSeries
+        );
+        assert_eq!(
+            decide_rsvp_action(true, STATUS_COMPLETED, Some("123".into()), false, false),
+            RsvpAction::ToggleSeries
+        );
+        assert_eq!(
+            decide_rsvp_action(true, 1, Some("123".into()), true, true),
+            RsvpAction::ToggleRecurrence("123".into())
+        );
+        assert_eq!(
+            decide_rsvp_action(true, 1, Some("123".into()), false, false),
+            RsvpAction::OpenPicker {
+                recurrence_id: "123".into(),
+                interested_in_series: false,
+            }
+        );
+        assert_eq!(dc_intl::t("WtORed"), "I am interested in...");
+        assert_eq!(dc_intl::t("8MPCVr"), "I am not interested in...");
+        assert_eq!(dc_intl::t("uoorxi"), "All events in this series");
+        assert_eq!(dc_intl::t("lwZCFT"), "Only this event");
     }
 }

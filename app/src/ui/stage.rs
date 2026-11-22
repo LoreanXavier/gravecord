@@ -170,6 +170,19 @@ mod before_tests {
     }
 }
 
+/// Module 696842 (`StageChannelInviteButton`): picks the Stage invite label by priority:
+/// active stream (`6VQaqd` "Invite to Stream") > active embedded activity (`OzOM/q` "Invite To Activity")
+/// > default (`VINpSK` "Invite").
+pub(crate) fn stage_invite_label(has_stream: bool, has_activity: bool) -> &'static str {
+    if has_stream {
+        dc_intl::t("6VQaqd")
+    } else if has_activity {
+        dc_intl::t("OzOM/q")
+    } else {
+        dc_intl::t("VINpSK")
+    }
+}
+
 /// The Stage page's top bar (`topControls_rTsZa_` of stage-ann/stage-live-hover and stage-after-end): the channel's
 /// glyph, the topic (the channel's name while no Stage is live), the speaking and audience counts, and the hand and
 /// chat icons. Hidden until the pointer is over the page (`group` "stage-live").
@@ -408,6 +421,9 @@ impl Root {
         let grid_w = stage_speaker_grid_width(shown_speakers.len());
         let can_connect = self.can_in_channel(channel, permissions::CONNECT);
         let can_invite = self.can_in_channel(channel, permissions::CREATE_INSTANT_INVITE);
+        let has_stream = here.iter().any(|s| s.self_stream);
+        let has_activity = !self.activities.in_channel(target).is_empty();
+        let invite_label = stage_invite_label(has_stream, has_activity);
         let heading = if topic.trim().is_empty() {
             channel.name.clone()
         } else {
@@ -639,7 +655,7 @@ impl Root {
                                                 .font_weight(FontWeight(500.))
                                                 .text_color(color("--white"))
                                                 .child(icon("invite", 16., "--white"))
-                                                .child(dc_intl::t("VINpSK"))
+                                                .child(invite_label)
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.open_invite_for(
                                                         target,
@@ -963,6 +979,35 @@ impl Root {
         let video_full =
             self.video_stage_full_notice(channel, (speakers.len() + audience.len()) as u64, cx);
         let sidebar = self.stage_requests_sidebar(channel, cx);
+        let can_invite = self.can_in_channel(channel, permissions::CREATE_INSTANT_INVITE);
+        let has_stream = self
+            .stores
+            .voice_members(guild, target)
+            .iter()
+            .any(|s| s.self_stream);
+        let has_activity = !self.activities.in_channel(target).is_empty();
+        let live_invite_label = stage_invite_label(has_stream, has_activity);
+        let live_invite_btn = can_invite.then(|| {
+            self.with_tip(
+                "stage-live-invite-tip",
+                super::tooltip::Tip::text(live_invite_label, super::tooltip::Side::Top),
+                div()
+                    .id("stage-live-invite")
+                    .size(px(40.))
+                    .rounded(px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+                    .child(icon("invite", 20., "--white"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_invite_for(target, super::invite::InviteTarget::Stage, cx);
+                        cx.notify();
+                    })),
+                cx,
+            )
+        });
         let tile = |user: &dc_state::User, is_speaker: bool| {
             let picture = self.images.get(&super::avatar_source(user).0).cloned();
             let person = user.id;
@@ -1253,6 +1298,7 @@ impl Root {
                             .child(round("stage-sound", "voice_soundboard_off"))
                             .child(hand)
                             .child(round("stage-mic", "stage_mic_off"))
+                            .children(live_invite_btn)
                             .child(round("stage-more", "voice_view_more")),
                     )
                     .child(
@@ -2867,5 +2913,19 @@ mod hand_tests {
         assert_eq!(super::stage_speaker_grid_width(3), 504.);
         assert_eq!(super::stage_speaker_grid_width(4), 336.);
         assert_eq!(super::stage_speaker_grid_width(5), 504.);
+    }
+
+    #[test]
+    fn stage_invite_button_696842_label_priority() {
+        assert_eq!(super::stage_invite_label(true, true), dc_intl::t("6VQaqd"));
+        assert_eq!(super::stage_invite_label(true, false), dc_intl::t("6VQaqd"));
+        assert_eq!(super::stage_invite_label(false, true), dc_intl::t("OzOM/q"));
+        assert_eq!(
+            super::stage_invite_label(false, false),
+            dc_intl::t("VINpSK")
+        );
+        assert_eq!(dc_intl::t("6VQaqd"), "Invite to Stream");
+        assert_eq!(dc_intl::t("OzOM/q"), "Invite To Activity");
+        assert_eq!(dc_intl::t("VINpSK"), "Invite");
     }
 }

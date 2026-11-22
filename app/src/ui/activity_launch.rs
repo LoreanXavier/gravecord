@@ -137,6 +137,13 @@ pub(crate) struct Activities {
     pub(super) shown_seconds: Option<u64>,
     /// The page is in the picture-in-picture window (the call view's stage is not on screen).
     pub(super) pip: bool,
+    /// Module 677793: whether the floating Activity PiP audio is muted.
+    pub(super) pip_muted: bool,
+    /// Module 677793: whether the floating Activity PiP overlay was minimized/hidden by the user.
+    pub(super) pip_hidden: bool,
+    /// Capture helper: forces the 40px Activity PiP hover toolbar visible for visual verification.
+    #[cfg(feature = "capture")]
+    pub(super) pip_controls_pinned: bool,
 }
 
 impl Activities {

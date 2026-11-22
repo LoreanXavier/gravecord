@@ -58,6 +58,8 @@ pub(super) struct GuildEvents {
     menu: Option<menu::EventMenu>,
     /// The Cancel Event, Start Event or End Event dialog.
     confirm: Option<menu::Confirm>,
+    /// Module 666394: recurring event RSVP picker ("I am interested in..." / "I am not interested in...").
+    rsvp_picker: Option<list::RsvpPicker>,
     /// Creators the member request was already sent for.
     asked: HashSet<Id>,
 }
@@ -241,6 +243,7 @@ impl Root {
             detail: None,
             menu: None,
             confirm: None,
+            rsvp_picker: None,
             asked: HashSet::new(),
         });
         let _ = self.requests.send(Request::Fetch {
@@ -261,6 +264,13 @@ impl Root {
         if open.menu.is_some() {
             if let Some(open) = self.guild_events.as_mut() {
                 open.menu = None;
+            }
+            cx.notify();
+            return true;
+        }
+        if open.rsvp_picker.is_some() {
+            if let Some(open) = self.guild_events.as_mut() {
+                open.rsvp_picker = None;
             }
             cx.notify();
             return true;
@@ -399,6 +409,9 @@ impl Root {
             return self.create_event_layer(open.guild, create, window, cx);
         }
         // A dialog hides what is under it, behind a second dim layer.
+        if let Some(picker) = open.rsvp_picker.as_ref() {
+            return vec![self.event_rsvp_picker_layer(picker, cx)];
+        }
         if let Some(confirm) = self.event_confirm_layer(cx) {
             return vec![confirm];
         }
