@@ -16,11 +16,16 @@ pub(crate) enum JoinRequestStatus {
     Rejected,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) enum JoinConfirmKind {
     Withdraw,
     Discard,
+    /// Module 867276 / 561446 moderator Reject Reason confirmation (`mFP/qw`, `ETE/oC`, `hDtbsz`).
+    RejectReason {
+        guild_id: dc_state::Id,
+        request_id: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -55,8 +60,131 @@ impl Root {
         let guild_name = modal.guild_name.as_deref();
         let can_reapply = modal.can_reapply;
 
-        // If a Withdraw / Discard confirmation is open, render official `E` dialog above.
-        if let Some(kind) = modal.confirm {
+        // If a Withdraw / Discard / RejectReason confirmation is open, render official `E` / `867276` dialog above.
+        if let Some(kind) = modal.confirm.as_ref() {
+            if let JoinConfirmKind::RejectReason {
+                guild_id,
+                request_id,
+            } = kind
+            {
+                let gid = *guild_id;
+                let rid = request_id.clone();
+                let reject_dialog = div()
+                    .id("join-req-reject-modal")
+                    .occlude()
+                    .w(px(440.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .p(px(24.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .line_height(px(24.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("mFP/qw")),
+                    )
+                    .child(
+                        div()
+                            .h(px(84.))
+                            .p(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--input-border-default"))
+                            .bg(color("--input-background-default"))
+                            .text_size(px(14.))
+                            .text_color(color("--text-muted"))
+                            .child(modal.rejection_reason.clone().unwrap_or_default()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .id("join-req-reject-cancel")
+                                    .h(px(36.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--control-secondary-text-default"))
+                                    .child(dc_intl::t("ETE/oC"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.join_request_modal = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("join-req-reject-confirm")
+                                    .h(px(36.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-critical-primary-background-default"))
+                                    .hover(|s| {
+                                        s.bg(color("--control-critical-primary-background-hover"))
+                                    })
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(dc_intl::t("hDtbsz"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let reason = this
+                                            .join_request_modal
+                                            .as_ref()
+                                            .and_then(|m| m.rejection_reason.clone());
+                                        let _ = this.requests.send(crate::net::Request::Rest {
+                                            key: Some(format!("join-request-action:{rid}")),
+                                            method: reqwest::Method::PATCH,
+                                            route: format!("/guilds/{gid}/requests/{rid}"),
+                                            body: Some(serde_json::json!({
+                                                "action": "REJECTED",
+                                                "rejection_reason": reason,
+                                            })),
+                                        });
+                                        this.join_request_modal = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    );
+                return Some(
+                    deferred(
+                        div()
+                            .id("join-req-reject-backdrop")
+                            .occlude()
+                            .absolute()
+                            .inset_0()
+                            .bg(rgba(0x000000b3))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.join_request_modal = None;
+                                cx.notify();
+                            }))
+                            .child(reject_dialog),
+                    )
+                    .with_priority(95)
+                    .into_any_element(),
+                );
+            }
             let name_arg = guild_name.unwrap_or("this server");
             let subtitle_runs = match kind {
                 JoinConfirmKind::Withdraw => {
@@ -65,6 +193,7 @@ impl Root {
                 JoinConfirmKind::Discard => {
                     vec![(dc_intl::t("fJwWVt").to_owned(), false)]
                 }
+                JoinConfirmKind::RejectReason { .. } => Vec::new(),
             };
             let confirm_dialog = div()
                 .id("join-req-confirm")
@@ -446,6 +575,142 @@ impl Root {
         )
     }
 
+    /// Module 561446: Approve / Reject / View Profile moderator actions for a join-request
+    /// interview channel header (`289287`, `flags & 16 != 0`) or review banner (`891522`).
+    pub(super) fn join_request_review_actions(
+        &self,
+        channel_id: dc_state::Id,
+        show_profile: bool,
+        show_trailing_divider: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let req = self
+            .stores
+            .join_requests
+            .get_request_by_interview_channel(channel_id)?;
+        if req.application_status.as_deref() != Some(dc_state::guild_join_requests::SUBMITTED) {
+            return None;
+        }
+        let guild_id = req.guild_id?;
+        if !self.my_permission(guild_id, None, dc_state::permissions::KICK_MEMBERS) {
+            return None;
+        }
+        let guild = self.stores.guild(guild_id)?;
+        let member_count = self
+            .stores
+            .member_counts
+            .get_member_count(guild_id)
+            .unwrap_or(0);
+        let at_limit = guild.max_members.is_some_and(|max| member_count >= max);
+        let req_id_approve = req.join_request_id.clone();
+        let req_id_reject = req.join_request_id.clone();
+        let applicant_id = req.user_id;
+        let guild_name = guild.name.clone();
+
+        let approve_btn = div()
+            .id("join-req-review-approve")
+            .h(px(28.))
+            .px(px(12.))
+            .rounded(px(6.))
+            .bg(color("--status-positive"))
+            .when(at_limit, |b| b.opacity(0.5).cursor_not_allowed())
+            .when(!at_limit, |b| {
+                b.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let _ = this.requests.send(crate::net::Request::Rest {
+                            key: Some(format!("join-request-action:{req_id_approve}")),
+                            method: reqwest::Method::PATCH,
+                            route: format!("/guilds/{guild_id}/requests/{req_id_approve}"),
+                            body: Some(serde_json::json!({ "action": "APPROVED" })),
+                        });
+                        cx.notify();
+                    }))
+            })
+            .flex()
+            .items_center()
+            .text_size(px(13.))
+            .font_weight(FontWeight(600.))
+            .text_color(color("--white"))
+            .child(dc_intl::t("BzjDQJ"));
+        let approve_el: AnyElement = if at_limit {
+            self.with_tip(
+                "join-req-approve-limit-tip",
+                super::tooltip::Tip::text(dc_intl::t("cdPGbE"), super::tooltip::Side::Bottom),
+                approve_btn,
+                cx,
+            )
+            .into_any_element()
+        } else {
+            approve_btn.into_any_element()
+        };
+
+        let reject_btn = div()
+            .id("join-req-review-reject")
+            .h(px(28.))
+            .px(px(12.))
+            .rounded(px(6.))
+            .bg(color("--control-critical-primary-background-default"))
+            .hover(|s| s.bg(color("--control-critical-primary-background-hover")))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .text_size(px(13.))
+            .font_weight(FontWeight(600.))
+            .text_color(color("--white"))
+            .child(dc_intl::t("hDtbsz"))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.join_request_modal = Some(JoinRequestModal {
+                    guild_id: Some(guild_id),
+                    guild_name: Some(guild_name.clone()),
+                    status: JoinRequestStatus::Submitted,
+                    rejection_reason: None,
+                    can_reapply: true,
+                    confirm: Some(JoinConfirmKind::RejectReason {
+                        guild_id,
+                        request_id: req_id_reject.clone(),
+                    }),
+                });
+                cx.notify();
+            }));
+
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(approve_el)
+                .child(reject_btn)
+                .when_some(
+                    show_profile.then_some(applicant_id).flatten(),
+                    |row, uid| {
+                        row.child(
+                            div()
+                                .id("join-req-review-profile")
+                                .h(px(28.))
+                                .px(px(12.))
+                                .rounded(px(6.))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--control-secondary-text-default"))
+                                .child(dc_intl::t("iXAna6"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_full_profile(uid, window, cx);
+                                })),
+                        )
+                    },
+                )
+                .when(show_trailing_divider, |row| {
+                    row.child(div().w(px(1.)).h(px(20.)).bg(color("--border-subtle")))
+                })
+                .into_any_element(),
+        )
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_join_request_page(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         let (status, reason, confirm) = match arg {
@@ -460,6 +725,14 @@ impl Root {
                 JoinRequestStatus::Incomplete,
                 None,
                 Some(JoinConfirmKind::Discard),
+            ),
+            "reject-reason" => (
+                JoinRequestStatus::Submitted,
+                Some("Please read #rules and resubmit with your in-game tag.".to_owned()),
+                Some(JoinConfirmKind::RejectReason {
+                    guild_id: self.guild.unwrap_or(100),
+                    request_id: "req_demo_561446".to_owned(),
+                }),
             ),
             _ => (
                 JoinRequestStatus::Rejected,
@@ -495,5 +768,12 @@ mod tests {
         }
         let runs = format_bold_runs("9ZezpN", &[("name", Arg::Str(Cow::Borrowed("Guild")))]);
         assert!(runs.iter().any(|(t, bold)| t == "Guild" && *bold));
+    }
+
+    #[test]
+    fn join_request_review_561446_and_reject_867276_keys_resolve() {
+        for key in ["BzjDQJ", "hDtbsz", "iXAna6", "cdPGbE", "mFP/qw", "ETE/oC"] {
+            assert!(!dc_intl::t(key).is_empty(), "empty key {key}");
+        }
     }
 }

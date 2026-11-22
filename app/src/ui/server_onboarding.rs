@@ -859,7 +859,7 @@ fn resource_channel(guild: &Guild, channel: &Channel) -> bool {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Task {
     pub(super) channel_id: String,
-    action_type: u64,
+    pub(super) action_type: u64,
     pub(super) title: String,
     pub(super) description: String,
     pub(super) emoji: Option<Emoji>,
@@ -9012,6 +9012,7 @@ mod tests {
             premium_subscription_count: 0,
             max_stage_video_channel_users: 0,
             max_video_channel_users: 0,
+            max_members: None,
             premium_progress_bar_enabled: false,
             system_channel_flags: 0,
             emojis: Vec::new(),

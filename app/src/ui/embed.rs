@@ -542,14 +542,22 @@ impl Root {
             .filter(|(_, embed)| !embed_layout::left_out(embed))
             .filter_map(|(index, embed)| self.embed(message, index, embed, suppress, cx))
             .collect();
-        // Module 107543: Quest Promoted Card for `https://discord.com/quests/{id}` links.
-        if !self.quests.store.quests.is_empty()
-            && message.content.contains("/quests/")
+        // Module 107543 + 562293 (`QUESTS_EMBED`): Quest Promoted Card or Fallback Card for
+        // `https://discord.com/quests/{id}` links.
+        if message.content.contains("/quests/")
             && let Some(qid) = super::quest_promoted::extract_quest_link_id(&message.content)
-            && let Some(quest) = self.quests.store.quests.iter().find(|q| q.id == qid)
         {
             let prefix = format!("msg-quest-{}", message.id);
-            cards.push(self.quest_promoted_card(quest, &prefix, cx));
+            if let Some(quest) = self.quests.store.quests.iter().find(|q| q.id == qid) {
+                cards.push(self.quest_promoted_card(quest, &prefix, cx));
+            } else {
+                let reason = if self.quests.store.excluded_quests.iter().any(|e| e == qid) {
+                    super::quest_promoted::QuestFallbackReason::Excluded
+                } else {
+                    super::quest_promoted::QuestFallbackReason::NotFound
+                };
+                cards.push(self.quest_embed_fallback_card(qid, reason, &prefix, cx));
+            }
         }
         (!cards.is_empty()).then(|| {
             div()

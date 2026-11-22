@@ -290,6 +290,149 @@ impl Root {
                 .is_some_and(|total| total > 0)
     }
 
+    /// Module 575293 (`_gmkdZC`): In-channel Server Guide new member action bar above the chat
+    /// composer (or forum header). Shows the current channel's `CHAT` task (`ElGg8+` "Send a message")
+    /// with a green check when completed, or transitions to the clickable `"Next: {step}"` (`/beONw`)
+    /// `"in {channelName}"` (`MkzlDL` / `J90oLW`) card jumping to the next uncompleted action channel.
+    pub(super) fn guide_channel_action_bar(
+        &self,
+        is_forum: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let guild = self.current_guild()?;
+        let channel_id = self.channel?;
+        if !enabled(guild) || guild.my_pending || guild.my_flags & 64 != 0 {
+            return None;
+        }
+        let home = self.guide_home()?;
+        let tasks = home.tasks.as_ref()?;
+        let channel_str = channel_id.to_string();
+        let current = tasks.iter().find(|t| t.channel_id == channel_str)?;
+        let actions_body = self.fetched.get(&format!("{ACTIONS}{}", guild.id));
+        let is_done = |cid: &str| {
+            actions_body.is_some_and(|b| !b["channel_actions"][cid]["completed"].is_null())
+        };
+        let current_done = is_done(&current.channel_id);
+        let next_task = tasks
+            .iter()
+            .find(|t| t.channel_id != current.channel_id && !is_done(&t.channel_id));
+        let is_view = current.action_type == 0;
+        let show_next = (current_done || is_view) && next_task.is_some();
+        if is_view && !show_next {
+            return None;
+        }
+        let guild_id = guild.id;
+        let mut bar = div()
+            .id("guide-channel-action-bar")
+            .w_full()
+            .p(px(12.))
+            .bg(color("--background-base-lowest"))
+            .rounded_t(px(8.))
+            .when(is_forum, |d| d.rounded_b(px(8.)))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .flex()
+            .items_center()
+            .gap(px(10.));
+
+        if show_next && let Some(next) = next_task {
+            let next_id = next.channel_id.parse::<Id>().ok();
+            let next_channel_name = next_id
+                .and_then(|nid| guild.channels.iter().find(|c| c.id == nid))
+                .map(|c| format!("#{}", c.name))
+                .unwrap_or_else(|| dc_intl::t("J90oLW").to_owned());
+            let title = dc_intl::format(
+                "/beONw",
+                &[(
+                    "step",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&next.title)),
+                )],
+            );
+            let sub = dc_intl::format(
+                "MkzlDL",
+                &[(
+                    "channelName",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&next_channel_name)),
+                )],
+            );
+            bar = bar
+                .cursor_pointer()
+                .hover(|s| s.bg(color("--background-mod-subtle")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(nid) = next_id {
+                        this.select(guild_id, Some(nid));
+                        cx.notify();
+                    }
+                }))
+                .child(icon("text_channel", 20., "--channels-default"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .truncate()
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-muted"))
+                                .truncate()
+                                .child(sub),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(20.))
+                        .rounded_full()
+                        .bg(color("--brand-500"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("shop_arrow_right", 12., "--white")),
+                );
+        } else {
+            bar = bar
+                .child(icon("text_channel", 20., "--channels-default"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .truncate()
+                                .child(current.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t("ElGg8+")),
+                        ),
+                )
+                .when(current_done, |row| {
+                    row.child(icon("circle_check", 20., "--status-positive"))
+                });
+        }
+        Some(bar.into_any_element())
+    }
+
     pub(super) fn guild_guide_rows(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.has_guild_guide() {
             return None;
@@ -881,11 +1024,19 @@ pub(super) fn celebration_percent(actions: usize, elapsed_ms: u128) -> f32 {
 impl Root {
     /// `handleGuildMemberUpdate` of module 976639: the first update this session that shows this account's
     /// `COMPLETED_HOME_ACTIONS` in a server opens module 455796, when the server's guide has new member actions.
-    pub(super) fn guide_member_updated(&mut self, data: &serde_json::Value, cx: &mut Context<Self>) {
+    pub(super) fn guide_member_updated(
+        &mut self,
+        data: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
         let me = self.stores.current_user.as_ref().map(|me| me.id);
         let (Some(guild), Some(user)) = (
-            data["guild_id"].as_str().and_then(|id| id.parse::<Id>().ok()),
-            data["user"]["id"].as_str().and_then(|id| id.parse::<Id>().ok()),
+            data["guild_id"]
+                .as_str()
+                .and_then(|id| id.parse::<Id>().ok()),
+            data["user"]["id"]
+                .as_str()
+                .and_then(|id| id.parse::<Id>().ok()),
         ) else {
             return;
         };

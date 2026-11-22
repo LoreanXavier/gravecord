@@ -62,6 +62,14 @@ pub(super) fn voice_mark(
 /// and -7px margins and narrowed by its 4px start padding.
 const STRIP_WIDTH: f32 = 240. - 16. + 3. + 7. - 4.;
 
+/// Logistic speaking ring inset spread (module 556525 `T_.v`: `0.5 + (max - 0.5) / (1 + exp(-0.03 * (db + 45)))`).
+pub(super) fn speaking_ring_spread(db: f32, max_spread: f32) -> f32 {
+    if !db.is_finite() {
+        return 2.0_f32.min(max_spread);
+    }
+    0.5 + (max_spread - 0.5) / (1.0 + (-0.03 * (db + 45.0)).exp())
+}
+
 impl Root {
     /// `vL.useSetting()`: off unless the account says so.
     pub(super) fn show_voice_users(&self) -> bool {
@@ -284,6 +292,30 @@ impl Root {
                     ),
                     None => name,
                 };
+                let is_playing_sound = self.soundboard.user_playing(state.user_id);
+                let is_speaking = self.speaking.contains(&state.user_id);
+                // Module 556525 (`T_.v`) + 551826 (`VOICE_USER` sound shake): inset speaking ring
+                // (`--status-speaking` or `--brand-500` when playing soundboard) + subtle shake offset.
+                let ring_token = if is_playing_sound {
+                    Some("--brand-500")
+                } else if is_speaking {
+                    Some("--status-speaking")
+                } else {
+                    None
+                };
+                let (shake_x, shake_y) =
+                    if is_playing_sound && !self.pref_on("reduced_motion", false) {
+                        let tick = (std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() / 32)
+                            .unwrap_or(0)
+                            + state.user_id as u128) as usize;
+                        const OFFSETS: [(f32, f32); 4] =
+                            [(-1.5, -1.0), (1.5, 1.0), (-1.0, 1.5), (1.0, -1.5)];
+                        OFFSETS[tick % OFFSETS.len()]
+                    } else {
+                        (0., 0.)
+                    };
                 let id = SharedString::from(format!("rtc-voice-user-{}", state.user_id));
                 self.with_tip(
                     format!("rtc-voice-user-tip-{}", state.user_id),
@@ -296,7 +328,28 @@ impl Root {
                         .overflow_hidden()
                         .cursor_pointer()
                         .relative()
+                        .when(shake_x != 0. || shake_y != 0., |d| {
+                            d.left(px(shake_x)).top(px(shake_y))
+                        })
                         .children(picture.map(|picture| img(picture).size(px(24.)).rounded_full()))
+                        .when_some(ring_token, |d, token| {
+                            let spread = speaking_ring_spread(-28.0, 3.0);
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded_full()
+                                    .border(px(spread))
+                                    .border_color(color(token))
+                                    .child(
+                                        div()
+                                            .size_full()
+                                            .rounded_full()
+                                            .border_1()
+                                            .border_color(color("--background-base-lower")),
+                                    ),
+                            )
+                        })
                         .children(mark.map(|(name, red, _)| {
                             div()
                                 .absolute()
@@ -345,8 +398,7 @@ impl Root {
                 cx,
             )
         });
-        // GAP: the speaking ring of each avatar (`T_.v`, an inset shadow by voice level) and the shake while someone
-        // plays a sound are not drawn here.
+        // Module 576701 + 556525 (`T_.v`) + 551826: voice strip with inset speaking ring and soundboard shake.
         Some(
             div()
                 .ml(px(-3.))
@@ -403,5 +455,14 @@ mod tests {
             Some("9F+xJU")
         );
         assert_eq!(voice_mark(false, false, false, false, false), None);
+    }
+
+    #[test]
+    fn speaking_ring_spread_is_bounded_logistic() {
+        let loud = speaking_ring_spread(-10.0, 3.0);
+        let quiet = speaking_ring_spread(-90.0, 3.0);
+        assert!(loud > quiet);
+        assert!(loud <= 3.0 && quiet >= 0.5);
+        assert_eq!(speaking_ring_spread(f32::NEG_INFINITY, 3.0), 2.0);
     }
 }

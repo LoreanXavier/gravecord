@@ -110,6 +110,13 @@ impl JoinRequests {
         self.by_id.get(request)
     }
 
+    /// Look up a submitted join request by its interview channel id (module 561446 / 844944).
+    pub fn get_request_by_interview_channel(&self, channel_id: Id) -> Option<&JoinRequest> {
+        self.by_id
+            .values()
+            .find(|req| req.interview_channel_id == Some(channel_id))
+    }
+
     /// `getRequests(guild, status)`: the actioned lists sort by `actionedAt` and the others by request id
     /// (`g`, `S`, `N`, module 844944; module 713402 keeps each sorted ascending by that key).
     pub fn get_requests(&self, guild: Id, status: &str) -> Vec<&JoinRequest> {

@@ -694,6 +694,8 @@ impl Root {
             (PAYMENTS_KEY, "/users/@me/billing/payments?limit=20"),
             (GIFT_CODES_KEY, "/users/@me/entitlements/gift-codes"),
             ("user-offer", "/users/@me/billing/user-offer"),
+            // Module 579245 (`589152.b`): Nitro friends / affinity social proof banner.
+            ("nitro:affinity", "/users/@me/billing/nitro-affinity"),
         ] {
             let _ = self.requests.send(Request::Rest {
                 key: Some(key.to_owned()),
@@ -1371,12 +1373,41 @@ impl Root {
                     owned,
                 )
             }));
+        // Module 543213: top-rim offer pill + Wumpus mascot accessible alt labels (`02VBaY` / `XP8vWR`).
+        let rim_pill_text: Option<&'static str> =
+            super::premium_upsell::resolve_upsell_offer(self.fetched.get("user-offer"), sku).1;
+        let mascot_alt = if nitro {
+            dc_intl::t("02VBaY")
+        } else {
+            dc_intl::t("XP8vWR")
+        };
         div()
             .relative()
             .w(px(400.))
             .h(px(620.))
             .rounded(px(24.))
             .bg(color("--background-surface-higher"))
+            .when_some(rim_pill_text, |card, pill| {
+                card.child(
+                    div()
+                        .absolute()
+                        .top(px(-14.))
+                        .left(px(110.))
+                        .right(px(110.))
+                        .h(px(26.))
+                        .px(px(10.))
+                        .rounded(px(999.))
+                        .bg(color("--control-primary-background-default"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--white"))
+                        .truncate()
+                        .child(pill),
+                )
+            })
             .child(
                 div()
                     .absolute()
@@ -1393,6 +1424,8 @@ impl Root {
             .when(nitro, |this| {
                 this.child(
                     div()
+                        .id("nitro-tier2-mascot")
+                        .aria_label(mascot_alt)
                         .absolute()
                         .left(px(170.))
                         .top(px(-55.))
@@ -1443,6 +1476,132 @@ impl Root {
             .into_any_element()
     }
 
+    /// Module 579245: Nitro Friends / Affinity Social Proof Banner (`GET /users/@me/billing/nitro-affinity`):
+    /// up to 3 overlapping avatars (`ml(-8px)`, surface border cutout) + `c7ETJH` / `st8Rh/` / `dpjXPL`.
+    pub(super) fn nitro_affinity_banner(&self, brand_refresh: bool) -> Option<AnyElement> {
+        let raw = self.fetched.get("nitro:affinity")?;
+        let list = raw
+            .get("body")
+            .and_then(Value::as_array)
+            .or_else(|| raw.as_array())?;
+        if list.is_empty() {
+            return None;
+        }
+        let mut users: Vec<(String, Option<String>)> = list
+            .iter()
+            .take(3)
+            .map(|u| {
+                let name = u["global_name"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| u["username"].as_str())
+                    .unwrap_or("Friend")
+                    .to_owned();
+                let id = u["id"].as_str().map(str::to_owned);
+                (name, id)
+            })
+            .collect();
+        users.reverse();
+        let copy = match users.len() {
+            3 => dc_intl::format(
+                "c7ETJH",
+                &[(
+                    "username",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&users[2].0)),
+                )],
+            ),
+            2 => dc_intl::format(
+                "st8Rh/",
+                &[
+                    (
+                        "username",
+                        dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&users[1].0)),
+                    ),
+                    (
+                        "otherUsername",
+                        dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&users[0].0)),
+                    ),
+                ],
+            ),
+            _ => dc_intl::format(
+                "dpjXPL",
+                &[(
+                    "username",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&users[0].0)),
+                )],
+            ),
+        };
+        let avatar_px = if brand_refresh { 24. } else { 32. };
+        let avatars = div()
+            .flex()
+            .items_center()
+            .children(users.iter().enumerate().map(|(idx, (name, uid))| {
+                let pic = uid
+                    .as_deref()
+                    .and_then(|s| s.parse::<dc_state::Id>().ok())
+                    .and_then(|id| self.stores.users.get(&id))
+                    .and_then(|u| {
+                        let (k, _) = super::avatar_source(u);
+                        self.images.get(&k).cloned()
+                    });
+                let initial = name
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_uppercase()
+                    .to_string();
+                div()
+                    .when(idx > 0, |d| d.ml(px(-8.)))
+                    .size(px(avatar_px))
+                    .rounded_full()
+                    .border_2()
+                    .border_color(color("--background-surface-higher"))
+                    .bg(color("--background-brand"))
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(match pic {
+                        Some(image) => img(image)
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .into_any_element(),
+                        None => {
+                            Self::nitro_text(&initial, 11., 14., 700., "--white").into_any_element()
+                        }
+                    })
+            }));
+        let banner = if brand_refresh {
+            div()
+                .id("nitro-affinity-banner")
+                .mt(px(16.))
+                .px(px(16.))
+                .py(px(12.))
+                .rounded(px(10.))
+                .bg(color("--background-mod-normal"))
+                .flex()
+                .items_center()
+                .gap(px(9.))
+                .child(avatars)
+                .child(Self::nitro_text(&copy, 14., 18., 500., "--text-strong"))
+        } else {
+            div()
+                .id("nitro-affinity-banner")
+                .mt(px(16.))
+                .h(px(50.))
+                .px(px(20.))
+                .rounded(px(10.))
+                .bg(gpui::rgba(0xffffff14))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(9.))
+                .child(avatars)
+                .child(Self::nitro_text(&copy, 16., 20., 500., "--text-strong"))
+        };
+        Some(banner.into_any_element())
+    }
+
     fn nitro_plans(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id("nitro-plans")
@@ -1451,6 +1610,7 @@ impl Root {
             .items_center()
             .w_full()
             .child(Self::nitro_heading("Pick Your Plan", 32., 34., true))
+            .children(self.nitro_affinity_banner(true))
             .child(
                 div()
                     .mt(px(112.))
@@ -2037,6 +2197,73 @@ impl Root {
             .is_some_and(|guild| guild.emojis.iter().any(|emoji| id == emoji.id));
         (!own && !tier.has(premium::Feature::EmojisEverywhere))
             || (animated && !tier.has(premium::Feature::AnimatedEmojis))
+    }
+
+    /// Capture helper for Phase 3ah visual surfaces (`trial-upsell`, `affinity`, `guide-bar`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_phase3ah(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "trial-upsell" => {
+                self.fetched.insert(
+                    "user-offer".to_owned(),
+                    serde_json::json!({
+                        "user_trial_offer": {
+                            "subscription_trial": {
+                                "sku_id": sku::TIER_2.to_string(),
+                                "interval": 1,
+                                "interval_count": 1
+                            }
+                        }
+                    }),
+                );
+                self.open_try_it_out_upsell(cx);
+                "phase3ah: trial-upsell".to_owned()
+            }
+            "affinity" => {
+                self.fetched.insert(
+                    "nitro:affinity".to_owned(),
+                    serde_json::json!([
+                        { "id": "101", "username": "wren", "global_name": "Wren" },
+                        { "id": "102", "username": "loreanxavier", "global_name": "lorean xavier" },
+                        { "id": "103", "username": "plu", "global_name": "plü" }
+                    ]),
+                );
+                self.open_nitro(cx);
+                cx.notify();
+                "phase3ah: affinity".to_owned()
+            }
+            "guide-bar" => {
+                if let (Some(gid), Some(cid)) = (self.guild, self.channel) {
+                    if let Some(g) = self.stores.guilds.iter_mut().find(|g| g.id == gid) {
+                        for f in ["COMMUNITY", "GUILD_SERVER_GUIDE", "GUILD_ONBOARDING"] {
+                            if !g.features.iter().any(|x| x == f) {
+                                g.features.push(f.to_owned());
+                            }
+                        }
+                        g.my_pending = false;
+                        g.my_flags &= !64;
+                    }
+                    self.fetched.insert(
+                        format!("guild-guide:home:{gid}"),
+                        serde_json::json!({
+                            "welcome_message": { "author_ids": [], "message": "Welcome!" },
+                            "new_member_actions": [
+                                {
+                                    "channel_id": cid.to_string(),
+                                    "action_type": 1,
+                                    "title": "Introduce yourself in #general",
+                                    "description": "Say hello to the server!"
+                                }
+                            ],
+                            "resource_channels": []
+                        }),
+                    );
+                }
+                cx.notify();
+                "phase3ah: guide-bar".to_owned()
+            }
+            other => format!("phase3ah: unknown {other}"),
+        }
     }
 
     /// Capture harness step `premium N`: the account's tier, changed in this process only, with the monthly

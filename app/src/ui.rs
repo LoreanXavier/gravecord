@@ -7812,6 +7812,15 @@ impl Root {
                     div()
                         .flex()
                         .gap(px(8.))
+                        .children(self.channel.and_then(|cid| {
+                            self.stores
+                                .private_channels
+                                .iter()
+                                .find(|dm| dm.id == cid && (dm.flags & 16 != 0))
+                                .and_then(|_| {
+                                    self.join_request_review_actions(cid, false, true, cx)
+                                })
+                        }))
                         .children(self.dm_call_header_items(cx))
                         .children(
                             self.channel
@@ -10961,6 +10970,7 @@ impl Root {
             .pb(px(8.))
             .children(self.typing_bar(cx))
             .children(self.slowmode_notice(cx))
+            .children(self.guide_channel_action_bar(false, cx))
             .child(self.regions.composer_probe())
             .child(
                 div()
@@ -11894,6 +11904,7 @@ impl Render for Root {
                         || this.partner_reward_modal.is_some()
                         || this.claim_before_purchase_modal.is_some()
                         || this.nitro_upload_badge_upsell
+                        || this.try_it_out_upsell
                         || this.activity_invite_modal.is_some()
                         || this.shop.wishlist_nux_sku.is_some()
                         || this.orb_wallet.delivered_modal.is_some()
@@ -11992,6 +12003,7 @@ impl Render for Root {
                     this.partner_reward_modal = None;
                     this.claim_before_purchase_modal = None;
                     this.nitro_upload_badge_upsell = false;
+                    this.try_it_out_upsell = false;
                     this.activity_invite_modal = None;
                     this.shop.wishlist_nux_sku = None;
                     this.orb_wallet.delivered_modal = None;

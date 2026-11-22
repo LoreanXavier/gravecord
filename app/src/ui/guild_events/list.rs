@@ -12,8 +12,8 @@ use chrono::NaiveDateTime;
 use dc_state::{
     ChannelKind, Id, User, permissions,
     scheduled_events::{
-        ENTITY_EXTERNAL, ENTITY_STAGE_INSTANCE, EventUser, RESPONSE_INTERESTED, STATUS_CANCELED,
-        STATUS_COMPLETED, ScheduledEvent,
+        ENTITY_EXTERNAL, ENTITY_STAGE_INSTANCE, EventUser, RESPONSE_INTERESTED, STATUS_ACTIVE,
+        STATUS_CANCELED, STATUS_COMPLETED, ScheduledEvent,
     },
 };
 use gpui::{
@@ -541,13 +541,23 @@ impl Root {
             .and_then(|creator| self.event_user(creator));
         let count = self.stores.scheduled_events.get_user_count(id, None);
         let (place_icon, place) = self.event_place(event);
+        let joined_this_event = event.status == STATUS_ACTIVE
+            && event.channel_id.is_some()
+            && self
+                .call
+                .as_ref()
+                .is_some_and(|c| Some(c.channel) == event.channel_id);
         let mut card = div()
             .id(("event-card", id))
             .w(px(554.))
             .flex_none()
             .rounded(px(8.))
             .border_1()
-            .border_color(color("--border-subtle"))
+            .border_color(if joined_this_event {
+                color("--status-positive-background")
+            } else {
+                color("--border-subtle")
+            })
             .bg(color("--background-surface-higher"))
             .hover(|style| style.bg(color("--background-surface-highest")))
             .cursor_pointer()
@@ -657,6 +667,9 @@ impl Root {
                         this.open_screening(cx);
                     }))
             })
+            .when(event.entity_type == ENTITY_EXTERNAL, |this| {
+                this.on_click(|_, _, cx| cx.stop_propagation())
+            })
             .child(place_icon_element)
             .child(
                 div()
@@ -676,6 +689,91 @@ impl Root {
         } else {
             place_row.into_any_element()
         };
+        // Module 567550 `G`: active voice/Stage event speaker grid (up to 5 avatars + `+N Speaker(s)` `185ggO`).
+        let speakers_grid = (event.status == STATUS_ACTIVE)
+            .then_some(event.channel_id)
+            .flatten()
+            .and_then(|cid| {
+                let mut speakers: Vec<Id> = self
+                    .stores
+                    .voice_members(event.guild_id, cid)
+                    .into_iter()
+                    .filter(|vs| event.entity_type != ENTITY_STAGE_INSTANCE || !vs.suppress)
+                    .map(|vs| vs.user_id)
+                    .collect();
+                if speakers.is_empty() {
+                    return None;
+                }
+                let total = speakers.len();
+                speakers.truncate(5);
+                let overflow = total.saturating_sub(speakers.len());
+                let mut cells: Vec<AnyElement> = speakers
+                    .into_iter()
+                    .map(|uid| {
+                        let user = self.event_user(uid);
+                        let name = user
+                            .as_ref()
+                            .map(|u| u.display_name().to_owned())
+                            .unwrap_or_else(|| uid.to_string());
+                        div()
+                            .w(px(164.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(self.event_avatar(user.as_ref(), 20.))
+                            .child(
+                                div()
+                                    .max_w(px(120.))
+                                    .truncate()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-default"))
+                                    .child(name),
+                            )
+                            .into_any_element()
+                    })
+                    .collect();
+                if overflow > 0 {
+                    let overflow_label =
+                        dc_intl::format("185ggO", &[("count", dc_intl::Arg::Num(overflow as f64))]);
+                    cells.push(
+                        div()
+                            .w(px(164.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .size(px(20.))
+                                    .rounded_full()
+                                    .bg(color("--background-base-lowest"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("mic", 12., "--text-default")),
+                            )
+                            .child(
+                                div()
+                                    .max_w(px(120.))
+                                    .truncate()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-default"))
+                                    .child(overflow_label),
+                            )
+                            .into_any_element(),
+                    );
+                }
+                Some(
+                    div()
+                        .mt(px(16.))
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(8.))
+                        .children(cells),
+                )
+            });
         let footer = div()
             .mt(px(12.))
             .h(px(32.))
@@ -727,6 +825,7 @@ impl Root {
                                 }),
                         ),
                 )
+                .children(speakers_grid)
                 .child(
                     div()
                         .mt(px(16.))

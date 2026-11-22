@@ -550,6 +550,8 @@ pub struct Guild {
     pub max_stage_video_channel_users: u64,
     /// `max_video_channel_users`: the video seats of a voice channel (`maxVideoChannelUsers`, `Pd` of module 147036).
     pub max_video_channel_users: u64,
+    /// `max_members`: maximum member cap advertised for the guild (used by join-request Approve guard, module 561446).
+    pub max_members: Option<u64>,
     /// `premium_progress_bar_enabled`: the boost progress bar in the channel list.
     pub premium_progress_bar_enabled: bool,
     /// `system_channel_flags`: which system messages the guild silences (SUPPRESS_JOIN_NOTIFICATION_REPLIES is
@@ -964,6 +966,9 @@ impl Guild {
                 .as_u64()
                 .or(properties["max_video_channel_users"].as_u64())
                 .unwrap_or(0),
+            max_members: value["max_members"]
+                .as_u64()
+                .or(properties["max_members"].as_u64()),
             premium_progress_bar_enabled: value["premium_progress_bar_enabled"]
                 .as_bool()
                 .or(properties["premium_progress_bar_enabled"].as_bool())
@@ -1024,6 +1029,7 @@ impl Guild {
         self.max_video_channel_users = value["max_video_channel_users"]
             .as_u64()
             .unwrap_or(self.max_video_channel_users);
+        self.max_members = value["max_members"].as_u64().or(self.max_members);
         self.premium_progress_bar_enabled = value["premium_progress_bar_enabled"]
             .as_bool()
             .unwrap_or(self.premium_progress_bar_enabled);
@@ -5306,6 +5312,7 @@ mod tests {
             premium_subscription_count: 0,
             max_stage_video_channel_users: 0,
             max_video_channel_users: 0,
+            max_members: None,
             premium_progress_bar_enabled: false,
             system_channel_flags: 0,
             emojis: Vec::new(),

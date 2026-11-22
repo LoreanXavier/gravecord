@@ -919,6 +919,8 @@ impl Root {
                             "boost:roles",
                             "Enhanced Role Styles",
                             "Make certain roles stand out with animated, vibrant gradients.",
+                            3u32,
+                            Some("NEW"),
                         ),
                         (
                             "boost-perk-tag",
@@ -926,10 +928,23 @@ impl Root {
                             "boost:tag",
                             "Server Tag",
                             "Let your members represent your server everywhere on Discord.",
+                            3u32,
+                            Some("BETA"),
                         ),
                     ]
-                    .map(|(id, sku_id, art, title, body)| {
-                        // `.card_RL7BaR` (module 658937, `196063.css`): clicking opens `GuildPowerupPerkModal` (945942).
+                    .map(|(id, sku_id, art, title, body, cost, badge)| {
+                        // `.card_RL7BaR` (module 658937) + module 577930 (`NI`/`Ft`/`$L` powerup perk card primitives:
+                        // active/expiring/removing borders, corner NEW/BETA badge, `t2Wbo1` boost cost).
+                        let perk_active = self.current_guild().is_some_and(|g| {
+                            (sku_id == SKU_ROLE_STYLES
+                                && g.features.iter().any(|f| f == "ENHANCED_ROLE_COLORS"))
+                                || (sku_id == SKU_SERVER_TAG
+                                    && g.features.iter().any(|f| f == "GUILD_TAGS"))
+                        });
+                        let cost_label = dc_intl::format(
+                            "t2Wbo1",
+                            &[("required", (cost as f64).into()), ("decorator", "".into())],
+                        );
                         div()
                             .id(id)
                             .cursor_pointer()
@@ -940,7 +955,11 @@ impl Root {
                             .rounded(px(16.))
                             .backdrop_blur(px(40.))
                             .border_1()
-                            .border_color(gpui::hsla(240. / 360., 0.04, 0.61, 0.12))
+                            .border_color(if perk_active {
+                                gpui::Hsla::from(color("--status-positive"))
+                            } else {
+                                gpui::hsla(240. / 360., 0.04, 0.61, 0.12)
+                            })
                             .bg(gpui::hsla(240. / 360., 0.04, 0.61, 0.08))
                             .hover(|s| s.border_color(gpui::hsla(240. / 360., 0.04, 0.75, 0.28)))
                             .p(px(24.))
@@ -968,6 +987,22 @@ impl Root {
                                     .h(px(316.))
                                     .rounded(px(15.)),
                             )
+                            .when_some(badge, |card, pill| {
+                                card.child(
+                                    div()
+                                        .absolute()
+                                        .top(px(12.))
+                                        .right(px(12.))
+                                        .px(px(8.))
+                                        .py(px(2.))
+                                        .rounded(px(999.))
+                                        .bg(color("--control-primary-background-default"))
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--white"))
+                                        .child(pill),
+                                )
+                            })
                             .child(self.boost_art(art, 250., 140.))
                             .child(
                                 div()
@@ -989,20 +1024,56 @@ impl Root {
                             )
                             .child(
                                 div()
-                                    .h(px(32.))
-                                    .px(px(12.))
-                                    .rounded(px(8.))
-                                    .border_1()
-                                    .border_color(gpui::hsla(240. / 360., 0.04, 0.61, 0.04))
-                                    .bg(gpui::hsla(240. / 360., 0.04, 0.61, 0.08))
                                     .flex()
                                     .items_center()
-                                    .gap(px(4.))
-                                    .text_size(px(14.))
-                                    .line_height(px(18.))
-                                    .text_color(rgba(0x94959cff))
-                                    .child(icon("boost_gem", 16., "--guild-boosting-pink-refresh"))
-                                    .child("3 Boosts"),
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .h(px(32.))
+                                            .px(px(12.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(gpui::hsla(240. / 360., 0.04, 0.61, 0.04))
+                                            .bg(gpui::hsla(240. / 360., 0.04, 0.61, 0.08))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .text_size(px(14.))
+                                            .line_height(px(18.))
+                                            .text_color(rgba(0x94959cff))
+                                            .child(icon(
+                                                "boost_gem",
+                                                16.,
+                                                "--guild-boosting-pink-refresh",
+                                            ))
+                                            .child(cost_label),
+                                    )
+                                    .when(perk_active, |row| {
+                                        row.child(
+                                            div()
+                                                .h(px(32.))
+                                                .px(px(10.))
+                                                .rounded(px(8.))
+                                                .bg(gpui::rgba(0x23a55a22))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(4.))
+                                                .child(icon(
+                                                    "circle_check",
+                                                    14.,
+                                                    "--status-positive",
+                                                ))
+                                                .child(
+                                                    text(
+                                                        13.,
+                                                        16.,
+                                                        600.,
+                                                        "--text-feedback-positive",
+                                                    )
+                                                    .child("Active"),
+                                                ),
+                                        )
+                                    }),
                             )
                     }),
                 ),

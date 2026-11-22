@@ -84,6 +84,27 @@ pub fn promoted_reward_headline(quest: &Quest, is_nitro: bool) -> (bool, String)
     }
 }
 
+/// Fallback reason for `QUESTS_EMBED` when a linked quest cannot be shown (module 562293 / 632623 / 127219).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) enum QuestFallbackReason {
+    NotFound,
+    Excluded,
+    NotShareable,
+    MobileOnly,
+}
+
+impl QuestFallbackReason {
+    pub(super) fn body_key(self) -> &'static str {
+        match self {
+            Self::Excluded => "NIliWX",
+            Self::NotShareable => "Rw9rwW",
+            Self::MobileOnly => "Pag1gS",
+            Self::NotFound => "c9275Z",
+        }
+    }
+}
+
 /// Enrollment-blocked ("You've been busy!", module 124232) modal state.
 #[derive(Clone, Debug)]
 pub(super) struct EnrollmentBlockedModal {
@@ -91,6 +112,124 @@ pub(super) struct EnrollmentBlockedModal {
 }
 
 impl Root {
+    /// Module 562293 (`i`): `"This was a Quest but..."` (`vnP31W`) fallback card for `QUESTS_EMBED`
+    /// (`632623` / `127219`). Dark: `--background-base-lowest` content + `--background-base-lower` art;
+    /// Light: `--background-base-lower` content + `--background-mod-normal` art; `"View Quests"` (`GURBQl`) CTA.
+    pub(super) fn quest_embed_fallback_card(
+        &self,
+        quest_id: &str,
+        reason: QuestFallbackReason,
+        id_prefix: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let light = super::theme() == dc_tokens::Theme::Light;
+        let content_bg = if light {
+            color("--background-base-lower")
+        } else {
+            color("--background-base-lowest")
+        };
+        let art_bg = if light {
+            color("--background-mod-normal")
+        } else {
+            color("--background-base-lower")
+        };
+        let art_url = "https://discord.com/assets/2431801debe6535e.svg";
+        let art = self.images.get(art_url).cloned();
+        div()
+            .id(SharedString::from(format!(
+                "{id_prefix}-quest-fallback-{quest_id}"
+            )))
+            .min_w(px(280.))
+            .max_w(px(660.))
+            .w_full()
+            .h(px(250.))
+            .mb(px(8.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .overflow_hidden()
+            .flex()
+            .flex_row()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .bg(content_bg)
+                    .pt(px(32.))
+                    .px(px(16.))
+                    .pb(px(16.))
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("vnP31W")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-default"))
+                                    .child(dc_intl::t(reason.body_key())),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "{id_prefix}-quest-fallback-cta-{quest_id}"
+                            )))
+                            .self_start()
+                            .h(px(38.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .hover(|s| s.bg(color("--control-primary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("GURBQl"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_quests(cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .bg(art_bg)
+                    .p(px(16.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(match art {
+                        Some(image) => gpui::img(image)
+                            .h(px(180.))
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .into_any_element(),
+                        None => icon("home_quests", 64., "--icon-muted").into_any_element(),
+                    }),
+            )
+            .into_any_element()
+    }
+
     /// Renders a `107543` Quest Promoted Card (`min-w: 336px, max-w: 425px, rounded: 10px`).
     pub(super) fn quest_promoted_card(
         &self,

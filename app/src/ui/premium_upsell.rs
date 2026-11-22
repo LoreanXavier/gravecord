@@ -8,9 +8,8 @@
 //! * "Reimagine your profile with Nitro" (module 536015, the profile editor's "Level up your look" link): its CDN
 //!   picture in the header's graphic box (`graphic_modal.rs`).
 //!
-//! GAP: the primary label is always Get Nitro; 831318 names a trial ("Try N months free") or a discount ("Save N% on
-//! Nitro") when the account has such an offer, and adds the `free_trial` or `beta` badge, which this client does not
-//! read.
+//! Resolves active `user-offer` trial (`722178.FY`: `C6i5Jt`/`cR9ifw`/`8FZfNo`/`xzAcST` + `FREE TRIAL` badge)
+//! or discount (`bkQ4bH`) on `TIER_2` per module 831318, falling back to `pj0XBN` ("Get Nitro").
 
 use super::graphic_modal::{Graphic, fitted, graphic_box_height};
 use super::modal::{self, Tone};
@@ -80,6 +79,52 @@ pub(super) const TRY_IT_OUT_GRAPHIC: Graphic = Graphic {
     height: 192.,
 };
 
+/// Resolves the primary CTA label and optional expressive header badge (`FREE TRIAL`) from a
+/// `GET /users/@me/billing/user-offer` JSON payload for `tier_sku` (module 831318 / 722178.FY).
+pub(super) fn resolve_upsell_offer(
+    offer: Option<&serde_json::Value>,
+    tier_sku: u64,
+) -> (SharedString, Option<&'static str>) {
+    let tier_str = tier_sku.to_string();
+    if let Some(offer) = offer {
+        let trial = &offer["user_trial_offer"]["subscription_trial"];
+        if trial["sku_id"].as_str() == Some(tier_str.as_str()) {
+            let interval = trial["interval"].as_u64().unwrap_or(1);
+            let count = trial["interval_count"].as_u64().unwrap_or(1) as f64;
+            let price = "$0";
+            let label = match interval {
+                // DAY = 3, WEEK = 4, MONTH = 1, YEAR = 2
+                3 => dc_intl::format("cR9ifw", &[("days", count.into()), ("price", price.into())]),
+                4 => dc_intl::format(
+                    "C6i5Jt",
+                    &[("weeks", count.into()), ("price", price.into())],
+                ),
+                2 => dc_intl::format(
+                    "xzAcST",
+                    &[("years", count.into()), ("price", price.into())],
+                ),
+                _ => dc_intl::format(
+                    "8FZfNo",
+                    &[("months", count.into()), ("price", price.into())],
+                ),
+            };
+            return (SharedString::from(label), Some("FREE TRIAL"));
+        }
+        let discount = &offer["user_discount_offer"]["discount"];
+        if let Some(amount) = discount["amount"].as_u64().filter(|&n| n > 0) {
+            let matches_tier = discount["plan_ids"]
+                .as_array()
+                .is_none_or(|plans| plans.is_empty())
+                || discount["sku_id"].as_str() == Some(tier_str.as_str());
+            if matches_tier {
+                let label = dc_intl::format("bkQ4bH", &[("percent", (amount as f64).into())]);
+                return (SharedString::from(label), None);
+            }
+        }
+    }
+    (SharedString::from(dc_intl::t("pj0XBN")), None)
+}
+
 impl Root {
     pub(super) fn premium_upsell(&self, spec: Spec, cx: &mut Context<Self>) -> AnyElement {
         let [close_id, perks_id, get_id] = spec.ids;
@@ -87,6 +132,10 @@ impl Root {
         let (close_scrim, close_button) = (close.clone(), close.clone());
         let on_secondary = spec.on_secondary;
         let on_primary = spec.on_primary;
+        let (primary_label, offer_badge) = resolve_upsell_offer(
+            self.fetched.get("user-offer"),
+            dc_state::premium::sku::TIER_2,
+        );
         let perks = modal::footer_button(
             modal::button(
                 perks_id,
@@ -100,7 +149,7 @@ impl Root {
             .id(get_id)
             // `expressiveWrapper_F7qvhY` is 202 wide beside the 204 of the secondary button.
             .flex_none()
-            .w(px(202.))
+            .min_w(px(202.))
             .h(px(40.))
             .px(px(16.))
             .rounded(px(8.))
@@ -115,7 +164,7 @@ impl Root {
             .font_weight(FontWeight(500.))
             .text_color(rgba(0x000000ff))
             .child(icon("nitro_wheel", 20., "--black"))
-            .child(dc_intl::tr("Get Nitro"))
+            .child(primary_label)
             .on_click(cx.listener(move |this, _, window, cx| {
                 on_primary(this, window, cx);
                 cx.notify();
@@ -213,6 +262,19 @@ impl Root {
                             .items_center()
                             .gap(px(8.))
                             .child(graphic)
+                            .when_some(offer_badge, |col, badge| {
+                                col.child(
+                                    div()
+                                        .px(px(8.))
+                                        .py(px(2.))
+                                        .rounded(px(999.))
+                                        .bg(rgba(0xffffffff))
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(rgba(0x000000ff))
+                                        .child(badge),
+                                )
+                            })
                             .child(
                                 div()
                                     .text_size(px(24.))
@@ -713,5 +775,35 @@ mod tests {
             "wide.gif",
             PremiumType::Nitro
         ));
+    }
+
+    #[test]
+    fn resolve_upsell_offer_picks_trial_discount_or_default() {
+        let tier = dc_state::premium::sku::TIER_2;
+        let (label, badge) = resolve_upsell_offer(None, tier);
+        assert_eq!(label.as_ref(), "Get Nitro");
+        assert_eq!(badge, None);
+
+        let trial = serde_json::json!({
+            "user_trial_offer": {
+                "subscription_trial": {
+                    "sku_id": tier.to_string(),
+                    "interval": 1,
+                    "interval_count": 1
+                }
+            }
+        });
+        let (t_label, t_badge) = resolve_upsell_offer(Some(&trial), tier);
+        assert!(t_label.contains("1 month"), "got {t_label}");
+        assert_eq!(t_badge, Some("FREE TRIAL"));
+
+        let disc = serde_json::json!({
+            "user_discount_offer": {
+                "discount": { "amount": 30, "sku_id": tier.to_string() }
+            }
+        });
+        let (d_label, d_badge) = resolve_upsell_offer(Some(&disc), tier);
+        assert!(d_label.contains("30%"), "got {d_label}");
+        assert_eq!(d_badge, None);
     }
 }

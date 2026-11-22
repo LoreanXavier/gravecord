@@ -33,6 +33,8 @@ pub(crate) struct ServerShopProduct {
     pub is_draft: bool,
     /// Whether to show the `"Purchase to Unlock"` lock overlay on the thumbnail (`YmIiSe`).
     pub show_unlock_badge: bool,
+    /// Whether this product listing is published (`published == false` triggers module 558067 alert).
+    pub published: bool,
 }
 
 /// Formatted product listing price with `"$——"` (`4uLhAp`) fallback (module 500770).
@@ -83,6 +85,8 @@ pub(crate) struct ServerShopModal {
     pub detail: Option<ServerProductInfoModal>,
     /// Active Report Listing SKU dialog (module 200073).
     pub report: Option<ServerShopReportModal>,
+    /// Active Unavailable Product alert (module 558067: `wLrh03`, `DW9yJj`, `BddRzS`).
+    pub unavailable_alert: bool,
 }
 
 impl Root {
@@ -256,10 +260,14 @@ impl Root {
             .flex_col()
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(m) = this.server_shop_modal.as_mut() {
-                    m.detail = Some(ServerProductInfoModal {
-                        product: clicked.clone(),
-                        contents_expanded: false,
-                    });
+                    if !clicked.published {
+                        m.unavailable_alert = true;
+                    } else {
+                        m.detail = Some(ServerProductInfoModal {
+                            product: clicked.clone(),
+                            contents_expanded: false,
+                        });
+                    }
                 }
                 cx.notify();
             }))
@@ -408,6 +416,10 @@ impl Root {
 
     pub(crate) fn close_server_shop(&mut self) -> bool {
         if let Some(m) = self.server_shop_modal.as_mut() {
+            if m.unavailable_alert {
+                m.unavailable_alert = false;
+                return true;
+            }
             if m.report.take().is_some() {
                 return true;
             }
@@ -418,11 +430,90 @@ impl Root {
         self.server_shop_modal.take().is_some()
     }
 
+    /// Module 558067: `"This product is not available."` (`wLrh03`, `DW9yJj`, `BddRzS`, `size: "sm"` 400px).
+    fn server_shop_unavailable_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let dialog = div()
+            .id("server-shop-unavailable-modal")
+            .occlude()
+            .w(px(400.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .p(px(24.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight(700.))
+                    .text_color(color("--text-strong"))
+                    .child(dc_intl::t("wLrh03")),
+            )
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(dc_intl::t("DW9yJj")),
+            )
+            .child(
+                div()
+                    .id("server-shop-unavailable-ok")
+                    .mt(px(8.))
+                    .w_full()
+                    .h(px(38.))
+                    .rounded(px(8.))
+                    .bg(color("--control-primary-background-default"))
+                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--white"))
+                    .child(dc_intl::t("BddRzS"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(m) = this.server_shop_modal.as_mut() {
+                            m.unavailable_alert = false;
+                        }
+                        cx.notify();
+                    })),
+            );
+        deferred(
+            div()
+                .id("server-shop-unavailable-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x000000b3))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(m) = this.server_shop_modal.as_mut() {
+                        m.unavailable_alert = false;
+                    }
+                    cx.notify();
+                }))
+                .child(dialog),
+        )
+        .with_priority(5)
+        .into_any_element()
+    }
+
     pub(in crate::ui) fn server_shop_modal_layer(
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let modal = self.server_shop_modal.as_ref()?;
+        if modal.unavailable_alert {
+            return Some(self.server_shop_unavailable_dialog(cx));
+        }
         if let Some(report) = modal.report.as_ref() {
             return Some(self.server_shop_report_dialog(report, cx));
         }
@@ -1456,6 +1547,7 @@ impl Root {
             image_url: None,
             is_draft: false,
             show_unlock_badge: true,
+            published: true,
         };
         let products = if arg == "empty" {
             Vec::new()
@@ -1474,6 +1566,7 @@ impl Root {
                     image_url: None,
                     is_draft: arg == "draft",
                     show_unlock_badge: false,
+                    published: arg != "draft",
                 },
             ]
         };
@@ -1515,6 +1608,7 @@ impl Root {
             promo_dismissed: arg == "draft",
             detail,
             report,
+            unavailable_alert: arg == "unavailable",
         });
         cx.notify();
         format!("server-shop: {arg}")
