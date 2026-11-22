@@ -616,20 +616,13 @@ impl Root {
             .rounded_t(px(8.))
             .overflow_hidden()
             .bg(color("--background-surface-high"))
-            // Hero image or rich dark-brand fallback gradient
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(linear_gradient(
-                        135.,
-                        linear_color_stop(rgba(0x5865f244), 0.),
-                        linear_color_stop(color("--background-base-lowest"), 1.),
-                    ))
-                    .children(
-                        hero_img.map(|im| img(im).size_full().object_fit(gpui::ObjectFit::Cover)),
-                    ),
-            )
+            // Module 918338 (`QuestTileBanner`): hero image or fallback gradient with `d/+YKd` label.
+            .child(render_quest_tile_banner(
+                &quest.config.quest_name,
+                hero_img,
+                QuestBannerVariant::Banner,
+                false,
+            ))
             // `overlay_CXA5dw`: smooth bottom scrim into `--background-surface-high`
             .child(div().absolute().inset_0().bg(linear_gradient(
                 0.,
@@ -3752,6 +3745,86 @@ pub(super) struct QuestRewardTileProps {
     pub alt_label: String,
 }
 
+/// Module 918338 (`QuestTileBanner`): layout variant (`banner` vs `modalPanel`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum QuestBannerVariant {
+    Banner,
+    ModalPanel,
+}
+
+/// Module 918338 (`k()`): computes hero image request dimensions `{ width, height }` for
+/// `width = 454 * min(2, dpr)` and `aspect = 2640 / 740`.
+#[allow(dead_code)]
+pub(super) fn quest_hero_image_size(dpr: f32) -> (f32, f32) {
+    let w = 454.0 * dpr.clamp(1.0, 2.0);
+    let h = w / (2640.0 / 740.0);
+    (w, h)
+}
+
+/// Module 918338 (`d/+YKd`): `"{questName} quest banner"` accessible label / alt text.
+pub(super) fn quest_banner_alt(quest_name: &str) -> String {
+    if quest_name.trim().is_empty() {
+        dc_intl::t("P84bAD").to_owned()
+    } else {
+        dc_intl::format("d/+YKd", &[("questName", quest_name.into())])
+    }
+}
+
+/// Module 918338 (`QuestTileBanner` `A`, CSS `271182`): renders the shared Quest hero banner
+/// container for both `Banner` (full-bleed tile header) and `ModalPanel` (`max-h: 190px` with
+/// vertical fade scrim into `--background-base-lowest`), supporting `hide_assets` and `d/+YKd`.
+pub(super) fn render_quest_tile_banner(
+    quest_name: &str,
+    hero_img: Option<std::sync::Arc<gpui::Image>>,
+    variant: QuestBannerVariant,
+    hide_assets: bool,
+) -> AnyElement {
+    let alt = quest_banner_alt(quest_name);
+    let mut base = div()
+        .id(SharedString::from(format!("quest-banner-{quest_name}")))
+        .w_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .overflow_hidden()
+        .bg(color("--background-base-low"))
+        .aria_label(SharedString::from(alt));
+
+    base = match variant {
+        QuestBannerVariant::Banner => base.absolute().inset_0(),
+        QuestBannerVariant::ModalPanel => base.relative().max_h(px(190.)).h(px(190.)),
+    };
+
+    if hide_assets {
+        return base.into_any_element();
+    }
+
+    let media = match hero_img {
+        Some(im) => img(im)
+            .size_full()
+            .object_fit(gpui::ObjectFit::Cover)
+            .into_any_element(),
+        None => div()
+            .size_full()
+            .bg(linear_gradient(
+                135.,
+                linear_color_stop(rgba(0x5865f244), 0.),
+                linear_color_stop(rgba(0x1e1f22ff), 1.),
+            ))
+            .into_any_element(),
+    };
+
+    base.child(media)
+        .when(variant == QuestBannerVariant::ModalPanel, |d| {
+            d.child(div().absolute().inset_0().bg(linear_gradient(
+                0.,
+                linear_color_stop(color("--background-base-lowest"), 0.),
+                linear_color_stop(color("--background-base-lowest").opacity(0.), 0.85),
+            )))
+        })
+        .into_any_element()
+}
+
 /// Module 639701: resolves `QuestRewardTile` alt label (`nLXlh+` `"{orbAmount} Orbs"` for claimed
 /// virtual currency quests, else reward name or `UMclVN` `"Quest reward"`).
 pub(super) fn quest_reward_tile_label(
@@ -3882,5 +3955,19 @@ mod tests {
         let fallback = quest_reward_tile_label(false, false, 0, None);
         assert_eq!(fallback, dc_intl::t("UMclVN"));
         assert!(!quest_reward_learn_more_text().is_empty());
+    }
+
+    #[test]
+    fn quest_tile_banner_918338_size_and_alt_copy() {
+        assert!(dc_intl::has_key("d/+YKd"));
+        assert!(dc_intl::has_key("P84bAD"));
+        let alt = quest_banner_alt("Starfall");
+        assert!(alt.contains("Starfall"), "got {alt}");
+        assert_eq!(quest_banner_alt(""), dc_intl::t("P84bAD"));
+        let (w1, h1) = quest_hero_image_size(1.0);
+        assert!((w1 - 454.0).abs() < 0.01);
+        assert!((h1 - (454.0 / (2640.0 / 740.0))).abs() < 0.05);
+        let (w3, _) = quest_hero_image_size(3.0);
+        assert!((w3 - 908.0).abs() < 0.01);
     }
 }

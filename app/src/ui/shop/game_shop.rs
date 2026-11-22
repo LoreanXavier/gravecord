@@ -225,11 +225,79 @@ pub(crate) fn discord_announcement_popover(
     })
 }
 
+/// Module 962299 (`SocialLayerStorefrontPromotionBanner`): active sticky promo banner data for a Game Shop.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(in crate::ui) struct StorefrontPromotion {
+    pub text: String,
+    /// Unix timestamp (seconds) when the promotion expires, if bounded.
+    pub ends_at_secs: Option<u64>,
+    /// `"nitro"` triggers `nitro-pink` gradient + `nitro_wheel` icon even in the generic branch.
+    pub flavor: String,
+    /// True when the viewer needs Nitro / an upgrade (`906383.ad` -> Branch 1 `pj0XBN` "Get Nitro").
+    pub needs_nitro: bool,
+    /// Optional redeemable Orbs coupon SKU attached to the promotion (Branch 2 -> `787844`).
+    pub coupon_sku_id: Option<String>,
+    pub coupon_orb_price: Option<u64>,
+    pub coupon_discount_percent: Option<u32>,
+    pub coupon_earned_or_consumed: bool,
+}
+
+/// Module 962299: resolved banner branch (`NitroUpsell` -> `OrbsCoupon` -> `Info`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ui) enum PromoBranch {
+    NitroUpsell,
+    OrbsCoupon,
+    Info,
+}
+
+impl StorefrontPromotion {
+    pub(in crate::ui) fn is_expired(&self, now_secs: u64) -> bool {
+        self.ends_at_secs.is_some_and(|end| now_secs >= end)
+    }
+
+    pub(in crate::ui) fn branch(&self) -> PromoBranch {
+        if self.needs_nitro {
+            PromoBranch::NitroUpsell
+        } else if self.coupon_sku_id.is_some()
+            && self.coupon_orb_price.is_some()
+            && !self.coupon_earned_or_consumed
+        {
+            PromoBranch::OrbsCoupon
+        } else {
+            PromoBranch::Info
+        }
+    }
+
+    pub(in crate::ui) fn is_nitro_pink(&self) -> bool {
+        matches!(
+            self.branch(),
+            PromoBranch::NitroUpsell | PromoBranch::OrbsCoupon
+        ) || self.flavor.eq_ignore_ascii_case("nitro")
+    }
+}
+
+/// Module 962299 / 647474 (`BXpdIg`): formats countdown badge (`"{days} days left"` or `HH:MM:SS`).
+pub(in crate::ui) fn promo_countdown_label(remaining_secs: u64) -> String {
+    if remaining_secs >= 86_400 {
+        let days = (remaining_secs / 86_400).max(1);
+        let formatted = dc_intl::format("BXpdIg", &[("days", (days as f64).into())]);
+        if !formatted.trim().is_empty() {
+            return formatted;
+        }
+        return format!("{days} days left");
+    }
+    let h = remaining_secs / 3600;
+    let m = (remaining_secs % 3600) / 60;
+    let s = remaining_secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(in crate::ui) struct Storefront {
     pub app: String,
     pub pages: Vec<Page>,
     pub listings: HashMap<String, Listing>,
+    pub promotion: Option<StorefrontPromotion>,
 }
 
 /// `GET /partner-sdk/applications/{id}/application-storefront` (`SOCIAL_LAYER_STOREFRONT_BY_APPLICATION_ID`).
@@ -397,10 +465,37 @@ pub(super) fn parse_storefront(body: &Value) -> Option<Storefront> {
             ))
         })
         .collect();
+    let promotion = body
+        .get("promotion")
+        .filter(|v| v.is_object())
+        .or_else(|| body["promotions"].as_array().and_then(|a| a.first()))
+        .and_then(|p| {
+            let text = p["header_text"]
+                .as_str()
+                .or_else(|| p["text"].as_str())?
+                .trim()
+                .to_owned();
+            if text.is_empty() {
+                return None;
+            }
+            let coupon = &p["coupon"];
+            Some(StorefrontPromotion {
+                text,
+                ends_at_secs: p["ends_at_secs"].as_u64(),
+                flavor: p["flavor"].as_str().unwrap_or_default().to_owned(),
+                needs_nitro: p["needs_nitro"].as_bool().unwrap_or(false),
+                coupon_sku_id: coupon["sku_id"].as_str().map(str::to_owned),
+                coupon_orb_price: coupon["orb_price"].as_u64(),
+                coupon_discount_percent: coupon["discount_percent"].as_u64().map(|n| n as u32),
+                coupon_earned_or_consumed: coupon["earned"].as_bool().unwrap_or(false)
+                    || coupon["consumed"].as_bool().unwrap_or(false),
+            })
+        });
     Some(Storefront {
         app,
         pages,
         listings,
+        promotion,
     })
 }
 
@@ -757,6 +852,15 @@ impl Root {
             .pb(px(PAD))
             .flex()
             .flex_col();
+        // Module 962299 (`SocialLayerStorefrontPromotionBanner`): sticky promo banner above content.
+        if let Some(promo) = store.promotion.as_ref() {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            if !promo.is_expired(now_secs) {
+                body = body.child(self.shop_game_promo_banner(&store.app, promo, now_secs, cx));
+            }
+        }
         let mut top = PAD;
         // `single-sku-wide-header`: a page with one sku opens with that card at the full width.
         let single = page.skus.len() == 1;
@@ -1239,6 +1343,146 @@ impl Root {
             .on_click(cx.listener(move |_, _, _, _| {
                 // A card opens the sku modal of module 317560, which is not built (BLOCKED.md).
             }))
+            .into_any_element()
+    }
+
+    /// Module 962299 (`SocialLayerStorefrontPromotionBanner`, CSS `279673`):
+    /// sticky storefront promo banner (`min-h: 32px`, `nitro-pink` gradient or surface pill) with
+    /// countdown badge (`BXpdIg`) and contextual CTA (`pj0XBN` "Get Nitro" or `787844` Orbs coupon).
+    pub(in crate::ui) fn shop_game_promo_banner(
+        &self,
+        app_id: &str,
+        promo: &StorefrontPromotion,
+        now_secs: u64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let branch = promo.branch();
+        let nitro_pink = promo.is_nitro_pink();
+        let countdown = promo
+            .ends_at_secs
+            .filter(|&end| end > now_secs)
+            .map(|end| promo_countdown_label(end - now_secs));
+        let cta: Option<AnyElement> = match branch {
+            PromoBranch::NitroUpsell => Some(
+                div()
+                    .id("game-shop-promo-get-nitro")
+                    .h(px(32.))
+                    .px(px(12.))
+                    .rounded(px(8.))
+                    .bg(color("--white"))
+                    .hover(|s| s.opacity(0.9))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .cursor_pointer()
+                    .child(icon("nitro_wheel", 16., "--text-strong"))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .line_height(px(16.))
+                            .font_weight(gpui::FontWeight(600.))
+                            .text_color(rgba(0x111214ff))
+                            .child(dc_intl::t("pj0XBN")),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.open_nitro(cx);
+                    }))
+                    .into_any_element(),
+            ),
+            PromoBranch::OrbsCoupon => promo.coupon_sku_id.clone().zip(promo.coupon_orb_price).map(
+                |(sku_id, orb_price)| {
+                    self.game_shop_orb_coupon_cta(
+                        sku_id,
+                        app_id.to_owned(),
+                        app_id.to_owned(),
+                        orb_price,
+                        promo.coupon_discount_percent,
+                        CouponSurface::Storefront,
+                        cx,
+                    )
+                },
+            ),
+            PromoBranch::Info => None,
+        };
+        let mut banner = div()
+            .id("game-shop-promo-banner")
+            .w_full()
+            .min_h(px(32.))
+            .mb(px(16.))
+            .px(px(16.))
+            .py(px(10.))
+            .rounded(px(8.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(10.));
+        banner = if nitro_pink {
+            banner.bg(gpui::linear_gradient(
+                90.,
+                gpui::linear_color_stop(rgba(0xb845c1ff), 0.),
+                gpui::linear_color_stop(rgba(0xe060a8ff), 1.),
+            ))
+        } else {
+            banner
+                .bg(color("--background-surface-high"))
+                .border_1()
+                .border_color(color("--border-subtle"))
+        };
+        banner
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon(
+                        if nitro_pink {
+                            "nitro_wheel"
+                        } else {
+                            "shop_info"
+                        },
+                        16.,
+                        if nitro_pink {
+                            "--white"
+                        } else {
+                            "--icon-strong"
+                        },
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(gpui::FontWeight(500.))
+                            .text_color(if nitro_pink {
+                                color("--white")
+                            } else {
+                                color("--text-strong")
+                            })
+                            .child(promo.text.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .children(countdown.map(|label| {
+                        div()
+                            .px(px(8.))
+                            .py(px(3.))
+                            .rounded(px(12.))
+                            .bg(rgba(0x00000044))
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(gpui::FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(label)
+                    }))
+                    .children(cta),
+            )
             .into_any_element()
     }
 
@@ -2050,5 +2294,42 @@ mod tests {
             GameShopGraphicSource::Video { .. }
         ));
         assert_eq!(vid_pop.action_label, dc_intl::t("RzWDqY"));
+    }
+
+    #[test]
+    fn storefront_promo_banner_962299_branches_and_countdown() {
+        assert!(!dc_intl::t("pj0XBN").is_empty());
+        assert!(dc_intl::has_key("BXpdIg"));
+        let nitro_promo = StorefrontPromotion {
+            text: "Get 20% off with Nitro".into(),
+            ends_at_secs: Some(200_000),
+            flavor: "nitro".into(),
+            needs_nitro: true,
+            ..Default::default()
+        };
+        assert_eq!(nitro_promo.branch(), PromoBranch::NitroUpsell);
+        assert!(nitro_promo.is_nitro_pink());
+        assert!(!nitro_promo.is_expired(100_000));
+        assert!(nitro_promo.is_expired(200_000));
+
+        let orbs_promo = StorefrontPromotion {
+            text: "Redeem coupon with Orbs".into(),
+            coupon_sku_id: Some("sku1".into()),
+            coupon_orb_price: Some(500),
+            coupon_earned_or_consumed: false,
+            ..Default::default()
+        };
+        assert_eq!(orbs_promo.branch(), PromoBranch::OrbsCoupon);
+        assert!(orbs_promo.is_nitro_pink());
+
+        let info_promo = StorefrontPromotion {
+            text: "Seasonal drop live".into(),
+            ..Default::default()
+        };
+        assert_eq!(info_promo.branch(), PromoBranch::Info);
+        assert!(!info_promo.is_nitro_pink());
+
+        assert_eq!(promo_countdown_label(3661), "01:01:01");
+        assert!(promo_countdown_label(3 * 86_400).contains('3'));
     }
 }

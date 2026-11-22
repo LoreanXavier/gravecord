@@ -737,14 +737,19 @@ impl Root {
                 .flex()
                 .flex_col()
                 .justify_between()
-                .children(hero_img.map(|im| {
-                    div().absolute().inset_0().rounded_r(px(11.)).child(
-                        img(im)
-                            .size_full()
-                            .rounded_r(px(11.))
-                            .object_fit(ObjectFit::Cover),
-                    )
-                }))
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded_r(px(11.))
+                        .overflow_hidden()
+                        .child(super::quests::render_quest_tile_banner(
+                            &quest.config.quest_name,
+                            hero_img,
+                            super::quests::QuestBannerVariant::Banner,
+                            false,
+                        )),
+                )
                 .child(
                     div()
                         .absolute()

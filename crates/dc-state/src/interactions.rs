@@ -80,6 +80,19 @@ pub struct Modal {
     pub components: Vec<Component>,
 }
 
+/// Module 949548 (`InteractionIframeModal`): embedded application iframe modal payload
+/// from `INTERACTION_IFRAME_MODAL_CREATE`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IframeModal {
+    pub interaction_id: Id,
+    pub channel_id: Id,
+    pub custom_id: String,
+    pub title: String,
+    pub iframe_path: String,
+    pub application: Application,
+    pub bot_verified: bool,
+}
+
 /// `Z` in module 750128.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalState {
@@ -105,9 +118,8 @@ pub struct InteractionStore {
     by_message: HashMap<Id, String>,
     pub modal: Option<Modal>,
     modal_state: Option<(String, ModalState)>,
-    /// The iframe modal an app asked for: (application id, interaction id, custom id, channel). Activities-style
-    /// content is not drawn here.
-    pub iframe_modal: Option<(Id, Id, String, Id)>,
+    /// The iframe modal an app asked for (`INTERACTION_IFRAME_MODAL_CREATE`, module 949548).
+    pub iframe_modal: Option<IframeModal>,
     /// Chosen values per container (a message id, or a modal's custom id) and component id.
     chosen: HashMap<(String, String), Chosen>,
     /// The nonce of a queued component press to the (container, component) it holds a value for.
@@ -273,6 +285,11 @@ impl InteractionStore {
         self.modal_state = None;
     }
 
+    /// Module 949548 (`INTERACTION_IFRAME_MODAL_CLOSE`): close the active iframe modal.
+    pub fn close_iframe_modal(&mut self) -> bool {
+        self.iframe_modal.take().is_some()
+    }
+
     /// A message was edited or deleted: what was chosen on it is forgotten (`MESSAGE_UPDATE`, `MESSAGE_DELETE`).
     pub fn message_changed(&mut self, message: Id) {
         self.clear_container(&message.to_string());
@@ -334,17 +351,28 @@ impl InteractionStore {
                 if let Some(nonce) = text(&data["nonce"]) {
                     self.succeed(&nonce);
                 }
-                if let (Some(application), Some(interaction), Some(channel)) = (
-                    id(&data["application"]["id"]),
+                if let (Some(application), Some(interaction_id), Some(channel_id)) = (
+                    Application::from_value(&data["application"]),
                     id(&data["id"]),
                     id(&data["channel_id"]),
                 ) {
-                    self.iframe_modal = Some((
+                    let bot_verified = data["application"]["bot"]["verified"]
+                        .as_bool()
+                        .unwrap_or(false)
+                        || (data["application"]["bot"]["public_flags"]
+                            .as_u64()
+                            .unwrap_or(0)
+                            & (1 << 16)
+                            != 0);
+                    self.iframe_modal = Some(IframeModal {
+                        interaction_id,
+                        channel_id,
+                        custom_id: text(&data["custom_id"]).unwrap_or_default(),
+                        title: text(&data["title"]).unwrap_or_default(),
+                        iframe_path: text(&data["iframe_path"]).unwrap_or_else(|| "/".to_owned()),
                         application,
-                        interaction,
-                        text(&data["custom_id"]).unwrap_or_default(),
-                        channel,
-                    ));
+                        bot_verified,
+                    });
                 }
             }
             "INTERACTION_IFRAME_MODAL_CLOSE" => self.iframe_modal = None,
@@ -466,5 +494,33 @@ mod tests {
         assert!(store.value("5", "0,0").is_some());
         store.dispatch("MESSAGE_DELETE", &json!({"id": "5", "channel_id": "1"}));
         assert!(store.value("5", "0,0").is_none());
+    }
+
+    #[test]
+    fn iframe_modal_949548_preserves_metadata_and_closes() {
+        let mut store = InteractionStore::default();
+        store.dispatch(
+            "INTERACTION_IFRAME_MODAL_CREATE",
+            &json!({
+                "id": "501",
+                "channel_id": "22",
+                "custom_id": "board",
+                "title": "Pick a map",
+                "iframe_path": "/embed/map",
+                "application": {
+                    "id": "99",
+                    "name": "Chess",
+                    "icon": "abc",
+                    "bot": {"id": "100", "username": "ChessBot", "verified": true}
+                }
+            }),
+        );
+        let m = store.iframe_modal.as_ref().expect("iframe modal");
+        assert_eq!(m.title, "Pick a map");
+        assert_eq!(m.iframe_path, "/embed/map");
+        assert_eq!(m.application.display_name(), "ChessBot");
+        assert!(m.bot_verified);
+        assert!(store.close_iframe_modal());
+        assert!(store.iframe_modal.is_none());
     }
 }

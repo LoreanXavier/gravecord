@@ -188,6 +188,9 @@ pub(super) enum Target {
     /// Standalone Image Actions fallback context menu (`image-context`, module 177079); URL & cache key in
     /// `State::image_target`.
     Image,
+    /// Standalone Native Link fallback context menu (`image-context` for `<a href>`, module 945896 / 777933);
+    /// href stored in `State::link_target`.
+    Link,
     /// Application Command Permission target right-click (`dev-context`, module 739174 -> 646938, `oJ1Muw`).
     CommandPermId(Id),
     /// Standalone embedded text-selection context menu (`text-context`, module 898811, `s285pq`);
@@ -493,13 +496,17 @@ pub(super) enum Act {
     CopySelection,
     /// Module 913525 / 46486 (`activity-popout-overflow-popout`): "Device Permissions" (`wum6n2`).
     DevicePermissions,
+    /// Module 945896 / 777933 (`copy-native-contact`): "Copy Email Address" (`ZYLVKo`) / "Copy Phone Number" (`3zozoR`).
+    CopyContact,
+    /// Module 945896 / 777933 (`native-send-sms`): "Send Text Message" (`+wbjMW`).
+    SendSms,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 196] = [
+    pub(super) const ALL: [Act; 198] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -696,6 +703,8 @@ impl Act {
         Act::SearchGoogle,
         Act::CopySelection,
         Act::DevicePermissions,
+        Act::CopyContact,
+        Act::SendSms,
     ];
 
     #[cfg(test)]
@@ -897,6 +906,8 @@ impl Act {
             Act::SearchGoogle => 193,
             Act::CopySelection => 194,
             Act::DevicePermissions => 195,
+            Act::CopyContact => 196,
+            Act::SendSms => 197,
         }
     }
 }
@@ -948,7 +959,9 @@ pub(super) fn status(act: Act) -> Status {
         | Act::OpenLink
         | Act::SearchGoogle
         | Act::CopySelection
-        | Act::DevicePermissions => Wired,
+        | Act::DevicePermissions
+        | Act::CopyContact
+        | Act::SendSms => Wired,
         Act::ModerationSettings => Wired,
         Act::ToggleProgressBar => Wired,
         Act::RemovePermission => Wired,
@@ -2257,7 +2270,7 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::ChannelTab(_) => Some(dc_intl::t("dd5Eyn")),
         Target::OverlayUser { .. } => Some(dc_intl::t("ogxXGq")),
         Target::GameMention(_) => Some(dc_intl::t("Hf9fuS")),
-        Target::Image => Some(dc_intl::t("Zow2V5")),
+        Target::Image | Target::Link => Some(dc_intl::t("Zow2V5")),
         Target::CommandPermId(_) => Some(dc_intl::t("ogxXGq")),
         Target::TextSelection => Some(dc_intl::t("s285pq")),
         Target::ActivityPopoutOverflow { .. } => Some(dc_intl::t("SS9Y6P")),
@@ -2294,6 +2307,47 @@ pub(super) fn image_context_items(url: &str) -> Vec<Entry> {
         ],
     );
     tidy(out)
+}
+
+/// Module 945896 (`image-context` for `<a href>`, aria-label `Zow2V5` "Image Actions") + `777933`:
+/// link-only native context menu skipping `Copy Image`/`Save Image` and adding `mailto:`/`tel:`/`sms:`
+/// contact rows (`ZYLVKo` "Copy Email Address", `3zozoR` "Copy Phone Number", `+wbjMW` "Send Text Message").
+pub(super) fn link_context_items(href: &str) -> Vec<Entry> {
+    use super::menu::LinkKind;
+    let trimmed = href.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let kind = LinkKind::of(trimmed);
+    let lower = trimmed.to_ascii_lowercase();
+    let (copy_label, open_label) = match kind {
+        LinkKind::ImageLink => (dc_intl::t("8xHmxo"), dc_intl::t("w8ldGK")),
+        LinkKind::MediaLink => (dc_intl::t("92CPQ+"), dc_intl::t("q5FbIB")),
+        _ => (dc_intl::t("WqhZss"), dc_intl::t("wuRE8M")),
+    };
+    let mut rows = vec![Row::new(Act::CopyLink, copy_label).icon("menu_copy_message_link")];
+    match kind {
+        LinkKind::Mail => {
+            rows.push(
+                Row::new(Act::CopyContact, dc_intl::t("ZYLVKo")).icon("menu_copy_message_link"),
+            );
+        }
+        LinkKind::Tel => {
+            rows.push(
+                Row::new(Act::CopyContact, dc_intl::t("3zozoR")).icon("menu_copy_message_link"),
+            );
+            if lower.starts_with("tel:") {
+                rows.push(Row::new(Act::SendSms, dc_intl::t("+wbjMW")).icon("menu_browser"));
+            }
+        }
+        _ => {}
+    }
+    rows.push(
+        Row::new(Act::OpenLink, open_label)
+            .icon("menu_browser")
+            .trailing("link_external_small"),
+    );
+    tidy(rows.into_iter().map(Entry::Row).collect())
 }
 
 /// Module 898811 (`text-context`, aria-label `s285pq` "Text Actions"):
@@ -3931,6 +3985,8 @@ pub(super) struct State {
     pub attachment_link: Option<(String, String)>,
     /// Standalone Image Actions target (`Target::Image`, module 177079): `(url, optional cache key)`.
     pub image_target: Option<(String, Option<String>)>,
+    /// Standalone Native Link target (`Target::Link`, module 945896).
+    pub link_target: Option<String>,
     /// Standalone Text Selection target (`Target::TextSelection`, module 898811).
     pub text_selection_target: Option<String>,
     /// Apps submenu (module 173500) search box and active nested app section.
@@ -5282,6 +5338,16 @@ impl Root {
                 };
                 image_context_items(url)
             }
+            Target::Link => {
+                let Some(href) = self.context.link_target.as_deref() else {
+                    return;
+                };
+                let items = link_context_items(href);
+                if items.is_empty() {
+                    return;
+                }
+                items
+            }
             Target::TextSelection => {
                 let Some(text) = self.context.text_selection_target.as_deref() else {
                     return;
@@ -5921,6 +5987,33 @@ impl Root {
         self.context.image_target = Some((url.to_owned(), None));
         self.open_context_menu(Target::Image, gpui::point(px(520.), px(260.)), cx);
         format!("image-context: {url}")
+    }
+
+    /// Module 945896 (`image-context` for `<a href>`): open standalone link-only native context menu.
+    #[allow(dead_code)]
+    pub(super) fn open_link_context_menu(
+        &mut self,
+        href: String,
+        at: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if href.trim().is_empty() {
+            return;
+        }
+        self.context.link_target = Some(href);
+        self.open_context_menu(Target::Link, at, cx);
+    }
+
+    /// Capture-only helper: opens standalone `Target::Link` (`image-context`, 945896) at `(520, 260)`.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_link_context(&mut self, href: &str, cx: &mut Context<Self>) -> String {
+        let sample = if href.trim().is_empty() {
+            "tel:+15550199"
+        } else {
+            href.trim()
+        };
+        self.open_link_context_menu(sample.to_owned(), gpui::point(px(520.), px(260.)), cx);
+        format!("link-context: {sample}")
     }
 
     /// Module 898811 (`text-context`): open standalone text-selection context menu.
@@ -6754,6 +6847,34 @@ impl Root {
                     cx.open_url(&url);
                 }
             }
+            (Act::CopyLink, Target::Link) => {
+                if let Some(href) = self.context.link_target.clone() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(href));
+                    self.show_success_toast(dc_intl::t("L/PwZf").to_owned(), cx);
+                }
+            }
+            (Act::CopyContact, Target::Link) => {
+                if let Some(href) = self.context.link_target.clone() {
+                    let stripped = href
+                        .split_once(':')
+                        .map(|(_, rest)| rest.split('?').next().unwrap_or(rest))
+                        .unwrap_or(&href)
+                        .to_owned();
+                    cx.write_to_clipboard(ClipboardItem::new_string(stripped));
+                    self.show_success_toast(dc_intl::t("L/PwZf").to_owned(), cx);
+                }
+            }
+            (Act::SendSms, Target::Link) => {
+                if let Some(href) = self.context.link_target.clone() {
+                    let number = href.split_once(':').map(|(_, rest)| rest).unwrap_or(&href);
+                    cx.open_url(&format!("sms:{number}"));
+                }
+            }
+            (Act::OpenLink, Target::Link) => {
+                if let Some(href) = self.context.link_target.clone() {
+                    cx.open_url(&href);
+                }
+            }
             (Act::CopyLink, Target::AttachmentLink) => {
                 if let Some((url, _)) = self.context.attachment_link.take() {
                     let now_secs = std::time::SystemTime::now()
@@ -6869,6 +6990,7 @@ impl Root {
                     | Target::BadgeCustomization { .. }
                     | Target::GameShopSku
                     | Target::Image
+                    | Target::Link
                     | Target::TextSelection
                     | Target::ActivityPopoutOverflow { .. }
                     | Target::InviteRoles => {
@@ -10849,5 +10971,32 @@ mod tests {
             labels(&activity_popout_overflow_items(false)),
             vec!["Report App"]
         );
+
+        // Module 945896: standalone native link context menu (`Zow2V5`, `ZYLVKo`, `3zozoR`, `+wbjMW`).
+        assert_eq!(menu_aria_label(Target::Link), Some("Image Actions"));
+        assert_eq!(
+            labels(&link_context_items("https://discord.com")),
+            vec!["Copy Link", "Open Link"]
+        );
+        assert_eq!(
+            labels(&link_context_items(
+                "https://cdn.discordapp.com/icons/1/a.png"
+            )),
+            vec!["Copy Image Link", "Open Image Link"]
+        );
+        assert_eq!(
+            labels(&link_context_items("mailto:support@discord.com")),
+            vec!["Copy Link", "Copy Email Address", "Open Link"]
+        );
+        assert_eq!(
+            labels(&link_context_items("tel:+15550199")),
+            vec![
+                "Copy Link",
+                "Copy Phone Number",
+                "Send Text Message",
+                "Open Link"
+            ]
+        );
+        assert!(link_context_items("").is_empty());
     }
 }

@@ -35,6 +35,7 @@ mod activity_launch;
 mod activity_shelf;
 mod activity_sync;
 mod add_server;
+mod age_verification_modal;
 mod alt_text;
 mod announcements;
 mod app_dm;
@@ -71,6 +72,7 @@ mod channel_settings_pages;
 mod channel_status;
 mod chat_notices;
 mod chat_skeleton;
+mod checkpoint;
 mod clips;
 mod code_copy;
 mod command_feedback;
@@ -126,6 +128,7 @@ mod group_manage;
 mod guild_cap;
 mod guild_menu;
 mod guild_notifications;
+mod guild_space;
 mod history;
 mod home;
 mod inbox;
@@ -153,6 +156,7 @@ mod message_kinds;
 mod message_requests;
 mod message_tips;
 mod platform_presence;
+mod premium_announcement_modal;
 mod premium_upsell;
 mod presence;
 mod provider_player;
@@ -940,6 +944,14 @@ pub struct Root {
     tenure_level_up: Option<badge_modal::TenureLevelUpPopout>,
     /// Welcome to your Server Hub NUX modal (module 725041).
     guild_space_nux: Option<guild_space_nux::GuildSpaceNuxModal>,
+    /// Guild Space ("Server Hub") page and 2-column widget editor (module 930417).
+    guild_space: Option<guild_space::GuildSpaceState>,
+    /// Primary Age Verification Get Started modal (module 929180).
+    age_verification_modal: Option<age_verification_modal::AgeVerificationModalState>,
+    /// Server-driven Nitro Announcement Modal Variant 1 (module 962263).
+    premium_announcement_modal: Option<premium_announcement_modal::PremiumAnnouncementModalState>,
+    /// Checkpoint 2026 full-screen interactive overlay (module 925433).
+    checkpoint_2026: Option<checkpoint::CheckpointState>,
     /// Stream Privacy Code modal (module 773262, DAVE MLS stream epoch authenticator).
     stream_privacy_code_modal: Option<voice_panel::StreamPrivacyCodeModal>,
     /// Quest Bar Bounty Card overlay (module 682908).
@@ -1604,6 +1616,10 @@ impl Root {
             evolving_tenure_modal: None,
             tenure_level_up: None,
             guild_space_nux: None,
+            guild_space: None,
+            age_verification_modal: None,
+            premium_announcement_modal: None,
+            checkpoint_2026: None,
             stream_privacy_code_modal: None,
             quest_bar_bounty: None,
             suspended_safety_hub: None,
@@ -12313,6 +12329,10 @@ impl Render for Root {
                         || this.evolving_tenure_modal.is_some()
                         || this.tenure_level_up.is_some()
                         || this.guild_space_nux.is_some()
+                        || this.guild_space.is_some()
+                        || this.age_verification_modal.is_some()
+                        || this.premium_announcement_modal.is_some()
+                        || this.checkpoint_2026.is_some()
                         || this.stream_privacy_code_modal.is_some()
                         || this.vv.invite_suggestions_open
                         || this.quest_bar_bounty.is_some()
@@ -12375,6 +12395,10 @@ impl Render for Root {
                     this.close_suspended_safety_hub();
                     this.close_nitro_trials_picker();
                     this.close_user_activity_preview();
+                    this.close_age_verification_modal();
+                    this.close_premium_announcement_modal();
+                    this.close_guild_space();
+                    this.close_checkpoint_2026();
                     this.premium_uncancel_modal = None;
                     this.close_claim_account_if_allowed();
                     this.transfer_ownership_modal = None;
@@ -13769,6 +13793,7 @@ impl Render for Root {
             .children(self.report_modal(cx))
             .children(self.custom_reminder_modal(cx))
             .children(self.interaction_modal(cx))
+            .children(self.interaction_iframe_modal(window, cx))
             .children(self.status_popout_layer(cx))
             .children(self.custom_status_modal(cx))
             .children(self.plus_menu_layer(window, cx))
@@ -13824,6 +13849,10 @@ impl Render for Root {
             .children(self.badge_modal_layer(cx))
             .children(app_storefront)
             .children(self.frames_announcement_layer(cx))
+            .children(self.age_verification_modal_layer(cx))
+            .children(self.premium_announcement_modal_layer(cx))
+            .children(self.guild_space_layer(cx))
+            .children(self.checkpoint_2026_layer(cx))
             .children(self.spotify_premium_layer(cx))
             .children(self.lightbox_layer(cx))
             .children(self.video_fullscreen_layer(window, cx))

@@ -11,9 +11,37 @@ use gpui::{
     linear_color_stop, linear_gradient, prelude::*, px, rgba, svg,
 };
 
-/// `tile_HhFoZE`: a 12% grey rounded tile that is a button.
+/// Module 930349 (`ProfileCustomizationTile` `Y`/`A`): tile state flags (`disabled`, `hasError`, `showOverlayOnHover`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) struct TileState {
+    pub disabled: bool,
+    pub has_error: bool,
+    pub show_overlay_on_hover: bool,
+}
+
+/// Module 930349 (`kzUdSh`): `"Currently set to: {value}"` screen-reader label for a customization tile.
+#[allow(dead_code)]
+pub(super) fn customization_tile_a11y_label(current_value: &str) -> String {
+    dc_intl::format("kzUdSh", &[("value", current_value.into())])
+}
+
+/// `tile_HhFoZE` (module 930349): a 12% grey rounded tile with inset 1px `--border-muted` ring.
 pub(super) fn tile(id: impl Into<SharedString>, width: f32, height: f32) -> gpui::Stateful<Div> {
-    div()
+    customization_tile(id, width, height, None, TileState::default())
+}
+
+/// Module 930349 (`ProfileCustomizationTile` `A`): interactive customization tile supporting
+/// `square` (100x100), `bar` (208x42), `full-height-bar` (208x100), error ring (`--input-border-error-default`),
+/// disabled opacity (`0.5`), `kzUdSh` accessible label, and optional `--opacity-black-40` hover scrim.
+pub(super) fn customization_tile(
+    id: impl Into<SharedString>,
+    width: f32,
+    height: f32,
+    current_value: Option<&str>,
+    state: TileState,
+) -> gpui::Stateful<Div> {
+    let mut el = div()
         .id(id.into())
         .relative()
         .w(px(width))
@@ -21,9 +49,35 @@ pub(super) fn tile(id: impl Into<SharedString>, width: f32, height: f32) -> gpui
         .flex_none()
         .rounded(px(8.))
         .overflow_hidden()
-        .bg(color("--background-mod-subtle"))
-        .cursor_pointer()
-        .hover(|style| style.bg(color("--background-mod-normal")))
+        .border_1()
+        .border_color(if state.has_error {
+            color("--input-border-error-default")
+        } else {
+            color("--border-muted")
+        })
+        .bg(if state.has_error {
+            color("--input-background-error-default")
+        } else {
+            color("--background-mod-subtle")
+        })
+        .when(state.disabled, |d| d.opacity(0.5))
+        .when(!state.disabled, |d| {
+            d.cursor_pointer()
+                .hover(|style| style.bg(color("--background-mod-normal")))
+        });
+    if let Some(val) = current_value.filter(|s| !s.is_empty()) {
+        el = el.aria_label(SharedString::from(customization_tile_a11y_label(val)));
+    }
+    if state.show_overlay_on_hover && !state.disabled {
+        el = el.child(
+            div()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000000))
+                .hover(|s| s.bg(color("--opacity-black-40"))),
+        );
+    }
+    el
 }
 
 /// `overlayIcon_HhFoZE`: the white 24px plus that marks an empty tile.
@@ -1000,4 +1054,26 @@ pub(super) fn banner_color(open: &Open, user: &User) -> u32 {
 
 fn default_banner_color(_user: &User) -> u32 {
     0x5c64f4
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TileState, customization_tile_a11y_label};
+
+    #[test]
+    fn profile_customization_tile_930349_copy_and_state() {
+        for k in ["N86XcP", "wgIPss", "kzUdSh"] {
+            assert!(dc_intl::has_key(k), "missing 930349 key {k}");
+        }
+        let label = customization_tile_a11y_label("Sakura");
+        assert!(label.contains("Sakura"), "got {label}");
+        assert_eq!(
+            TileState::default(),
+            TileState {
+                disabled: false,
+                has_error: false,
+                show_overlay_on_hover: false,
+            }
+        );
+    }
 }

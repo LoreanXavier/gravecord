@@ -1761,10 +1761,46 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_nitro_trials_picker(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
-            // `user-activity-card [open|close]`: Legacy UserActivity card preview (663249).
+            // `user-activity-card [open|close]`: Legacy UserActivity card preview (663249 + 961272).
             ["user-activity-card", rest @ ..] => {
                 let arg = rest.join(" ");
                 let line = root.update(cx, |root, cx| root.script_user_activity_card(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `link-context [href]`: Standalone native link context menu (945896).
+            ["link-context", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_link_context(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `iframe-modal [open|close]`: Interaction iframe modal (949548).
+            ["iframe-modal", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_iframe_modal(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `age-verify-modal [default|stage|close]`: Age Verification Get Started modal (929180).
+            ["age-verify-modal", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_age_verify_modal(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `premium-announcement [open|close]`: Nitro Announcement Modal Variant 1 (962263).
+            ["premium-announcement", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_premium_announcement(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `guild-space [open|edit|close]`: Guild Space Server Hub page & widget editor (930417).
+            ["guild-space", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_guild_space(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `checkpoint-2026 [home|summary|squad|close]`: Checkpoint 2026 full-screen layer (925433).
+            ["checkpoint-2026", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_checkpoint_2026(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
             // `copy-combo <tier 1..11|reset>`: Copy combo easter egg green tooltip (206845).

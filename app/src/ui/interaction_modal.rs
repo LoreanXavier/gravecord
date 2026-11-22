@@ -232,8 +232,11 @@ impl Root {
         }
     }
 
-    /// Escape: an open list closes first, then the dialog. True when it closed something.
+    /// Escape: an open list closes first, then the dialog (or active iframe modal). True when it closed something.
     pub(super) fn interaction_modal_escape(&mut self) -> bool {
+        if self.stores.interactions.close_iframe_modal() {
+            return true;
+        }
         let Some(form) = self.interaction_ui.form.as_mut() else {
             return false;
         };
@@ -247,6 +250,241 @@ impl Root {
         }
         self.close_interaction_modal();
         true
+    }
+
+    /// Module 949548 (`InteractionIframeModal`, CSS `589478`/`319060`):
+    /// renders the embedded application iframe modal from `INTERACTION_IFRAME_MODAL_CREATE`.
+    pub(super) fn interaction_iframe_modal(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.stores.interactions.iframe_modal.as_ref()?;
+        let vp = window.viewport_size();
+        let modal_w = iframe_modal_width(f32::from(vp.width), f32::from(vp.height));
+        let frame_h = (modal_w * 9.0 / 16.0).round();
+        let guild_id = self.guild_of_channel(modal.channel_id);
+        let url = iframe_modal_url(modal, guild_id);
+        let app_name = modal.application.display_name().to_owned();
+        let title = modal.title.clone();
+        let verified = modal.bot_verified;
+        let open_url = url.clone();
+        let initial = app_name
+            .chars()
+            .next()
+            .unwrap_or('A')
+            .to_ascii_uppercase()
+            .to_string();
+
+        Some(
+            deferred(
+                div()
+                    .id("interaction-iframe-modal-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.stores.interactions.close_iframe_modal();
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("interaction-iframe-modal")
+                            .w(px(modal_w))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            // `.modalHeader_sKUDgo`: 52px header (`padding: 12px 16px`, bottom subtle border)
+                            .child(
+                                div()
+                                    .min_h(px(52.))
+                                    .px(px(16.))
+                                    .py(px(10.))
+                                    .border_b_1()
+                                    .border_color(color("--border-subtle"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .size(px(32.))
+                                                    .flex_none()
+                                                    .rounded(px(8.))
+                                                    .bg(color("--control-primary-background-default"))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--white"))
+                                                    .child(initial),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(4.))
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(14.))
+                                                                    .line_height(px(18.))
+                                                                    .font_weight(FontWeight(600.))
+                                                                    .text_color(color("--text-strong"))
+                                                                    .child(app_name),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .px(px(5.))
+                                                                    .h(px(16.))
+                                                                    .rounded(px(4.))
+                                                                    .bg(color("--control-primary-background-default"))
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .gap(px(2.))
+                                                                    .when(verified, |b| {
+                                                                        b.child(icon("select_check", 10., "--white"))
+                                                                    })
+                                                                    .child(
+                                                                        div()
+                                                                            .text_size(px(10.))
+                                                                            .font_weight(FontWeight(700.))
+                                                                            .text_color(color("--white"))
+                                                                            .child(dc_intl::tr("APP")),
+                                                                    ),
+                                                            ),
+                                                    )
+                                                    .when(!title.is_empty(), |col| {
+                                                        col.child(
+                                                            div()
+                                                                .text_size(px(12.))
+                                                                .line_height(px(16.))
+                                                                .font_weight(FontWeight(500.))
+                                                                .text_color(color("--text-muted"))
+                                                                .child(title),
+                                                        )
+                                                    }),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("interaction-iframe-modal-close")
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .aria_label(SharedString::from(dc_intl::t("WAI6xu")))
+                                            .child(icon("modal_close", 18., "--interactive-text-default"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.stores.interactions.close_iframe_modal();
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            // 16:9 embedded app iframe surface (`.outer_spl_hF` / `.iframe_sKUDgo`)
+                            .child(
+                                div()
+                                    .w_full()
+                                    .h(px(frame_h))
+                                    .bg(color("--background-base-lowest"))
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(12.))
+                                    .p(px(24.))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .line_height(px(18.))
+                                            .text_color(color("--text-muted"))
+                                            .child(url),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("interaction-iframe-open-external")
+                                            .h(px(34.))
+                                            .px(px(14.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.))
+                                            .child(icon("link_external_small", 14., "--white"))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .font_weight(FontWeight(600.))
+                                                    .text_color(color("--white"))
+                                                    .child(dc_intl::t("wuRE8M")),
+                                            )
+                                            .on_click(cx.listener(move |_, _, _, cx| {
+                                                cx.open_url(&open_url);
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_iframe_modal(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.stores.interactions.close_iframe_modal();
+            cx.notify();
+            return "iframe modal closed".to_owned();
+        }
+        self.stores.interactions.iframe_modal = Some(dc_state::interactions::IframeModal {
+            interaction_id: 949548,
+            channel_id: self.channel.unwrap_or(1),
+            custom_id: "board_picker".to_owned(),
+            title: "Configure Match Settings".to_owned(),
+            iframe_path: "/embed/configure".to_owned(),
+            application: dc_state::interactions::Application {
+                id: 99123456,
+                name: "Arena Activity".to_owned(),
+                icon: None,
+                bot_name: Some("ArenaBot".to_owned()),
+                bot_id: Some(99123457),
+            },
+            bot_verified: true,
+        });
+        cx.notify();
+        "iframe modal opened".to_owned()
     }
 
     /// The submit state moved: a success closes the dialog.
@@ -849,6 +1087,40 @@ pub(super) fn sample_modal(channel: Id) -> Value {
     })
 }
 
+/// Module 949548 (`319060` constants): responsive 16:9 width clamp
+/// `max(320, min(viewportW - 160, min((viewportH - 52 - 160) * 16 / 9, 1280)))`.
+pub(super) fn iframe_modal_width(viewport_w: f32, viewport_h: f32) -> f32 {
+    const MIN_W: f32 = 320.0;
+    const MAX_W: f32 = 1280.0;
+    const MARGIN: f32 = 80.0;
+    const HEADER_H: f32 = 52.0;
+    let by_w = (viewport_w - MARGIN * 2.0).max(MIN_W);
+    let by_h = ((viewport_h - HEADER_H - MARGIN * 2.0).max(180.0) * 16.0 / 9.0).min(MAX_W);
+    by_w.min(by_h).clamp(MIN_W, MAX_W).round()
+}
+
+/// Module 949548 (`358415.oI`): constructs the embedded app iframe URL with `instance_id`,
+/// `custom_id`, `channel_id`, and optional `guild_id` (omitted in DMs).
+pub(super) fn iframe_modal_url(
+    modal: &dc_state::interactions::IframeModal,
+    guild_id: Option<Id>,
+) -> String {
+    let app_id = modal.application.id;
+    let path = if modal.iframe_path.starts_with('/') {
+        modal.iframe_path.as_str()
+    } else {
+        "/"
+    };
+    let mut url = format!(
+        "https://{app_id}.discordsays.com{path}?instance_id={}:{}:{}&custom_id={}&channel_id={}",
+        modal.channel_id, app_id, modal.custom_id, modal.custom_id, modal.channel_id
+    );
+    if let Some(gid) = guild_id {
+        url.push_str(&format!("&guild_id={gid}"));
+    }
+    url
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -962,5 +1234,33 @@ mod tests {
         assert_eq!(select["data"]["values"][0], "a");
         assert_eq!(select["data"]["type"], 3);
         assert!(select["guild_id"].is_null());
+    }
+
+    #[test]
+    fn iframe_modal_949548_width_clamp_and_url() {
+        assert!(!dc_intl::t("WAI6xu").is_empty());
+        assert_eq!(iframe_modal_width(1280., 720.), 903.);
+        assert_eq!(iframe_modal_width(400., 300.), 320.);
+        assert_eq!(iframe_modal_width(3000., 2000.), 1280.);
+        let modal = dc_state::interactions::IframeModal {
+            interaction_id: 1,
+            channel_id: 22,
+            custom_id: "pick".into(),
+            title: "Pick".into(),
+            iframe_path: "/embed/a".into(),
+            application: dc_state::interactions::Application {
+                id: 99,
+                name: "Game".into(),
+                icon: None,
+                bot_name: None,
+                bot_id: None,
+            },
+            bot_verified: false,
+        };
+        let dm_url = iframe_modal_url(&modal, None);
+        assert!(dm_url.contains("instance_id=22:99:pick"));
+        assert!(!dm_url.contains("guild_id="));
+        let guild_url = iframe_modal_url(&modal, Some(777));
+        assert!(guild_url.ends_with("&guild_id=777"));
     }
 }

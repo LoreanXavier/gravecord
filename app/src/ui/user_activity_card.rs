@@ -33,6 +33,164 @@ pub(crate) enum ActivityKind {
     ScreenShare,
 }
 
+/// Module 961272 (`UserActivityActions`): action metadata carried by a `UserActivityCardData`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct UserActivityActionsSpec {
+    pub is_current_user: bool,
+    pub is_rich: bool,
+    pub platform_connected: bool,
+    pub spotify_can_play: bool,
+    pub spotify_can_sync: bool,
+    pub stage_in_channel: bool,
+    pub is_watching_stream: bool,
+    pub can_watch_stream: bool,
+    pub has_other_active_streams: bool,
+    /// Bit 0 (`INSTANCE = 1`) enables the `"Notify Me"` (`vwl1PK`) action.
+    pub is_instance: bool,
+    /// Custom activity buttons (`activity.buttons[]`: `(label, optional_resolved_url)`).
+    pub custom_buttons: Vec<(String, Option<String>)>,
+}
+
+/// Module 961272: resolved action button specification across the 5 official priority branches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum UserActivityAction {
+    ConnectConsole {
+        platform: &'static str,
+        icon: &'static str,
+    },
+    SpotifyPlay,
+    SpotifyListenAlong,
+    StageListenIn {
+        disabled: bool,
+    },
+    WatchStream {
+        label: String,
+        active: bool,
+        disabled: bool,
+        show_multi: bool,
+    },
+    WatchExternal {
+        url: String,
+    },
+    NotifyMe,
+    CustomButton {
+        index: usize,
+        label: String,
+        url: Option<String>,
+    },
+}
+
+/// Module 961272 (`729937`): `GET /users/{userId}/sessions/{sessionId}/activities/{appId}/metadata`.
+#[allow(dead_code)]
+pub(crate) fn activity_metadata_route(
+    user_id: &str,
+    session_id: &str,
+    application_id: Option<&str>,
+) -> String {
+    let app = application_id.unwrap_or("0");
+    format!("/users/{user_id}/sessions/{session_id}/activities/{app}/metadata")
+}
+
+/// Module 961272 (`ep`): resolves the ordered action list for `UserActivityCardData`.
+pub(crate) fn resolve_user_activity_actions(
+    data: &UserActivityCardData,
+) -> (bool, Vec<UserActivityAction>) {
+    let spec = &data.actions;
+    // Branch 1: non-rich Console Connect (Xbox / PlayStation Network).
+    if !spec.is_rich
+        && !spec.platform_connected
+        && let Some(p) = data.platform.as_deref()
+    {
+        match p.to_ascii_lowercase().as_str() {
+            "xbox" => {
+                return (
+                    false,
+                    vec![UserActivityAction::ConnectConsole {
+                        platform: "Xbox",
+                        icon: "activity_connect_xbox",
+                    }],
+                );
+            }
+            "ps4" | "ps5" | "playstation" => {
+                return (
+                    false,
+                    vec![UserActivityAction::ConnectConsole {
+                        platform: "PlayStation Network",
+                        icon: "activity_connect_playstation",
+                    }],
+                );
+            }
+            _ => {}
+        }
+    }
+    // Branch 2: Spotify horizontal row (`PLAY` + `SYNC`).
+    if data
+        .platform
+        .as_deref()
+        .is_some_and(|p| p.eq_ignore_ascii_case("spotify"))
+    {
+        let mut out = Vec::new();
+        if spec.spotify_can_play || data.spotify_track_url.is_some() {
+            out.push(UserActivityAction::SpotifyPlay);
+        }
+        if spec.spotify_can_sync {
+            out.push(UserActivityAction::SpotifyListenAlong);
+        }
+        return (true, out);
+    }
+    // Branch 3: Stage Instance (`ZYO5OK` "Listen In").
+    if data.activity_kind == ActivityKind::Stage {
+        return (
+            false,
+            vec![UserActivityAction::StageListenIn {
+                disabled: spec.stage_in_channel,
+            }],
+        );
+    }
+    // Branch 4: Stream Preview / Live Stream (`7Xq/nV` / `JH1SJ+` / `XvBdeT` + `wCrzut` multi-stream).
+    if data.card_kind == ActivityCardKind::StreamPreview
+        || data.activity_kind == ActivityKind::ScreenShare
+    {
+        let label = if spec.is_current_user {
+            dc_intl::t("XvBdeT").to_owned()
+        } else if spec.is_watching_stream {
+            dc_intl::t("JH1SJ+").to_owned()
+        } else {
+            dc_intl::t("7Xq/nV").to_owned()
+        };
+        let disabled = spec.is_current_user || spec.is_watching_stream || !spec.can_watch_stream;
+        let show_multi =
+            spec.has_other_active_streams && !spec.is_watching_stream && !spec.is_current_user;
+        return (
+            false,
+            vec![UserActivityAction::WatchStream {
+                label,
+                active: !spec.is_watching_stream,
+                disabled,
+                show_multi,
+            }],
+        );
+    }
+    // Branch 5: Default Activity Stack (Watch Twitch/Stream, Notify Me, Custom Activity Buttons).
+    let mut out = Vec::new();
+    if let Some(url) = data.stream_url.as_ref().filter(|u| !u.trim().is_empty()) {
+        out.push(UserActivityAction::WatchExternal { url: url.clone() });
+    }
+    if spec.is_instance {
+        out.push(UserActivityAction::NotifyMe);
+    }
+    for (index, (label, url)) in spec.custom_buttons.iter().enumerate() {
+        if !label.trim().is_empty() {
+            out.push(UserActivityAction::CustomButton {
+                index,
+                label: label.clone(),
+                url: url.clone(),
+            });
+        }
+    }
+    (false, out)
+}
+
 /// Input data for a `UserActivity` card (module 663249).
 #[derive(Clone, Debug)]
 pub(crate) struct UserActivityCardData {
@@ -62,6 +220,8 @@ pub(crate) struct UserActivityCardData {
     pub spotify_album: Option<(String, Option<String>)>,
     pub stream_url: Option<String>,
     pub elapsed_label: Option<String>,
+    /// Module 961272 (`UserActivityActions`) button metadata.
+    pub actions: UserActivityActionsSpec,
 }
 
 /// Formats the header line of `UserActivity` (module 663249 `renderHeader`).
@@ -404,6 +564,8 @@ pub(crate) fn render_user_activity_card(
             .child(badge_label)
     });
 
+    let actions_row = render_user_activity_actions(data, cx);
+
     div()
         .p(px(12.))
         .rounded(px(8.))
@@ -440,7 +602,255 @@ pub(crate) fn render_user_activity_card(
                 )
                 .children(platform_badge),
         )
+        .children(actions_row)
         .into_any_element()
+}
+
+/// Module 961272 (`UserActivityActions`, CSS `279954`/`408399`): renders the action button bar
+/// beneath a `UserActivity` card (`buttonsWrapper_nwnlPG`, horizontal for Spotify else vertical).
+pub(crate) fn render_user_activity_actions(
+    data: &UserActivityCardData,
+    cx: &mut Context<Root>,
+) -> Option<AnyElement> {
+    let (horizontal, actions) = resolve_user_activity_actions(data);
+    if actions.is_empty() {
+        return None;
+    }
+    let spotify_url = data.spotify_track_url.clone();
+    let mut wrap = div().mt(px(4.)).flex().gap(px(8.));
+    wrap = if horizontal {
+        wrap.flex_row().items_center()
+    } else {
+        wrap.flex_col()
+    };
+    for (idx, action) in actions.into_iter().enumerate() {
+        let el: AnyElement = match action {
+            UserActivityAction::ConnectConsole {
+                platform,
+                icon: ico,
+            } => {
+                let label =
+                    dc_intl::format("XWSHTb", &[("platform", Arg::Str(Cow::Borrowed(platform)))]);
+                div()
+                    .id(SharedString::from(format!("ua-connect-{idx}")))
+                    .h(px(32.))
+                    .px(px(12.))
+                    .rounded(px(8.))
+                    .bg(color("--background-mod-subtle"))
+                    .hover(|s| s.bg(color("--background-mod-normal")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .child(icon(ico, 16., "--icon-strong"))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(label),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_settings(cx);
+                    }))
+                    .into_any_element()
+            }
+            UserActivityAction::SpotifyPlay => {
+                let url = spotify_url.clone();
+                div()
+                    .id(SharedString::from(format!("ua-spotify-play-{idx}")))
+                    .flex_1()
+                    .h(px(32.))
+                    .px(px(12.))
+                    .rounded(px(8.))
+                    .bg(color("--background-mod-subtle"))
+                    .hover(|s| s.bg(color("--background-mod-normal")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .child(icon("active_now_spotify", 16., "--icon-strong"))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("rRffNz")),
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        if let Some(u) = url.as_deref() {
+                            cx.open_url(u);
+                        }
+                    }))
+                    .into_any_element()
+            }
+            UserActivityAction::SpotifyListenAlong => div()
+                .id(SharedString::from(format!("ua-spotify-sync-{idx}")))
+                .size(px(32.))
+                .rounded(px(8.))
+                .bg(color("--background-mod-subtle"))
+                .hover(|s| s.bg(color("--background-mod-normal")))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .aria_label(SharedString::from(dc_intl::t("hR2x2Q")))
+                .child(icon("user_play", 16., "--icon-strong"))
+                .into_any_element(),
+            UserActivityAction::StageListenIn { disabled } => div()
+                .id(SharedString::from(format!("ua-stage-listen-{idx}")))
+                .h(px(32.))
+                .px(px(12.))
+                .rounded(px(8.))
+                .bg(if disabled {
+                    color("--background-mod-subtle")
+                } else {
+                    color("--control-primary-background-default")
+                })
+                .when(disabled, |d| d.opacity(0.5))
+                .when(!disabled, |d| d.cursor_pointer())
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .child(icon("stage_channel", 16., "--white"))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child(dc_intl::t("ZYO5OK")),
+                )
+                .into_any_element(),
+            UserActivityAction::WatchStream {
+                label,
+                active,
+                disabled,
+                show_multi,
+            } => div()
+                .flex()
+                .flex_row()
+                .items_stretch()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("ua-watch-stream-{idx}")))
+                        .flex_1()
+                        .h(px(32.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .bg(if active && !disabled {
+                            color("--control-primary-background-default")
+                        } else {
+                            color("--background-mod-subtle")
+                        })
+                        .when(disabled, |d| d.opacity(0.5))
+                        .when(!disabled, |d| d.cursor_pointer())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(if active && !disabled {
+                                    color("--white")
+                                } else {
+                                    color("--text-strong")
+                                })
+                                .child(label),
+                        ),
+                )
+                .when(show_multi, |row| {
+                    row.child(
+                        div()
+                            .id(SharedString::from(format!("ua-watch-multi-{idx}")))
+                            .size(px(32.))
+                            .rounded(px(8.))
+                            .bg(color("--background-mod-subtle"))
+                            .hover(|s| s.bg(color("--background-mod-normal")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .aria_label(SharedString::from(dc_intl::t("wCrzut")))
+                            .child(icon("voice_view_eye_plus", 16., "--icon-strong")),
+                    )
+                })
+                .into_any_element(),
+            UserActivityAction::WatchExternal { url } => div()
+                .id(SharedString::from(format!("ua-watch-ext-{idx}")))
+                .h(px(32.))
+                .px(px(12.))
+                .rounded(px(8.))
+                .bg(color("--background-mod-subtle"))
+                .hover(|s| s.bg(color("--background-mod-normal")))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("I6JG46")),
+                )
+                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+                .into_any_element(),
+            UserActivityAction::NotifyMe => div()
+                .id(SharedString::from(format!("ua-notify-me-{idx}")))
+                .h(px(32.))
+                .px(px(12.))
+                .rounded(px(8.))
+                .bg(color("--background-mod-subtle"))
+                .hover(|s| s.bg(color("--background-mod-normal")))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .child(icon("bell", 15., "--icon-strong"))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("vwl1PK")),
+                )
+                .into_any_element(),
+            UserActivityAction::CustomButton { index, label, url } => div()
+                .id(SharedString::from(format!("ua-custom-{idx}-{index}")))
+                .h(px(32.))
+                .px(px(12.))
+                .rounded(px(8.))
+                .bg(color("--background-mod-subtle"))
+                .hover(|s| s.bg(color("--background-mod-normal")))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(label),
+                )
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    if let Some(u) = url.as_deref()
+                        && (u.starts_with("https://") || u.starts_with("http://"))
+                    {
+                        cx.open_url(u);
+                    }
+                }))
+                .into_any_element(),
+        };
+        wrap = wrap.child(el);
+    }
+    Some(wrap.into_any_element())
 }
 
 impl Root {
@@ -535,6 +945,11 @@ impl Root {
                 spotify_album: None,
                 stream_url: None,
                 elapsed_label: Some("01:24:10 elapsed".to_owned()),
+                actions: UserActivityActionsSpec {
+                    is_rich: false,
+                    platform_connected: false,
+                    ..Default::default()
+                },
             },
             UserActivityCardData {
                 card_kind: ActivityCardKind::VoiceChannel,
@@ -560,6 +975,12 @@ impl Root {
                 spotify_album: Some(("Alfredo".to_owned(), None)),
                 stream_url: None,
                 elapsed_label: None,
+                actions: UserActivityActionsSpec {
+                    is_rich: true,
+                    spotify_can_play: true,
+                    spotify_can_sync: true,
+                    ..Default::default()
+                },
             },
             UserActivityCardData {
                 card_kind: ActivityCardKind::StreamPreview,
@@ -585,6 +1006,7 @@ impl Root {
                 spotify_album: None,
                 stream_url: None,
                 elapsed_label: None,
+                actions: UserActivityActionsSpec::default(),
             },
         ]);
         cx.notify();
@@ -636,6 +1058,7 @@ mod tests {
             spotify_album: None,
             stream_url: None,
             elapsed_label: None,
+            actions: UserActivityActionsSpec::default(),
         };
         assert!(format_activity_header(&data).contains("PS5"));
         assert_eq!(format_party_suffix(&data).as_deref(), Some("(2 of 4)"));
@@ -646,5 +1069,96 @@ mod tests {
         data.stage_listeners = Some(15);
         let stage = format_party_suffix(&data).unwrap();
         assert!(stage.contains('3') && stage.contains("15"));
+    }
+
+    #[test]
+    fn user_activity_actions_961272_all_branches_and_intl() {
+        for key in [
+            "XWSHTb", "ZYO5OK", "vwl1PK", "wCrzut", "I6JG46", "XvBdeT", "JH1SJ+", "7Xq/nV",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 961272 key {key}");
+        }
+        assert_eq!(
+            activity_metadata_route("u1", "s2", Some("app3")),
+            "/users/u1/sessions/s2/activities/app3/metadata"
+        );
+        assert_eq!(
+            activity_metadata_route("u1", "s2", None),
+            "/users/u1/sessions/s2/activities/0/metadata"
+        );
+        let mut data = UserActivityCardData {
+            card_kind: ActivityCardKind::ActivityFeed,
+            activity_kind: ActivityKind::Playing,
+            hide_header: false,
+            name: "Halo".into(),
+            details: None,
+            state: None,
+            large_text: None,
+            small_text: None,
+            platform: Some("xbox".into()),
+            session_platform: None,
+            guild_name: None,
+            channel_name: None,
+            is_embedded: false,
+            show_channel_details: false,
+            party_count: None,
+            party_max: None,
+            stage_speakers: None,
+            stage_listeners: None,
+            spotify_track_url: None,
+            spotify_artists: vec![],
+            spotify_album: None,
+            stream_url: None,
+            elapsed_label: None,
+            actions: UserActivityActionsSpec::default(),
+        };
+        let (horiz, acts) = resolve_user_activity_actions(&data);
+        assert!(!horiz);
+        assert!(matches!(
+            acts.as_slice(),
+            [UserActivityAction::ConnectConsole {
+                platform: "Xbox",
+                ..
+            }]
+        ));
+
+        data.platform = Some("spotify".into());
+        data.actions.is_rich = true;
+        data.actions.spotify_can_play = true;
+        data.actions.spotify_can_sync = true;
+        let (horiz, acts) = resolve_user_activity_actions(&data);
+        assert!(horiz);
+        assert_eq!(acts.len(), 2);
+
+        data.platform = None;
+        data.activity_kind = ActivityKind::Stage;
+        let (_, acts) = resolve_user_activity_actions(&data);
+        assert_eq!(
+            acts,
+            vec![UserActivityAction::StageListenIn { disabled: false }]
+        );
+
+        data.activity_kind = ActivityKind::ScreenShare;
+        data.actions.can_watch_stream = true;
+        data.actions.has_other_active_streams = true;
+        let (_, acts) = resolve_user_activity_actions(&data);
+        assert!(matches!(
+            acts.as_slice(),
+            [UserActivityAction::WatchStream {
+                show_multi: true,
+                active: true,
+                disabled: false,
+                ..
+            }]
+        ));
+
+        data.activity_kind = ActivityKind::Playing;
+        data.card_kind = ActivityCardKind::ActivityFeed;
+        data.stream_url = Some("https://twitch.tv/demo".into());
+        data.actions.is_instance = true;
+        data.actions.custom_buttons =
+            vec![("Join Website".into(), Some("https://example.com".into()))];
+        let (_, acts) = resolve_user_activity_actions(&data);
+        assert_eq!(acts.len(), 3);
     }
 }
