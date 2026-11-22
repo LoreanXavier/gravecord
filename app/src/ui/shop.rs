@@ -89,6 +89,8 @@ pub(super) struct State {
     pub balance: Option<i64>,
     /// Skus on the account's wishlist: read when the Shop opens, changed by the hearts.
     pub wishlist: HashSet<String>,
+    /// Friend user IDs who have wishlisted a given SKU (module 532423 avatar pile badge).
+    pub wishlisted_by: HashMap<String, Vec<dc_state::Id>>,
     /// Module 124557: guard preventing overlapping wishlist writes.
     pub wishlist_busy: bool,
     /// Module 38884: "Added to your Wishlist!" NUX modal (`Some(sku)` when open).

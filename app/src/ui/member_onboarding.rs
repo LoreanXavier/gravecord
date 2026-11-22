@@ -1,8 +1,8 @@
 //! The member side of server onboarding: the blocked page (module 140354, `GuildOnboardingBlockedPage`) the channel
 //! route draws in place of the channel while the member has started onboarding and not finished it (961973 `$Y`,
 //! called from the channel renderer `gk` of 596339 after its static routes), its Start Onboarding button (`sy` of
-//! 817818, then 197463), and the interactive prompt flow (`GuildOnboardingPage`, module 215764, submitting via
-//! `POST /guilds/{id}/onboarding-responses`, module 669953).
+//! 817818, then 197463), the interactive prompt flow (`GuildOnboardingPage`, module 215764, submitting via
+//! `POST /guilds/{id}/onboarding-responses`, module 669953), and Guild Onboarding Connection Cards (module 528275).
 use super::{Root, color, motion};
 use crate::{net::Request, parity::Parity};
 use dc_state::{Guild, Id};
@@ -55,6 +55,80 @@ struct OnboardingPrompt {
     single_select: bool,
     required: bool,
     options: Vec<OnboardingOption>,
+}
+
+/// Guild Onboarding connection item (`GET /guilds/{id}/onboarding` `connections[]`, module 528275).
+/// `connection_type`: `0 = APPLICATION`, `1 = PROVIDER_CONNECTED_ACCOUNT`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct OnboardingConnection {
+    pub connection_type: u64,
+    pub application_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub description: String,
+}
+
+pub(super) fn parse_onboarding_connections(value: &Value) -> Vec<OnboardingConnection> {
+    value
+        .get("connections")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|item| OnboardingConnection {
+                    connection_type: item["connection_type"].as_u64().unwrap_or(1),
+                    application_id: item["application_id"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                    provider_id: item["provider_id"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                    description: item["description"].as_str().unwrap_or_default().to_owned(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Display name & description fallback for a guild onboarding connection card (module 528275).
+pub(super) fn onboarding_connection_copy(conn: &OnboardingConnection) -> (String, String) {
+    let title = if conn.connection_type == 0 {
+        conn.application_id
+            .clone()
+            .filter(|id| !id.chars().all(|c| c.is_ascii_digit()))
+            .unwrap_or_else(|| dc_intl::t("cgPbaZ").to_owned())
+    } else {
+        match conn.provider_id.as_deref() {
+            Some("twitch") => "Twitch".to_owned(),
+            Some("youtube") => "YouTube".to_owned(),
+            Some("spotify") => "Spotify".to_owned(),
+            Some("steam") => "Steam".to_owned(),
+            Some("github") => "GitHub".to_owned(),
+            Some("xbox") => "Xbox".to_owned(),
+            Some("playstation") => "PlayStation Network".to_owned(),
+            Some("battlenet") => "Battle.net".to_owned(),
+            Some("epicgames") => "Epic Games".to_owned(),
+            Some("riotgames") => "Riot Games".to_owned(),
+            Some(other) if !other.is_empty() => {
+                let mut chars = other.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => dc_intl::t("NzCoRx").to_owned(),
+                }
+            }
+            _ => dc_intl::t("NzCoRx").to_owned(),
+        }
+    };
+    let description = if !conn.description.trim().is_empty() {
+        conn.description.clone()
+    } else {
+        match conn.provider_id.as_deref() {
+            Some("twitch") => dc_intl::t("D/wRWb").to_owned(),
+            Some("youtube") => dc_intl::t("TC0upt").to_owned(),
+            _ => String::new(),
+        }
+    };
+    (title, description)
 }
 
 fn guild_splash_key(guild: Id, splash: &str) -> String {
@@ -623,6 +697,7 @@ impl Root {
                         .child(prompt.title.clone()),
                 )
                 .child(options_grid)
+                .children(self.onboarding_connections_section(guild_id, cx))
                 .when_some(flow.error.clone(), |col, err| {
                     col.child(
                         div()
@@ -812,6 +887,246 @@ impl Root {
             );
         }
         cx.notify();
+    }
+
+    /// Guild Onboarding Connection Cards section (`eDVMrA` / `BozOXu` header + `528275.A` `card_yId8-H`).
+    /// Shown in both `GuildOnboardingPage` (`member_onboarding.rs`) and `channel_browser.rs`.
+    pub(super) fn onboarding_connections_section(
+        &self,
+        guild_id: Id,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let key = format!("{PROMPTS}{guild_id}");
+        let connections = parse_onboarding_connections(self.fetched.get(&key)?);
+        if connections.is_empty() {
+            return None;
+        }
+        let connected_providers: HashSet<String> = self
+            .fetched
+            .get("connections")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|c| c["type"].as_str().map(str::to_lowercase))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let cards: Vec<AnyElement> = connections
+            .iter()
+            .enumerate()
+            .map(|(i, conn)| {
+                let (title, description) = onboarding_connection_copy(conn);
+                let is_connected = conn
+                    .provider_id
+                    .as_deref()
+                    .is_some_and(|p| connected_providers.contains(&p.to_lowercase()));
+                let provider_for_click = conn.provider_id.clone();
+                let app_for_click = conn.application_id.clone();
+                let badge_letter = title
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_uppercase()
+                    .to_string();
+                let right: AnyElement = if is_connected {
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(super::icon("circle_check", 16., "--status-positive"))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--status-positive"))
+                                .child(dc_intl::t("LV+CXH")),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .id(gpui::SharedString::from(format!(
+                            "onboarding-conn-connect-{i}"
+                        )))
+                        .flex_none()
+                        .h(px(32.))
+                        .px(px(14.))
+                        .rounded(px(6.))
+                        .bg(color("--control-primary-background-default"))
+                        .hover(|s| s.bg(color("--control-primary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child(dc_intl::t("S0W8Z5"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(provider) = provider_for_click.as_deref() {
+                                let _ = this.requests.send(Request::Rest {
+                                    key: Some(format!("connection-authorize:{provider}")),
+                                    method: reqwest::Method::GET,
+                                    route: format!("/connections/{provider}/authorize"),
+                                    body: None,
+                                });
+                            } else if let Some(app_id) = app_for_click.as_deref() {
+                                cx.open_url(&format!(
+                                    "https://discord.com/oauth2/authorize?client_id={app_id}"
+                                ));
+                            }
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                };
+                div()
+                    .id(gpui::SharedString::from(format!("onboarding-conn-{i}")))
+                    .p(px(14.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .size(px(40.))
+                                    .rounded(px(10.))
+                                    .bg(color("--background-base-lowest"))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(badge_letter),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(
+                                        div()
+                                            .text_size(px(15.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .truncate()
+                                            .child(title),
+                                    )
+                                    .when(!description.is_empty(), |col| {
+                                        col.child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .line_height(px(18.))
+                                                .text_color(color("--text-muted"))
+                                                .child(description),
+                                        )
+                                    }),
+                            ),
+                    )
+                    .child(right)
+                    .into_any_element()
+            })
+            .collect();
+
+        Some(
+            div()
+                .my(px(12.))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("eDVMrA")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t("BozOXu")),
+                        ),
+                )
+                .children(cards)
+                .into_any_element(),
+        )
+    }
+
+    /// Capture helper: seeds onboarding connections (`528275`) and opens the member onboarding page.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_onboarding_connections(&mut self, cx: &mut Context<Self>) -> String {
+        let Some(guild_id) = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id))
+        else {
+            return "onboarding-connections: no guild".to_owned();
+        };
+        let key = format!("{PROMPTS}{guild_id}");
+        self.fetched.insert(
+            key,
+            json!({
+                "prompts": [
+                    {
+                        "id": "9001",
+                        "title": "Pick your favorite games & interests",
+                        "in_onboarding": true,
+                        "single_select": false,
+                        "required": false,
+                        "options": [
+                            { "id": "9011", "title": "Valorant", "description": "Match alerts & squads" },
+                            { "id": "9012", "title": "Creative Art", "description": "Weekly showcases" }
+                        ]
+                    }
+                ],
+                "connections": [
+                    { "connection_type": 1, "provider_id": "twitch", "description": "" },
+                    { "connection_type": 1, "provider_id": "youtube", "description": "" },
+                    { "connection_type": 0, "application_id": "Riot Games Verify", "description": "Verify your Riot account for ranked channels." }
+                ]
+            }),
+        );
+        self.fetched.insert(
+            "connections".to_owned(),
+            json!([{ "type": "twitch", "name": "lorean" }]),
+        );
+        self.onboarding_flow = Some(OnboardingFlow {
+            guild_id,
+            return_channel_id: self.channel,
+            step_index: 0,
+            selected_options: HashSet::new(),
+            prompts_seen: HashMap::new(),
+            options_seen: HashMap::new(),
+            submitting: false,
+            error: None,
+        });
+        cx.notify();
+        format!("onboarding-connections: opened for guild {guild_id}")
     }
 
     /// Start Onboarding (140354 `f`): `sy` of 817818 marks the start in the client's store, then 197463 fetches the

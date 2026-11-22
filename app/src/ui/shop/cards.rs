@@ -17,6 +17,37 @@ pub(super) fn item_static(id: &str) -> String {
     format!("https://cdn.discordapp.com/media/v1/collectibles-shop/{id}/static")
 }
 
+/// Strikethrough original price element (module 506742 `A`): `"Originally {price}"` (`2CEGln`)
+/// with `.opacity(0.7)` and `.line_through()`.
+pub(super) fn strikethrough_price(
+    id: impl Into<SharedString>,
+    price_text: &str,
+    font_size: f32,
+    line_height: f32,
+    weight: f32,
+) -> gpui::Stateful<gpui::Div> {
+    let aria = dc_intl::format(
+        "2CEGln",
+        &[(
+            "price",
+            dc_intl::Arg::Str(std::borrow::Cow::Borrowed(price_text)),
+        )],
+    );
+    div()
+        .id(id.into())
+        .aria_label(aria)
+        .text_size(px(font_size))
+        .line_height(px(line_height))
+        .font_weight(FontWeight(weight))
+        .text_color(color("--text-muted"))
+        .opacity(0.7)
+        .line_through()
+        .child(price_text.to_owned())
+}
+
+/// Maximum number of overlapping avatars in the Wishlisted Avatar Pile badge (module 532423).
+pub(super) const MAX_WISHLIST_AVATARS: usize = 3;
+
 /// Screen-reader price label for a Shop price line (module 219103: `niC6DK`, `6C36MF`, `ckguyq`, `a/Y8PK`).
 pub(super) fn shop_price_aria_label(
     price_text: &str,
@@ -639,6 +670,7 @@ impl Root {
                     cx,
                 )
             });
+            let original_price = product.original_price(nitro);
             div()
                 .flex()
                 .items_center()
@@ -647,6 +679,15 @@ impl Root {
                     row.child(icon("shop_orb_18", 18., "--text-default"))
                 })
                 .children(discount_badge)
+                .when_some(original_price, |row, orig| {
+                    row.child(strikethrough_price(
+                        format!("shop-orig-price-{sku}"),
+                        &orig.text(),
+                        13.,
+                        18.,
+                        500.,
+                    ))
+                })
                 .child(text(14., 20., 600., "--text-default").child(price.text()))
                 .when_some(shown_pct, |row, percent| {
                     row.child(
@@ -663,6 +704,19 @@ impl Root {
             false,
             Some(id.clone()),
             hovering,
+            cx,
+        );
+        let wishlisters = self
+            .shop
+            .wishlisted_by
+            .get(sku)
+            .cloned()
+            .unwrap_or_default();
+        let wishlist_pile = self.shop_wishlisted_avatar_pile(
+            format!("shop-card-wishpile-{sku}"),
+            &wishlisters,
+            8.,
+            44.,
             cx,
         );
         outer
@@ -734,8 +788,86 @@ impl Root {
                 (None, false, true) => text_badge(&dc_intl::tr("Nitro exclusive").to_uppercase()),
                 _ => div().into_any_element(),
             })
+            .children(wishlist_pile)
             .child(heart)
             .into_any_element()
+    }
+
+    /// Wishlisted avatar pile badge overlaid on top-right of Shop gifting/recommendation cards
+    /// (module 532423 `p` / `n`): shows up to `MAX_WISHLIST_AVATARS` (3) overlapping circular
+    /// avatars of users who wishlisted the SKU, wrapped in a `"Wishlisted"` (`OnWY3/`) tooltip.
+    pub(super) fn shop_wishlisted_avatar_pile(
+        &self,
+        id: impl Into<SharedString>,
+        users: &[dc_state::Id],
+        top_inset: f32,
+        right_inset: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if users.is_empty() {
+            return None;
+        }
+        let id = id.into();
+        let pile = div().flex().items_center().children(
+            users
+                .iter()
+                .take(MAX_WISHLIST_AVATARS)
+                .enumerate()
+                .map(|(i, uid)| {
+                    let user = self.stores.users.get(uid);
+                    let initial = user
+                        .map(|u| {
+                            u.display_name()
+                                .chars()
+                                .next()
+                                .unwrap_or('?')
+                                .to_uppercase()
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| "?".to_owned());
+                    let avatar_img = user.and_then(|u| {
+                        let (key, _) = super::super::avatar_source(u);
+                        self.images.get(&key).cloned()
+                    });
+                    div()
+                        .when(i > 0, |d| d.ml(px(-8.)))
+                        .size(px(24.))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(color("--background-base-low"))
+                        .bg(color("--background-brand"))
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(match avatar_img {
+                            Some(image) => img(image)
+                                .size_full()
+                                .object_fit(ObjectFit::Cover)
+                                .into_any_element(),
+                            None => text(10., 12., 700., "--white")
+                                .child(initial)
+                                .into_any_element(),
+                        })
+                }),
+        );
+        let tipped = self.with_tip(
+            id,
+            super::super::tooltip::Tip::text(
+                dc_intl::t("OnWY3/"),
+                super::super::tooltip::Side::Top,
+            ),
+            pile,
+            cx,
+        );
+        Some(
+            div()
+                .absolute()
+                .top(px(top_inset))
+                .right(px(right_inset))
+                .child(tipped)
+                .into_any_element(),
+        )
     }
 
     /// The hover buttons (`getPurchaseButton` of module 987421): "Buy for <price>" with a gift button, or "View Details"

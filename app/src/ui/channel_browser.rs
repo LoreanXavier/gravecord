@@ -952,6 +952,9 @@ impl Root {
         if !self.stores.content_dismissed(INTRO) {
             list = list.child(self.browser_intro(cx));
         }
+        if let Some(connections) = self.onboarding_connections_section(guild_id, cx) {
+            list = list.child(connections);
+        }
         let mut first_heading = true;
         let mut first_row = true;
         for (category, rows) in groups {

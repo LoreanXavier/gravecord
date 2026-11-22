@@ -111,6 +111,33 @@ impl Root {
                     logo.as_deref(),
                     section,
                 )),
+                Block::SocialLayerPromoBanner {
+                    application_id,
+                    header_text,
+                    subheader_text,
+                    gradient_colors,
+                    gradient_angle,
+                    sku_ids,
+                    end_time,
+                    cta_type,
+                    logo_url,
+                    terms_url,
+                    background_image_url,
+                } => self.shop_social_layer_promo_banner(
+                    application_id,
+                    header_text,
+                    subheader_text,
+                    gradient_colors,
+                    *gradient_angle,
+                    sku_ids,
+                    end_time.as_deref(),
+                    *cta_type,
+                    logo_url.as_deref(),
+                    terms_url.as_deref(),
+                    background_image_url.as_deref(),
+                    section,
+                    cx,
+                ),
             };
             if let Some(element) = element {
                 page = page.child(block_container(index == 0, element));
@@ -147,6 +174,306 @@ impl Root {
                 window.request_animation_frame();
             }
         }
+    }
+
+    /// Collectibles Shop Game Promotion Banner (`type == 9`, module 504262 `"In Game Items"`):
+    /// fetches the application's storefront (`GET /partner-sdk/applications/{app}/application-storefront`),
+    /// renders the promo banner with gradient/background, 32px logo, header/subheader, Game Shop (`apFNLU`)
+    /// or Get Nitro (`pj0XBN`) CTA, optional countdown pill, `"Terms Apply."` (`mYS7uY`), 1/2/3+ SKU cards
+    /// (`aria_label("kocF+6")`), and `"© 2026 MARVEL"` legal footer for Marvel Rivals (`1346069614634864772`).
+    #[allow(clippy::too_many_arguments)]
+    fn shop_social_layer_promo_banner(
+        &mut self,
+        application_id: &str,
+        header_text: &str,
+        subheader_text: &str,
+        gradient_colors: &[String],
+        gradient_angle: Option<f32>,
+        sku_ids: &[String],
+        end_time: Option<&str>,
+        cta_type: i64,
+        logo_url: Option<&str>,
+        terms_url: Option<&str>,
+        background_image_url: Option<&str>,
+        section: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !application_id.is_empty() {
+            let key = super::game_shop::storefront_key(application_id);
+            let route = super::game_shop::storefront_route(application_id);
+            self.shop_request(&key, route);
+        }
+        let app_id = application_id.to_owned();
+        let storefront = self.shop.storefronts.get(application_id).cloned();
+        let bg_img = background_image_url.and_then(|u| self.shop_img(u));
+        let logo_img = logo_url.and_then(|u| self.shop_img(u));
+        let parsed_grad = (gradient_colors.len() >= 2)
+            .then(|| {
+                let parse_hex = |s: &str| -> Option<gpui::Rgba> {
+                    let h = s.trim().trim_start_matches('#');
+                    let v = u32::from_str_radix(h, 16).ok()?;
+                    Some(if h.len() == 6 {
+                        gpui::rgba((v << 8) | 0xff)
+                    } else {
+                        gpui::rgba(v)
+                    })
+                };
+                let first = parse_hex(&gradient_colors[0])?;
+                let last = parse_hex(gradient_colors.last()?)?;
+                Some(linear_gradient(
+                    gradient_angle.unwrap_or(135.),
+                    linear_color_stop(first, 0.),
+                    linear_color_stop(last, 1.),
+                ))
+            })
+            .flatten();
+        let countdown = end_time.and_then(|ts| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs() as i64;
+            let days = data::days_left(ts, now)?;
+            Some(if days > 1 {
+                dc_intl::t!("Io7ozn", days = days).to_string()
+            } else {
+                dc_intl::tr("Last day to buy").to_owned()
+            })
+        });
+        let cta_label = if cta_type == 1 {
+            dc_intl::t("pj0XBN")
+        } else {
+            dc_intl::t("apFNLU")
+        };
+        let terms_href = terms_url.map(str::to_owned);
+        let cards: Vec<AnyElement> = sku_ids
+            .iter()
+            .take(4)
+            .enumerate()
+            .map(|(i, sku)| {
+                let listing = storefront.as_ref().and_then(|sf| sf.listings.get(sku));
+                let title = listing
+                    .map(|l| l.name.clone())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| dc_intl::t("kocF+6").to_owned());
+                let price = listing.and_then(|l| l.price.clone());
+                let art = listing
+                    .and_then(|l| l.card_image.as_deref())
+                    .map(|asset| super::game_shop::asset_url(application_id, asset, 512))
+                    .and_then(|u| self.shop_img(&u));
+                let open_app = app_id.clone();
+                div()
+                    .id(SharedString::from(format!("shop-sl-promo-sku-{i}-{sku}")))
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(164.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .hover(|s| s.border_color(color("--border-normal")))
+                    .bg(color("--background-base-lower"))
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .flex()
+                    .flex_col()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !open_app.is_empty() {
+                            this.shop_open_game_shop(&open_app, 0, cx);
+                        }
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .w_full()
+                            .bg(color("--background-base-lowest"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .overflow_hidden()
+                            .child(match art {
+                                Some(image) => img(image)
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover)
+                                    .into_any_element(),
+                                None => {
+                                    icon("storefront_store", 28., "--icon-muted").into_any_element()
+                                }
+                            }),
+                    )
+                    .child(
+                        div()
+                            .px(px(10.))
+                            .py(px(8.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(6.))
+                            .child(
+                                text(13., 18., 600., "--text-strong")
+                                    .truncate()
+                                    .child(title),
+                            )
+                            .when_some(price, |row, p| {
+                                row.child(text(12., 16., 600., "--text-muted").child(p))
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+
+        let is_marvel = application_id == "1346069614634864772";
+        let cta_app = app_id.clone();
+        let banner = div()
+            .id(SharedString::from(format!(
+                "shop-sl-promo-{application_id}"
+            )))
+            .relative()
+            .w(px(section))
+            .rounded(px(16.))
+            .border_2()
+            .border_color(color("--border-normal"))
+            .bg(color("--background-base-lowest"))
+            .overflow_hidden()
+            .when_some(parsed_grad, |d, grad| d.bg(grad))
+            .when_some(bg_img, |d, image| {
+                d.child(
+                    img(image)
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .object_fit(ObjectFit::Cover)
+                        .opacity(0.35),
+                )
+            })
+            .child(
+                div()
+                    .relative()
+                    .p(px(24.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(16.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .when_some(logo_img, |col, image| {
+                                        col.child(
+                                            img(image).h(px(32.)).object_fit(ObjectFit::Contain),
+                                        )
+                                    })
+                                    .child(
+                                        text(24., 30., 700., "--text-strong")
+                                            .child(header_text.to_owned()),
+                                    )
+                                    .when(!subheader_text.is_empty(), |col| {
+                                        col.child(
+                                            text(14., 20., 400., "--text-default")
+                                                .child(subheader_text.to_owned()),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .when_some(countdown, |row, pill| {
+                                        row.child(
+                                            div()
+                                                .px(px(10.))
+                                                .py(px(5.))
+                                                .rounded(px(999.))
+                                                .bg(color("--background-surface-high"))
+                                                .border_1()
+                                                .border_color(color("--border-subtle"))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(5.))
+                                                .child(icon("webhook_clock", 13., "--text-strong"))
+                                                .child(
+                                                    text(12., 16., 600., "--text-strong")
+                                                        .child(pill),
+                                                ),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "shop-sl-promo-cta-{application_id}"
+                                            )))
+                                            .h(px(38.))
+                                            .px(px(16.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .hover(|s| {
+                                                s.bg(color("--control-primary-background-hover"))
+                                            })
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(text(14., 18., 600., "--white").child(cta_label))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if cta_type == 1 {
+                                                    this.open_purchase(false, cx);
+                                                } else if !cta_app.is_empty() {
+                                                    this.shop_open_game_shop(&cta_app, 0, cx);
+                                                }
+                                            })),
+                                    ),
+                            ),
+                    )
+                    .when(!cards.is_empty(), |col| {
+                        col.child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "shop-sl-promo-grid-{application_id}"
+                                )))
+                                .aria_label(dc_intl::t("kocF+6"))
+                                .flex()
+                                .gap(px(12.))
+                                .children(cards),
+                        )
+                    })
+                    .when(terms_href.is_some() || is_marvel, |col| {
+                        col.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(div().children(terms_href.map(|href| {
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "shop-sl-promo-terms-{application_id}"
+                                        )))
+                                        .cursor_pointer()
+                                        .text_size(px(12.))
+                                        .text_color(color("--text-link"))
+                                        .hover(|s| s.underline())
+                                        .child(dc_intl::t("mYS7uY"))
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.open_url(&href);
+                                        }))
+                                })))
+                                .when(is_marvel, |row| {
+                                    row.child(
+                                        text(11., 14., 500., "--text-muted")
+                                            .child("\u{00a9} 2026 MARVEL"),
+                                    )
+                                }),
+                        )
+                    }),
+            );
+        Some(centered(banner.into_any_element()))
     }
 
     /// The loading page of `tK`: the hero with no art and four skeleton cards, the two skeleton tiles of the featured

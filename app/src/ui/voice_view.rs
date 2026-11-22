@@ -3453,14 +3453,71 @@ impl Root {
                                     cx.stop_propagation();
                                 })
                                 .on_click(|_, _, cx| cx.stop_propagation())
-                                .child(self.with_tip(
-                                    "call-invite-tip",
-                                    Tip::text(dc_intl::tr("Invite"), Side::Top),
-                                    tray("call-invite", "voice_view_invite").on_click(
-                                        cx.listener(|this, _, _, cx| this.open_invite(cx)),
-                                    ),
-                                    cx,
-                                )),
+                                .child({
+                                    // Module 520006: contextual Invite to Stream / Invite to Activity / Invite to Voice.
+                                    let is_streaming = self.go_live.is_some();
+                                    let running_act = self.activities.running.as_ref().map(|r| {
+                                        (
+                                            r.channel,
+                                            r.application_id.parse::<dc_state::Id>().unwrap_or(0),
+                                            r.name.clone(),
+                                        )
+                                    });
+                                    let tip_label = if is_streaming {
+                                        dc_intl::t("6VQaqd")
+                                    } else if running_act.is_some() {
+                                        dc_intl::t("OzOM/q")
+                                    } else {
+                                        dc_intl::tr("Invite")
+                                    };
+                                    self.with_tip(
+                                        "call-invite-tip",
+                                        Tip::text(tip_label, Side::Top),
+                                        tray("call-invite", "voice_view_invite").on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                let ch = this
+                                                    .call
+                                                    .as_ref()
+                                                    .map(|c| c.channel)
+                                                    .or(this.channel);
+                                                if let Some(ch) = ch {
+                                                    if is_streaming
+                                                        && let Some(me) = this
+                                                            .stores
+                                                            .current_user
+                                                            .as_ref()
+                                                            .map(|u| u.id)
+                                                    {
+                                                        this.open_invite_for(
+                                                            ch,
+                                                            super::invite::InviteTarget::Stream {
+                                                                user_id: me,
+                                                            },
+                                                            cx,
+                                                        );
+                                                        return;
+                                                    }
+                                                    if let Some((_, app_id, app_name)) =
+                                                        running_act.as_ref()
+                                                        && *app_id != 0
+                                                    {
+                                                        this.open_invite_for(
+                                                            ch,
+                                                            super::invite::InviteTarget::Activity {
+                                                                application_id: *app_id,
+                                                                application_name: app_name.clone(),
+                                                            },
+                                                            cx,
+                                                        );
+                                                        return;
+                                                    }
+                                                }
+                                                this.open_invite(cx);
+                                            }),
+                                        ),
+                                        cx,
+                                    )
+                                }),
                         )
                     }),
             )

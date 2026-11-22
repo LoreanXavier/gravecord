@@ -2709,12 +2709,46 @@ impl Root {
             .into_any_element()
     }
 
+    /// Activity or custom-status subtext shown under a mutual friend's name (module 503062).
+    pub(super) fn mutual_friend_subtext(&self, user: Id) -> Option<String> {
+        let presence = self.stores.presence.get(user, None)?;
+        if let Some(custom) = presence.activities.iter().find_map(|a| {
+            (a["type"].as_u64() == Some(4))
+                .then(|| a["state"].as_str())
+                .flatten()
+                .filter(|s| !s.is_empty())
+        }) {
+            return Some(custom.to_owned());
+        }
+        presence.activities.iter().find_map(|a| {
+            (a["type"].as_u64() != Some(4))
+                .then(|| a["name"].as_str())
+                .flatten()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        })
+    }
+
     pub(super) fn mutual_row(
         &self,
         id: SharedString,
         leading: AnyElement,
         name: String,
         tint: Hsla,
+        hover_bg: gpui::Rgba,
+    ) -> gpui::Stateful<gpui::Div> {
+        self.mutual_row_with_subtext(id, leading, name, None, tint, tint, hover_bg)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn mutual_row_with_subtext(
+        &self,
+        id: SharedString,
+        leading: AnyElement,
+        name: String,
+        subtext: Option<String>,
+        tint: Hsla,
+        sub_tint: Hsla,
         hover_bg: gpui::Rgba,
     ) -> gpui::Stateful<gpui::Div> {
         div()
@@ -2730,11 +2764,29 @@ impl Root {
             .child(leading)
             .child(
                 div()
-                    .text_size(px(16.))
-                    .line_height(px(20.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(tint)
-                    .child(name),
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(tint)
+                            .truncate()
+                            .child(name),
+                    )
+                    .when_some(subtext, |col, sub| {
+                        col.child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(sub_tint)
+                                .truncate()
+                                .child(sub),
+                        )
+                    }),
             )
     }
 
@@ -3482,11 +3534,13 @@ impl Root {
                         .get(&friend.id)
                         .cloned()
                         .unwrap_or_else(|| "offline".to_owned());
+                    let mobile = self.stores.presence.is_mobile_online(friend.id);
+                    let subtext = self.mutual_friend_subtext(friend.id);
                     let leading = div()
                         .relative()
                         .size(px(40.))
                         .children(picture.map(|picture| img(picture).size(px(40.)).rounded_full()))
-                        .child(super::status_dot_40(&status, dot_cutout))
+                        .child(super::status_dot_40_mobile(&status, mobile, dot_cutout))
                         .into_any_element();
                     let friend_id = friend.id;
                     let tag = friend.tag.clone();
@@ -3494,14 +3548,16 @@ impl Root {
                     let label = mutual_friend_label(
                         friend.display_name(),
                         (!friend.bot)
-                            .then(|| status_label(&status, false))
+                            .then(|| status_label(&status, mobile))
                             .flatten(),
                     );
-                    self.mutual_row(
+                    self.mutual_row_with_subtext(
                         SharedString::from(format!("full-profile-friend-{friend_id}")),
                         leading,
                         friend.display_name().to_owned(),
+                        subtext,
                         strong,
+                        default,
                         row_hover,
                     )
                     .aria_label(label)
@@ -3512,6 +3568,20 @@ impl Root {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_full_profile(friend_id, window, cx);
                     }))
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.open_context_menu(
+                                super::context_menu::Target::User {
+                                    user: friend_id,
+                                    guild: None,
+                                },
+                                ev.position,
+                                cx,
+                            );
+                        }),
+                    )
                     .into_any_element()
                 }))
                 .into_any_element(),

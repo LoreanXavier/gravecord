@@ -859,6 +859,258 @@ impl Root {
             )
     }
 
+    /// Classic DM sidebar collapsible Mutual Servers (`oR`) and Mutual Friends (`oL`) sections
+    /// (modules 289287, 503062, 51943). Expanding Mutual Friends fetches `with_mutual_friends=true`
+    /// if the cached sidebar profile only carried `mutual_friends_count`.
+    fn classic_sidebar_mutuals(
+        &mut self,
+        user_id: Id,
+        palette: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let body = self.fetched.get(&format!("profile:{user_id}")).cloned()?;
+        let server_ids: Vec<(Id, Option<String>)> = body["mutual_guilds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|g| {
+                let id = g["id"].as_str()?.parse::<Id>().ok()?;
+                let nick = g["nick"].as_str().map(str::to_owned);
+                Some((id, nick))
+            })
+            .collect();
+        let friends: Vec<User> = body["mutual_friends"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(mutual_user)
+            .collect();
+        let friend_count = if !friends.is_empty() || body["mutual_friends"].is_array() {
+            friends.len()
+        } else {
+            body["mutual_friends_count"].as_u64().unwrap_or(0) as usize
+        };
+        let server_count = server_ids.len();
+        if server_count == 0 && friend_count == 0 {
+            return None;
+        }
+        let servers_open = self.dm_mutual_servers_open;
+        let friends_open = self.dm_mutual_friends_open;
+        let has_friend_list = body["mutual_friends"].is_array();
+        let strong: Hsla = palette.token("--text-strong").into();
+        let subtle: Hsla = palette.token("--text-muted").into();
+        let row_hover = palette.token("--background-mod-subtle");
+        let divider = palette.token("--border-subtle");
+        let dot_cutout = "--user-profile-overlay-background";
+
+        let servers_section = (server_count > 0).then(|| {
+            let title = dc_intl::t!("fGlxFS", count = server_count as f64).to_string();
+            let rows: Vec<AnyElement> = if servers_open {
+                server_ids
+                    .iter()
+                    .filter_map(|(gid, _nick)| {
+                        let known = self.stores.guilds.iter().find(|g| g.id == *gid)?;
+                        let name = known.name.clone();
+                        let label = dc_intl::t!("Ce2iXp", guildName = name.clone()).to_string();
+                        let picture = self.images.get(&format!("guild:{gid}")).cloned();
+                        let leading = div()
+                            .size(px(32.))
+                            .flex_none()
+                            .rounded(px(10.))
+                            .overflow_hidden()
+                            .bg(palette.token("--background-base-lower"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(12.))
+                            .text_color(strong)
+                            .when_some(picture, |d, pic| d.child(img(pic).size(px(32.))))
+                            .when(self.images.get(&format!("guild:{gid}")).is_none(), |d| {
+                                d.child(
+                                    name.chars()
+                                        .next()
+                                        .unwrap_or('?')
+                                        .to_uppercase()
+                                        .to_string(),
+                                )
+                            })
+                            .into_any_element();
+                        let gid = *gid;
+                        Some(
+                            self.mutual_row(
+                                SharedString::from(format!("dm-sidebar-server-{gid}")),
+                                leading,
+                                name,
+                                strong,
+                                row_hover,
+                            )
+                            .aria_label(label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select(gid, None);
+                                cx.notify();
+                            }))
+                            .into_any_element(),
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .id("dm-sidebar-mutual-servers-toggle")
+                        .cursor_pointer()
+                        .py(px(4.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dm_mutual_servers_open = !this.dm_mutual_servers_open;
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(strong)
+                                .child(title),
+                        )
+                        .child(icon(
+                            if servers_open {
+                                "chevron_down"
+                            } else {
+                                "chevron_right"
+                            },
+                            14.,
+                            "--interactive-icon-default",
+                        )),
+                )
+                .children(rows)
+        });
+
+        let friends_section = (friend_count > 0).then(|| {
+            let title = dc_intl::t!("9Gofqp", count = friend_count as f64).to_string();
+            let rows: Vec<AnyElement> = if friends_open {
+                friends
+                    .into_iter()
+                    .map(|friend| {
+                        let (avatar_key, avatar_url) = avatar_source(&friend);
+                        let picture = self.images.get(&avatar_key).cloned();
+                        if picture.is_none() {
+                            self.want_image(avatar_key, avatar_url, cx);
+                        }
+                        let status = self
+                            .stores
+                            .presences
+                            .get(&friend.id)
+                            .cloned()
+                            .unwrap_or_else(|| "offline".to_owned());
+                        let mobile = self.stores.presence.is_mobile_online(friend.id);
+                        let subtext = self.mutual_friend_subtext(friend.id);
+                        let leading = div()
+                            .relative()
+                            .size(px(32.))
+                            .children(picture.map(|pic| img(pic).size(px(32.)).rounded_full()))
+                            .child(super::status_dot_40_mobile(&status, mobile, dot_cutout))
+                            .into_any_element();
+                        let friend_id = friend.id;
+                        self.mutual_row_with_subtext(
+                            SharedString::from(format!("dm-sidebar-friend-{friend_id}")),
+                            leading,
+                            friend.display_name().to_owned(),
+                            subtext,
+                            strong,
+                            subtle,
+                            row_hover,
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_full_profile(friend_id, window, cx);
+                        }))
+                        .on_mouse_down(
+                            gpui::MouseButton::Right,
+                            cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.open_context_menu(
+                                    super::context_menu::Target::User {
+                                        user: friend_id,
+                                        guild: None,
+                                    },
+                                    ev.position,
+                                    cx,
+                                );
+                            }),
+                        )
+                        .into_any_element()
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .id("dm-sidebar-mutual-friends-toggle")
+                        .cursor_pointer()
+                        .py(px(4.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.dm_mutual_friends_open = !this.dm_mutual_friends_open;
+                            if this.dm_mutual_friends_open && !has_friend_list {
+                                let route = format!(
+                                    "/users/{user_id}/profile?type=sidebar&with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=true"
+                                );
+                                let _ = this.requests.send(crate::net::Request::Rest {
+                                    key: Some(format!("profile:{user_id}")),
+                                    method: reqwest::Method::GET,
+                                    route,
+                                    body: None,
+                                });
+                            }
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(strong)
+                                .child(title),
+                        )
+                        .child(icon(
+                            if friends_open {
+                                "chevron_down"
+                            } else {
+                                "chevron_right"
+                            },
+                            14.,
+                            "--interactive-icon-default",
+                        )),
+                )
+                .children(rows)
+        });
+
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .children(servers_section)
+                .when(server_count > 0 && friend_count > 0, |col| {
+                    col.child(div().w_full().h(px(1.)).bg(divider))
+                })
+                .children(friends_section)
+                .into_any_element(),
+        )
+    }
+
     /// `mutuals_PXYMZ1` (module 791556): avatars and the friends' count, a dot, the servers' count; `body-xs` when both
     /// show, `body-sm` for one. Each opens the full profile on its tab.
     pub(super) fn profile_mutuals(
@@ -1509,14 +1761,20 @@ impl Root {
             .into_any_element();
         // `an` of module 289287: a non-user bot's sidebar is the names, the bio and Created On only.
         let non_user_bot = user.non_user_bot();
-        let mutuals = (!non_user_bot)
-            .then(|| self.profile_mutuals("dm-profile", user_id, palette, cx))
-            .flatten();
-        let private =
-            is_private.then(|| super::profile_board::private_notice(user.display_name(), palette));
         // The redesign draws module 442228 (three lines and View Full Bio); the classic sidebar module 501925's
         // `lineClamp` of six lines.
         let redesign = self.sidebar_redesign();
+        let mutuals = (!non_user_bot)
+            .then(|| {
+                if redesign {
+                    self.profile_mutuals("dm-profile", user_id, palette, cx)
+                } else {
+                    self.classic_sidebar_mutuals(user_id, palette, cx)
+                }
+            })
+            .flatten();
+        let private =
+            is_private.then(|| super::profile_board::private_notice(user.display_name(), palette));
         let bio = bio.and_then(|bio| {
             let strong = palette.token("--text-strong").into();
             if redesign {

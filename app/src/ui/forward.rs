@@ -36,6 +36,90 @@ impl Destination {
     }
 }
 
+/// Activity / Frame share payload for `SHARE_LINK` & `SHARE_CONTENT` (module 529999 / 342384).
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) struct ShareActivity {
+    pub application_id: String,
+    pub application_name: String,
+    pub preview_title: Option<String>,
+    pub subtitle: Option<String>,
+    pub share_url: String,
+    pub content: String,
+    pub image_url: Option<String>,
+    /// Attachment counts `(images, videos, other_files)` for MIME summary copy (`Lr0Top`/`SJ6pPX`/`h4pFfU`/`89ihS8`).
+    pub media_counts: (usize, usize, usize),
+    /// Extra thumbnails count beyond the first preview tile (`+{N}` overflow badge).
+    pub extra_media: usize,
+    /// Pending Embedded App SDK `(cmd, nonce)` to reply `{ success, didCopyLink, didSendMessage }`.
+    pub sdk_cmd: Option<(String, String)>,
+    pub did_copy_link: bool,
+}
+
+/// Builds the official Activity share URL (`342384.W`: `https://discord.com/activities/{app}?...`).
+pub(super) fn build_activity_share_url(
+    application_id: &str,
+    custom_id: Option<&str>,
+    link_id: Option<&str>,
+    referrer_id: Option<&str>,
+) -> String {
+    let mut url = format!("https://discord.com/activities/{application_id}");
+    let mut params = Vec::new();
+    if let Some(cid) = custom_id.filter(|s| !s.is_empty()) {
+        params.push(format!("custom_id={cid}"));
+    }
+    if let Some(lid) = link_id.filter(|s| !s.is_empty()) {
+        params.push(format!("link_id={lid}"));
+    }
+    if let Some(rid) = referrer_id.filter(|s| !s.is_empty()) {
+        params.push(format!("referrer_id={rid}"));
+    }
+    if !params.is_empty() {
+        url.push('?');
+        url.push_str(&params.join("&"));
+    }
+    url
+}
+
+/// Formats MIME attachment count summary for `SHARE_CONTENT` (module 529999: `Lr0Top`, `SJ6pPX`, `h4pFfU`, `89ihS8`).
+pub(super) fn activity_share_media_summary(
+    images: usize,
+    videos: usize,
+    files: usize,
+) -> Option<String> {
+    let total = images + videos + files;
+    if total == 0 {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if images > 0 {
+        parts.push(dc_intl::format(
+            "Lr0Top",
+            &[("count", (images as f64).into())],
+        ));
+    }
+    if videos > 0 {
+        parts.push(dc_intl::format(
+            "SJ6pPX",
+            &[("count", (videos as f64).into())],
+        ));
+    }
+    if files > 0 {
+        parts.push(dc_intl::format(
+            "h4pFfU",
+            &[("count", (files as f64).into())],
+        ));
+    }
+    if parts.len() > 1 {
+        Some(dc_intl::format(
+            "89ihS8",
+            &[("count", (total as f64).into())],
+        ))
+    } else {
+        parts.into_iter().next()
+    }
+}
+
 pub(crate) struct Forward {
     /// The forwarded message; none when a profile is shared.
     pub message: Option<Message>,
@@ -43,6 +127,8 @@ pub(crate) struct Forward {
     pub(super) profile: Option<dc_state::User>,
     /// Share Clip (module 243258): the same modal, sending the clip's trimmed video.
     pub(super) clip: Option<super::clips::ShareClip>,
+    /// Share Activity / Frame (`SHARE_LINK` & `SHARE_CONTENT`, module 529999).
+    pub(super) activity: Option<ShareActivity>,
     pub(super) search: Entity<Editor>,
     pub(super) note: Entity<Editor>,
     _events: [Subscription; 2],
@@ -98,6 +184,87 @@ impl Root {
         }
     }
 
+    /// Share Activity / Frame (`SHARE_LINK` & `SHARE_CONTENT`, module 529999).
+    pub(super) fn open_share_activity(
+        &mut self,
+        share: ShareActivity,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(url) = share.image_url.as_ref().filter(|u| !u.is_empty()) {
+            self.request_image(
+                format!("activity-share:{}", share.application_id),
+                url.clone(),
+            );
+        }
+        let search = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_placeholder("Search".to_owned());
+            editor
+        });
+        let note = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_placeholder("Add an optional message...".to_owned());
+            editor
+        });
+        let search_events = cx.subscribe(&search, |this, editor, event: &EditorEvent, cx| {
+            if let Some(forward) = this.forward.as_mut() {
+                match event {
+                    EditorEvent::Edited => forward.query = editor.read(cx).text().to_owned(),
+                    EditorEvent::Cancel => this.close_forward(cx),
+                    EditorEvent::Submit(_) => {}
+                }
+            }
+            cx.notify();
+        });
+        let note_events = cx.subscribe(&note, |this, _, event: &EditorEvent, cx| {
+            match event {
+                EditorEvent::Submit(text) => {
+                    let text = text.clone();
+                    this.send_forward(Some(text), cx);
+                }
+                EditorEvent::Cancel => this.close_forward(cx),
+                EditorEvent::Edited => {}
+            }
+            cx.notify();
+        });
+        if let Some(window) = window {
+            window.focus(&search.read(cx).focus_handle(cx), cx);
+        }
+        self.forward = Some(Forward {
+            message: None,
+            profile: None,
+            clip: None,
+            activity: Some(share),
+            search,
+            note,
+            _events: [search_events, note_events],
+            query: String::new(),
+            selected: Vec::new(),
+        });
+        cx.notify();
+    }
+
+    /// Closes the forward modal, resolving any pending Activity SDK share promise as cancelled.
+    pub(super) fn close_forward(&mut self, cx: &mut Context<Self>) {
+        if let Some(forward) = self.forward.take()
+            && let Some(act) = forward.activity
+            && let Some((cmd, nonce)) = act.sdk_cmd
+        {
+            self.activity_reply(
+                &cmd,
+                &nonce,
+                Ok(serde_json::json!({
+                    "success": act.did_copy_link,
+                    "didCopyLink": act.did_copy_link,
+                    "didSendMessage": false,
+                })),
+                cx,
+            );
+        }
+        cx.notify();
+    }
+
     fn open_forward_with(
         &mut self,
         message: Option<Message>,
@@ -144,6 +311,7 @@ impl Root {
             message,
             profile,
             clip: None,
+            activity: None,
             search,
             note,
             _events: [search_events, note_events],
@@ -297,6 +465,46 @@ impl Root {
             if let Some(share) = forward.clip {
                 self.clips_send_share(share, channels, note, cx);
             }
+            return;
+        }
+        if let Some(act) = forward.activity {
+            // Module 529999 send handler: posts [imageUrl, content, note] to each destination,
+            // toasts `kwmYkt` / `iufib1`, and resolves `{ success, didCopyLink, didSendMessage }`.
+            let mut lines: Vec<String> = Vec::new();
+            if let Some(img_url) = act.image_url.as_ref().filter(|s| !s.is_empty()) {
+                lines.push(img_url.clone());
+            }
+            if !act.content.trim().is_empty() {
+                lines.push(act.content.clone());
+            } else if !act.share_url.is_empty() {
+                lines.push(act.share_url.clone());
+            }
+            if !note.is_empty() {
+                lines.push(note);
+            }
+            let body = lines.join("\n");
+            for destination in &forward.selected {
+                self.start_local_text(destination.channel(), body.clone());
+            }
+            if let Some((cmd, nonce)) = act.sdk_cmd {
+                self.activity_reply(
+                    &cmd,
+                    &nonce,
+                    Ok(serde_json::json!({
+                        "success": true,
+                        "didCopyLink": act.did_copy_link,
+                        "didSendMessage": true,
+                    })),
+                    cx,
+                );
+            }
+            self.go_to_destination(&forward.selected);
+            let toast = if forward.selected.len() > 1 {
+                dc_intl::t("iufib1")
+            } else {
+                dc_intl::t("kwmYkt")
+            };
+            self.show_success_toast(toast.to_owned(), cx);
             return;
         }
         if let Some(user) = forward.profile.as_ref() {
@@ -727,9 +935,10 @@ impl Root {
                 .preview_text(&super::first_spans(&message.content), false)
                 .into_any_element(),
             (None, Some(user)) => self.profile_preview(user, cx),
-            (None, None) => match forward.clip.as_ref() {
-                Some(clip) => self.clips_share_preview(clip),
-                None => div().into_any_element(),
+            (None, None) => match (&forward.clip, &forward.activity) {
+                (Some(clip), _) => self.clips_share_preview(clip),
+                (None, Some(act)) => self.activity_share_preview(act),
+                (None, None) => div().into_any_element(),
             },
         };
         let attached = forward
@@ -742,6 +951,11 @@ impl Root {
             .as_ref()
             .is_some_and(|message| !message.content.is_empty());
         let sharing = forward.profile.as_ref().map(|user| user.id);
+        let activity_share_url = forward
+            .activity
+            .as_ref()
+            .map(|act| act.share_url.clone())
+            .filter(|u| !u.is_empty());
         let send_label = if count <= 1 {
             "Send".to_owned()
         } else {
@@ -788,11 +1002,18 @@ impl Root {
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
                                     .child(if forward.clip.is_some() {
-                                        "Share Clip"
+                                        "Share Clip".to_owned()
+                                    } else if let Some(act) = forward.activity.as_ref() {
+                                        act.preview_title
+                                            .clone()
+                                            .filter(|t| !t.is_empty())
+                                            .unwrap_or_else(|| {
+                                                format!("Share {}", act.application_name)
+                                            })
                                     } else if sharing.is_some() {
-                                        "Share Profile"
+                                        "Share Profile".to_owned()
                                     } else {
-                                        "Forward To"
+                                        "Forward To".to_owned()
                                     }),
                             )
                             .child(
@@ -812,8 +1033,7 @@ impl Root {
                                         "--control-icon-only-icon-default",
                                     ))
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.forward = None;
-                                        cx.notify();
+                                        this.close_forward(cx);
                                     })),
                             ),
                     )
@@ -899,9 +1119,12 @@ impl Root {
                         div()
                             .relative()
                             .pl(px(16.))
-                            .when(sharing.is_none() && forward.clip.is_none(), |this| {
-                                this.py(px(4.))
-                            })
+                            .when(
+                                sharing.is_none()
+                                    && forward.clip.is_none()
+                                    && forward.activity.is_none(),
+                                |this| this.py(px(4.)),
+                            )
                             .child(
                                 div()
                                     .absolute()
@@ -981,7 +1204,10 @@ impl Root {
                                                 .rounded(px(8.))
                                                 .bg(gpui::rgba(0x0000000a)),
                                         )
-                                } else if sharing.is_some() || forward.clip.is_some() {
+                                } else if sharing.is_some()
+                                    || forward.clip.is_some()
+                                    || forward.activity.is_some()
+                                {
                                     div().child(preview)
                                 } else {
                                     div().h(px(22.)).pt(px(2.)).child(preview)
@@ -1043,6 +1269,52 @@ impl Root {
                                     )),
                             ),
                     )
+                    .when_some(activity_share_url, |this, url| {
+                        // Module 529999 Copy Link secondary icon button (`WqhZss` / `L/PwZf`).
+                        this.child(
+                            self.with_tip(
+                                "activity-share-copy-tip",
+                                super::tooltip::Tip::text(
+                                    dc_intl::t("WqhZss"),
+                                    super::tooltip::Side::Top,
+                                ),
+                                div()
+                                    .id("activity-share-copy-link")
+                                    .size(px(40.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .hover(|style| {
+                                        style.bg(color("--control-secondary-background-hover"))
+                                    })
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        svg()
+                                            .path("icons/share_link.svg")
+                                            .size(px(20.))
+                                            .text_color(color("--control-secondary-text-default")),
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                            url.clone(),
+                                        ));
+                                        if let Some(act) =
+                                            this.forward.as_mut().and_then(|f| f.activity.as_mut())
+                                        {
+                                            act.did_copy_link = true;
+                                        }
+                                        this.show_success_toast(
+                                            dc_intl::t("L/PwZf").to_owned(),
+                                            cx,
+                                        );
+                                        cx.notify();
+                                    })),
+                                cx,
+                            ),
+                        )
+                    })
                     .when_some(sharing, |this, user| {
                         // `additionalActions`: Copy Link, a secondary icon button.
                         this.child(
@@ -1121,8 +1393,7 @@ impl Root {
                     .items_center()
                     .justify_center()
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.forward = None;
-                        cx.notify();
+                        this.close_forward(cx);
                     }))
                     .child(modal.posed(pose)),
             )
@@ -1130,6 +1401,131 @@ impl Root {
             .with_priority(3)
             .into_any_element(),
         )
+    }
+
+    /// Module 529999 preview card for `SHARE_LINK` / `SHARE_CONTENT`:
+    /// title (or app name), subtitle (or MIME media count summary `Lr0Top`/`SJ6pPX`/`h4pFfU`/`89ihS8`),
+    /// and a 56x56 preview thumbnail with optional `+{N}` overflow badge.
+    fn activity_share_preview(&self, act: &ShareActivity) -> AnyElement {
+        let title = act
+            .preview_title
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&act.application_name)
+            .to_owned();
+        let subtitle = act
+            .subtitle
+            .clone()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                activity_share_media_summary(
+                    act.media_counts.0,
+                    act.media_counts.1,
+                    act.media_counts.2,
+                )
+            })
+            .unwrap_or_else(|| act.share_url.clone());
+        let thumb = self
+            .images
+            .get(&format!("activity-share:{}", act.application_id))
+            .cloned()
+            .or_else(|| {
+                act.image_url
+                    .as_deref()
+                    .and_then(|u| self.images.get(u).cloned())
+            });
+        div()
+            .min_h(px(56.))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .truncate()
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-muted"))
+                            .truncate()
+                            .child(subtitle),
+                    ),
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .size(px(56.))
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .bg(color("--background-base-lowest"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(match thumb {
+                        Some(pic) => img(pic)
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .into_any_element(),
+                        None => icon("activity_rocket", 22., "--icon-subtle").into_any_element(),
+                    })
+                    .when(act.extra_media > 0, |box_el| {
+                        box_el.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .bg(rgba(0x00000088))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--white"))
+                                .child(format!("+{}", act.extra_media)),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// Capture helper: `activity-share` opens the Activity Share modal (`529999`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_activity_share(&mut self, cx: &mut Context<Self>) -> String {
+        let share_url =
+            build_activity_share_url("880218394199220334", Some("match-42"), Some("lnk-7"), None);
+        self.open_share_activity(
+            ShareActivity {
+                application_id: "880218394199220334".to_owned(),
+                application_name: "Watch Together".to_owned(),
+                preview_title: Some("Share Watch Together Highlight".to_owned()),
+                subtitle: None,
+                share_url: share_url.clone(),
+                content: share_url,
+                image_url: None,
+                media_counts: (2, 1, 0),
+                extra_media: 2,
+                sdk_cmd: None,
+                did_copy_link: false,
+            },
+            None,
+            cx,
+        );
+        "activity-share: opened".to_owned()
     }
 
     /// `preview_0XXhWj`: the shared user, avatar 40 with status, display name and tag.

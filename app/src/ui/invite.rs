@@ -1,8 +1,9 @@
-//! Invite to Server (server menu and the invite icons), measured in `design/dom/modals/invite-darker-cozy.json`:
-//! the title and "Recipients will land in #channel", a friend search, rows with Invite, and the link footer. Opening
-//! it creates the invite as `TRAFFIC/invite-open.json` records: `POST /channels/{id}/invites {validate, max_age:
-//! 2592000, max_uses: 0, target_type: null, temporary: false, flags: 0}`. Invite on a row sends the link in that
-//! person's DM; Copy puts it on the clipboard.
+//! Invite to Server / Stream / Activity / Stage / Event (modules 137811 & 520006), measured in
+//! `design/dom/modals/invite-darker-cozy.json`: the title and "Recipients will land in #channel",
+//! a friend search, rows with Invite, and the link footer. Opening it creates the invite as
+//! `TRAFFIC/invite-open.json` records: `POST /channels/{id}/invites {validate, max_age:
+//! 2592000, max_uses: 0, target_type: null|1|2, temporary: false, flags: 0}`. Invite on a row
+//! sends the link in that person's DM; Copy puts it on the clipboard.
 
 use super::{Root, avatar_source, color, editor_style, icon, modal};
 use crate::editor::{Editor, EditorEvent};
@@ -28,8 +29,30 @@ pub(super) const IS_GUEST_INVITE: u64 = 1;
 /// `IS_APPLICATION_BYPASS` flag bit (module 821418 / 312556).
 pub(super) const IS_APPLICATION_BYPASS: u64 = 8;
 
+/// Target of an instant invite dialog (modules 137811 & 520006).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum InviteTarget {
+    #[default]
+    Server,
+    /// `target_type: 1` (`STREAM`) + `target_user_id`.
+    Stream {
+        user_id: Id,
+    },
+    /// `target_type: 2` (`EMBEDDED_APPLICATION`) + `target_application_id`.
+    Activity {
+        application_id: Id,
+        application_name: String,
+    },
+    Stage,
+    Event {
+        event_id: Id,
+    },
+}
+
 pub(crate) struct Invite {
     pub channel: Id,
+    pub target: InviteTarget,
     pub search: Entity<Editor>,
     _events: Subscription,
     pub query: String,
@@ -130,12 +153,31 @@ pub(super) fn generate_body(max_age: u64, max_uses: u64, temporary: bool, roles:
     generate_body_with_flags(max_age, max_uses, temporary, 0, roles)
 }
 
+#[cfg(test)]
 pub(super) fn generate_body_with_flags(
     max_age: u64,
     max_uses: u64,
     temporary: bool,
     flags: u64,
     roles: &[Id],
+) -> Value {
+    generate_body_for_target(
+        max_age,
+        max_uses,
+        temporary,
+        flags,
+        roles,
+        &InviteTarget::Server,
+    )
+}
+
+pub(super) fn generate_body_for_target(
+    max_age: u64,
+    max_uses: u64,
+    temporary: bool,
+    flags: u64,
+    roles: &[Id],
+    target: &InviteTarget,
 ) -> Value {
     let mut body = json!({
         "max_age": max_age,
@@ -144,10 +186,57 @@ pub(super) fn generate_body_with_flags(
         "temporary": temporary,
         "flags": flags,
     });
+    match target {
+        InviteTarget::Stream { user_id } => {
+            body["target_type"] = json!(1);
+            body["target_user_id"] = json!(user_id.to_string());
+        }
+        InviteTarget::Activity { application_id, .. } => {
+            body["target_type"] = json!(2);
+            body["target_application_id"] = json!(application_id.to_string());
+        }
+        InviteTarget::Server | InviteTarget::Stage | InviteTarget::Event { .. } => {}
+    }
     if !roles.is_empty() {
         body["role_ids"] = roles.iter().map(|role| role.to_string()).collect();
     }
     body
+}
+
+/// Modal title & link-section header copy for each `InviteTarget` (modules 137811 & 520006).
+pub(super) fn invite_target_copy(
+    target: &InviteTarget,
+    guild_name: &str,
+) -> (String, &'static str) {
+    match target {
+        InviteTarget::Server => (
+            format!("Invite friends to {guild_name}"),
+            dc_intl::t("MLkj7N"),
+        ),
+        InviteTarget::Stream { .. } => (dc_intl::t("6VQaqd").to_owned(), dc_intl::t("1b9neu")),
+        InviteTarget::Activity {
+            application_name, ..
+        } => (
+            dc_intl::format(
+                "ZdK3dW",
+                &[(
+                    "applicationName",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(application_name)),
+                )],
+            ),
+            dc_intl::t("iI1gMg"),
+        ),
+        InviteTarget::Stage => (dc_intl::t("zTrsH0").to_owned(), dc_intl::t("2frWa3")),
+        InviteTarget::Event { .. } => (dc_intl::t("JKV4FL").to_owned(), dc_intl::t("KaWCyD")),
+    }
+}
+
+/// Invite link URL formatted for the target (appends `?event={id}` for Event invites, module 137811).
+pub(super) fn invite_url_for_target(code: &str, target: &InviteTarget) -> String {
+    match target {
+        InviteTarget::Event { event_id } => format!("https://discord.gg/{code}?event={event_id}"),
+        _ => format!("https://discord.gg/{code}"),
+    }
 }
 
 /// The roles an invite may hand out (`ek` of module 137811): none without Manage Roles; never @everyone, a managed
@@ -218,6 +307,16 @@ impl Root {
         }) else {
             return;
         };
+        self.open_invite_for(channel, InviteTarget::Server, cx);
+    }
+
+    /// Opens the instant invite modal for a specific channel & target (module 520006 / 137811).
+    pub(super) fn open_invite_for(
+        &mut self,
+        channel: Id,
+        target: InviteTarget,
+        cx: &mut Context<Self>,
+    ) {
         let search = cx.new(|cx| {
             let mut editor = Editor::new(editor_style(), cx);
             editor.set_placeholder(dc_intl::t("CmSHYx").to_owned());
@@ -252,22 +351,20 @@ impl Root {
             }
             cx.notify();
         });
-        let previous = self.invite_codes.get(&channel).cloned();
+        let previous = (target == InviteTarget::Server)
+            .then(|| self.invite_codes.get(&channel).cloned())
+            .flatten();
+        let mut body = generate_body_for_target(MAX_AGE, 0, false, 0, &[], &target);
+        body["validate"] = json!(previous);
         let _ = self.requests.send(Request::Rest {
             key: Some(CREATE_KEY.to_owned()),
             method: reqwest::Method::POST,
             route: format!("/channels/{channel}/invites"),
-            body: Some(json!({
-                "validate": previous,
-                "max_age": MAX_AGE,
-                "max_uses": 0,
-                "target_type": null,
-                "temporary": false,
-                "flags": 0,
-            })),
+            body: Some(body),
         });
         self.invite = Some(Invite {
             channel,
+            target,
             search,
             _events: events,
             query: String::new(),
@@ -311,12 +408,13 @@ impl Root {
             return;
         }
         invite.error = None;
-        let body = generate_body_with_flags(
+        let body = generate_body_for_target(
             invite.max_age,
             invite.max_uses,
             temporary,
             invite.flags,
             &invite.roles,
+            &invite.target,
         );
         let _ = self.requests.send(Request::Rest {
             key: Some(CREATE_KEY.to_owned()),
@@ -1178,6 +1276,20 @@ impl Root {
             }
         }
         people.sort_by_key(|user| user.display_name().to_lowercase());
+        // Module 137811 / 520006: omit users already connected to the target voice/Stage channel.
+        if matches!(
+            invite.target,
+            InviteTarget::Stream { .. } | InviteTarget::Activity { .. } | InviteTarget::Stage
+        ) && let Some(gid) = self.guild_of_channel(invite.channel)
+        {
+            let in_channel: HashSet<Id> = self
+                .stores
+                .voice_members(gid, invite.channel)
+                .into_iter()
+                .map(|vs| vs.user_id)
+                .collect();
+            people.retain(|user| !in_channel.contains(&user.id));
+        }
         people.retain(|user| {
             query.is_empty()
                 || user.display_name().to_lowercase().contains(&query)
@@ -1190,8 +1302,9 @@ impl Root {
         let link = invite
             .code
             .as_ref()
-            .map(|code| format!("https://discord.gg/{code}"))
+            .map(|code| invite_url_for_target(code, &invite.target))
             .unwrap_or_default();
+        let (modal_title, link_header) = invite_target_copy(&invite.target, &guild_name);
         let copy_link = link.clone();
         let shown_link = link;
         #[cfg(feature = "capture")]
@@ -1384,7 +1497,7 @@ impl Root {
                                 .line_height(px(20.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-strong"))
-                                .child(dc_intl::t("MLkj7N")),
+                                .child(link_header),
                         )
                         .child(copy_bar)
                         .children({
@@ -1503,29 +1616,152 @@ impl Root {
                 )
                 .into_any_element()
         };
-        Some(modal::render(
-            modal::Spec {
-                id: "invite-modal",
-                title: format!("Invite friends to {guild_name}").into(),
-                subtitle: Some(
+        let subtitle: AnyElement = match &invite.target {
+            InviteTarget::Stream { .. } => div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
                     div()
                         .flex()
                         .items_center()
-                        .child("Recipients will land in\u{a0}")
-                        .child(div().ml(px(2.)).mr(px(2.)).child(icon(
-                            "text_channel",
-                            16.,
-                            "--text-subtle",
-                        )))
-                        .child(channel_name)
-                        .into_any_element(),
-                ),
+                        .gap(px(4.))
+                        .child(icon("voice_channel", 16., "--text-subtle"))
+                        .child(channel_name),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("CXpS1I")),
+                )
+                .into_any_element(),
+            InviteTarget::Activity { .. } => div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(icon("voice_channel", 16., "--text-subtle"))
+                .child(channel_name)
+                .into_any_element(),
+            InviteTarget::Stage => div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(icon("stage_channel", 16., "--text-subtle"))
+                .child(channel_name)
+                .into_any_element(),
+            InviteTarget::Event { .. } => div()
+                .text_color(color("--text-subtle"))
+                .child(dc_intl::t("ueCrHB"))
+                .into_any_element(),
+            InviteTarget::Server => div()
+                .flex()
+                .items_center()
+                .child("Recipients will land in\u{a0}")
+                .child(div().ml(px(2.)).mr(px(2.)).child(icon(
+                    "text_channel",
+                    16.,
+                    "--text-subtle",
+                )))
+                .child(channel_name)
+                .into_any_element(),
+        };
+        Some(modal::render(
+            modal::Spec {
+                id: "invite-modal",
+                title: modal_title.into(),
+                subtitle: Some(subtitle),
                 body: Some(body),
                 buttons: Vec::new(),
                 close: Box::new(|this, _, _| this.invite = None),
             },
             cx,
         ))
+    }
+
+    /// Module 520006 `A`: Invite to Stream / Invite to Activity / Invite to Stage action button.
+    #[allow(dead_code)]
+    pub(super) fn invite_target_button(
+        &self,
+        id: &'static str,
+        channel: Id,
+        target: InviteTarget,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let label = match &target {
+            InviteTarget::Stream { .. } => dc_intl::t("6VQaqd"),
+            InviteTarget::Activity { .. } => dc_intl::t("OzOM/q"),
+            InviteTarget::Stage => dc_intl::t("6F9ivu"),
+            _ => dc_intl::tr("Invite"),
+        };
+        let target_click = target.clone();
+        Some(
+            div()
+                .id(id)
+                .h(px(32.))
+                .px(px(12.))
+                .rounded(px(6.))
+                .bg(color("--control-secondary-background-default"))
+                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(icon(
+                    "voice_view_invite",
+                    16.,
+                    "--control-secondary-text-default",
+                ))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--control-secondary-text-default"))
+                        .child(label),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_invite_for(channel, target_click.clone(), cx);
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// Capture helper: `invite-target [stream|activity|stage|event]` opens the targeted invite modal
+    /// (modules 520006 / 137811).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_invite_target(&mut self, which: &str, cx: &mut Context<Self>) -> String {
+        let channel = self
+            .channel
+            .or_else(|| {
+                self.stores
+                    .guilds
+                    .first()
+                    .and_then(|g| g.channels.first().map(|c| c.id))
+            })
+            .unwrap_or(1);
+        let target = match which.trim() {
+            "stream" => InviteTarget::Stream {
+                user_id: self.stores.current_user.as_ref().map(|u| u.id).unwrap_or(1),
+            },
+            "activity" => InviteTarget::Activity {
+                application_id: 880218394199220334,
+                application_name: "Watch Together".to_owned(),
+            },
+            "stage" => InviteTarget::Stage,
+            "event" => InviteTarget::Event {
+                event_id: 1234567890,
+            },
+            _ => InviteTarget::Server,
+        };
+        self.open_invite_for(channel, target, cx);
+        if let Some(invite) = self.invite.as_mut()
+            && invite.code.is_none()
+        {
+            invite.code = Some("gravecord".to_owned());
+        }
+        cx.notify();
+        format!("invite-target: {which}")
     }
 
     /// Capture helper: `invite-no-suggestions` opens the invite modal in its empty-friends layout (module 137811).
@@ -1693,6 +1929,48 @@ mod tests {
                 dc_intl::has_key(key),
                 "missing en-US key {key} in invite 137811"
             );
+        }
+    }
+
+    #[test]
+    fn targeted_invite_bodies_and_520006_strings_resolve() {
+        let stream_body = generate_body_for_target(
+            MAX_AGE,
+            0,
+            false,
+            0,
+            &[],
+            &InviteTarget::Stream { user_id: 77 },
+        );
+        assert_eq!(stream_body["target_type"], json!(1));
+        assert_eq!(stream_body["target_user_id"], json!("77"));
+
+        let act_body = generate_body_for_target(
+            MAX_AGE,
+            0,
+            false,
+            0,
+            &[],
+            &InviteTarget::Activity {
+                application_id: 880218394199220334,
+                application_name: "Watch Together".to_owned(),
+            },
+        );
+        assert_eq!(act_body["target_type"], json!(2));
+        assert_eq!(
+            act_body["target_application_id"],
+            json!("880218394199220334")
+        );
+
+        assert_eq!(
+            invite_url_for_target("abc", &InviteTarget::Event { event_id: 999 }),
+            "https://discord.gg/abc?event=999"
+        );
+        for key in [
+            "6VQaqd", "ZdK3dW", "JKV4FL", "zTrsH0", "CXpS1I", "ueCrHB", "1b9neu", "iI1gMg",
+            "KaWCyD", "2frWa3", "OzOM/q", "6F9ivu",
+        ] {
+            assert!(dc_intl::has_key(key), "missing key {key} in 520006/137811");
         }
     }
 }

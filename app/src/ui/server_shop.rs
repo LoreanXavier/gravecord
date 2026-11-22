@@ -1,5 +1,6 @@
-//! Server Shop storefront modal/view (module 38137): Products & Server Subscriptions tabs,
-//! Downloadable + Role cards, creator promo state, and preview removal banner.
+//! Server Shop storefront modal/view (module 38137) and Product Listing Card (module 500770):
+//! Products & Server Subscriptions tabs, Downloadable + Role cards, creator promo state, and
+//! preview removal banner.
 
 use super::{Root, color, icon};
 use gpui::{
@@ -26,6 +27,32 @@ pub(crate) struct ServerShopProduct {
     pub role: Option<(String, u32)>,
     /// Whether the viewer already owns this product listing.
     pub has_entitlement: bool,
+    /// Optional product cover image URL (module 500770 `img__15efM`).
+    pub image_url: Option<String>,
+    /// Whether this product listing is an unpublished draft (`draftBadge__15efM`, `vosPk5`).
+    pub is_draft: bool,
+    /// Whether to show the `"Purchase to Unlock"` lock overlay on the thumbnail (`YmIiSe`).
+    pub show_unlock_badge: bool,
+}
+
+/// Formatted product listing price with `"$——"` (`4uLhAp`) fallback (module 500770).
+pub(crate) fn server_shop_product_price_display(price: &str) -> SharedString {
+    if price.trim().is_empty() {
+        SharedString::from(dc_intl::t("4uLhAp"))
+    } else {
+        SharedString::from(price.to_owned())
+    }
+}
+
+/// Accessible label for a Server Shop product listing card (`e+TmJa`, module 500770).
+pub(crate) fn server_shop_product_card_aria(product_name: &str) -> String {
+    dc_intl::format(
+        "e+TmJa",
+        &[(
+            "productName",
+            dc_intl::Arg::Str(std::borrow::Cow::Borrowed(product_name)),
+        )],
+    )
 }
 
 /// Server Product Info Modal state (`GUILD_PRODUCT_LISTING_INFO_MODAL`, module 733230).
@@ -59,6 +86,326 @@ pub(crate) struct ServerShopModal {
 }
 
 impl Root {
+    /// Server Shop Product Listing Card (module 500770 `A`):
+    /// - 187px thumbnail (`#2b2c31`) with optional `"Purchase to Unlock"` (`YmIiSe`) and `"Draft"` (`vosPk5`) badges
+    /// - Title, truncated description + `"See full description"` (`5fmYjW`, stops propagation -> info modal)
+    /// - Inline `411342` role pill (`RnyseL` `"Role:"`) when a role is included
+    /// - Footer with price (`--interactive-text-active`, `"$——"` `4uLhAp` fallback), product type, and action CTA
+    fn server_shop_product_card(
+        &self,
+        index: usize,
+        prod: &ServerShopProduct,
+        is_creator_preview: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let clicked = prod.clone();
+        let clicked_more = prod.clone();
+        let clicked_cta = prod.clone();
+        let aria = server_shop_product_card_aria(&prod.name);
+        let price_display = server_shop_product_price_display(&prod.price);
+        let product_kind = if prod.is_bundle {
+            dc_intl::t("ih4QMU")
+        } else if !prod.attachments.is_empty() {
+            dc_intl::t("DWYJua")
+        } else {
+            dc_intl::t("o9xphc")
+        };
+        let (cta_label, cta_icon, cta_primary, cta_disabled) = if is_creator_preview {
+            (dc_intl::t("xUi3BL"), None, true, true)
+        } else if !prod.has_entitlement {
+            (dc_intl::t("xUi3BL"), None, true, false)
+        } else if prod.attachments.len() == 1 {
+            (
+                dc_intl::t("t9bE9b"),
+                Some("plugin_cloud_download"),
+                true,
+                false,
+            )
+        } else if prod.attachments.len() > 1 {
+            (dc_intl::t("UyuiUE"), Some("shop_arrow_right"), true, false)
+        } else {
+            (dc_intl::t("RcTOGF"), None, false, true)
+        };
+        let cover_img = prod
+            .image_url
+            .as_deref()
+            .and_then(|u| self.images.get(u).cloned());
+
+        let thumb = div()
+            .relative()
+            .w_full()
+            .h(px(187.))
+            .bg(rgba(0x2b2c31ff))
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(match cover_img {
+                Some(image) => gpui::img(image)
+                    .w_full()
+                    .h_full()
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .into_any_element(),
+                None => icon(
+                    "storefront_store",
+                    40.,
+                    "--control-primary-background-default",
+                )
+                .into_any_element(),
+            })
+            .when(prod.show_unlock_badge && !prod.has_entitlement, |box_el| {
+                box_el.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x00000066))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .px(px(10.))
+                                .py(px(6.))
+                                .rounded(px(999.))
+                                .bg(rgba(0x000000b3))
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(icon("access_lock", 13., "--white"))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(dc_intl::t("YmIiSe")),
+                                ),
+                        ),
+                )
+            })
+            .when(prod.is_draft, |box_el| {
+                box_el.child(
+                    div()
+                        .absolute()
+                        .right(px(8.))
+                        .bottom(px(8.))
+                        .px(px(8.))
+                        .py(px(3.))
+                        .rounded(px(4.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .text_size(px(11.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("vosPk5")),
+                )
+            });
+
+        let role_row = prod.role.as_ref().map(|(role_name, role_rgb)| {
+            let dot_rgba = ((*role_rgb) << 8) | 0xff;
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("RnyseL")),
+                )
+                .child(
+                    div()
+                        .px(px(7.))
+                        .py(px(2.))
+                        .rounded(px(4.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .child(div().size(px(8.)).rounded_full().bg(rgba(dot_rgba)))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-default"))
+                                .truncate()
+                                .child(role_name.clone()),
+                        ),
+                )
+        });
+
+        div()
+            .id(SharedString::from(format!(
+                "srv-shop-prod-{index}-{}",
+                prod.id
+            )))
+            .aria_label(aria)
+            .flex_1()
+            .min_w_0()
+            .rounded(px(10.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .hover(|s| s.border_color(color("--border-normal")))
+            .bg(color("--background-base-lower"))
+            .overflow_hidden()
+            .cursor_pointer()
+            .flex()
+            .flex_col()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(m) = this.server_shop_modal.as_mut() {
+                    m.detail = Some(ServerProductInfoModal {
+                        product: clicked.clone(),
+                        contents_expanded: false,
+                    });
+                }
+                cx.notify();
+            }))
+            .child(thumb)
+            .child(
+                div()
+                    .flex_1()
+                    .p(px(14.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .truncate()
+                            .child(prod.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-muted"))
+                                    .truncate()
+                                    .child(prod.description.clone()),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "srv-shop-prod-more-{index}-{}",
+                                        prod.id
+                                    )))
+                                    .self_start()
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-link"))
+                                    .hover(|s| s.underline())
+                                    .child(dc_intl::t("5fmYjW"))
+                                    .child(icon("shop_arrow_right", 12., "--text-link"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        if let Some(m) = this.server_shop_modal.as_mut() {
+                                            m.detail = Some(ServerProductInfoModal {
+                                                product: clicked_more.clone(),
+                                                contents_expanded: false,
+                                            });
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .children(role_row)
+                    .child(
+                        div()
+                            .mt_auto()
+                            .pt(px(8.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(1.))
+                                    .child(
+                                        div()
+                                            .text_size(px(15.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--interactive-text-active"))
+                                            .child(price_display),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(color("--text-muted"))
+                                            .child(product_kind),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "srv-shop-prod-cta-{index}-{}",
+                                        prod.id
+                                    )))
+                                    .h(px(32.))
+                                    .px(px(12.))
+                                    .rounded(px(6.))
+                                    .bg(if cta_primary {
+                                        color("--control-primary-background-default")
+                                    } else {
+                                        color("--control-secondary-background-default")
+                                    })
+                                    .when(cta_disabled, |b| b.opacity(0.55))
+                                    .when(!cta_disabled, |b| {
+                                        b.cursor_pointer().hover(|s| {
+                                            s.bg(if cta_primary {
+                                                color("--control-primary-background-hover")
+                                            } else {
+                                                color("--control-secondary-background-hover")
+                                            })
+                                        })
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.))
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(if cta_primary {
+                                        color("--white")
+                                    } else {
+                                        color("--text-strong")
+                                    })
+                                    .children(cta_icon.map(|g| icon(g, 13., "--white")))
+                                    .child(cta_label)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        if !cta_disabled {
+                                            if let Some(m) = this.server_shop_modal.as_mut() {
+                                                m.detail = Some(ServerProductInfoModal {
+                                                    product: clicked_cta.clone(),
+                                                    contents_expanded: clicked_cta.has_entitlement,
+                                                });
+                                            }
+                                            cx.notify();
+                                        }
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     pub(crate) fn close_server_shop(&mut self) -> bool {
         if let Some(m) = self.server_shop_modal.as_mut() {
             if m.report.take().is_some() {
@@ -93,7 +440,8 @@ impl Root {
         let tab_btn = |id: &'static str,
                        title_key: &'static str,
                        sub_key: &'static str,
-                       which: ServerShopTab| {
+                       which: ServerShopTab,
+                       cx: &mut Context<Self>| {
             let active = tab == which;
             div()
                 .id(id)
@@ -274,68 +622,7 @@ impl Root {
                         )
                         .child(div().flex().gap(px(12.)).children(
                             modal.products.iter().enumerate().map(|(i, prod)| {
-                                let clicked = prod.clone();
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "srv-shop-prod-{i}-{}",
-                                        prod.id
-                                    )))
-                                    .flex_1()
-                                    .p(px(14.))
-                                    .rounded(px(10.))
-                                    .border_1()
-                                    .border_color(color("--border-subtle"))
-                                    .hover(|s| s.border_color(color("--border-normal")))
-                                    .bg(color("--background-base-lower"))
-                                    .cursor_pointer()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(8.))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some(m) = this.server_shop_modal.as_mut() {
-                                            m.detail = Some(ServerProductInfoModal {
-                                                product: clicked.clone(),
-                                                contents_expanded: false,
-                                            });
-                                        }
-                                        cx.notify();
-                                    }))
-                                    .when(prod.is_bundle, |card| {
-                                        card.child(
-                                            div()
-                                                .self_start()
-                                                .px(px(6.))
-                                                .py(px(2.))
-                                                .rounded(px(4.))
-                                                .bg(color("--control-primary-background-default"))
-                                                .text_size(px(11.))
-                                                .font_weight(FontWeight(600.))
-                                                .text_color(color("--white"))
-                                                .child(dc_intl::t("ih4QMU")),
-                                        )
-                                    })
-                                    .child(
-                                        div()
-                                            .text_size(px(15.))
-                                            .font_weight(FontWeight(600.))
-                                            .text_color(color("--text-strong"))
-                                            .child(prod.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .line_height(px(17.))
-                                            .text_color(color("--text-muted"))
-                                            .child(prod.description.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .mt(px(4.))
-                                            .text_size(px(15.))
-                                            .font_weight(FontWeight(700.))
-                                            .text_color(color("--text-strong"))
-                                            .child(prod.price.clone()),
-                                    )
+                                self.server_shop_product_card(i, prod, modal.is_creator_preview, cx)
                             }),
                         ))
                         .into_any_element()
@@ -381,6 +668,7 @@ impl Root {
             .id("server-shop-modal")
             .occlude()
             .w(px(660.))
+            .max_h(px(660.))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-subtle"))
@@ -398,8 +686,9 @@ impl Root {
             .children(preview_banner)
             .child(
                 div()
+                    .flex_none()
                     .px(px(20.))
-                    .py(px(16.))
+                    .py(px(14.))
                     .border_b_1()
                     .border_color(color("--border-subtle"))
                     .flex()
@@ -443,6 +732,10 @@ impl Root {
             )
             .child(
                 div()
+                    .id("server-shop-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .px(px(20.))
                     .py(px(14.))
                     .flex()
@@ -458,12 +751,14 @@ impl Root {
                                 "odvTUp",
                                 "0JFpRW",
                                 ServerShopTab::Products,
+                                cx,
                             ))
                             .child(tab_btn(
                                 "server-shop-tab-subs",
                                 "KzCF/6",
                                 "jqz+ly",
                                 ServerShopTab::Subscriptions,
+                                cx,
                             )),
                     )
                     .child(content)
@@ -1158,6 +1453,9 @@ impl Root {
             ],
             role: Some(("Shop Patron".to_owned(), 0x5865f2)),
             has_entitlement: arg == "product-owned",
+            image_url: None,
+            is_draft: false,
+            show_unlock_badge: true,
         };
         let products = if arg == "empty" {
             Vec::new()
@@ -1173,6 +1471,9 @@ impl Root {
                     attachments: Vec::new(),
                     role: Some(("VIP Color".to_owned(), 0xeb459e)),
                     has_entitlement: false,
+                    image_url: None,
+                    is_draft: arg == "draft",
+                    show_unlock_badge: false,
                 },
             ]
         };
@@ -1206,9 +1507,12 @@ impl Root {
                 ServerShopTab::Products
             },
             products,
-            is_creator_preview: arg != "member" && detail.is_none() && report.is_none(),
+            is_creator_preview: arg != "member"
+                && arg != "draft"
+                && detail.is_none()
+                && report.is_none(),
             is_tab_layout: arg != "page",
-            promo_dismissed: false,
+            promo_dismissed: arg == "draft",
             detail,
             report,
         });

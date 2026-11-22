@@ -595,6 +595,126 @@ impl Root {
                         .answer("OPEN_EXTERNAL_LINK", &nonce, Ok(json!({"opened": false})));
                 self.activity_actions(vec![action], cx);
             }
+            Ask::ShareLink {
+                nonce,
+                message,
+                custom_id,
+                link_id,
+            } => {
+                let (app_id, app_name) = self
+                    .activities
+                    .running
+                    .as_ref()
+                    .map(|r| (r.application_id.clone(), r.name.clone()))
+                    .unwrap_or_else(|| ("0".to_owned(), "Activity".to_owned()));
+                let me = self.stores.current_user.as_ref().map(|u| u.id.to_string());
+                let share_url = super::forward::build_activity_share_url(
+                    &app_id,
+                    custom_id.as_deref(),
+                    link_id.as_deref(),
+                    me.as_deref(),
+                );
+                let content = if message.trim().is_empty() {
+                    share_url.clone()
+                } else {
+                    format!("{message}\n{share_url}")
+                };
+                self.open_share_activity(
+                    super::forward::ShareActivity {
+                        application_id: app_id,
+                        application_name: app_name,
+                        preview_title: None,
+                        subtitle: (!message.trim().is_empty()).then_some(message),
+                        share_url,
+                        content,
+                        image_url: None,
+                        media_counts: (0, 0, 0),
+                        extra_media: 0,
+                        sdk_cmd: Some(("SHARE_LINK".to_owned(), nonce)),
+                        did_copy_link: false,
+                    },
+                    None,
+                    cx,
+                );
+            }
+            Ask::ShareContent { nonce, args } => {
+                let (app_id, app_name) = self
+                    .activities
+                    .running
+                    .as_ref()
+                    .map(|r| (r.application_id.clone(), r.name.clone()))
+                    .unwrap_or_else(|| ("0".to_owned(), "Activity".to_owned()));
+                let me = self.stores.current_user.as_ref().map(|u| u.id.to_string());
+                let custom_id = args["custom_id"].as_str();
+                let link_id = args["link_id"].as_str();
+                let share_url = super::forward::build_activity_share_url(
+                    &app_id,
+                    custom_id,
+                    link_id,
+                    me.as_deref(),
+                );
+                let preview_title = args["preview_title"]
+                    .as_str()
+                    .or_else(|| args["title"].as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                let subtitle = args["subtitle"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                let content = args["content"]
+                    .as_str()
+                    .or_else(|| args["message"].as_str())
+                    .unwrap_or(&share_url)
+                    .to_owned();
+                let image_url = args["media_urls"]
+                    .as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(Value::as_str)
+                    .or_else(|| args["image_url"].as_str())
+                    .map(str::to_owned);
+                let mut imgs = 0usize;
+                let mut vids = 0usize;
+                let mut files = 0usize;
+                if let Some(arr) = args["media_urls"].as_array() {
+                    for u in arr.iter().filter_map(Value::as_str) {
+                        let lower = u.to_lowercase();
+                        if lower.ends_with(".mp4")
+                            || lower.ends_with(".webm")
+                            || lower.ends_with(".mov")
+                        {
+                            vids += 1;
+                        } else if lower.ends_with(".png")
+                            || lower.ends_with(".jpg")
+                            || lower.ends_with(".jpeg")
+                            || lower.ends_with(".gif")
+                            || lower.ends_with(".webp")
+                        {
+                            imgs += 1;
+                        } else {
+                            files += 1;
+                        }
+                    }
+                }
+                let total_media = imgs + vids + files;
+                self.open_share_activity(
+                    super::forward::ShareActivity {
+                        application_id: app_id,
+                        application_name: app_name,
+                        preview_title,
+                        subtitle,
+                        share_url,
+                        content,
+                        image_url,
+                        media_counts: (imgs, vids, files),
+                        extra_media: total_media.saturating_sub(1),
+                        sdk_cmd: Some(("SHARE_CONTENT".to_owned(), nonce)),
+                        did_copy_link: false,
+                    },
+                    None,
+                    cx,
+                );
+            }
         }
     }
 

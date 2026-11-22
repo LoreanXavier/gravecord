@@ -1538,6 +1538,22 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_invite_no_suggestions(cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `invite-target [stream|activity|stage|event]`: opens targeted Invite modal (module 520006 / 137811).
+            ["invite-target", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_invite_target(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `onboarding-connections`: opens Guild Onboarding with connection cards (module 528275).
+            ["onboarding-connections"] => {
+                let line = root.update(cx, |root, cx| root.script_onboarding_connections(cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `activity-share`: opens Activity / Frame Share modal (module 529999).
+            ["activity-share"] => {
+                let line = root.update(cx, |root, cx| root.script_activity_share(cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `monetization-eligibility`: opens Server Subscriptions monetization eligibility checklist (module 715395).
             ["monetization-eligibility"] => {
                 let line = root.update(cx, |root, cx| root.script_monetization_eligibility(cx));

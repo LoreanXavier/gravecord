@@ -614,6 +614,9 @@ impl Root {
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.settings_extra.family_tab = index;
+                        if index == 1 && !this.stores.account.nsfw_allowed {
+                            this.request_family_center_link_code(cx);
+                        }
                         cx.notify();
                     }))
                     .child(
@@ -642,7 +645,7 @@ impl Root {
             }));
         let panel = match tab {
             0 => self.family_activity(cx),
-            1 => self.family_my_family(),
+            1 => self.family_my_family(cx),
             _ => self.family_settings(cx),
         };
         vec![
@@ -885,7 +888,15 @@ impl Root {
             )
     }
 
-    fn family_my_family(&self) -> AnyElement {
+    fn family_my_family(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.stores.account.nsfw_allowed {
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(20.))
+                .child(self.family_center_share_code_card(cx))
+                .into_any_element();
+        }
         let art = self.images.get(FAMILY_ART.0).cloned();
         let step = |number: &'static str, title: &'static str, text: &'static str| {
             div()

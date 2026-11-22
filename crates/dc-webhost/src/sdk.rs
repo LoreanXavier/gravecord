@@ -63,6 +63,15 @@ pub enum Ask {
     /// `ENCOURAGE_HW_ACCELERATION`: the host may ask the user to turn hardware acceleration on, then answers
     /// `{enabled}` with the setting as it is.
     EncourageHardwareAcceleration { nonce: String },
+    /// `SHARE_LINK` (module 529999 / 342384): open the Activity share modal with a generated activity link.
+    ShareLink {
+        nonce: String,
+        message: String,
+        custom_id: Option<String>,
+        link_id: Option<String>,
+    },
+    /// `SHARE_CONTENT` (module 529999): open the Activity share modal with custom title/subtitle/media.
+    ShareContent { nonce: String, args: Value },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -424,6 +433,32 @@ impl Bridge {
                 vec![Action::Ask(Ask::OpenExternalLink {
                     nonce: nonce.to_owned(),
                     url: url.to_owned(),
+                })]
+            }
+            "SHARE_LINK" => {
+                if let Some(denied) = need_auth(self) {
+                    return denied;
+                }
+                vec![Action::Ask(Ask::ShareLink {
+                    nonce: nonce.to_owned(),
+                    message: args["message"].as_str().unwrap_or_default().to_owned(),
+                    custom_id: args["custom_id"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                    link_id: args["link_id"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                })]
+            }
+            "SHARE_CONTENT" => {
+                if let Some(denied) = need_auth(self) {
+                    return denied;
+                }
+                vec![Action::Ask(Ask::ShareContent {
+                    nonce: nonce.to_owned(),
+                    args: args.clone(),
                 })]
             }
             "SUBSCRIBE" | "UNSUBSCRIBE" => {

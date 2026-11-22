@@ -645,7 +645,17 @@ impl Root {
                             )
                     })
                     .when(!orbs_only, |row| {
-                        row.child(
+                        let original = product.original_price(nitro);
+                        row.when_some(original, |row, orig| {
+                            row.child(super::cards::strikethrough_price(
+                                format!("shop-modal-orig-price-{}", product.sku_id),
+                                &orig.text(),
+                                14.,
+                                18.,
+                                500.,
+                            ))
+                        })
+                        .child(
                             text(16., 20., 600., "--text-strong").child(
                                 price.as_ref().map(|price| price.text()).unwrap_or_default(),
                             ),

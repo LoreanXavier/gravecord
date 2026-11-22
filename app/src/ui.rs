@@ -927,6 +927,9 @@ pub struct Root {
     member_view: Option<server_members::MemberView>,
     /// The profile beside a DM (`Hide User Profile` in its header); shown until toggled off.
     show_dm_profile: bool,
+    /// Classic DM sidebar collapsible Mutual Servers / Mutual Friends accordions (modules 289287, 503062).
+    dm_mutual_servers_open: bool,
+    dm_mutual_friends_open: bool,
     /// The member list beside a group DM: on by default.
     group_members: bool,
     friends_tab: friends::FriendsTab,
@@ -1555,6 +1558,8 @@ impl Root {
                 && std::env::var("GRAVECORD_SHOW_MEMBERS").as_deref() == Ok("1"),
             member_view: None,
             show_dm_profile: true,
+            dm_mutual_servers_open: false,
+            dm_mutual_friends_open: false,
             group_members: true,
             friends_tab: friends::FriendsTab::default(),
             skin_tone: picker::stored_tone(),
@@ -13246,6 +13251,7 @@ impl Render for Root {
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))
             .children(self.disable_family_center_modal(cx))
+            .children(self.family_center_share_modal(cx))
             .children(self.follow_success_modal(cx))
             .children(self.guild_cap_upsell_layer(cx))
             .children(self.app_directory_promo_modal(cx))
@@ -13575,6 +13581,41 @@ fn status_dot(status: &str, ring: &str) -> impl IntoElement {
 /// The status dot of a 40px avatar (`svg-mask-avatar-status-round-40`): 12px at (28, 28) in a 16px hole.
 fn status_dot_40(status: &str, ring: &str) -> impl IntoElement {
     status_dot_sized(status, ring, 12., 2.)
+}
+
+/// 40px avatar status badge with mobile-online phone silhouette when `status == "online" && mobile`
+/// (module 503062 / `svg-mask-status-online-mobile`).
+pub(super) fn status_dot_40_mobile(status: &str, mobile: bool, ring: &str) -> AnyElement {
+    if status == "online" && mobile {
+        div()
+            .absolute()
+            .right(px(-2.))
+            .bottom(px(-2.))
+            .w(px(14.))
+            .h(px(18.))
+            .rounded(px(4.))
+            .bg(color(ring))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(10.))
+                    .h(px(14.))
+                    .rounded(px(2.))
+                    .bg(color("--icon-status-online"))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_between()
+                    .py(px(2.))
+                    .child(div().w(px(6.)).h(px(7.)).rounded(px(1.)).bg(color(ring)))
+                    .child(div().size(px(2.)).rounded_full().bg(color(ring))),
+            )
+            .into_any_element()
+    } else {
+        status_dot_40(status, ring).into_any_element()
+    }
 }
 
 /// A status dot of `dot` px in a ring-colored hole reaching `out` px past the avatar corner; the dnd bar,

@@ -1,5 +1,5 @@
-//! Quest Completion / Reward Split Modal (module 670092) and Members List Quest Hover/Expand
-//! Popout Card (module 198525).
+//! Quest Completion / Reward Split Modal (module 670092), In-Game Reward Claimed Panel
+//! (module 529398), and Members List Quest Hover/Expand Popout Card (module 198525).
 //!
 //! - `670092`: Opened when claiming/viewing a completed Quest reward (`quest_menu.rs`). Displays
 //!   Loading (`ZTNur7`), Reward Error (`Hd3D8W`, `Ij97SL`, `cpT0Cq`), or the 2-column split card
@@ -94,6 +94,9 @@ pub(crate) enum QuestRewardModalState {
         /// Module 459624 Orbs Balance Celebration (`WPNjGe`, `YMor7k`, `g4t9aw`, `WYchde`, `Lmysvd`, `loyTil`).
         orbs_earned: Option<u64>,
         orbs_balance: Option<u64>,
+        /// Module 529398 In-Game Reward Claimed panel (`0/Yz+Y`, `v1u/zq`, `OD6Tvf`, `loyTil`).
+        is_in_game_reward: bool,
+        reward_asset_url: Option<String>,
     },
 }
 
@@ -196,9 +199,16 @@ impl Root {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "Quest Reward".to_owned());
             let _ = self.requests.send(claim_quest_reward_request(&quest.id));
-            let _ = self
-                .requests
-                .send(fetch_quest_reward_code_request(&quest.id));
+            let is_in_game_reward = quest.config.has_reward(dc_state::quests::reward::IN_GAME);
+            let needs_code = quest
+                .config
+                .has_reward(dc_state::quests::reward::REWARD_CODE)
+                || (!is_in_game_reward && !quest.config.has_virtual_currency_reward());
+            if needs_code {
+                let _ = self
+                    .requests
+                    .send(fetch_quest_reward_code_request(&quest.id));
+            }
             let orbs_earned = quest.config.has_virtual_currency_reward().then(|| {
                 quest
                     .config
@@ -208,6 +218,11 @@ impl Root {
             });
             let orbs_balance =
                 orbs_earned.map(|earned| self.quests.currency.balance.unwrap_or(0).max(earned));
+            let reward_asset_url = quest
+                .config
+                .assets_reward_tile
+                .clone()
+                .filter(|s| !s.is_empty());
             self.quest_reward_modal = Some(QuestRewardModalState::Claimed {
                 quest_id: quest.id.clone(),
                 quest_name: quest.config.quest_name.clone(),
@@ -220,6 +235,8 @@ impl Root {
                 cta_url: quest.config.cta_link.clone(),
                 orbs_earned,
                 orbs_balance,
+                is_in_game_reward,
+                reward_asset_url,
             });
         } else {
             self.quest_reward_modal = Some(QuestRewardModalState::Error {
@@ -576,6 +593,8 @@ impl Root {
                 cta_url,
                 orbs_earned,
                 orbs_balance,
+                is_in_game_reward,
+                reward_asset_url,
             } => {
                 let heading = dc_intl::format(
                     "EAYZAr",
@@ -823,6 +842,103 @@ impl Root {
                                                 this.quest_reward_modal = None;
                                                 this.quests_open_orbs_shop(cx);
                                             })),
+                                    )
+                                    .into_any_element()
+                            } else if *is_in_game_reward {
+                                // Module 529398: In-Game Reward Claimed panel (`loyTil`, `0/Yz+Y`, `v1u/zq`, `OD6Tvf`).
+                                let reward_header = format!(
+                                    "{} | {}",
+                                    dc_intl::t("loyTil").trim(),
+                                    reward_name
+                                );
+                                let body_copy = dc_intl::format(
+                                    "v1u/zq",
+                                    &[("rewardName", Arg::Str(Cow::Borrowed(reward_name)))],
+                                );
+                                let tile_img = reward_asset_url
+                                    .as_deref()
+                                    .and_then(|u| self.images.get(u).cloned());
+                                div()
+                                    .id("quest-in-game-reward-panel")
+                                    .flex_1()
+                                    .min_w_0()
+                                    .p(px(24.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(16.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-muted"))
+                                            .truncate()
+                                            .child(reward_header),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .justify_center()
+                                            .gap(px(14.))
+                                            .child(
+                                                div()
+                                                    .size(px(148.))
+                                                    .rounded(px(12.))
+                                                    .overflow_hidden()
+                                                    .border_1()
+                                                    .border_color(color("--border-subtle"))
+                                                    .bg(linear_gradient(
+                                                        135.,
+                                                        linear_color_stop(rgba(0x5865f244), 0.),
+                                                        linear_color_stop(rgba(0xeb459e33), 1.),
+                                                    ))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(match tile_img {
+                                                        Some(image) => gpui::img(image)
+                                                            .size_full()
+                                                            .object_fit(gpui::ObjectFit::Cover)
+                                                            .into_any_element(),
+                                                        None => icon("gift", 48., "--white")
+                                                            .into_any_element(),
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(20.))
+                                                    .line_height(px(24.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--text-strong"))
+                                                    .text_center()
+                                                    .child(dc_intl::t("0/Yz+Y")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .line_height(px(20.))
+                                                    .text_color(color("--text-muted"))
+                                                    .text_center()
+                                                    .child(body_copy),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("quest-in-game-claimed-btn")
+                                            .w_full()
+                                            .h(px(34.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-secondary-background-default"))
+                                            .opacity(0.6)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--control-secondary-text-default"))
+                                            .child(dc_intl::t("OD6Tvf")),
                                     )
                                     .into_any_element()
                             } else {
@@ -1326,6 +1442,26 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> String {
         match arg.trim() {
+            "in-game" => {
+                self.member_quest_popout = None;
+                self.quest_reward_modal = Some(QuestRewardModalState::Claimed {
+                    quest_id: "quest_ingame_42".to_owned(),
+                    quest_name: "Starfall Odyssey".to_owned(),
+                    game_title: "Starfall Odyssey".to_owned(),
+                    publisher: "Nebula Studios".to_owned(),
+                    reward_name: "Starfall Wing Glider".to_owned(),
+                    reward_code: None,
+                    is_game_quest: true,
+                    cta_label: "Launch Game".to_owned(),
+                    cta_url: "https://discord.com/quests".to_owned(),
+                    orbs_earned: None,
+                    orbs_balance: None,
+                    is_in_game_reward: true,
+                    reward_asset_url: None,
+                });
+                cx.notify();
+                "quest-reward-modal: in-game".to_owned()
+            }
             "orbs" => {
                 self.member_quest_popout = None;
                 self.quest_reward_modal = Some(QuestRewardModalState::Claimed {
@@ -1340,6 +1476,8 @@ impl Root {
                     cta_url: "https://discord.com/quests".to_owned(),
                     orbs_earned: Some(700),
                     orbs_balance: Some(1450),
+                    is_in_game_reward: false,
+                    reward_asset_url: None,
                 });
                 cx.notify();
                 "quest-reward-modal: orbs".to_owned()
@@ -1358,6 +1496,8 @@ impl Root {
                     cta_url: "https://discord.com/quests".to_owned(),
                     orbs_earned: None,
                     orbs_balance: None,
+                    is_in_game_reward: false,
+                    reward_asset_url: None,
                 });
                 cx.notify();
                 "quest-reward-modal: claimed".to_owned()

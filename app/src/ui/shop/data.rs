@@ -76,6 +76,8 @@ pub struct Price {
     pub amount: i64,
     pub currency: String,
     pub exponent: u32,
+    /// Optional discounted sale amount (`sale_amount` / `sale_percentage`, module 506742).
+    pub sale_amount: Option<i64>,
 }
 
 impl Price {
@@ -178,6 +180,7 @@ pub fn parse_product(value: &serde_json::Value) -> Option<Product> {
                                         .unwrap_or_default()
                                         .to_owned(),
                                     exponent: price["exponent"].as_u64().unwrap_or(0) as u32,
+                                    sale_amount: price["sale_amount"].as_i64(),
                                 })
                                 .collect()
                         })
@@ -358,6 +361,45 @@ impl Product {
         (percent > 0).then_some((original, percent))
     }
 
+    /// The original (pre-discount) price for strikethrough rendering (module 506742 `2CEGln`).
+    /// Returns `Some(original)` when a bundle discount, Nitro discount, or sale price makes the
+    /// active price strictly lower than the base/undiscounted price.
+    pub fn original_price(&self, nitro: bool) -> Option<Price> {
+        let active = self
+            .fiat_price(nitro)
+            .or_else(|| self.price(PRICE_DEFAULT, Some(ORB)))?;
+        if let Some((original_amt, pct)) = self.bundle_discount(nitro)
+            && pct >= Self::MIN_DISCOUNT_PERCENT
+            && original_amt > active.amount
+        {
+            return Some(Price {
+                amount: original_amt,
+                currency: active.currency.clone(),
+                exponent: active.exponent,
+                sale_amount: None,
+            });
+        }
+        if nitro
+            && active.currency != ORB
+            && let Some(base) = self.fiat_price(false)
+            && base.amount > active.amount
+        {
+            return Some(base.clone());
+        }
+        if let Some(sale) = active.sale_amount
+            && sale > 0
+            && sale < active.amount
+        {
+            return Some(Price {
+                amount: active.amount,
+                currency: active.currency.clone(),
+                exponent: active.exponent,
+                sale_amount: None,
+            });
+        }
+        None
+    }
+
     /// The `{n}pc` prefix a bundle's name carries on a card.
     pub fn piece_count(&self) -> Option<usize> {
         self.is_bundle()
@@ -529,6 +571,20 @@ pub enum Block {
         banner: Option<String>,
         logo: Option<String>,
     },
+    /// Social Layer / Game Promotion banner block (`type == 9`, module 504262 `In Game Items`).
+    SocialLayerPromoBanner {
+        application_id: String,
+        header_text: String,
+        subheader_text: String,
+        gradient_colors: Vec<String>,
+        gradient_angle: Option<f32>,
+        sku_ids: Vec<String>,
+        end_time: Option<String>,
+        cta_type: i64,
+        logo_url: Option<String>,
+        terms_url: Option<String>,
+        background_image_url: Option<String>,
+    },
 }
 
 /// The hero block (`type` 0): the record `tl`/`eB.A` of module 253782 and 353448 draw.
@@ -634,6 +690,26 @@ fn parse_block(block: &serde_json::Value) -> Option<Block> {
             button: string(block, "button_text").filter(|_| block["show_button"] == true),
             background: string(block, "desktop_background_image"),
             title_color: string(block, "title_color"),
+        }),
+        9 => Some(Block::SocialLayerPromoBanner {
+            application_id: text("application_id"),
+            header_text: text("header_text"),
+            subheader_text: text("subheader_text"),
+            gradient_colors: block["gradient_colors"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            gradient_angle: block["gradient_angle"].as_f64().map(|v| v as f32),
+            sku_ids: ids(&block["sku_ids"]),
+            end_time: string(block, "end_time"),
+            cta_type: block["cta_type"].as_i64().unwrap_or(0),
+            logo_url: string(block, "logo_url"),
+            terms_url: string(block, "terms_url"),
+            background_image_url: string(block, "background_image_url"),
         }),
         _ => None,
     }
@@ -1662,6 +1738,7 @@ mod tests {
             amount,
             currency: currency.to_owned(),
             exponent,
+            sale_amount: None,
         };
         assert_eq!(price(32900, "try", 2).text(), "TRY 329");
         assert_eq!(price(9499, "try", 2).text(), "TRY 94.99");
@@ -1973,6 +2050,7 @@ mod tests {
             amount: 700,
             currency: ORB.to_owned(),
             exponent: 0,
+            sale_amount: None,
         };
         assert_eq!(OrbButton::check(Some(&price), Some(700)), OrbButton::Ready);
         assert_eq!(
