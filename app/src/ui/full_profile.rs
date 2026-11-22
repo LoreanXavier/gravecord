@@ -18,7 +18,7 @@ use crate::ui::motion::Posed as _;
 use dc_state::Id;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, Hsla, IntoElement, Rgba, SharedString, Subscription,
-    Window, deferred, div, hsla, img, prelude::*, px, rgba, svg,
+    Window, deferred, div, hsla, img, prelude::*, px, svg,
 };
 use serde_json::Value;
 
@@ -2966,11 +2966,12 @@ impl Root {
                     .overflow_hidden()
                     .relative()
                     .bg(self.profile_banner_fill(&user, open_guild))
-                    .children(
-                        banner_img
-                            .clone()
-                            .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
-                    )
+                    .children(banner_img.clone().map(|image| {
+                        img(image)
+                            .size_full()
+                            .rounded_t(px(16.))
+                            .object_fit(gpui::ObjectFit::Cover)
+                    }))
                     .children(self.live_banner_in(id, open_guild, geo.card_width, 140., cx)),
             )
             .child(
@@ -3673,25 +3674,32 @@ impl Root {
         let modal_fade_end = palette.theme.map_or(modal_bg, |t| {
             super::profile_theme::blend_over(t.modal_background, t.modal_inner_stops().1)
         });
-        let top_banner_backdrop =
-            banner_img.map(|image| {
-                // `.backgroundImage_s3DB6Y` (927071.js:7177-7184): top 280px blurred banner backdrop with vertical fade.
-                div()
-                    .parity("full-profile-banner-backdrop")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(280.))
-                    .overflow_hidden()
-                    .child(
-                        img(image)
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Cover)
-                            .opacity(if light_theme { 0.4 } else { 0.3 }),
-                    )
-                    .child(div().absolute().inset_0().backdrop_blur(px(15.)).bg(
-                        gpui::linear_gradient(
+        let inner_radius = (geo.radius - 1.).max(0.);
+        let top_banner_backdrop = banner_img.map(|image| {
+            // `.backgroundImage_s3DB6Y` (927071.js:7177-7184): top 280px blurred banner backdrop with vertical fade.
+            div()
+                .parity("full-profile-banner-backdrop")
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(280.))
+                .rounded_t(px(inner_radius))
+                .overflow_hidden()
+                .child(
+                    img(image)
+                        .size_full()
+                        .rounded_t(px(inner_radius))
+                        .object_fit(gpui::ObjectFit::Cover)
+                        .opacity(if light_theme { 0.4 } else { 0.3 }),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded_t(px(inner_radius))
+                        .backdrop_blur(px(15.))
+                        .bg(gpui::linear_gradient(
                             180.,
                             gpui::linear_color_stop(
                                 Rgba {
@@ -3701,9 +3709,9 @@ impl Root {
                                 0.,
                             ),
                             gpui::linear_color_stop(modal_fade_end, 1.),
-                        ),
-                    ))
-            });
+                        )),
+                )
+        });
         let top_band = geo
             .sys_pad
             .max(if private_profile { PRIVATE_BANNER } else { 0. });
@@ -3715,6 +3723,9 @@ impl Root {
             super::profile_frames::FrameSurface::Modal,
             f32::from(viewport.height),
         );
+        let vw = f32::from(viewport.width);
+        let vh = f32::from(viewport.height);
+        let border_normal = palette.token("--border-normal");
         let modal = div()
             .parity("full-profile")
             .id("full-profile")
@@ -3724,18 +3735,18 @@ impl Root {
             .h(px(geo.height))
             .rounded(px(geo.radius))
             .overflow_hidden()
-            // Filling the window's height (below 785px) the official modal shows its edge on the sides only: a line at
-            // x 159 and 1120 of a 1280x720 window, none at the top, so the card starts at y 80, not 81.
-            .map(|modal| {
-                if geo.radius == 0. && geo.sys_pad > 0. {
-                    modal.border_l_1().border_r_1()
-                } else {
-                    modal.border_1()
-                }
-            })
-            .border_color(border_muted)
+            // `f4f30bf79660bbe0.css` (`outer_ZhNJfE`): `border-inline: 1px solid var(--border-normal)` from 929px wide,
+            // `border-block: 1px solid var(--border-normal)` from 785px tall, and `border-radius: 16px` when both hold.
+            .when(vw >= 929., |d| d.border_l_1().border_r_1())
+            .when(vh >= 785., |d| d.border_t_1().border_b_1())
+            .border_color(border_normal)
             .bg(modal_bg)
-            .children(palette.modal_backdrop())
+            .children(palette.modal_backdrop_rounded(
+                inner_radius,
+                inner_radius,
+                inner_radius,
+                inner_radius,
+            ))
             .children(top_banner_backdrop)
             .children(frame_back)
             .on_click(|_, _, cx| cx.stop_propagation())
@@ -3750,6 +3761,7 @@ impl Root {
                         .left_0()
                         .right_0()
                         .h(px(PRIVATE_BANNER))
+                        .rounded_t(px(inner_radius))
                         // `.custom-user-profile-theme.user-profile-modal-v2 .banner_B_p0HC`: on a themed profile the
                         // band is the overlay mixed into the primary colour, 65% at the top to 60% at the bottom.
                         .map(|band| match palette.theme.as_ref() {
@@ -3831,7 +3843,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(pose.dim(rgba(0x000000b8)))
+                    .bg(pose.dim(color("--background-scrim")))
                     .flex()
                     .items_center()
                     .justify_center()

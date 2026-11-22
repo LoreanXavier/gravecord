@@ -359,10 +359,12 @@ impl Root {
                     .overflow_hidden()
                     .relative()
                     .bg(banner)
-                    .children(
-                        self.profile_banner_image(id)
-                            .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
-                    )
+                    .children(self.profile_banner_image(id).map(|image| {
+                        img(image)
+                            .size_full()
+                            .rounded_t(px(6.))
+                            .object_fit(gpui::ObjectFit::Cover)
+                    }))
                     .children(self.live_banner(id, 300., 105., cx)),
             )
             .child(
@@ -819,39 +821,23 @@ impl Root {
         } else {
             point(popout.anchor.right() + px(8.), popout.anchor.top())
         };
+        let card = super::keyboard::outside(card, super::keyboard::Layer::Profile, cx);
         Some(
             deferred(
-                div()
-                    .id("profile-layer")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            if this.profile_menu.is_none() {
-                                this.profile = None;
-                            }
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        anchored()
-                            .position(at)
-                            .snap_to_window_with_margin(px(12.))
-                            // `animatorLeft` for a member, `animatorRight` for a message author, both translate
-                            // (design/dom/popouts/pt-decorated-member, channel/profile-popout).
-                            .child(card.popout(
-                                "user-popout",
-                                PopKind::Translate,
-                                if popout.left {
-                                    PopSide::Left
-                                } else {
-                                    PopSide::Right
-                                },
-                            )),
-                    ),
+                anchored()
+                    .position(at)
+                    .snap_to_window_with_margin(px(12.))
+                    // `animatorLeft` for a member, `animatorRight` for a message author, both translate
+                    // (design/dom/popouts/pt-decorated-member, channel/profile-popout).
+                    .child(card.popout(
+                        "user-popout",
+                        PopKind::Translate,
+                        if popout.left {
+                            PopSide::Left
+                        } else {
+                            PopSide::Right
+                        },
+                    )),
             )
             .with_priority(1)
             .into_any_element(),

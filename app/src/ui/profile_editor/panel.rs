@@ -78,31 +78,39 @@ impl Root {
             Mode::Nitro => self.profile_editor_nitro_panel(user, cx),
         };
         // `editingPanel_s3DB6Y`: the 240px inner panel between its borders (the start one from 1169px), padded under
-        // the title bar below 785px.
+        // the title bar below 785px. Explicit `.rounded_l(radius)` keeps the left outer corners curved in GPUI.
+        let radius = if geometry.panel_over {
+            0.
+        } else {
+            geometry.radius
+        };
         div()
             .parity("profile-editor-panel")
             .w(px(geometry.panel_width))
             .h_full()
             .flex_none()
+            .rounded_l(px(radius))
             .bg(color("--background-surface-high"))
             .pt(px(geometry.system_bar))
             .relative()
-            .when(geometry.panel_width > 241., |this| {
-                this.pl(px(1.)).child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .bottom_0()
-                        .w(px(1.))
-                        .bg(color("--border-normal")),
-                )
+            .when(geometry.panel_width > 241., |this| this.border_l_1())
+            .when(geometry.tall && !geometry.panel_over, |this| {
+                this.border_t_1().border_b_1()
             })
-            .border_r_1()
-            .border_color(color("--border-subtle"))
+            .border_color(color("--border-normal"))
             .flex()
             .flex_col()
-            .child(body)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .w_full()
+                    .border_r_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .flex_col()
+                    .child(body),
+            )
             .into_any_element()
     }
 
@@ -640,9 +648,17 @@ impl Root {
 
     /// `premiumTryItOutSection_cuaHiV`: the lock, the pitch and the Preview Nitro button.
     fn profile_editor_nitro_block(&self, cx: &mut Context<Self>) -> AnyElement {
+        let bl = self.profile_editor.as_ref().map_or(0., |open| {
+            if open.geometry.panel_over {
+                0.
+            } else {
+                (open.geometry.radius - 1.).max(0.)
+            }
+        });
         div()
             .relative()
             .flex_none()
+            .rounded_bl(px(bl))
             .px(px(16.))
             .pt(px(22.))
             .pb(px(20.))

@@ -133,9 +133,17 @@ impl Palette {
             div()
                 .absolute()
                 .inset_0()
+                .rounded_t(px(16.))
                 .flex()
                 .flex_col()
-                .child(div().w_full().h(px(banner_height)).flex_none().bg(start))
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(banner_height))
+                        .flex_none()
+                        .rounded_t(px(16.))
+                        .bg(start),
+                )
                 .child(div().w_full().flex_1().bg(linear_gradient(
                     180.,
                     linear_color_stop(start, 0.),
@@ -144,22 +152,48 @@ impl Palette {
         )
     }
 
-    /// `.inner_P1YEjQ` 300px vertical overlay fade over `modal_background` (`253781.63b02f3f5d17fef5.css`).
-    pub(super) fn modal_backdrop(&self) -> Option<gpui::Div> {
+    /// `.inner_P1YEjQ` 300px vertical overlay fade over `modal_background` (`253781.63b02f3f5d17fef5.css`),
+    /// with explicit corner radii so GPUI's rectangular `overflow_hidden()` does not paint square corners.
+    pub(super) fn modal_backdrop_rounded(
+        &self,
+        tl: f32,
+        tr: f32,
+        br: f32,
+        bl: f32,
+    ) -> Option<gpui::Div> {
         let theme = self.theme.as_ref()?;
         let (top, bottom) = theme.modal_inner_stops();
         Some(
             div()
                 .absolute()
                 .inset_0()
+                .rounded_tl(px(tl))
+                .rounded_tr(px(tr))
+                .rounded_br(px(br))
+                .rounded_bl(px(bl))
                 .flex()
                 .flex_col()
-                .child(div().w_full().h(px(300.)).flex_none().bg(linear_gradient(
-                    180.,
-                    linear_color_stop(top, 0.),
-                    linear_color_stop(bottom, 1.),
-                )))
-                .child(div().w_full().flex_1().bg(bottom)),
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(300.))
+                        .flex_none()
+                        .rounded_tl(px(tl))
+                        .rounded_tr(px(tr))
+                        .bg(linear_gradient(
+                            180.,
+                            linear_color_stop(top, 0.),
+                            linear_color_stop(bottom, 1.),
+                        )),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .flex_1()
+                        .rounded_bl(px(bl))
+                        .rounded_br(px(br))
+                        .bg(bottom),
+                ),
         )
     }
 }
@@ -1918,10 +1952,12 @@ impl Root {
                     .overflow_hidden()
                     .relative()
                     .bg(banner)
-                    .children(
-                        self.profile_banner_image(user_id)
-                            .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
-                    )
+                    .children(self.profile_banner_image(user_id).map(|image| {
+                        img(image)
+                            .size_full()
+                            .rounded_t(px(6.))
+                            .object_fit(gpui::ObjectFit::Cover)
+                    }))
                     .children(self.live_banner(user_id, 300., 105., cx)),
             )
             .child(self.sidebar_avatar(user, &palette, left, top, cx));
@@ -2134,10 +2170,12 @@ impl Root {
                     .overflow_hidden()
                     .relative()
                     .bg(banner)
-                    .children(
-                        self.profile_banner_image(user_id)
-                            .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
-                    )
+                    .children(self.profile_banner_image(user_id).map(|image| {
+                        img(image)
+                            .size_full()
+                            .rounded_t(px(6.))
+                            .object_fit(gpui::ObjectFit::Cover)
+                    }))
                     .children(self.live_banner(user_id, 340., 120., cx)),
             )
             .child(self.sidebar_avatar(user, &palette, 16., 72., cx));

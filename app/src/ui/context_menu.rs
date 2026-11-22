@@ -1388,7 +1388,10 @@ pub(super) fn moderation_user_items(
             );
         }
     }
-    group(&mut out, vec![Row::new(Act::CopyId, dc_intl::t("/AXYnE"))]);
+    group(
+        &mut out,
+        vec![Row::new(Act::CopyId, dc_intl::t("/AXYnE")).icon("menu_id")],
+    );
     tidy(out)
 }
 
@@ -1996,7 +1999,7 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
     if facts.developer {
         group(
             &mut out,
-            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID"))],
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID")).icon("menu_id")],
         );
     }
     tidy(out)
@@ -2038,7 +2041,7 @@ pub(super) fn activity_voice_items(
     if developer {
         group(
             &mut out,
-            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID"))],
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID")).icon("menu_id")],
         );
     }
     tidy(out)
@@ -2196,28 +2199,31 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
 }
 
 /// Module 177079 (`image-context`, `aria-label` `Zow2V5` "Image Actions"):
-/// Group 1 (`115184`): Copy Image (`tvUqWn`), Save Image (`PeXhgO`).
-/// Group 2 (`777933`): Copy Image/Media/Link + Open Image/Media/Link.
+/// Group 1 (`115184`): Copy Image (`tvUqWn`), Save Image (`PeXhgO`) gated by `253400` (`canCopyImage`/`canSaveImage`).
+/// Group 2 (`777933`): Copy Image/Media/Link + Open Image/Media/Link (`BrowserIcon` leading, `LinkExternalSmallIcon` trailing).
 pub(super) fn image_context_items(url: &str) -> Vec<Entry> {
-    use super::menu::LinkKind;
+    use super::menu::{LinkKind, can_copy_image, can_save_image};
     let (copy_label, open_label) = match LinkKind::of(url) {
         LinkKind::ImageLink => (dc_intl::t("8xHmxo"), dc_intl::t("w8ldGK")),
         LinkKind::MediaLink => (dc_intl::t("92CPQ+"), dc_intl::t("q5FbIB")),
         _ => (dc_intl::t("WqhZss"), dc_intl::t("wuRE8M")),
     };
     let mut out = Vec::new();
+    let mut image_rows = Vec::new();
+    if can_copy_image(url) {
+        image_rows.push(Row::new(Act::CopyImage, dc_intl::t("tvUqWn")).icon("clips_image"));
+    }
+    if can_save_image(url) {
+        image_rows.push(Row::new(Act::SaveImage, dc_intl::t("PeXhgO")).icon("clips_image"));
+    }
+    group(&mut out, image_rows);
     group(
         &mut out,
         vec![
-            Row::new(Act::CopyImage, dc_intl::t("tvUqWn")),
-            Row::new(Act::SaveImage, dc_intl::t("PeXhgO")),
-        ],
-    );
-    group(
-        &mut out,
-        vec![
-            Row::new(Act::CopyLink, copy_label),
-            Row::new(Act::OpenLink, open_label),
+            Row::new(Act::CopyLink, copy_label).icon("menu_copy_message_link"),
+            Row::new(Act::OpenLink, open_label)
+                .icon("menu_browser")
+                .trailing("link_external_small"),
         ],
     );
     tidy(out)
@@ -2434,7 +2440,7 @@ pub(super) fn category_items(
     if developer {
         group(
             &mut out,
-            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Category ID"))],
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Category ID")).icon("menu_id")],
         );
     }
     tidy(out)
@@ -2682,7 +2688,7 @@ pub(super) fn thread_items(facts: ThreadFacts, level: &str) -> Vec<Entry> {
     if developer {
         group(
             &mut out,
-            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Thread ID"))],
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Thread ID")).icon("menu_id")],
         );
     }
     tidy(out)
@@ -2766,7 +2772,7 @@ pub(super) fn guild_items(facts: GuildFacts, level: &str) -> Vec<Entry> {
     if facts.developer {
         group(
             &mut out,
-            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Server ID"))],
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Server ID")).icon("menu_id")],
         );
     }
     tidy(out)
@@ -2913,7 +2919,7 @@ pub(super) fn group_items(unread: bool, owner: bool, developer: bool) -> Vec<Ent
     if developer {
         group(
             &mut out,
-            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID"))],
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID")).icon("menu_id")],
         );
     }
     tidy(out)
@@ -3226,7 +3232,10 @@ pub(super) fn overlay_user_items(facts: &UserFacts, has_guild_channel: bool) -> 
 
     // Group 5: Developer Copy User ID (`/AXYnE`).
     if facts.developer {
-        group(&mut out, vec![Row::new(Act::CopyId, dc_intl::t("/AXYnE"))]);
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::t("/AXYnE")).icon("menu_id")],
+        );
     }
     tidy(out)
 }
@@ -3479,7 +3488,7 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     if facts.developer {
         group(
             &mut out,
-            vec![Row::new(Act::CopyId, dc_intl::tr("Copy User ID"))],
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy User ID")).icon("menu_id")],
         );
     }
     tidy(out)
@@ -4424,10 +4433,9 @@ impl Root {
                 let mut items = vec![Entry::Row(Row::new(Act::Profile, dc_intl::tr("Profile")))];
                 if developer {
                     items.push(Entry::Separator);
-                    items.push(Entry::Row(Row::new(
-                        Act::CopyId,
-                        dc_intl::tr("Copy User ID"),
-                    )));
+                    items.push(Entry::Row(
+                        Row::new(Act::CopyId, dc_intl::tr("Copy User ID")).icon("menu_id"),
+                    ));
                 }
                 items
             }
@@ -5350,6 +5358,14 @@ impl Root {
     ) {
         self.context.image_target = Some((url, cache_key));
         self.open_context_menu(Target::Image, at, cx);
+    }
+
+    /// Capture-only helper: opens standalone `Target::Image` (`image-context`, 177079) at `(520, 260)`.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_image_context(&mut self, url: &str, cx: &mut Context<Self>) -> String {
+        self.context.image_target = Some((url.to_owned(), None));
+        self.open_context_menu(Target::Image, gpui::point(px(520.), px(260.)), cx);
+        format!("image-context: {url}")
     }
 
     pub(super) fn close_context_menu(&mut self, cx: &mut Context<Self>) {
@@ -7805,35 +7821,17 @@ impl Root {
                         })
                         .relative()
                         .child(self.anchor_probe("context-menu-generic"))
+                        // Official `.menu_M3qk4j` computed `min-width: 144px` (`476662.132d13bdf8dde1b6.css`).
                         .when(
-                            matches!(
-                                target,
-                                Target::InventoryAuthor { .. } | Target::SpotifyActivity { .. }
-                            ),
+                            !matches!(target, Target::InventoryFeed | Target::AppDirectory(_)),
                             |d| d.min_w(px(144.)),
-                        )
-                        .when(
-                            !matches!(
-                                target,
-                                Target::InventoryAuthor { .. }
-                                    | Target::SpotifyActivity { .. }
-                                    | Target::InventoryFeed
-                                    | Target::AppDirectory(_)
-                            ),
-                            |d| d.min_w(px(188.)),
                         )
                         .occlude()
                         .rounded(px(8.))
                         .bg(color("--background-surface-higher"))
                         .border_1()
                         .border_color(color("--border-subtle"))
-                        .shadow(vec![gpui::BoxShadow {
-                            color: gpui::hsla(0., 0., 0., 0.24),
-                            offset: gpui::point(px(0.), px(12.)),
-                            blur_radius: px(24.),
-                            spread_radius: px(0.),
-                            inset: false,
-                        }])
+                        .shadow(vec![super::shadow_high()])
                         .on_mouse_down_out(cx.listener(
                             |this, event: &gpui::MouseDownEvent, _, cx| {
                                 let in_sub = ["submenu", "submenu2"].iter().any(|key| {
@@ -7872,7 +7870,7 @@ impl Root {
                         .child(super::menu::menu_scrollbar(self.menu_scroll.clone())),
                 ),
         )
-        .with_priority(2)
+        .with_priority(3)
         .into_any_element();
         let sub = open.sub.and_then(|(act, row)| {
             if act == Act::Apps
@@ -8162,7 +8160,7 @@ impl Root {
                         .flex_col()
                         .children(rows),
                 )
-                .with_priority(3)
+                .with_priority(4)
                 .into_any_element(),
             )
         });
@@ -8260,8 +8258,16 @@ impl Root {
                     )
                 }),
         );
+        let row_group = SharedString::from(format!("ctx-row-{index}"));
+        let icon_hover_color = if danger {
+            color("--white")
+        } else {
+            color("--interactive-text-active")
+        };
         self.menu_stop(
-            div().id(SharedString::from(key.clone())),
+            div()
+                .id(SharedString::from(key.clone()))
+                .group(row_group.clone()),
             &key,
             if danger {
                 color("--background-feedback-mod-critical")
@@ -8374,18 +8380,24 @@ impl Root {
                 )
         }))
         .children(row.icon.map(|name| {
-            div().mr(px(8.)).child(icon(
-                name,
-                // `iconContainerLeft_M3qk4j`: 20px in every captured menu (menus2/dm-row, channel-row,
-                // favorites-rail-menu, guild-header-dropdown), then an 8px gap to the label.
-                20.,
-                // A danger row's icon takes the row's critical colour (frame menus2/favorites-rail-menu).
-                if danger {
-                    "--text-feedback-critical"
-                } else {
-                    "--interactive-text-default"
-                },
-            ))
+            let group = row_group.clone();
+            div().mr(px(8.)).child(
+                icon(
+                    name,
+                    // `iconContainerLeft_M3qk4j`: 20px in every captured menu (menus2/dm-row, channel-row,
+                    // favorites-rail-menu, guild-header-dropdown), then an 8px gap to the label.
+                    20.,
+                    // A danger row's icon takes the row's critical colour (frame menus2/favorites-rail-menu).
+                    if danger {
+                        "--text-feedback-critical"
+                    } else {
+                        "--interactive-text-default"
+                    },
+                )
+                .when(!disabled, |svg| {
+                    svg.group_hover(group, move |style| style.text_color(icon_hover_color))
+                }),
+            )
         }))
         .child(
             div()
@@ -8437,16 +8449,20 @@ impl Root {
                 .map(|on| div().ml(px(8.)).child(status_dot(on, tint.into()))),
         )
         .children(row.trailing.filter(|_| !row.caret).map(|name| {
-            div()
-                .ml(px(8.))
-                .child(icon(name, 18., "--interactive-text-default"))
+            let group = row_group.clone();
+            div().ml(px(8.)).child(
+                icon(name, 20., "--interactive-text-default").when(!disabled, |svg| {
+                    svg.group_hover(group, move |style| style.text_color(icon_hover_color))
+                }),
+            )
         }))
         .when(row.caret, |this| {
-            this.child(div().ml(px(10.)).child(icon(
-                "menu_caret",
-                18.,
-                "--interactive-text-default",
-            )))
+            let group = row_group.clone();
+            this.child(div().ml(px(8.)).child(
+                icon("menu_caret", 20., "--text-muted").when(!disabled, |svg| {
+                    svg.group_hover(group, |style| style.text_color(color("--white")))
+                }),
+            ))
         })
         .into_any_element()
     }
@@ -8492,7 +8508,10 @@ pub(super) fn game_mention_items(developer: bool) -> Vec<Entry> {
         ],
     );
     if developer {
-        group(&mut out, vec![Row::new(Act::CopyId, dc_intl::t("SHQGPj"))]);
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::t("SHQGPj")).icon("menu_id")],
+        );
     }
     tidy(out)
 }
@@ -9821,6 +9840,38 @@ mod tests {
         assert_eq!(
             plain,
             ["Copy Image", "Save Image", "-", "Copy Link", "Open Link"]
+        );
+        // Official 115184 / 777933: leading icons on all 4 rows, trailing external arrow on Open Link.
+        let items = image_context_items("https://media.discordapp.net/attachments/1/2/shot.png");
+        let icons: Vec<Option<&str>> = items
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Row(r) => Some(r.icon),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            icons,
+            [
+                Some("clips_image"),
+                Some("clips_image"),
+                Some("menu_copy_message_link"),
+                Some("menu_browser"),
+            ]
+        );
+        let open_trailing = items.iter().find_map(|e| match e {
+            Entry::Row(r) if r.act == Act::OpenLink => r.trailing,
+            _ => None,
+        });
+        assert_eq!(open_trailing, Some("link_external_small"));
+        // Official 253400: animated `.gif` hides Copy Image (keeps Save Image); video hides both.
+        assert_eq!(
+            labels(&image_context_items("https://media.discordapp.net/a/b.gif")),
+            ["Save Image", "-", "Copy Media Link", "Open Media Link"]
+        );
+        assert_eq!(
+            labels(&image_context_items("https://media.discordapp.net/a/b.mp4")),
+            ["Copy Media Link", "Open Media Link"]
         );
     }
 

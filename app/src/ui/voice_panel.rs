@@ -791,9 +791,15 @@ impl Root {
             .border_1()
             .border_color(color("--border-subtle"))
             .bg(color("--background-surface-higher"))
-            .shadow_lg()
+            .shadow(vec![super::shadow_high()])
             .occlude()
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_panel_popout(cx)))
+            .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if this.press_outside(super::keyboard::Layer::VoicePanelPopout, cx)
+                    && event.button != gpui::MouseButton::Right
+                {
+                    cx.stop_propagation();
+                }
+            }))
             .flex()
             .flex_col()
             .gap(px(16.))
@@ -1099,9 +1105,15 @@ impl Root {
             .border_1()
             .border_color(color("--border-subtle"))
             .bg(color("--background-surface-higher"))
-            .shadow_lg()
+            .shadow(vec![super::shadow_high()])
             .occlude()
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_panel_popout(cx)))
+            .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if this.press_outside(super::keyboard::Layer::VoicePanelPopout, cx)
+                    && event.button != gpui::MouseButton::Right
+                {
+                    cx.stop_propagation();
+                }
+            }))
             .flex()
             .flex_col()
             .gap(px(8.))

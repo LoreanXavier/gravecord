@@ -194,7 +194,11 @@ const ENTRIES: [&[(Entry, &str, &str)]; 4] = [
 
 impl Root {
     pub(super) fn toggle_guild_menu(&mut self, cx: &mut Context<Self>) {
-        self.guild_menu = !self.guild_menu;
+        let opening = !self.guild_menu;
+        if opening {
+            self.close_competing_popouts(super::keyboard::Layer::GuildMenu);
+        }
+        self.guild_menu = opening;
         cx.notify();
     }
 

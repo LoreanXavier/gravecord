@@ -817,17 +817,28 @@ impl Root {
                     div()
                         .id("lightbox-video-stage")
                         .on_click(|_, _, cx| cx.stop_propagation())
-                        // Module 2323: the media component's `onContextMenu` is the same for a video as for a
-                        // picture (`image-menu`, without Copy Image).
+                        // Module 2323: right-clicking lightbox media opens `image-context` (`177079`), not the `...` menu.
                         .on_mouse_up(
                             MouseButton::Right,
                             cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
-                                if let Some(open) = this.lightbox.as_mut() {
-                                    open.more = true;
-                                    open.more_at = Some(event.position);
+                                if let Some(item) = this
+                                    .lightbox
+                                    .as_ref()
+                                    .and_then(|open| open.items.get(open.index))
+                                    .cloned()
+                                {
+                                    if let Some(open) = this.lightbox.as_mut() {
+                                        open.more = false;
+                                        open.details_open = false;
+                                    }
+                                    this.context.image_target = Some((item.url, Some(item.key)));
+                                    this.open_context_menu(
+                                        super::context_menu::Target::Image,
+                                        event.position,
+                                        cx,
+                                    );
                                 }
                                 cx.stop_propagation();
-                                cx.notify();
                             }),
                         )
                         .child(player),
@@ -853,12 +864,24 @@ impl Root {
                         .on_mouse_up(
                             MouseButton::Right,
                             cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
-                                if let Some(open) = this.lightbox.as_mut() {
-                                    open.more = true;
-                                    open.more_at = Some(event.position);
+                                if let Some(item) = this
+                                    .lightbox
+                                    .as_ref()
+                                    .and_then(|open| open.items.get(open.index))
+                                    .cloned()
+                                {
+                                    if let Some(open) = this.lightbox.as_mut() {
+                                        open.more = false;
+                                        open.details_open = false;
+                                    }
+                                    this.context.image_target = Some((item.url, Some(item.key)));
+                                    this.open_context_menu(
+                                        super::context_menu::Target::Image,
+                                        event.position,
+                                        cx,
+                                    );
                                 }
                                 cx.stop_propagation();
-                                cx.notify();
                             }),
                         )
                         // Not in the pinned client: ImageZoom's lens and its probe (`plugin_hooks/image_zoom.rs`).
@@ -1046,11 +1069,14 @@ impl Root {
 
     /// The menu under More: Copy Image and Copy Media Link, as module 2323's `image-menu` lists them.
     fn lightbox_more_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let is_video = self
+        let current = self
             .lightbox
             .as_ref()
-            .is_some_and(|open| open.items[open.index].is_video);
-        // Menu items of module 165862: 8px padding, 36px with their 20px icon (CopyIcon, LinkIcon, IdIcon of 2323).
+            .and_then(|open| open.items.get(open.index));
+        let is_video = current.is_some_and(|item| item.is_video);
+        let can_copy =
+            current.is_some_and(|item| !item.is_video && super::menu::can_copy_image(&item.url));
+        // Menu items of module 165862 (`data-menu-migrated: true`): 8px padding, 36px with 20px LEADING icon.
         let row = |id: &'static str, label: &'static str, cx: &mut Context<Self>| {
             let glyph = if id == "lightbox-copy-image" {
                 "menu_copy_text"
@@ -1064,16 +1090,15 @@ impl Root {
                 .rounded(px(4.))
                 .flex()
                 .items_center()
-                .justify_between()
                 .gap(px(8.))
                 .cursor_pointer()
-                .hover(|this| this.bg(midnight("--background-mod-subtle")))
+                .hover(|this| this.bg(midnight("--interactive-background-hover")))
                 .text_size(px(14.))
                 .line_height(px(18.))
                 .font_weight(FontWeight(500.))
-                .text_color(midnight("--text-default"))
-                .child(label)
+                .text_color(midnight("--text-strong"))
                 .child(icon(glyph, 20., "--interactive-text-default"))
+                .child(label)
                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                     if *hovered && let Some(open) = this.lightbox.as_mut() {
                         open.details_open = false;
@@ -1143,10 +1168,11 @@ impl Root {
                 .id("lightbox-details-menu")
                 .occlude()
                 .absolute()
+                .child(self.anchor_probe("lightbox-details-menu"))
                 // `submenu_M3qk4j`: beside the menu, at least 188 and at most 320 wide.
                 .left_full()
                 .ml(px(-4.))
-                .top(px(if is_video { 53. } else { 89. }))
+                .top(px(if !can_copy { 53. } else { 89. }))
                 .min_w(px(188.))
                 .max_w(px(320.))
                 .p(px(8.))
@@ -1215,16 +1241,15 @@ impl Root {
                 .rounded(px(4.))
                 .flex()
                 .items_center()
-                .justify_between()
                 .gap(px(8.))
                 .cursor_pointer()
-                .hover(|this| this.bg(midnight("--background-mod-subtle")))
+                .hover(|this| this.bg(midnight("--interactive-background-hover")))
                 .text_size(px(14.))
                 .line_height(px(18.))
                 .font_weight(FontWeight(500.))
-                .text_color(midnight("--text-default"))
-                .child("Copy Attachment ID")
+                .text_color(midnight("--text-strong"))
                 .child(icon("menu_id", 20., "--interactive-text-default"))
+                .child("Copy Attachment ID")
                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                     if *hovered && let Some(open) = this.lightbox.as_mut() {
                         open.details_open = false;
@@ -1239,23 +1264,41 @@ impl Root {
                     cx.notify();
                 }))
         });
+        let _ = is_video;
         // `image-menu` of module 2323: the copy group, View Details (attachments), Copy Attachment ID (Developer
         // Mode).
         let menu = div()
             .id("lightbox-more-menu")
             .occlude()
             .relative()
-            // `flexible_M3qk4j`: as wide as its rows, 188 to 320.
-            .min_w(px(188.))
+            // `flexible_M3qk4j`: as wide as its rows, 144 to 320.
+            .min_w(px(144.))
             .max_w(px(320.))
             .p(px(8.))
             .rounded(px(8.))
             .border_1()
             .border_color(midnight("--border-subtle"))
-            .bg(midnight("--background-surface-highest"))
+            .bg(midnight("--background-surface-higher"))
+            .shadow(vec![super::shadow_high()])
             .flex()
             .flex_col()
-            .children((!is_video).then(|| row("lightbox-copy-image", "Copy Image", cx)))
+            .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                let in_details = this
+                    .tip_anchors
+                    .borrow()
+                    .get("lightbox-details-menu")
+                    .is_some_and(|b| b.contains(&event.position));
+                if !in_details && let Some(open) = this.lightbox.as_mut() {
+                    open.more = false;
+                    open.details_open = false;
+                    open.more_at = None;
+                    if event.button != MouseButton::Right {
+                        cx.stop_propagation();
+                    }
+                    cx.notify();
+                }
+            }))
+            .children(can_copy.then(|| row("lightbox-copy-image", "Copy Image", cx)))
             .child(row("lightbox-copy-link", "Copy Media Link", cx))
             .when(view_details.is_some() || copy_id.is_some(), |this| {
                 this.child(separator())

@@ -682,20 +682,26 @@ impl Root {
                         )
                     })
             });
+        let modal_w = (self.viewport.0 - 48.).clamp(320., 1024.);
+        let modal_h = (self.viewport.1 - 80.).clamp(320., 608.);
+        let sidebar_w = (modal_w * 0.39).clamp(240., 400.);
+        let form_left = sidebar_w + 48.;
+        let form_w = (modal_w - form_left - 34.).max(240.);
+        let form_h = (modal_h - 154.).max(180.);
         let pose = crate::ui::motion::modal_pose("screening");
         Some(gpui::deferred(div().id("screening-layer").absolute().inset_0().occlude()
             .bg(pose.dim(color("--background-scrim"))).flex().items_center().justify_center()
             .on_click(cx.listener(|this, _, _, cx| { this.screening = None; cx.notify(); }))
             .child(div().id("screening-modal").posed(pose).parity_with_border("screening-modal", 1.)
-                .relative().w(px(1024.)).h(px(608.)).rounded(px(16.)).border_1()
+                .relative().w(px(modal_w)).h(px(modal_h)).rounded(px(16.)).border_1()
                 .border_color(color("--border-subtle")).bg(color("--background-surface-high"))
                 .on_click(|_, _, cx| cx.stop_propagation())
-                .child(div().absolute().left(px(16.)).top(px(8.)).w(px(400.)).h(px(590.))
+                .child(div().absolute().left(px(16.)).top(px(8.)).w(px(sidebar_w)).h(px(modal_h - 18.))
                     .rounded(px(8.)).flex().items_center().justify_center()
                     .child(div().absolute().inset_0().rounded(px(8.)).opacity(0.33).bg(sidebar_gradient))
                     .child(div().parity("screening-guild-card").children(card)))
                 .child(div().parity("screening-form-scroll")
-                    .absolute().left(px(456.)).top(px(60.)).w(px(534.)).h(px(454.))
+                    .absolute().left(px(form_left)).top(px(60.)).w(px(form_w)).h(px(form_h))
                     .child(div().id("screening-form-scroll").size_full().overflow_y_scroll().track_scroll(&open.scroll)
                     .child(div().pt(px(8.)).pb(px(20.))
                         .child(div().text_size(px(32.)).line_height(px(40.)).font_weight(FontWeight(500.))
@@ -705,7 +711,7 @@ impl Root {
                         .children(questions))))
                 .children(scroll_fader(self, -open.scroll.offset().y, true))
                 .children(scroll_fader(self, open.scroll.max_offset().y + open.scroll.offset().y, false))
-                .children(open.error.as_ref().map(|error| div().absolute().left(px(456.)).bottom(px(76.))
+                .children(open.error.as_ref().map(|error| div().absolute().left(px(form_left)).bottom(px(76.))
                     .text_size(px(14.)).text_color(color("--text-feedback-critical")).child(error.clone())))
                 .child(div().id("screening-submit").parity("screening-submit").absolute().right(px(32.)).bottom(px(44.))
                     .h(px(40.)).w(px(100.)).rounded(px(8.)).bg(color("--control-connected-background-default"))

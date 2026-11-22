@@ -777,8 +777,9 @@ impl Root {
             .absolute()
             .top_0()
             .left_0()
-            .w(px(1190.))
+            .w_full()
             .h(px(56.))
+            .rounded_t(px(11.))
             .bg(color("--background-base-lower").opacity(0.8))
             .px(px(24.))
             .flex()
@@ -943,7 +944,8 @@ impl Root {
                     }),
             );
         let main = div()
-            .w(px(766.66))
+            .flex_1()
+            .min_w(px(0.))
             .flex()
             .flex_col()
             .gap(px(24.))
@@ -1372,16 +1374,19 @@ impl Root {
                         )
                     }),
             );
+        let modal_w = (self.viewport.0 - 48.).clamp(320., 1200.);
+        let modal_h = (self.viewport.1 - 96.).clamp(320., 640.);
         let panel = div()
             .id("game-profile")
             .occlude()
             .relative()
-            .w(px(1200.))
-            .h(px(640.))
+            .w(px(modal_w))
+            .h(px(modal_h))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-subtle"))
             .bg(color("--background-base-lower"))
+            .shadow(vec![super::shadow_high()])
             .overflow_hidden()
             .child(content)
             .child(bar);
@@ -1443,7 +1448,7 @@ impl Root {
                 .occlude()
                 .absolute()
                 .inset_0()
-                .bg(gpui::rgba(0x000000aa))
+                .bg(color("--background-scrim"))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1459,12 +1464,12 @@ impl Root {
                         .parity("game-platform-picker-modal")
                         .id("game-platform-picker-modal")
                         .occlude()
-                        .w(px(440.))
+                        .w(px(440_f32.min((self.viewport.0 - 48.).max(280.))))
                         .rounded(px(12.))
                         .border_1()
                         .border_color(color("--border-subtle"))
                         .bg(color("--background-surface-high"))
-                        .shadow_lg()
+                        .shadow(vec![super::shadow_high()])
                         .overflow_hidden()
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .child(

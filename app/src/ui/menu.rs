@@ -160,6 +160,8 @@ pub(super) struct SavedState {
     pub link: LinkKind,
     /// The pointer was on a picture the app can copy and save.
     pub image: bool,
+    /// The pointer was on an image that can be saved but not copied (e.g. `.gif`, `.bmp`, `.tiff`).
+    pub save_image: bool,
     /// Sensitive/obfuscated media under the pointer (module 761304 `report-image-false-positive` / `ZH7P2h`).
     pub sensitive_media: bool,
     /// Not in the pinned client: ReverseImageSearch offers "Search Image" for the picture under the pointer.
@@ -235,6 +237,50 @@ impl LinkKind {
             return Self::MediaLink;
         }
         Self::Link
+    }
+}
+
+/// Lowercased file extension (or `format=` query parameter) of a media URL.
+fn media_extension(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if let Some(query) = lower.split('?').nth(1) {
+        let query = query.split('#').next().unwrap_or(query);
+        for pair in query.split('&') {
+            if let Some(fmt) = pair.strip_prefix("format=")
+                && !fmt.is_empty()
+            {
+                return Some(fmt.to_owned());
+            }
+        }
+    }
+    let path = lower.split(['?', '#']).next().unwrap_or("");
+    let segment = path.rsplit('/').next().unwrap_or("");
+    let (_, ext) = segment.rsplit_once('.')?;
+    (!ext.is_empty()).then(|| ext.to_owned())
+}
+
+/// Official `canCopyImage` (`253400.js`): static raster images (`jpg|jpeg|jfif|png|webp|avif`), NOT `.gif`/video.
+pub(super) fn can_copy_image(url: &str) -> bool {
+    match media_extension(url).as_deref() {
+        Some("jpg" | "jpeg" | "jfif" | "png" | "webp" | "avif") => true,
+        Some(
+            "gif" | "bmp" | "tiff" | "tif" | "mp4" | "webm" | "mov" | "mkv" | "m4v" | "avi" | "ogg"
+            | "mp3" | "wav" | "flac",
+        ) => false,
+        _ => true,
+    }
+}
+
+/// Official `canSaveImage` (`253400.js`): images including `.gif`/`.bmp`/`.tiff`, NOT video/audio.
+pub(super) fn can_save_image(url: &str) -> bool {
+    match media_extension(url).as_deref() {
+        Some(
+            "jpg" | "jpeg" | "jfif" | "png" | "webp" | "gif" | "tiff" | "tif" | "bmp" | "avif",
+        ) => true,
+        Some("mp4" | "webm" | "mov" | "mkv" | "m4v" | "avi" | "ogg" | "mp3" | "wav" | "flac") => {
+            false
+        }
+        _ => true,
     }
 }
 
@@ -590,6 +636,13 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             Action::SaveImage,
             false,
         ));
+    } else if saved.save_image {
+        pictures.push(Item::Entry(
+            "Save Image",
+            "clips_image",
+            Action::SaveImage,
+            false,
+        ));
     }
     if saved.sensitive_media {
         pictures.push(Item::Entry(
@@ -634,29 +687,24 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         match saved.link {
             LinkKind::Mail => media.push(Item::Entry(
                 "Copy Email Address",
-                "menu_copy_message_link",
+                "",
                 Action::CopyContact,
                 false,
             )),
             LinkKind::Tel => {
                 media.push(Item::Entry(
                     "Copy Phone Number",
-                    "menu_copy_message_link",
+                    "",
                     Action::CopyContact,
                     false,
                 ));
-                media.push(Item::Entry(
-                    "Send Text Message",
-                    "menu_reply",
-                    Action::SendSms,
-                    false,
-                ));
+                media.push(Item::Entry("Send Text Message", "", Action::SendSms, false));
             }
             _ => {}
         }
     }
     if let Some(open) = open {
-        media.push(Item::Entry(open, "open_external", Action::OpenUrl, false));
+        media.push(Item::Entry(open, "menu_browser", Action::OpenUrl, false));
     }
     // Not in the pinned client: ReverseImageSearch, at the end of the link group (`findGroupChildrenByChildId`).
     if saved.search_image {
@@ -892,7 +940,8 @@ impl Root {
             },
             no_thread: self.guild.is_none(),
             failed: self.send_state_of(message) == Some(super::send_state::SendState::Failed),
-            image: matches!(&self.menu_extra.hit, Some(Hit::Media { key, .. }) if self.images.contains_key(key)),
+            image: matches!(&self.menu_extra.hit, Some(Hit::Media { url, .. }) if can_copy_image(url)),
+            save_image: matches!(&self.menu_extra.hit, Some(Hit::Media { url, .. }) if can_save_image(url)),
             sensitive_media: matches!(
                 &self.menu_extra.hit,
                 Some(Hit::Media { .. } | Hit::Video { .. })
@@ -1633,6 +1682,17 @@ impl Root {
                     .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
             )
         })
+        .when(run == Action::OpenUrl, |this| {
+            this.child(
+                svg()
+                    .path("icons/link_external_small.svg")
+                    .size(px(20.))
+                    .flex_none()
+                    .ml(px(8.))
+                    .text_color(icon_tint)
+                    .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
+            )
+        })
         .when(run == Action::VideoStats, |this| {
             let on = self
                 .menu_video_src()
@@ -1756,13 +1816,7 @@ impl Root {
                         .bg(color("--background-surface-higher"))
                         .border_1()
                         .border_color(color("--border-subtle"))
-                        .shadow(vec![gpui::BoxShadow {
-                            color: gpui::hsla(0., 0., 0., 0.24),
-                            offset: gpui::point(px(0.), px(12.)),
-                            blur_radius: px(24.),
-                            spread_radius: px(0.),
-                            inset: false,
-                        }])
+                        .shadow(vec![super::shadow_high()])
                         .on_mouse_down_out(cx.listener(
                             |this, event: &gpui::MouseDownEvent, _, cx| {
                                 // A click in the submenu is not outside the menu.
@@ -1816,7 +1870,7 @@ impl Root {
                         .child(menu_scrollbar(self.menu_scroll.clone())),
                 ),
         )
-        .with_priority(2);
+        .with_priority(3);
         Some(
             div()
                 .child(self.menu_backdrop(cx))
@@ -1895,19 +1949,13 @@ impl Root {
                 .border_1()
                 .border_color(color("--border-subtle"))
                 .bg(color("--background-surface-higher"))
-                .shadow(vec![gpui::BoxShadow {
-                    color: gpui::hsla(0., 0., 0., 0.24),
-                    offset: gpui::point(px(0.), px(12.)),
-                    blur_radius: px(24.),
-                    spread_radius: px(0.),
-                    inset: false,
-                }])
+                .shadow(vec![super::shadow_high()])
                 .p(px(8.))
                 .flex()
                 .flex_col()
                 .children(rows.into_iter().map(|(element, _)| element)),
         )
-        .with_priority(2)
+        .with_priority(4)
         .into_any_element()
     }
 
@@ -2128,25 +2176,35 @@ impl Root {
         own: bool,
         cx: &mut Context<Self>,
     ) {
+        let near = |a: gpui::Point<Pixels>, b: gpui::Point<Pixels>| {
+            (a.x - b.x).abs() <= px(8.) && (a.y - b.y).abs() <= px(8.)
+        };
+        if let Some((at, game_id)) = self.chat_extra.game_mention_hit.take()
+            && matches!(anchor, Anchor::Pointer(pointer) if near(pointer, at))
+        {
+            self.menu_hit = None;
+            self.open_context_menu(super::context_menu::Target::GameMention(game_id), at, cx);
+            return;
+        }
         // A right press on a channel mention opens the mention's menu (module 223998) in place of the message's.
         if let Some((at, channel)) = self.chat_extra.mention_hit.take()
-            && matches!(anchor, Anchor::Pointer(pointer) if pointer == at)
+            && matches!(anchor, Anchor::Pointer(pointer) if near(pointer, at))
         {
             self.menu_hit = None;
             self.open_context_menu(super::context_menu::Target::ChannelMention(channel), at, cx);
             return;
         }
         if let Some((at, url, name)) = self.chat_extra.attachment_hit.take()
-            && matches!(anchor, Anchor::Pointer(pointer) if pointer == at)
+            && matches!(anchor, Anchor::Pointer(pointer) if near(pointer, at))
         {
             self.menu_hit = None;
             self.context.attachment_link = Some((url, name));
             self.open_context_menu(super::context_menu::Target::AttachmentLink, at, cx);
             return;
         }
-        // The element under a right press recorded what it was before this handler ran; only for the same press.
+        // The element under a right press recorded what it was before this handler ran; allow slight pointer jitter.
         let hit = self.menu_hit.take().and_then(|(at, hit)| {
-            matches!(anchor, Anchor::Pointer(pointer) if pointer == at).then_some(hit)
+            matches!(anchor, Anchor::Pointer(pointer) if near(pointer, at)).then_some(hit)
         });
         self.menu_extra = MenuExtra {
             reactions_confirm: None,

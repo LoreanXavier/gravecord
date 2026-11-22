@@ -1283,12 +1283,15 @@ impl Root {
             Page::Landing => self.server_landing_page(open.guild, cx),
             Page::Template => self.server_template_page(open.guild, cx),
         };
-        // ESC sits right of the content column: 835 beside Server Profile's card, 740 after a plain page.
-        let close_left = match page {
+        // ESC sits right of the content column: 835 beside Server Profile's card, 740 after a plain page,
+        // clamped inside the right pane on narrow windows so it never clips off-screen.
+        let pane_w = (self.viewport.0 - 264.).max(320.);
+        let close_left: f32 = match page {
             Page::Profile => 835.,
             Page::Members | Page::Landing => 837.,
             _ => 740.,
         };
+        let close_left = close_left.min((pane_w - 60.).max(16.));
         // Custom pages (Invites) put ESC 32px higher: their scroller starts at the window's top.
         let close_top = if matches!(
             page,
@@ -1525,7 +1528,8 @@ impl Root {
                     div()
                         .id("server-members-scroller")
                         .h_full()
-                        .w(px(844.))
+                        .w_full()
+                        .max_w(px(844.))
                         .overflow_scroll()
                         .flex()
                         .items_start()
@@ -1536,7 +1540,7 @@ impl Root {
             div()
                 .size_full()
                 .pt(px(32.))
-                .child(div().h_full().w(px(700.)).child(content))
+                .child(div().h_full().w_full().max_w(px(700.)).child(content))
                 .into_any_element()
         } else {
             div()
@@ -1551,6 +1555,7 @@ impl Root {
                 .items_start()
                 .child(
                     div()
+                        .w_full()
                         .pt(px(60.))
                         .px(px(40.))
                         .pb(px(if page == Page::Landing { 128. } else { 100. }))
@@ -1561,8 +1566,9 @@ impl Root {
                             content
                         } else {
                             div()
-                                .w(px(660.))
-                                .flex_none()
+                                .w_full()
+                                .max_w(px(660.))
+                                .min_w(px(0.))
                                 .child(content)
                                 .into_any_element()
                         })
@@ -1625,9 +1631,14 @@ impl Root {
                             .h_full()
                             .bg(color("--background-base-low"))
                             .child(body)
-                            // The preview card and ESC hold their place while the page scrolls, as in the capture.
+                            // The preview card and ESC hold their place while the page scrolls, clamped inside the pane.
                             .children(preview.map(|preview| {
-                                div().absolute().left(px(495.)).top(px(92.)).child(preview)
+                                let preview_left = 495_f32.min((pane_w - 316.).max(200.));
+                                div()
+                                    .absolute()
+                                    .left(px(preview_left))
+                                    .top(px(92.))
+                                    .child(preview)
                             }))
                             .child(
                                 div()

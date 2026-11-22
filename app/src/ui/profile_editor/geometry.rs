@@ -44,26 +44,50 @@ pub(super) struct Geometry {
     /// `--custom-modal-v2-profile-width`.
     pub profile_width: f32,
     pub compact: Compact,
-    /// `border-radius` of the editor: `--radius-lg` from 785px high and 1169px wide.
+    /// `border-radius` of the editor: `--radius-lg` from 785px high and 1169px wide (or 929px when panel collapsed).
     pub radius: f32,
     /// The profile column's 1px end border (`border-inline-end` of `profileContentOuter_s3DB6Y`).
     pub content_border: f32,
+    /// Whether the window is tall enough (`>= 785px`) for top/bottom modal borders and centred framing.
+    pub tall: bool,
+    /// Whether the editing panel is currently collapsed.
+    pub panel_collapsed: bool,
 }
 
 impl Geometry {
     pub(super) fn of(window_width: f32, window_height: f32) -> Self {
+        Self::of_with_collapse(window_width, window_height, false)
+    }
+
+    pub(super) fn of_with_collapse(
+        window_width: f32,
+        window_height: f32,
+        panel_collapsed: bool,
+    ) -> Self {
         let (w, h) = (window_width, window_height);
         let wide = w >= 1169.;
         let grid = w >= 929.;
         let tall = h >= 785.;
-        let width = if wide {
+        let width = if panel_collapsed {
+            if grid { 962_f32.min(w - 96.) } else { w }
+        } else if wide {
             (962. + PANEL_INNER).min(w - 96.)
         } else {
             w
         };
         let height = if tall { 800_f32.min(h - 96.) } else { h };
-        let panel_width = PANEL_INNER + if wide { 2. } else { 1. };
-        let profile = if wide {
+        let panel_width = if panel_collapsed {
+            0.
+        } else {
+            PANEL_INNER + if wide { 2. } else { 1. }
+        };
+        let profile = if panel_collapsed {
+            if grid {
+                0.455 * w - 96. * 0.455
+            } else {
+                0.455 * w
+            }
+        } else if wide {
             0.455 * w - (panel_width + 96.) * 0.455
         } else if grid {
             0.455 * w - panel_width * 0.455
@@ -78,6 +102,7 @@ impl Geometry {
         } else {
             Compact::None
         };
+        let framed_horizontally = if panel_collapsed { grid } else { wide };
         Self {
             left: ((w - width) / 2.).max(0.),
             top: if tall {
@@ -93,8 +118,10 @@ impl Geometry {
             padding: if w >= 1267. { 48. } else { 32. },
             profile_width,
             compact,
-            radius: if tall && wide { 16. } else { 0. },
-            content_border: if wide { 1. } else { 0. },
+            radius: if tall && framed_horizontally { 16. } else { 0. },
+            content_border: if framed_horizontally { 1. } else { 0. },
+            tall,
+            panel_collapsed,
         }
     }
 
@@ -245,5 +272,19 @@ mod tests {
         assert_eq!(narrow.width, 800.);
         assert_eq!(narrow.content_width(), 800.);
         assert_eq!(Geometry::of(800., 400.).height, 400.);
+    }
+
+    /// Collapsing the editing panel restores 16px rounded corners at `>= 929x785` and caps width to `min(962, w - 96)`.
+    #[test]
+    fn collapsed_panel_restores_rounded_framing_from_929_wide() {
+        let mid = Geometry::of_with_collapse(1000., 900., true);
+        assert_eq!(mid.panel_width, 0.);
+        assert_eq!(mid.width, 904.);
+        assert_eq!(mid.radius, 16.);
+        assert_eq!(mid.content_border, 1.);
+        let wide = Geometry::of_with_collapse(1920., 1080., true);
+        assert_eq!(wide.panel_width, 0.);
+        assert_eq!(wide.width, 962.);
+        assert_eq!(wide.radius, 16.);
     }
 }

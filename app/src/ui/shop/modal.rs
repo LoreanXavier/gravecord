@@ -452,6 +452,7 @@ impl Root {
     ) -> Option<AnyElement> {
         let sku = self.shop.modal.clone()?;
         let product = self.shop_product(&sku);
+        let width = (f32::from(window.viewport_size().width) - 48.).clamp(320., 960.);
         let height = (f32::from(window.viewport_size().height) - 112.).clamp(300., 608.);
         let body: AnyElement = match product {
             Some(product) => self.shop_modal_body(&product, window, cx),
@@ -462,7 +463,7 @@ impl Root {
             .parity("shop-modal")
             .occlude()
             .relative()
-            .w(px(960.))
+            .w(px(width))
             .h(px(height))
             .rounded(px(12.))
             .overflow_hidden()
@@ -1134,8 +1135,9 @@ impl Root {
                     .child(centre),
             );
         let content = div()
-            .w(px(945.))
-            .h(px(650.))
+            .w_full()
+            .max_w(px(945.))
+            .min_h(px(650.))
             .flex()
             .child(left)
             .child(right);

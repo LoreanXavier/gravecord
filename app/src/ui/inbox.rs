@@ -154,6 +154,7 @@ impl Root {
 
     pub(super) fn toggle_inbox(&mut self, cx: &mut Context<Self>) {
         if self.inbox.take().is_none() {
+            self.close_competing_popouts(super::keyboard::Layer::Inbox);
             // `onOpen` of the inbox button (module 113367 `Vc`): the overdue reminders' notice stops.
             self.mark_inbox_opened();
             self.inbox = Some(InboxTab::default());
@@ -1625,21 +1626,19 @@ impl Root {
         })
         .collect();
         let page = self.inbox_page(tab, cx);
+        let max_h = MAX_HEIGHT.min((self.viewport.1 - 52.).max(240.));
         let popout = div()
             .parity("inbox")
             .id("inbox")
             .occlude()
-            .w(px(WIDTH))
-            .max_h(px(MAX_HEIGHT))
+            .w(px(WIDTH.min((self.viewport.0 - 16.).max(300.))))
+            .max_h(px(max_h))
             .rounded(px(8.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(color("--border-subtle"))
             .bg(color("--background-surface-higher"))
-            .shadow(vec![gpui::BoxShadow {
-                color: gpui::hsla(0., 0., 0., 0.24),
-                offset: gpui::point(px(0.), px(12.)),
-                blur_radius: px(24.),
-                spread_radius: px(0.),
-                inset: false,
-            }])
+            .shadow(vec![super::shadow_high()])
             .flex()
             .flex_col()
             .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {

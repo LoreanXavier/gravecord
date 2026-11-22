@@ -138,12 +138,25 @@ impl Root {
             .child(self.profile_editor_widgets(&palette, window, cx));
         // `inner_P1YEjQ profileContentInner_s3DB6Y`: the column's padding, the title bar's height at its top. A themed
         // profile (`custom-user-profile-theme`) paints `modal_background` with the 300px overlay fade (`253781`).
+        let full_stage = geometry.panel_collapsed || geometry.panel_over;
+        let stage_tl = if full_stage { geometry.radius } else { 0. };
+        let stage_bl = stage_tl;
+        let stage_tr = geometry.radius;
+        let stage_br = geometry.radius;
+        let inner_tl = (stage_tl - 1.).max(0.);
+        let inner_tr = (stage_tr - 1.).max(0.);
+        let inner_br = (stage_br - 1.).max(0.);
+        let inner_bl = (stage_bl - 1.).max(0.);
         let mut stage = div()
             .parity("profile-editor-stage")
             .relative()
             .flex_1()
             .min_w(px(0.))
             .h_full()
+            .rounded_tl(px(stage_tl))
+            .rounded_tr(px(stage_tr))
+            .rounded_br(px(stage_br))
+            .rounded_bl(px(stage_bl))
             .overflow_hidden()
             .bg(palette
                 .theme
@@ -152,9 +165,11 @@ impl Root {
             .pl(px(geometry.padding))
             .pt(px(geometry.content_top()))
             .when(geometry.content_border > 0., |this| {
-                this.border_r_1().border_color(color("--border-normal"))
+                this.border_r_1().when(full_stage, |d| d.border_l_1())
             })
-            .children(palette.modal_backdrop())
+            .when(geometry.tall, |this| this.border_t_1().border_b_1())
+            .border_color(color("--border-normal"))
+            .children(palette.modal_backdrop_rounded(inner_tl, inner_tr, inner_br, inner_bl))
             .child(columns);
         if let Some(bar) = self.profile_editor_bar(cx) {
             stage = stage.child(bar);
@@ -326,12 +341,14 @@ impl Root {
                 img(image)
                     .w_full()
                     .h(px(140.))
+                    .rounded_t(px(16.))
                     .object_fit(gpui::ObjectFit::Cover)
             }))
             .child(
                 div()
                     .absolute()
                     .inset_0()
+                    .rounded_t(px(16.))
                     .bg(color("--opacity-black-40"))
                     .opacity(0.)
                     .group_hover("profile-editor-preview-banner-group", |s| s.opacity(1.))
@@ -861,7 +878,8 @@ impl Root {
                 ),
             );
 
-        // `profile_s3DB6Y`: rounded at the top only, from the column's padding to the editor's bottom edge.
+        // `profile_s3DB6Y`: rounded at the top only, from the column's padding to the editor's bottom edge,
+        // with `box-shadow: var(--shadow-medium)` and `outline: 1px solid var(--border-muted)`.
         let mut card = div()
             .parity("profile-editor-card")
             .id("profile-editor-card")
@@ -871,15 +889,13 @@ impl Root {
             .flex_none()
             .rounded_t(px(16.))
             .overflow_hidden()
+            .shadow(vec![super::super::shadow_medium()])
             .bg(palette.theme.as_ref().map_or_else(
                 || color("--background-surface-high"),
                 |t| t.card_gradient_stops().0,
             ))
-            .when(palette.theme.is_some(), |this| {
-                // `outline: 1px solid var(--border-muted)` keeps the themed card apart from the themed column.
-                this.border_1()
-                    .border_color(palette.token("--border-muted"))
-            })
+            .border_1()
+            .border_color(palette.token("--border-muted"))
             .flex()
             .flex_col()
             .children(palette.card_backdrop(140.))
@@ -1271,12 +1287,17 @@ impl Root {
                     .anchor(gpui::Anchor::TopLeft)
                     .position(pos)
                     .snap_to_window_with_margin(px(8.))
-                    .child(panel.on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        if let Some(open) = this.profile_editor.as_mut() {
-                            open.tag_select_open = false;
-                        }
-                        cx.notify();
-                    }))),
+                    .child(panel.on_mouse_down_out(cx.listener(
+                        |this, event: &gpui::MouseDownEvent, _, cx| {
+                            if let Some(open) = this.profile_editor.as_mut() {
+                                open.tag_select_open = false;
+                            }
+                            if event.button != gpui::MouseButton::Right {
+                                cx.stop_propagation();
+                            }
+                            cx.notify();
+                        },
+                    ))),
             )
             .with_priority(3)
             .into_any_element(),

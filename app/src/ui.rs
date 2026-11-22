@@ -543,6 +543,45 @@ fn hsla(name: &str) -> Hsla {
     color(name).into()
 }
 
+/// `--shadow-high` (`design/tokens/darker.json` vs `light.json`):
+/// `0 12px 24px 0 rgba(0, 0, 0, 0.24)` on dark themes, `0 12px 36px 0 rgba(0, 0, 0, 0.12)` on light.
+pub(crate) fn shadow_high() -> gpui::BoxShadow {
+    let light = theme() == Theme::Light;
+    gpui::BoxShadow {
+        color: gpui::hsla(0., 0., 0., if light { 0.12 } else { 0.24 }),
+        offset: gpui::point(px(0.), px(12.)),
+        blur_radius: px(if light { 36. } else { 24. }),
+        spread_radius: px(0.),
+        inset: false,
+    }
+}
+
+/// `--shadow-medium` (`design/tokens/darker.json` vs `light.json`):
+/// `0 4px 8px 0 rgba(0, 0, 0, 0.16)` on dark themes, `0 4px 8px 0 rgba(0, 0, 0, 0.08)` on light.
+pub(crate) fn shadow_medium() -> gpui::BoxShadow {
+    let light = theme() == Theme::Light;
+    gpui::BoxShadow {
+        color: gpui::hsla(0., 0., 0., if light { 0.08 } else { 0.16 }),
+        offset: gpui::point(px(0.), px(4.)),
+        blur_radius: px(8.),
+        spread_radius: px(0.),
+        inset: false,
+    }
+}
+
+/// `--shadow-border` (`design/tokens/darker.json` vs `light.json`):
+/// `0 0 0 1px rgba(255, 255, 255, 0.08)` on dark themes, `0 0 0 1px rgba(0, 0, 0, 0.08)` on light.
+pub(crate) fn shadow_border() -> gpui::BoxShadow {
+    let light = theme() == Theme::Light;
+    gpui::BoxShadow {
+        color: gpui::hsla(0., 0., if light { 0. } else { 1. }, 0.08),
+        offset: gpui::point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(1.),
+        inset: false,
+    }
+}
+
 fn icon(name: &str, size: f32, tint: &str) -> gpui::Svg {
     svg()
         .path(format!("icons/{name}.svg"))
@@ -1835,7 +1874,12 @@ impl Root {
     }
 
     pub(crate) fn combined_sidebar_width(&self) -> f32 {
-        self.sidebar_width_combined.clamp(264., 432.)
+        let cap = if self.viewport.0 > 0. {
+            (self.viewport.0 * 0.42).clamp(264., 432.)
+        } else {
+            432.
+        };
+        self.sidebar_width_combined.clamp(264., cap)
     }
 
     pub(crate) fn sidebar_width(&self) -> f32 {
@@ -8768,13 +8812,9 @@ impl Root {
                 .collect();
             element = element.on_piece_context(move |piece, at, _, cx| {
                 if let Some(Some(game_id)) = games_ctx.get(piece).copied() {
-                    let _ = root.update(cx, |this, cx| {
+                    let _ = root.update(cx, |this, _| {
                         if this.game_mention_name(game_id).is_some() {
-                            this.open_context_menu(
-                                context_menu::Target::GameMention(game_id),
-                                at,
-                                cx,
-                            );
+                            this.chat_extra.game_mention_hit = Some((at, game_id));
                         }
                     });
                     return;
@@ -11916,10 +11956,15 @@ impl Render for Root {
         };
         self.search_field(dc_intl::t!("LDZtFO", name = place), cx);
         // The chat column less the message's 72px gutter and its 24 + 16px right padding.
+        self.viewport = (
+            f32::from(window.viewport_size().width),
+            f32::from(window.viewport_size().height),
+        );
         // The member list in a guild, the profile beside a DM.
         let members = if self.mod_view.is_some() {
-            // The Mod View panel (480) opens beside the member list, which stays (menus2/mod-view-self).
-            480. + if self.show_members && self.guild.is_some() {
+            // The Mod View panel (480) opens beside the member list on wide windows; hide members below 1200px so
+            // chat never collapses to zero.
+            480. + if self.show_members && self.guild.is_some() && self.viewport.0 >= 1200. {
                 self.member_list_width() + 1.
             } else {
                 0.
@@ -11928,7 +11973,7 @@ impl Render for Root {
             // The New Thread panel replaces the member list: 480 wide, its 1px border and 8px of gap.
             480.
         } else if self.current_dm().is_some() {
-            self.dm_profile_width(f32::from(window.viewport_size().width))
+            self.dm_profile_width(self.viewport.0)
         } else if self.show_members && self.guild.is_some() {
             self.member_list_width()
         } else if self.group_members_shown() {
@@ -11936,14 +11981,8 @@ impl Render for Root {
         } else {
             0.
         };
-        self.content_width = f32::from(window.viewport_size().width)
-            - self.combined_sidebar_width()
-            - members
-            - 112.;
-        self.viewport = (
-            f32::from(window.viewport_size().width),
-            f32::from(window.viewport_size().height),
-        );
+        self.content_width =
+            (self.viewport.0 - self.combined_sidebar_width() - members - 112.).max(200.);
         crate::net::SHOP_SCALE.store(
             (window.scale_factor().max(1.) * 100.).round() as u32,
             std::sync::atomic::Ordering::Relaxed,
@@ -12373,9 +12412,25 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
-                // 165862 closes the whole menu on Escape, before an underlying field consumes it.
-                if keys.key == "escape" && this.picker.is_none() && this.context.open.is_some() {
+                // 165862 closes the whole menu on Escape, before any underlying picker/field/popout consumes it.
+                if keys.key == "escape" && this.context.open.is_some() {
                     this.close_context_menu(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && (this.menu.is_some() || this.submenu.is_some()) {
+                    this.menu = None;
+                    this.submenu = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape"
+                    && (this.vv.tile_menu.is_some() || this.stage_tile_menu.is_some())
+                {
+                    this.vv.tile_menu = None;
+                    this.stage_tile_menu = None;
+                    cx.notify();
                     cx.stop_propagation();
                     return;
                 }
@@ -12859,8 +12914,7 @@ impl Render for Root {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.forward.is_some() {
-                    this.forward = None;
-                    cx.notify();
+                    this.close_forward(cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape"
                     && (this.interaction_modal_escape() || this.chat_alert_escape())
@@ -12878,7 +12932,12 @@ impl Render for Root {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.picker.is_some() {
-                    this.picker = None;
+                    if this.skin_menu {
+                        this.skin_menu = false;
+                    } else {
+                        this.picker = None;
+                        this.skin_menu = false;
+                    }
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape"
@@ -13686,6 +13745,7 @@ pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) 
             this.schedule_inventory(cx);
             if !window.is_window_active() {
                 this.release_push_to_talk_on_blur();
+                this.dismiss_transient_on_blur(cx);
             }
         })
         .detach();

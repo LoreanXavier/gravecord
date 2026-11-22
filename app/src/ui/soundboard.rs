@@ -1731,6 +1731,7 @@ impl Root {
             .top(px(HEADER_HEIGHT + 1.))
             .w(px(RAIL_WIDTH))
             .h(px(PICKER_HEIGHT - HEADER_HEIGHT - 1.))
+            .rounded_bl(px(8.))
             .bg(color("--background-base-lower"))
             .overflow_y_scroll()
             .track_scroll(&rail_scroll)
@@ -1810,6 +1811,7 @@ impl Root {
             .left_0()
             .w_full()
             .h(px(head))
+            .rounded_t(px(8.))
             // The gift header is the surface colour (36, 36, 41 in the capture), the call picker's the base one.
             .bg(color(if gift {
                 "--background-surface-high"
@@ -1984,7 +1986,7 @@ impl Root {
                 .w(px(PICKER_WIDTH))
                 .h(px(PICKER_HEIGHT))
                 .on_mouse_down_out(
-                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
                         let on_menu =
                             this.soundboard
                                 .gift_picker
@@ -1999,8 +2001,10 @@ impl Root {
                                             .contains(&x)
                                         && (menu_top..menu_top + MENU_HEIGHT).contains(&y)
                                 });
-                        if !on_menu {
-                            this.soundboard_gift_close(window, cx);
+                        if !on_menu
+                            && this.press_outside(super::keyboard::Layer::Soundboard, cx)
+                            && event.button != MouseButton::Right
+                        {
                             cx.stop_propagation();
                         }
                     }),
@@ -2031,11 +2035,12 @@ impl Root {
                                 .contains(&x)
                             && (top..top + MENU_HEIGHT).contains(&y)
                     });
-                    if !on_menu {
-                        if this.vv.bar_press.get() != Some(event.position) {
-                            cx.stop_propagation();
-                        }
-                        this.close_panel_popout(cx);
+                    if !on_menu
+                        && this.press_outside(super::keyboard::Layer::Soundboard, cx)
+                        && this.vv.bar_press.get() != Some(event.position)
+                        && event.button != MouseButton::Right
+                    {
+                        cx.stop_propagation();
                     }
                 }))
                 .child(picker_box)

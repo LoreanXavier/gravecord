@@ -43,6 +43,8 @@ pub(in crate::ui) enum Layer {
     StickerPopout,
     RolePopout,
     HeaderPopout,
+    VoicePanelPopout,
+    Soundboard,
     Profile,
     RolePicker,
     /// Not in the pinned client: PermissionsViewer's member popout (`plugin_hooks/permissions_viewer.rs`).
@@ -84,6 +86,8 @@ pub(in crate::ui) const ALL: &[Layer] = &[
     Layer::StickerPopout,
     Layer::RolePopout,
     Layer::HeaderPopout,
+    Layer::VoicePanelPopout,
+    Layer::Soundboard,
     Layer::Profile,
     Layer::RolePicker,
     Layer::PluginPermissions,
@@ -124,6 +128,8 @@ impl Layer {
             | Layer::StickerPopout
             | Layer::RolePopout
             | Layer::HeaderPopout
+            | Layer::VoicePanelPopout
+            | Layer::Soundboard
             | Layer::Profile
             | Layer::RolePicker
             | Layer::PluginPermissions
@@ -147,6 +153,11 @@ const ESCAPE_HERE: &[Layer] = &[
     Layer::AddGame,
     Layer::SettingsSelect,
     Layer::HeaderPopout,
+    Layer::VoicePanelPopout,
+    Layer::Soundboard,
+    Layer::MentionsFilter,
+    Layer::FileMenu,
+    Layer::ProfileMenu,
     Layer::RolePicker,
     Layer::PluginPermissions,
     Layer::ComponentSelect,
@@ -209,6 +220,20 @@ impl Root {
             Layer::StickerPopout => self.sticker_popout.is_some(),
             Layer::RolePopout => self.role_popout.is_some(),
             Layer::HeaderPopout => self.header_popout.is_some(),
+            Layer::VoicePanelPopout => matches!(
+                self.panel.popout,
+                Some(
+                    super::super::voice_panel::Popout::Connection(_)
+                        | super::super::voice_panel::Popout::Noise
+                )
+            ),
+            Layer::Soundboard => {
+                self.soundboard.gift_picker.is_some()
+                    || matches!(
+                        self.panel.popout,
+                        Some(super::super::voice_panel::Popout::Soundboard)
+                    )
+            }
             Layer::Profile => self.profile.is_some(),
             Layer::RolePicker => self.role_picker.is_some(),
             Layer::PluginPermissions => {
@@ -263,6 +288,14 @@ impl Root {
             Layer::StickerPopout => self.close_sticker_popout(cx),
             Layer::RolePopout => self.close_role_popout(cx),
             Layer::HeaderPopout => self.close_header_popout(cx),
+            Layer::VoicePanelPopout => self.close_panel_popout(cx),
+            Layer::Soundboard => {
+                if self.soundboard.gift_picker.is_some() {
+                    self.soundboard.gift_picker = None;
+                } else {
+                    self.close_panel_popout(cx);
+                }
+            }
             Layer::Profile => self.profile = None,
             Layer::RolePicker => self.role_picker = None,
             Layer::PluginPermissions => self.permissions_viewer_popout_close(),
@@ -358,12 +391,12 @@ impl Root {
         self.clips_close_menu();
     }
 
-    /// Full-window pointer trap behind open right-click menus so background hovers cease and outside clicks dismiss.
+    /// Full-window pointer trap behind open right-click menus for left/middle outside clicks; right-clicks pass
+    /// through to retarget another element in one click (`on_mouse_down_out` closes the previous menu first).
     pub(in crate::ui) fn menu_backdrop(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         gpui::deferred(
             gpui::div()
                 .id("context-menu-backdrop")
-                .occlude()
                 .absolute()
                 .inset_0()
                 .on_mouse_down(
@@ -375,7 +408,7 @@ impl Root {
                     }),
                 )
                 .on_mouse_down(
-                    gpui::MouseButton::Right,
+                    gpui::MouseButton::Middle,
                     cx.listener(|this, _, _, cx| {
                         this.close_all_context_menus();
                         cx.stop_propagation();
@@ -383,8 +416,68 @@ impl Root {
                     }),
                 ),
         )
-        .with_priority(1)
+        .with_priority(2)
         .into_any_element()
+    }
+
+    /// Closes mutually exclusive sibling popouts when opening a top-level popout (`keep`).
+    pub(in crate::ui) fn close_competing_popouts(&mut self, keep: Layer) {
+        self.close_all_context_menus();
+        if keep != Layer::PlusMenu {
+            self.plus_menu = false;
+        }
+        if keep != Layer::Picker {
+            self.picker = None;
+            self.skin_menu = false;
+        }
+        if keep != Layer::Pins {
+            self.pins_open = None;
+        }
+        if keep != Layer::Inbox {
+            self.inbox = None;
+            self.mentions_filter_open = false;
+        }
+        if keep != Layer::Notify {
+            self.notify_open = false;
+            self.notify_submenu = None;
+        }
+        if keep != Layer::GuildMenu {
+            self.guild_menu = false;
+        }
+        if keep != Layer::StatusPopout {
+            self.status_popout = None;
+        }
+        if keep != Layer::Profile {
+            self.profile = None;
+            self.profile_menu = None;
+        }
+        if keep != Layer::VoicePanelPopout && keep != Layer::Soundboard {
+            self.panel.popout = None;
+            self.soundboard.picker = None;
+            self.soundboard.gift_picker = None;
+        }
+    }
+
+    /// Window focus loss (`blur` / Alt-Tab): dismiss transient menus, tooltips, and dropdowns so none stay stuck open.
+    pub(in crate::ui) fn dismiss_transient_on_blur(&mut self, cx: &mut Context<Self>) {
+        self.close_all_context_menus();
+        self.guild_menu = false;
+        self.profile_menu = None;
+        self.audio_menu = None;
+        self.file_menu = None;
+        self.friend_menu = None;
+        self.snooze_menu = None;
+        self.plus_menu = false;
+        self.skin_menu = false;
+        if let Some(open) = self.lightbox.as_mut() {
+            open.more = false;
+            open.details_open = false;
+            open.more_at = None;
+        }
+        if let Some(popout) = self.status_popout.as_mut() {
+            popout.submenu = super::super::status_menu::Submenu::None;
+        }
+        cx.notify();
     }
 
     /// A press outside `layer`'s card: closes it when it is the top layer. True when it did.
@@ -441,7 +534,7 @@ mod tests {
         }
         // `kind`'s match is exhaustive, so a variant left out of `ALL` is the only way to forget one: this is the
         // number of variants.
-        assert_eq!(ALL.len(), 34);
+        assert_eq!(ALL.len(), 36);
     }
 
     #[test]

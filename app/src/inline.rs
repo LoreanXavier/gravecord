@@ -1037,7 +1037,7 @@ impl Inline {
             let laid = self.laid.clone();
             let line_height = self.line_height;
             let hitbox = hitbox.clone();
-            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble
                     && event.button == MouseButton::Right
                     && hitbox.is_hovered(window)

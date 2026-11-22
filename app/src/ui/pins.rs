@@ -80,8 +80,7 @@ impl Root {
             return;
         }
         let key = pins_key(channel);
-        if !self.fetched.contains_key(&key)
-            && self.requested.insert(format!("warm-pins:{channel}"))
+        if !self.fetched.contains_key(&key) && self.requested.insert(format!("warm-pins:{channel}"))
         {
             let _ = self.requests.send(Request::Fetch {
                 key,
@@ -120,6 +119,7 @@ impl Root {
         let Some(channel) = self.channel else {
             return;
         };
+        self.close_competing_popouts(super::keyboard::Layer::Pins);
         self.pins_open = Some(anchor);
         self.ack_open_pins();
         let _ = self.requests.send(Request::Fetch {
@@ -317,17 +317,18 @@ impl Root {
         let viewport = window.viewport_size();
         let right = (f32::from(viewport.width) - f32::from(button.right())).max(8.);
         let top = f32::from(button.bottom()) + 8.;
-        let body: AnyElement =
-            if !self.fetched.contains_key(&pins_key(channel)) && super::start_cache::enabled() {
-                div()
-                    .h(px(180.))
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(crate::ui::login::wandering_cubes())
-                    .into_any_element()
-            } else if pins.is_empty() {
+        let body: AnyElement = if !self.fetched.contains_key(&pins_key(channel))
+            && super::start_cache::enabled()
+        {
+            div()
+                .h(px(180.))
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::ui::login::wandering_cubes())
+                .into_any_element()
+        } else if pins.is_empty() {
             let picture = self.images.get("pins-empty").cloned();
             div()
                 .flex()
@@ -417,22 +418,7 @@ impl Root {
                     .w(px(420.))
                     .rounded(px(8.))
                     .bg(color("--background-surface-high"))
-                    .shadow(vec![
-                        gpui::BoxShadow {
-                            color: gpui::hsla(0., 0., 1., 0.08),
-                            offset: gpui::point(px(0.), px(0.)),
-                            blur_radius: px(0.),
-                            spread_radius: px(1.),
-                            inset: false,
-                        },
-                        gpui::BoxShadow {
-                            color: gpui::hsla(0., 0., 0., 0.24),
-                            offset: gpui::point(px(0.), px(12.)),
-                            blur_radius: px(24.),
-                            spread_radius: px(0.),
-                            inset: false,
-                        },
-                    ])
+                    .shadow(vec![super::shadow_border(), super::shadow_high()])
                     .overflow_hidden()
                     .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
                         if this.press_outside(super::keyboard::Layer::Pins, cx)

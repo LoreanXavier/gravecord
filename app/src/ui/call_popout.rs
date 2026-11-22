@@ -128,6 +128,7 @@ impl Root {
             let opened = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(320.), px(180.))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("gravecord".into()),
                         ..Default::default()

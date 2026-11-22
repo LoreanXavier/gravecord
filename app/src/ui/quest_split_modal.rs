@@ -430,6 +430,7 @@ impl Root {
             .w(px(300.))
             .h_full()
             .flex_none()
+            .rounded_l(px(11.))
             .p(px(24.))
             .bg(linear_gradient(
                 135.,
@@ -728,24 +729,33 @@ impl Root {
         let right_panel =
             div()
                 .relative()
-                .w(px(454.))
+                .flex_1()
+                .min_w(px(0.))
                 .h_full()
-                .flex_none()
+                .rounded_r(px(11.))
                 .bg(color("--background-base-lowest"))
                 .flex()
                 .flex_col()
                 .justify_between()
                 .children(hero_img.map(|im| {
+                    div().absolute().inset_0().rounded_r(px(11.)).child(
+                        img(im)
+                            .size_full()
+                            .rounded_r(px(11.))
+                            .object_fit(ObjectFit::Cover),
+                    )
+                }))
+                .child(
                     div()
                         .absolute()
                         .inset_0()
-                        .child(img(im).size_full().object_fit(ObjectFit::Cover))
-                }))
-                .child(div().absolute().inset_0().bg(linear_gradient(
-                    0.,
-                    linear_color_stop(color("--background-base-lowest"), 0.25),
-                    linear_color_stop(rgba(0x00000033), 1.),
-                )))
+                        .rounded_r(px(11.))
+                        .bg(linear_gradient(
+                            0.,
+                            linear_color_stop(color("--background-base-lowest"), 0.25),
+                            linear_color_stop(rgba(0x00000033), 1.),
+                        )),
+                )
                 // Top-right floating buttons (`Q`, `.modalButtons_e3bXMB`: Copy Link `WqhZss` + Close)
                 .child(
                     div()
@@ -923,7 +933,7 @@ impl Root {
                     .top_0()
                     .left_0()
                     .size_full()
-                    .bg(rgba(0x000000b3))
+                    .bg(color("--background-scrim"))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -934,8 +944,8 @@ impl Root {
                     .child(
                         div()
                             .id("quest-split-modal")
-                            .w(px(754.))
-                            .h(px(524.))
+                            .w(px(754_f32.min((self.viewport.0 - 48.).max(320.))))
+                            .h(px(524_f32.min((self.viewport.1 - 48.).max(320.))))
                             .rounded(px(12.))
                             .bg(color("--background-surface-high"))
                             .border_1()

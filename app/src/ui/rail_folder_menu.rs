@@ -306,13 +306,7 @@ impl Root {
             .bg(color("--background-surface-higher"))
             .border_1()
             .border_color(color("--border-subtle"))
-            .shadow(vec![gpui::BoxShadow {
-                color: gpui::hsla(0., 0., 0., 0.24),
-                offset: gpui::point(px(0.), px(12.)),
-                blur_radius: px(24.),
-                spread_radius: px(0.),
-                inset: false,
-            }])
+            .shadow(vec![super::shadow_high()])
             .p(px(8.))
             .flex()
             .flex_col()
@@ -332,7 +326,7 @@ impl Root {
                                 cx,
                             )),
                     )
-                    .with_priority(2),
+                    .with_priority(3),
                 )
                 .into_any_element(),
         )

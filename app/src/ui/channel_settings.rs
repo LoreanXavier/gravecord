@@ -1070,8 +1070,14 @@ impl Root {
                             .child(page),
                     ),
             )
-            // ESC holds its place while the page scrolls.
-            .child(div().absolute().left(px(740.)).top(px(32.)).child(close))
+            // ESC holds its place while the page scrolls, clamped inside the right pane on narrow windows.
+            .child(
+                div()
+                    .absolute()
+                    .left(px(740_f32.min((self.viewport.0 - 264. - 60.).max(16.))))
+                    .top(px(32.))
+                    .child(close),
+            )
             .children(notice);
         // A layer of the layer stack: it enters from `scale(1.1)` and opacity 0 (module 596339).
         let pose = crate::ui::motion::layer_pose("channel-settings");

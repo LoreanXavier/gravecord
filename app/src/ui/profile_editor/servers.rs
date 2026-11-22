@@ -258,9 +258,12 @@ impl Root {
                     .border_1()
                     .border_color(color("--border-subtle"))
                     .bg(color("--background-surface-higher"))
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
                         if let Some(open) = this.profile_editor.as_mut() {
                             open.select_open = false;
+                        }
+                        if event.button != gpui::MouseButton::Right {
+                            cx.stop_propagation();
                         }
                         cx.notify();
                     }))

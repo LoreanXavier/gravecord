@@ -225,11 +225,12 @@ impl Root {
             .iter()
             .map(|user| self.reactor_row(user, Some(user.id) == me, cx))
             .collect();
-        // `container_quI2qP`: 517 tall under a full-width rule, 17px below the title.
+        // `container_quI2qP`: 517 tall under a full-width rule, 17px below the title, clamped on short windows.
+        let body_h = 517_f32.min((self.viewport.1 - 190.).max(200.));
         let body = div()
             .mt(px(1.))
             .mx(px(-24.))
-            .h(px(517.))
+            .h(px(body_h))
             .border_t_1()
             .border_color(color("--border-subtle"))
             .pl(px(24.))

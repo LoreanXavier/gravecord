@@ -1472,19 +1472,20 @@ impl Root {
             .iter()
             .map(|thread| self.thread_card(thread, true, 430., window, cx))
             .collect();
-        // The divider colour is read from the golden's pixels (50, 50, 55 on the modal's 36, 36, 41).
-        let divider = gpui::rgba(0x323237ff);
+        let divider = color("--border-subtle");
+        let modal_h = 608_f32.min((self.viewport.1 - 96.).max(280.));
         let modal = div()
             .parity("active-threads-modal")
             .id("active-threads-modal")
             .occlude()
-            .w(px(480.))
-            .h(px(608.))
+            .w(px(480_f32.min((self.viewport.0 - 48.).max(300.))))
+            .h(px(modal_h))
             .overflow_hidden()
             .rounded(px(12.))
             .border_1()
             .border_color(divider)
             .bg(color("--background-surface-high"))
+            .shadow(vec![super::shadow_high()])
             .flex()
             .flex_col()
             .child(

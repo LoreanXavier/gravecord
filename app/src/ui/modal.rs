@@ -468,7 +468,9 @@ fn render_sized_at(
         .opacity(body_opacity)
         .paint_scale(pose.scale, gpui::point(0.5, 0.5))
         .occlude()
-        .w(px(width))
+        .w_full()
+        .max_w(px(width))
+        .max_h_full()
         .pt(px(8.))
         .pb(px(if pinned.is_some() && !pinned_bar {
             0.
@@ -482,13 +484,7 @@ fn render_sized_at(
         .border_1()
         .border_color(color("--border-subtle"))
         .bg(color("--background-surface-high"))
-        .shadow(vec![gpui::BoxShadow {
-            color: gpui::hsla(0., 0., 0., 0.24),
-            offset: gpui::point(px(0.), px(12.)),
-            blur_radius: px(24.),
-            spread_radius: px(0.),
-            inset: false,
-        }])
+        .shadow(vec![super::shadow_high()])
         .flex()
         .flex_col()
         .child(
@@ -548,9 +544,18 @@ fn render_sized_at(
         )
         .children(spec.body.map(|body| {
             if pinned.is_some() {
-                div().flex_1().min_h(px(0.)).child(body)
+                div().flex_1().min_h(px(0.)).child(body).into_any_element()
             } else {
-                div().pt(px(16.)).pl(px(24.)).pr(px(24.)).child(body)
+                div()
+                    .id(SharedString::from(format!("{}-body", spec.id)))
+                    .flex_shrink_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .pt(px(16.))
+                    .pl(px(24.))
+                    .pr(px(24.))
+                    .child(body)
+                    .into_any_element()
             }
         }))
         // A dialog without buttons (Invite) ends with its body.
@@ -602,9 +607,12 @@ fn render_sized_at(
             .absolute()
             .inset_0()
             .bg(pose.dim(color("--background-scrim")))
+            .px(px(24.))
             .flex()
-            .when(pinned.is_none(), |this| this.items_center())
-            .when_some(pinned, |this, (top, _)| this.items_start().pt(px(top)))
+            .when(pinned.is_none(), |this| this.py(px(56.)).items_center())
+            .when_some(pinned, |this, (top, _)| {
+                this.pt(px(top)).pb(px(24.)).items_start()
+            })
             .justify_center()
             .on_click(cx.listener(move |this, _, window, cx| {
                 close_scrim(this, window, cx);

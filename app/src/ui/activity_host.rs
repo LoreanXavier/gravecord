@@ -38,11 +38,15 @@ pub(crate) struct ActivityHost {
 /// 312 from the bottom of the 1280 by 720 frame.
 fn pip_bounds(window: &Window) -> (f32, f32, f32, f32) {
     let size = window.viewport_size();
+    let vw = f32::from(size.width);
+    let vh = f32::from(size.height);
+    let w = 320_f32.min((vw - 16.).max(160.));
+    let h = 180_f32.min((vh - 16.).max(90.));
     (
-        f32::from(size.width) - 400.,
-        f32::from(size.height) - 312.,
-        320.,
-        180.,
+        (vw - 400.).clamp(8., (vw - w - 8.).max(8.)),
+        (vh - 312.).clamp(8., (vh - h - 8.).max(8.)),
+        w,
+        h,
     )
 }
 

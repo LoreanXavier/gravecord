@@ -16,7 +16,7 @@ use dc_state::{
 };
 use gpui::{
     AnyElement, Context, Entity, Focusable, FontWeight, Image, ImageFormat, IntoElement,
-    ScrollHandle, SharedString, Subscription, Window, deferred, div, img, prelude::*, px, rgba,
+    ScrollHandle, SharedString, Subscription, Window, deferred, div, img, prelude::*, px,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -2074,7 +2074,6 @@ impl Root {
         let viewport = window.viewport_size();
         let height = 398.42188_f32;
         let top = ((f32::from(viewport.height) - height) / 2.).max(8.);
-        let left = ((f32::from(viewport.width) - 680.) / 2.).max(8.);
 
         let row_elements: Vec<AnyElement> = rows_data
             .iter()
@@ -2212,6 +2211,9 @@ impl Root {
         };
 
         let pose = super::motion::modal_pose("quick-switcher");
+        let modal_w = 680_f32.min((self.viewport.0 - 48.).max(320.));
+        let left = ((self.viewport.0 - modal_w) / 2.).max(24.);
+        let top = top.clamp(56., (self.viewport.1 - 410.).max(56.));
         let modal = div()
             .parity_with_border("quick-switcher", 1.)
             .id("quick-switcher")
@@ -2220,18 +2222,12 @@ impl Root {
             .absolute()
             .left(px(left))
             .top(px(top))
-            .w(px(680.))
+            .w(px(modal_w))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-subtle"))
             .bg(color("--background-surface-high"))
-            .shadow(vec![gpui::BoxShadow {
-                color: gpui::hsla(0., 0., 0., 0.24),
-                offset: gpui::point(px(0.), px(12.)),
-                blur_radius: px(24.),
-                spread_radius: px(0.),
-                inset: false,
-            }])
+            .shadow(vec![super::shadow_high()])
             .pt(px(8.))
             .pb(px(16.))
             .children(caption)
@@ -2300,7 +2296,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(pose.dim(rgba(0x000000b8)))
+                    .bg(pose.dim(color("--background-scrim")))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.quick_switcher = None;
                         cx.notify();

@@ -550,6 +550,8 @@ pub(super) struct State {
     pub forward_batch: Option<ForwardBatch>,
     /// A right press on a `#channel` mention: where, and the channel (read by the message menu's opener).
     pub mention_hit: Option<(gpui::Point<gpui::Pixels>, Id)>,
+    /// A right press on a game mention: where, and the game id (read by the message menu's opener).
+    pub game_mention_hit: Option<(gpui::Point<gpui::Pixels>, Id)>,
     /// A right press on an attachment chip: where, its address and its file name (module 740024's menu).
     pub attachment_hit: Option<(gpui::Point<gpui::Pixels>, String, String)>,
     /// A dialog on the graphic modal (`ui/graphic_dialogs.rs`).

@@ -796,9 +796,18 @@ impl Root {
         let media_hit = super::lightbox::items_of(message)
             .into_iter()
             .find(|item| item.key == key)
-            .map(|item| super::menu::Hit::Media {
-                url: item.url,
-                key: item.key,
+            .map(|item| {
+                if item.is_video || !super::menu::can_save_image(&item.url) {
+                    super::menu::Hit::Video {
+                        url: item.url.clone(),
+                        src: item.url,
+                    }
+                } else {
+                    super::menu::Hit::Media {
+                        url: item.url,
+                        key: item.key,
+                    }
+                }
             });
         let (width, height) = (px(size.0), px(size.1));
         div()
@@ -862,22 +871,40 @@ impl Root {
         let key = image_key(message.id, index, "thumbnail");
         let force_external = video.width > 6016 || video.height > 3384;
         if playable && let Some(proxy_url) = video.proxy_url.as_ref().filter(|_| !force_external) {
-            return Some(self.render_media_player(
-                super::video_player::PlayerSpec {
-                    key: format!("embed:{}:{index}", message.id),
-                    src: proxy_url.clone(),
-                    width: size.0.max(150.0),
-                    height: size.1.max(144.0),
-                    aspect_size: (video.width.max(1), video.height.max(1)),
-                    radius: 4.0,
-                    poster_key: Some(key),
-                    auto_play: false,
-                    allow_fullscreen: true,
-                    is_fullscreen_view: false,
-                    actions: None,
-                },
-                cx,
-            ));
+            let menu_url = video.url.clone();
+            let menu_src = proxy_url.clone();
+            return Some(
+                div()
+                    .on_mouse_up(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, _| {
+                            this.menu_hit = Some((
+                                event.position,
+                                super::menu::Hit::Video {
+                                    url: menu_url.clone(),
+                                    src: menu_src.clone(),
+                                },
+                            ));
+                        }),
+                    )
+                    .child(self.render_media_player(
+                        super::video_player::PlayerSpec {
+                            key: format!("embed:{}:{index}", message.id),
+                            src: proxy_url.clone(),
+                            width: size.0.max(150.0),
+                            height: size.1.max(144.0),
+                            aspect_size: (video.width.max(1), video.height.max(1)),
+                            radius: 4.0,
+                            poster_key: Some(key),
+                            auto_play: false,
+                            allow_fullscreen: true,
+                            is_fullscreen_view: false,
+                            actions: None,
+                        },
+                        cx,
+                    ))
+                    .into_any_element(),
+            );
         }
         let poster = self.images.get(&key).cloned();
         let (width, height) = (px(size.0), px(size.1));
@@ -1004,6 +1031,8 @@ impl Root {
                 )
                 .into_any_element()
         };
+        let menu_video_url = target.clone();
+        let menu_video_src = video.proxy_url.clone().unwrap_or_else(|| target.clone());
         Some(
             div()
                 .id(SharedString::from(format!("{group}-box")))
@@ -1015,6 +1044,18 @@ impl Root {
                 .rounded(px(if proxied { 3. } else { 4. }))
                 .overflow_hidden()
                 .bg(color("--background-base-lower"))
+                .on_mouse_up(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, _| {
+                        this.menu_hit = Some((
+                            event.position,
+                            super::menu::Hit::Video {
+                                url: menu_video_url.clone(),
+                                src: menu_video_src.clone(),
+                            },
+                        ));
+                    }),
+                )
                 .children(poster.map(|poster| {
                     img(poster)
                         .w(width)
@@ -1272,17 +1313,32 @@ impl Root {
     ) -> AnyElement {
         // `min-width: 0` (the `embedProvider`/`embedAuthor`/`embedTitle` rule): in the row it sits in, the text wraps
         // inside its column instead of running on at its one-line width (under the thumbnail, out of the card).
+        let label_for_menu = text.clone();
         let base = div()
             .id(SharedString::from(id))
             .min_w(px(0.))
             .text_color(color(idle))
             .child(text);
         match url {
-            Some(url) => base
-                .cursor_pointer()
-                .hover(|style| style.underline())
-                .on_click(cx.listener(move |this, _, _, cx| this.follow_link(&url, &url, cx)))
-                .into_any_element(),
+            Some(url) => {
+                let menu_url = url.clone();
+                base.cursor_pointer()
+                    .hover(|style| style.underline())
+                    .on_mouse_up(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, _| {
+                            this.menu_hit = Some((
+                                event.position,
+                                super::menu::Hit::Link {
+                                    url: menu_url.clone(),
+                                    label: label_for_menu.clone(),
+                                },
+                            ));
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.follow_link(&url, &url, cx)))
+                    .into_any_element()
+            }
             None => base.into_any_element(),
         }
     }

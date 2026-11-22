@@ -2986,6 +2986,7 @@ impl Root {
             let opened = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(480.), px(360.))),
                     titlebar: Some(TitlebarOptions {
                         title: Some(dc_intl::t!("5I/1fl").into()),
                         ..Default::default()

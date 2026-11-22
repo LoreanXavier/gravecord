@@ -498,27 +498,34 @@ impl Root {
             deferred(
                 div()
                     .absolute()
-                    .left(anchor.right() - px(360.))
+                    .left((anchor.right() - px(360.)).max(px(8.)))
                     .top(anchor.bottom() + px(8.))
                     .child(
                         div()
                             .id("search-popout")
                             .occlude()
-                            .w(px(356.))
+                            .w(px(356_f32.min((self.viewport.0 - 16.).max(260.))))
                             .pt(px(12.))
                             .pb(px(12.))
                             .px(px(8.))
                             .rounded(px(8.))
                             .border_1()
                             .border_color(color("--border-subtle"))
-                            .bg(color("--background-surface-higher"))
-                            .shadow(vec![gpui::BoxShadow {
-                                color: gpui::hsla(0., 0., 0., 0.24),
-                                offset: gpui::point(px(0.), px(12.)),
-                                blur_radius: px(24.),
-                                spread_radius: px(0.),
-                                inset: false,
-                            }])
+                            .bg(color("--background-surface-high"))
+                            .shadow(vec![super::shadow_high()])
+                            .on_mouse_down_out(cx.listener(
+                                |this, event: &gpui::MouseDownEvent, window, cx| {
+                                    let in_input = this
+                                        .tip_anchors
+                                        .borrow()
+                                        .get("header-search")
+                                        .is_some_and(|b| b.contains(&event.position));
+                                    if !in_input {
+                                        window.focus(&this.focus, cx);
+                                        cx.notify();
+                                    }
+                                },
+                            ))
                             .flex()
                             .flex_col()
                             .gap(px(4.))

@@ -982,11 +982,14 @@ impl Root {
             None => div().into_any_element(),
             Some(badge) => self.badge_detail(badge, &catalog, &mine, other, modal, cx),
         };
+        let full_bleed = self.viewport.1 <= 519. || self.viewport.0 <= 723.;
+        let inner_r = if full_bleed { 0. } else { 11. };
         let right = div()
             .relative()
             .flex_1()
             .h_full()
             .min_w(px(0.))
+            .rounded_r(px(inner_r))
             .bg(color("--background-base-lower"))
             .child(right_body)
             .child(
@@ -1012,19 +1015,32 @@ impl Root {
         // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
 
         let pose = super::motion::legacy_modal_pose("badge-modal", "badge-modal-layer", false);
+        let modal_w = if full_bleed {
+            self.viewport.0
+        } else {
+            682_f32.min((self.viewport.0 - 48.).max(320.))
+        };
+        let modal_h = if full_bleed {
+            self.viewport.1
+        } else {
+            562_f32.min((self.viewport.1 - 48.).max(320.))
+        };
         let card = div()
             .id("badge-modal")
             .occlude()
             .opacity(pose.opacity)
             .paint_scale(pose.scale, gpui::point(0.5, 0.5))
-            .w(px(682.))
-            .h(px(562.))
-            .rounded(px(12.))
-            .border_1()
-            .border_color(color("--border-normal"))
+            .w(px(modal_w))
+            .h(px(modal_h))
+            .when(!full_bleed, |d| {
+                d.rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-normal"))
+            })
             .bg(color("--background-surface-high"))
             .overflow_hidden()
             .flex()
+            .on_click(|_, _, cx| cx.stop_propagation())
             .child(left)
             .child(right);
         Some(
@@ -1034,10 +1050,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(gpui::Rgba {
-                        a: f32::from(0xb8u8) / 255. * pose.scrim,
-                        ..rgba(0x000000ff)
-                    })
+                    .bg(pose.dim(color("--background-scrim")))
                     .flex()
                     .items_center()
                     .justify_center()

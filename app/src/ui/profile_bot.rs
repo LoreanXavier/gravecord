@@ -912,7 +912,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(pose.dim(rgba(0x000000b8)))
+                    .bg(pose.dim(super::color("--background-scrim")))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1606,6 +1606,7 @@ impl Root {
                     .relative()
                     .w_full()
                     .h(px(120.))
+                    .rounded_t(px(11.))
                     .bg(super::color("--control-primary-background-default"))
                     .child(
                         div()

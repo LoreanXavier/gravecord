@@ -1204,15 +1204,17 @@ impl Root {
         // The leave button's red is the notification red (210, 45, 57) in stage-ann/stage-leave-menu.
         let red = color("--background-feedback-notification");
         let menu_open = moderator && self.stage_leave_menu;
-        // `End Stage for Everyone` (stage-ann/stage-leave-menu): a 202 by 53 popout above the caret, the item 37 high
-        // with a red circle-x and red text.
+        // `End Stage for Everyone` (stage-ann/stage-leave-menu): a 202 by 54 popout above the caret,
+        // anchored from the bottom so it stays over the control bar at every window height.
+        let stage_w = (self.viewport.0 - self.combined_sidebar_width()).max(320.);
+        let leave_left = (stage_w / 2. + 3.).clamp(8., (stage_w - 210.).max(8.));
         let leave_menu = menu_open.then(|| {
             div()
                 .id("stage-leave-menu")
                 .occlude()
                 .absolute()
-                .left(px(455.))
-                .top(px(552.))
+                .left(px(leave_left))
+                .bottom(px(82.))
                 .w(px(201.8))
                 .h(px(54.))
                 .p(px(8.))
@@ -1223,14 +1225,7 @@ impl Root {
                     ..rgba(0x6c6d76ff)
                 })
                 .bg(color("--neutral-76"))
-                // `menu_M3qk4j`: 0 12px 24px rgba(0,0,0,.24).
-                .shadow(vec![gpui::BoxShadow {
-                    color: gpui::hsla(0., 0., 0., 0.24),
-                    offset: gpui::point(px(0.), px(12.)),
-                    blur_radius: px(24.),
-                    spread_radius: px(0.),
-                    inset: false,
-                }])
+                .shadow(vec![super::shadow_high()])
                 .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
                     if !this.keys.outside_closed_this_press {
                         this.keys.outside_closed_this_press = true;
@@ -1389,25 +1384,20 @@ impl Root {
         // heading 20px under it, the button 20px under that, 16px of padding.
         let art = self.images.get(COACH_ART).cloned();
         let coach = (listening && !self.stage_coach_closed).then(|| {
+            let coach_left = (stage_w / 2. - 186.).clamp(8., (stage_w - 248.).max(8.));
             div()
                 .absolute()
                 .invisible()
                 .group_hover("stage-live", |style| style.visible())
-                .left(px(266.))
-                .top(px(372.))
+                .left(px(coach_left))
+                .bottom(px(75.))
                 .w(px(240.))
                 .h(px(241.))
                 .rounded(px(12.))
                 .overflow_hidden()
                 // `popoverGradientWrapper_81I`: oklab(.26239 .0025 -.0089), (36, 36, 41) in the capture.
                 .bg(rgba(0x242429ff))
-                .shadow(vec![gpui::BoxShadow {
-                    color: gpui::hsla(0., 0., 0., 0.24),
-                    offset: gpui::point(px(0.), px(12.)),
-                    blur_radius: px(24.),
-                    spread_radius: px(0.),
-                    inset: false,
-                }])
+                .shadow(vec![super::shadow_high()])
                 .child(
                     img(header_gradient(
                         color("--expressive-gradient-blue-start"),
@@ -1571,14 +1561,15 @@ impl Root {
                     })),
             )
             .children(coach)
-            // `caret_uDaE_S`: 22 by 14 under the box, centred on the hand button (750, 644).
+            // `caret_uDaE_S`: 22 by 14 under the box, centred on the hand button.
             .children((listening && !self.stage_coach_closed).then(|| {
+                let caret_left = (stage_w / 2. - 77.).clamp(8., (stage_w - 30.).max(8.));
                 div()
                     .absolute()
                     .invisible()
                     .group_hover("stage-live", |style| style.visible())
-                    .left(px(self.combined_sidebar_width()))
-                    .top(px(612.))
+                    .left(px(caret_left))
+                    .bottom(px(62.))
                     .child(
                         icon("popout_caret_down", 22., "--white")
                             .text_color(rgba(0x242429ff))

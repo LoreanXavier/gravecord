@@ -1460,24 +1460,19 @@ impl Root {
                     ),
             )
             .children(breadcrumbs);
+        let modal_w = (f32::from(window.viewport_size().width) - 48.).clamp(320., width);
         let modal = div()
             .parity_with_border(id, 1.)
             .id(id)
             .occlude()
-            .w(px(width))
+            .w(px(modal_w))
             .max_h(px(limit))
             .pt(px(8.))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-subtle"))
             .bg(color("--background-surface-high"))
-            .shadow(vec![gpui::BoxShadow {
-                color: gpui::hsla(0., 0., 0., 0.24),
-                offset: gpui::point(px(0.), px(12.)),
-                blur_radius: px(24.),
-                spread_radius: px(0.),
-                inset: false,
-            }])
+            .shadow(vec![super::shadow_high()])
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -1498,7 +1493,7 @@ impl Root {
                 .occlude()
                 .absolute()
                 .inset_0()
-                .bg(pose.dim(rgba(0x000000b8)))
+                .bg(pose.dim(color("--background-scrim")))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -2397,7 +2392,8 @@ impl Root {
                     .child(options),
             );
         let content = div()
-            .w(px(958.))
+            .w_full()
+            .max_w(px(958.))
             .px(px(24.))
             .when(has_person, |this| this.py(px(12.)))
             .when(!has_person, |this| this.pb(px(8.)))

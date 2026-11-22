@@ -447,7 +447,8 @@ impl Root {
         let _ = width;
         // The page column is 696px wide (`select` width in the generated page).
         div()
-            .w(px(696.))
+            .w_full()
+            .max_w(px(696.))
             // 8px of room under the note before the next row (captured: note ends at 456, next title at 480).
             .pb(px(8.))
             .flex()

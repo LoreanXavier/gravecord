@@ -1425,6 +1425,7 @@ impl Root {
             .id("picker-rail")
             .w(px(48.))
             .h_full()
+            .rounded_bl(px(7.))
             .bg(color("--background-base-lower"))
             .overflow_y_scroll()
             .pt(px(8.))
@@ -1446,6 +1447,7 @@ impl Root {
         div()
             .h(px(48.))
             .flex_none()
+            .rounded_br(px(7.))
             .px(px(16.))
             .bg(color("--background-base-lower"))
             .border_t_1()
@@ -1801,6 +1803,17 @@ impl Root {
                                 div()
                                     .id("picker-skin-tones")
                                     .occlude()
+                                    .on_mouse_down_out(cx.listener(
+                                        |this, event: &gpui::MouseDownEvent, _, cx| {
+                                            if this.skin_menu {
+                                                this.skin_menu = false;
+                                                if event.button != gpui::MouseButton::Right {
+                                                    cx.stop_propagation();
+                                                }
+                                                cx.notify();
+                                            }
+                                        },
+                                    ))
                                     .absolute()
                                     .left(px(-1.))
                                     .top(px(-1.))
@@ -2150,7 +2163,9 @@ impl Root {
             title: dc_intl::tr("Oh no!").into(),
             subtitle: Some(
                 div()
-                    .child(format!("You cannot have more than {FAVORITES_MAX} favorites."))
+                    .child(format!(
+                        "You cannot have more than {FAVORITES_MAX} favorites."
+                    ))
                     .into_any_element(),
             ),
             body: None,

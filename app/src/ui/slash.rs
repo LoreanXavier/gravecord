@@ -2004,29 +2004,14 @@ impl Root {
                 // The 1px ring is drawn outside the box: the box itself starts one pixel further in.
                 .right(px(12.))
                 .bottom(px(31.))
-                .w(px(500.))
-                .h(px(680.))
+                .w(px(500_f32.min((self.viewport.0 - 24.).max(320.))))
+                .h(px(680_f32.min((self.viewport.1 - 48.).max(260.))))
                 .occlude()
                 .rounded(px(8.))
+                .overflow_hidden()
                 .bg(color("--background-base-lower"))
-                // `contentWrapper_Z0Mo0M`: a 1px ring of white at 8% outside the box (a shadow, no border), over the
-                // 0 12px 24px shadow of the layers.
-                .shadow(vec![
-                    gpui::BoxShadow {
-                        color: gpui::hsla(0., 0., 1., 0.08),
-                        offset: gpui::point(px(0.), px(0.)),
-                        blur_radius: px(0.),
-                        spread_radius: px(1.),
-                        inset: false,
-                    },
-                    gpui::BoxShadow {
-                        color: gpui::hsla(0., 0., 0., 0.24),
-                        offset: gpui::point(px(0.), px(12.)),
-                        blur_radius: px(24.),
-                        spread_radius: px(0.),
-                        inset: false,
-                    },
-                ])
+                // `contentWrapper_Z0Mo0M`: a 1px ring outside the box (a shadow, no border), over `--shadow-high`.
+                .shadow(vec![super::shadow_border(), super::shadow_high()])
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.slash.launcher = None;
                     cx.notify();

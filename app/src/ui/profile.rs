@@ -153,6 +153,7 @@ impl Root {
     ) {
         let me = self.stores.current_user.as_ref().map(|current| current.id);
         let other = Some(user) != me;
+        self.close_competing_popouts(super::keyboard::Layer::Profile);
         let mut route = format!(
             "/users/{user}/profile?type=popout&with_mutual_guilds={other}&with_mutual_friends={other}&with_mutual_friends_count=false"
         );
@@ -319,11 +320,25 @@ impl Root {
             self.want_image(avatar_key, avatar_url, cx);
         }
         let banner = self.banner_color(&user);
+        let banner_img = self.profile_banner_image(user.id);
         let badges = self.profile_badges("popout", user.id, cx);
         let header = div()
             .relative()
             .h(px(152.5))
-            .child(div().h(px(105.)).rounded_t(px(8.)).bg(banner))
+            .child(
+                div()
+                    .h(px(105.))
+                    .rounded_t(px(8.))
+                    .overflow_hidden()
+                    .relative()
+                    .bg(banner)
+                    .children(banner_img.map(|image| {
+                        img(image)
+                            .size_full()
+                            .rounded_t(px(8.))
+                            .object_fit(gpui::ObjectFit::Cover)
+                    })),
+            )
             // `avatar_WRLIGC`: 80px, ringed by 6px of the card, its status dot at the lower right.
             .child(
                 div()
@@ -558,23 +573,9 @@ impl Root {
             .relative()
             .w(px(300.))
             .rounded(px(8.))
+            .overflow_hidden()
             .bg(color("--background-surface-high"))
-            .shadow(vec![
-                BoxShadow {
-                    color: hsla(0., 0., 1., 0.08),
-                    offset: point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(1.),
-                    inset: false,
-                },
-                BoxShadow {
-                    color: hsla(0., 0., 0., 0.24),
-                    offset: point(px(0.), px(12.)),
-                    blur_radius: px(24.),
-                    spread_radius: px(0.),
-                    inset: false,
-                },
-            ])
+            .shadow(vec![super::shadow_border(), super::shadow_high()])
             .pb(px(4.))
             .flex()
             .flex_col()
@@ -591,48 +592,27 @@ impl Root {
         } else {
             point(popout.anchor.right() + px(8.), popout.anchor.top() - px(1.))
         };
+        let card = super::keyboard::outside(card, super::keyboard::Layer::Profile, cx);
         Some(
             deferred(
-                div()
-                    .id("profile-layer")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.profile = None;
-                            cx.notify();
-                        }),
-                    )
-                    .on_mouse_down(
-                        gpui::MouseButton::Right,
-                        cx.listener(|this, _, _, cx| {
-                            this.profile = None;
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        anchored()
-                            .position(at)
-                            // 12px kept below the card (menus2/self-popout: its border ends at y=708 of 720).
-                            .snap_to_window_with_margin(gpui::Edges {
-                                top: px(8.),
-                                right: px(8.),
-                                bottom: px(12.),
-                                left: px(8.),
-                            })
-                            .child(card.popout(
-                                "user-popout",
-                                PopKind::Translate,
-                                if popout.left {
-                                    PopSide::Left
-                                } else {
-                                    PopSide::Right
-                                },
-                            )),
-                    ),
+                anchored()
+                    .position(at)
+                    // 12px kept below the card (menus2/self-popout: its border ends at y=708 of 720).
+                    .snap_to_window_with_margin(gpui::Edges {
+                        top: px(8.),
+                        right: px(8.),
+                        bottom: px(12.),
+                        left: px(8.),
+                    })
+                    .child(card.popout(
+                        "user-popout",
+                        PopKind::Translate,
+                        if popout.left {
+                            PopSide::Left
+                        } else {
+                            PopSide::Right
+                        },
+                    )),
             )
             .with_priority(1)
             .into_any_element(),

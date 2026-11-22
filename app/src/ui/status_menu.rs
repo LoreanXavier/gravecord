@@ -102,7 +102,7 @@ pub(super) struct StatusPopout {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum Submenu {
+pub(in crate::ui) enum Submenu {
     #[default]
     None,
     Statuses,
@@ -172,7 +172,10 @@ impl Root {
     pub(super) fn toggle_status_popout(&mut self, cx: &mut Context<Self>) {
         self.status_popout = match self.status_popout {
             Some(_) => None,
-            None => Some(StatusPopout::default()),
+            None => {
+                self.close_competing_popouts(super::keyboard::Layer::StatusPopout);
+                Some(StatusPopout::default())
+            }
         };
         cx.notify();
     }
@@ -377,11 +380,25 @@ impl Root {
         let dnd_bell = (status == "dnd")
             .then(|| icon("pm_dnd_bell", 12., "--interactive-icon-default").into_any_element());
 
+        let banner_img = self.profile_banner_image(user.id);
         let header = div()
             .relative()
             .flex_none()
             .h(px(140.))
-            .child(div().h(px(105.)).rounded_t(px(8.)).bg(banner))
+            .child(
+                div()
+                    .h(px(105.))
+                    .rounded_t(px(8.))
+                    .overflow_hidden()
+                    .relative()
+                    .bg(banner)
+                    .children(banner_img.map(|image| {
+                        img(image)
+                            .size_full()
+                            .rounded_t(px(8.))
+                            .object_fit(gpui::ObjectFit::Cover)
+                    })),
+            )
             .child(
                 div()
                     .absolute()
@@ -611,23 +628,9 @@ impl Root {
             .occlude()
             .w(px(300.))
             .rounded(px(8.))
+            .overflow_hidden()
             .bg(surface)
-            .shadow(vec![
-                BoxShadow {
-                    color: gpui::hsla(0., 0., 1., 0.08),
-                    offset: point(px(0.), px(0.)),
-                    blur_radius: px(0.),
-                    spread_radius: px(1.),
-                    inset: false,
-                },
-                BoxShadow {
-                    color: gpui::hsla(0., 0., 0., 0.24),
-                    offset: point(px(0.), px(12.)),
-                    blur_radius: px(24.),
-                    spread_radius: px(0.),
-                    inset: false,
-                },
-            ])
+            .shadow(vec![super::shadow_border(), super::shadow_high()])
             .pb(px(4.))
             .flex()
             .flex_col()
@@ -893,10 +896,9 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = STATUSES[index].0;
-        // Hung 9px above the hovered row: Idle's row starts 492 from the top of the window's 720.
-        let top: f32 = 483. + [0., 36., 88.][index.saturating_sub(1)];
-        // Kept inside the window, 8px from its bottom.
-        let top = top.min(self.viewport.1 - 222. - 8.);
+        // Hung 9px above the hovered row: anchored relative to `self.viewport.1` (483 at 720px height).
+        let top: f32 = (self.viewport.1 - 237. + [0., 36., 88.][index.saturating_sub(1)])
+            .clamp(8., (self.viewport.1 - 230.).max(8.));
         div()
             .id("status-durations")
             .occlude()

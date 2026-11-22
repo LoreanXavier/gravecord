@@ -539,13 +539,16 @@ impl Root {
             },
         );
         let _ = premium;
+        let modal_w = 836_f32.min((self.viewport.0 - 48.).max(320.));
+        let modal_h = 672_f32.min((self.viewport.1 - 64.).max(320.));
         let modal_box = div()
             .parity("profile-editor-styles")
             .id("profile-editor-styles")
             .occlude()
+            .on_click(|_, _, cx| cx.stop_propagation())
             .relative()
-            .w(px(836.))
-            .h(px(672.))
+            .w(px(modal_w))
+            .h(px(modal_h))
             .rounded(px(12.))
             .overflow_hidden()
             .bg(color("--background-surface-high"))
@@ -554,7 +557,8 @@ impl Root {
             .child(
                 div()
                     .flex()
-                    .h(px(581.))
+                    .flex_1()
+                    .min_h(px(0.))
                     .overflow_hidden()
                     .child(left)
                     .child(preview),
@@ -617,10 +621,16 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(pose.dim(rgba(0x000000b8)))
+                    .bg(pose.dim(color("--background-scrim")))
                     .flex()
                     .items_center()
                     .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.profile_editor.as_mut() {
+                            open.styles = None;
+                        }
+                        cx.notify();
+                    }))
                     .child(modal_box.posed(pose))
                     .children(popout),
             )
@@ -956,8 +966,9 @@ impl Root {
         div()
             .parity("profile-editor-styles-preview")
             .w(px(402.))
-            .h(px(632.))
+            .h_full()
             .flex_none()
+            .rounded_tr(px(12.))
             .bg(color("--background-base-lower"))
             .overflow_hidden()
             .pl(px(12.))

@@ -2560,6 +2560,14 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_profile_editor(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
+            ["image-context", rest @ ..] => {
+                let url = rest
+                    .first()
+                    .copied()
+                    .unwrap_or("https://media.discordapp.net/attachments/1/2/shot.png");
+                let line = root.update(cx, |root, cx| root.script_image_context(url, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // Measurements, see `perf.rs`: `perf sample <label>` (process counters), `perf caches` (sizes of the app's
             // own caches), `perf start` (when the content and the loading screen's end showed).
             ["perf", "sample", label @ ..] => {

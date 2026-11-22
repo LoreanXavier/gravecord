@@ -511,6 +511,7 @@ fn run() -> Result<()> {
                 .open_window(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        window_min_size: Some(size(px(940.), px(500.))),
                         titlebar: Some(TitlebarOptions {
                             title: Some("gravecord".into()),
                             appears_transparent: true,

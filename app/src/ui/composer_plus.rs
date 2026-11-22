@@ -331,7 +331,9 @@ impl Root {
             .id("composer-plus-menu")
             .occlude()
             .absolute()
-            .left(px(395.))
+            .left(px(
+                (self.combined_sidebar_width() + 20.).min((self.viewport.0 - 220.).max(16.))
+            ))
             .bottom(px(61.))
             .w(px(201.44))
             .p(px(8.))

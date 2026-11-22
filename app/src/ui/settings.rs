@@ -65,9 +65,9 @@ use crate::net::Request;
 use crate::parity::Parity;
 use dc_proto::pin;
 use gpui::{
-    AnyElement, Bounds, BoxShadow, Context, ElementId, FontWeight, HighlightStyle, IntoElement,
-    Pixels, ScrollHandle, SharedString, StyledText, Window, canvas, deferred, div, fill, hsla, img,
-    point, prelude::*, px, size, svg,
+    AnyElement, Bounds, Context, ElementId, FontWeight, HighlightStyle, IntoElement, Pixels,
+    ScrollHandle, SharedString, StyledText, Window, canvas, deferred, div, fill, img, point,
+    prelude::*, px, size, svg,
 };
 pub(super) use model::Choice;
 use model::{ButtonKind, Runs};
@@ -1858,6 +1858,7 @@ impl Root {
             .filter(|(_, entries)| entries.iter().any(|entry| kept(&entry)))
             .collect();
         let no_results = visible.is_empty();
+        let full = f32::from(window.viewport_size().width) <= FULL_WINDOW_MODAL;
         let search_box = self.settings_search(window, cx);
         let sections = visible.iter().enumerate().map(|(index, (label, entries))| {
             let last = index + 1 == visible.len();
@@ -1895,6 +1896,7 @@ impl Root {
             .flex_none()
             .w(px(SETTINGS_SIDEBAR_WIDTH))
             .h_full()
+            .when(!full, |this| this.rounded_l(px(11.)))
             .pt(px(16.))
             .pl(px(12.))
             .border_r_1()
@@ -2443,11 +2445,13 @@ impl Root {
             .then_some(self.settings_extra.panel)
             .flatten()
             .filter(|panel| panel.has_breadcrumb());
+        let full = f32::from(window.viewport_size().width) <= FULL_WINDOW_MODAL;
         div()
             .parity("settings-content")
             .flex_1()
             .min_w(px(0.))
             .h_full()
+            .when(!full, |this| this.rounded_r(px(11.)))
             .flex()
             .flex_col()
             .bg(client_theme::solid("--background-base-low"))
@@ -2539,6 +2543,7 @@ impl Root {
                                 .occlude()
                                 .absolute()
                                 .inset_0()
+                                .when(!full, |this| this.rounded_br(px(11.)))
                                 .bg(client_theme::solid("--background-base-low"))
                                 .child(cover),
                         )
@@ -2616,13 +2621,7 @@ impl Root {
                 this.rounded(px(12.))
                     .border_1()
                     .border_color(color("--border-subtle"))
-                    .shadow(vec![BoxShadow {
-                        color: hsla(0., 0., 0., 0.24),
-                        offset: point(px(0.), px(12.)),
-                        blur_radius: px(24.),
-                        spread_radius: px(0.),
-                        inset: false,
-                    }])
+                    .shadow(vec![super::shadow_high()])
             })
             .when(full, |this| this.pt(px(32.)))
             .bg(client_theme::solid("--background-base-lower"))

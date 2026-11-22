@@ -801,8 +801,12 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let viewport = window.viewport_size();
-        let geometry =
-            geometry::Geometry::of(f32::from(viewport.width), f32::from(viewport.height));
+        let panel_collapsed = self.profile_editor.as_ref()?.panel_collapsed;
+        let geometry = geometry::Geometry::of_with_collapse(
+            f32::from(viewport.width),
+            f32::from(viewport.height),
+            panel_collapsed,
+        );
         self.profile_editor.as_mut()?.geometry = geometry;
         let user = self.profile_editor_user();
         self.profile_editor_request_art(&user);
@@ -835,10 +839,6 @@ impl Root {
         // follows the window (`geometry.rs`).
         let pose =
             super::motion::legacy_modal_pose("profile-editor", "profile-editor-layer", false);
-        let panel_collapsed = self
-            .profile_editor
-            .as_ref()
-            .is_some_and(|open| geometry.panel_over && open.panel_collapsed);
         let panel = if panel_collapsed {
             None
         } else {
@@ -898,7 +898,8 @@ impl Root {
             .bg(color("--background-base-lower"))
             .flex()
             .font_family(SANS)
-            .font_features(kerning());
+            .font_features(kerning())
+            .on_click(|_, _, cx| cx.stop_propagation());
         let root = if geometry.panel_over {
             root.child(stage).children(panel.map(panel_slot))
         } else {
@@ -924,6 +925,7 @@ impl Root {
                 .left_0()
                 .size_full()
                 .bg(pose.dim(color("--background-scrim")))
+                .on_click(cx.listener(|this, _, _, cx| this.close_profile_editor(cx)))
                 .child(root)
                 .children(guild_upsell),
         )
