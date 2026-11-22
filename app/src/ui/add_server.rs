@@ -1644,14 +1644,148 @@ impl Root {
         let modal = self.template_accept.as_ref()?;
         let pose = crate::ui::motion::modal_pose("template-accept-modal");
         let preview = modal.preview.as_ref();
+        let (header_copy, verified_author) = builtin_template_meta(&modal.code);
         let template_name = preview
             .map(|p| p.name.clone())
             .unwrap_or_else(|| modal.code.clone());
-        let usage_copy = preview.map(|p| p.usage_copy()).unwrap_or_default();
+        let usage_copy = preview
+            .map(|p| p.usage_copy_with_author(verified_author))
+            .unwrap_or_default();
         let guidelines_copy = dc_intl::format(
             "2bprXx",
             &[("guidelinesURL", "https://discord.com/guidelines".into())],
         );
+
+        // Module 833397 (`GuildTemplateHeader` + `GuildTemplateUsagePill` + `CreatorBadge`):
+        // 1) Error state -> `mDFGFj` ("Whoops...") + error subtitle
+        // 2) Resolving state -> centered spinner
+        // 3) Resolved state -> `651539` header + `h+vyO6` ("based on") + template name + optional description + `usagePill_I_rpEd`
+        let header_833397 = if let Some(err) = modal.error.as_deref().filter(|_| preview.is_none())
+        {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .mt(px(2.))
+                        .text_size(px(24.))
+                        .line_height(px(30.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("mDFGFj")),
+                )
+                .child(
+                    div()
+                        .text_center()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(err.to_owned()),
+                )
+                .into_any_element()
+        } else if modal.loading && preview.is_none() {
+            div()
+                .py(px(16.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .size(px(28.))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(color("--control-primary-background-default")),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .mt(px(2.))
+                        .text_center()
+                        .text_size(px(24.))
+                        .line_height(px(30.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(header_copy),
+                )
+                .child(
+                    div()
+                        .text_center()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("h+vyO6")),
+                )
+                .child(
+                    div()
+                        .mt(px(2.))
+                        .text_center()
+                        .text_size(px(24.))
+                        .line_height(px(30.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(template_name),
+                )
+                .when_some(
+                    preview
+                        .and_then(|p| p.description.as_ref())
+                        .filter(|d| !d.is_empty()),
+                    |col, desc| {
+                        col.child(
+                            div()
+                                .mt(px(8.))
+                                .text_center()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-default"))
+                                .child(desc.clone()),
+                        )
+                    },
+                )
+                .when(!usage_copy.is_empty(), |col| {
+                    col.child(
+                        // `.usagePill_I_rpEd` (rounded 16px, 8px 16px padding, mt 16px, --background-base-lower)
+                        // with optional verified FlowerStar + white check (`verifiedIcon_I_rpEd`).
+                        div()
+                            .mt(px(16.))
+                            .px(px(16.))
+                            .py(px(8.))
+                            .rounded(px(16.))
+                            .bg(color("--background-base-lower"))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .when(verified_author.is_some(), |pill| {
+                                pill.child(
+                                    div()
+                                        .size(px(16.))
+                                        .rounded_full()
+                                        .bg(color("--status-positive"))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon("select_check", 10., "--white")),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-default"))
+                                    .child(usage_copy),
+                            ),
+                    )
+                })
+                .into_any_element()
+        };
 
         let left_form = div()
             .flex_1()
@@ -1660,51 +1794,7 @@ impl Root {
             .flex()
             .flex_col()
             .gap(px(14.))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight(700.))
-                            .text_color(color("--text-muted"))
-                            .child(dc_intl::t("h+vyO6").to_uppercase()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(22.))
-                            .line_height(px(28.))
-                            .font_weight(FontWeight(700.))
-                            .text_color(color("--text-strong"))
-                            .child(template_name),
-                    )
-                    .when(!usage_copy.is_empty(), |col| {
-                        col.child(
-                            div()
-                                .text_size(px(13.))
-                                .line_height(px(18.))
-                                .text_color(color("--text-subtle"))
-                                .child(usage_copy),
-                        )
-                    })
-                    .when_some(
-                        preview
-                            .and_then(|p| p.description.as_ref())
-                            .filter(|d| !d.is_empty()),
-                        |col, desc| {
-                            col.child(
-                                div()
-                                    .pt(px(2.))
-                                    .text_size(px(13.))
-                                    .line_height(px(18.))
-                                    .text_color(color("--text-default"))
-                                    .child(desc.clone()),
-                            )
-                        },
-                    ),
-            )
+            .child(header_833397)
             .child(
                 div()
                     .flex()
@@ -1988,10 +2078,29 @@ impl Root {
             cx.notify();
             return "template-accept: closed".to_owned();
         }
-        self.open_template_accept_modal("hvtBQMfw6uSJ", window, cx);
+        let code = match arg.trim() {
+            "builtin" => "64UDvRNCC52Y",
+            "github" => "UqzZCTj2zfwy",
+            _ => "hvtBQMfw6uSJ",
+        };
+        self.open_template_accept_modal(code, window, cx);
+        if arg.trim() == "error" {
+            self.template_accept_fetched(
+                &format!("guild-template:{code}"),
+                &json!({"message": "Unknown Guild Template"}),
+            );
+            cx.notify();
+            return "template-accept: error".to_owned();
+        }
         let sample = json!({
-            "code": "hvtBQMfw6uSJ",
-            "name": "Gaming Squad HQ",
+            "code": code,
+            "name": if arg.trim() == "builtin" {
+                "Local Community"
+            } else if arg.trim() == "github" {
+                "GitHub Hackathon"
+            } else {
+                "Gaming Squad HQ"
+            },
             "description": "Pre-built channels and roles for competitive squads and nightly customs.",
             "usage_count": 482,
             "creator": { "username": "Lorean" },
@@ -2015,9 +2124,9 @@ impl Root {
                 ]
             }
         });
-        self.template_accept_fetched("guild-template:hvtBQMfw6uSJ", &sample);
+        self.template_accept_fetched(&format!("guild-template:{code}"), &sample);
         cx.notify();
-        "template-accept: opened".to_owned()
+        format!("template-accept: {code}")
     }
 }
 
@@ -2119,8 +2228,15 @@ impl GuildTemplatePreview {
         })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn usage_copy(&self) -> String {
-        if let Some(creator) = self.creator_name.as_deref() {
+        self.usage_copy_with_author(builtin_template_meta(&self.code).1)
+    }
+
+    /// Module 833397 (`GuildTemplateUsagePill`): formats `TTcKAw` when verified author or creator
+    /// exists, else `cGXXHL`.
+    pub(crate) fn usage_copy_with_author(&self, verified_author: Option<&str>) -> String {
+        if let Some(creator) = verified_author.or(self.creator_name.as_deref()) {
             dc_intl::format(
                 "TTcKAw",
                 &[
@@ -2134,6 +2250,23 @@ impl GuildTemplatePreview {
                 &[("usageCount", (self.usage_count as f64).into())],
             )
         }
+    }
+}
+
+/// Module 833397 / 651539 / 401755 (`IZ`): official built-in template header text & verified author.
+pub(crate) fn builtin_template_meta(code: &str) -> (&'static str, Option<&'static str>) {
+    match code {
+        "fVfBazbqjhXg" => (dc_intl::t("x7+QD9"), Some("Discord")),
+        "64UDvRNCC52Y" => (dc_intl::t("AhPF5a"), Some("Discord")),
+        "6exdzMgjZgah" => (dc_intl::t("Wx7UUY"), Some("Discord")),
+        "4sgbPdCjzAYU" => (dc_intl::t("sn5Z8t"), Some("Discord")),
+        "hgM48av5Q69A" => (dc_intl::t("QmGwQ6"), Some("Discord")),
+        "FbwUwRp4j8Es" => (dc_intl::t("sJDGZT"), Some("Discord")),
+        "WYAQmEzjw3Pj" => (dc_intl::t("M/gqdd"), Some("Discord")),
+        "Ctg7PUHcQmZu" => (dc_intl::t("v6JIt3"), Some("Discord")),
+        "PJ6VvgEJYg45" => (dc_intl::t("zHGbB/"), Some("Discord")),
+        "UqzZCTj2zfwy" => (dc_intl::t("Gde9Ve"), Some("GitHub Education")),
+        _ => (dc_intl::t("xr59t7"), None),
     }
 }
 
@@ -2263,5 +2396,22 @@ mod tests {
         let role_names: Vec<&str> = p.roles.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(role_names, ["Tutor", "Student"]);
         assert!(p.usage_copy().contains("5"));
+    }
+
+    #[test]
+    fn guild_template_header_833397_builtins_and_intl() {
+        for k in [
+            "mDFGFj", "h+vyO6", "TTcKAw", "cGXXHL", "xr59t7", "x7+QD9", "AhPF5a", "Wx7UUY",
+            "sn5Z8t", "QmGwQ6", "sJDGZT", "M/gqdd", "v6JIt3", "zHGbB/", "Gde9Ve",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 833397/651539 key {k}");
+        }
+        assert_eq!(builtin_template_meta("64UDvRNCC52Y").1, Some("Discord"));
+        assert_eq!(
+            builtin_template_meta("UqzZCTj2zfwy").1,
+            Some("GitHub Education")
+        );
+        assert_eq!(builtin_template_meta("customCode").1, None);
+        assert_eq!(builtin_template_meta("customCode").0, dc_intl::t("xr59t7"));
     }
 }

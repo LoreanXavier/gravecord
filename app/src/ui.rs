@@ -2617,6 +2617,10 @@ impl Root {
                     self.thread_step_fetched(&key, &body);
                     return;
                 }
+                if key.starts_with(join_request_page::ACTION_KEY_PREFIX) {
+                    self.join_request_action_answered(&key, &body, cx);
+                    return;
+                }
                 if key.starts_with(app_storefront::KEY_PREFIX) {
                     self.app_storefront_fetched(key, body, cx);
                     return;
@@ -6909,6 +6913,7 @@ impl Root {
                 sidebar.child(self.guild_events_row(cx))
             })
             .children(self.member_safety_row(cx))
+            .children(self.guild_game_shop_row(cx))
             .when(self.sidebar_has_boosts(), |sidebar| {
                 sidebar.child(
                     plain_row("boosts", dc_intl::tr("Server Boosts"))
@@ -12223,6 +12228,7 @@ impl Render for Root {
                         || this.activity_invite_modal.is_some()
                         || this.shop.wishlist_nux_sku.is_some()
                         || this.shop.coupon_complete.is_some()
+                        || this.shop.game_shop_popover.is_some()
                         || this.friends_popout.open
                         || this.orb_wallet.delivered_modal.is_some()
                         || this.nitro_upsell_modal.is_some()
@@ -12341,6 +12347,7 @@ impl Render for Root {
                     this.activity_invite_modal = None;
                     this.shop.wishlist_nux_sku = None;
                     this.shop.coupon_complete = None;
+                    this.shop.game_shop_popover = None;
                     this.friends_popout.open = false;
                     this.orb_wallet.delivered_modal = None;
                     this.nitro_upsell_modal = None;
@@ -13691,6 +13698,7 @@ impl Render for Root {
             .children(self.pick_guild_settings_layer(cx))
             .children(self.orb_wallet_layer(cx))
             .children(self.coupon_complete_layer(cx))
+            .children(self.game_shop_popover_layer(cx))
             .children(self.friends_popout_layer(cx))
             .children(self.research_survey_layer(cx))
             .children(self.guild_theme_nux_layer(cx))

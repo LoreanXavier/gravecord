@@ -182,6 +182,16 @@ impl Root {
                     )
                     .child(self.member_safety_card(cx)),
             )
+            .children(
+                self.member_view
+                    .as_ref()
+                    .and_then(|v| self.member_safety_bulk_bar(v.guild, cx)),
+            )
+            .children(
+                self.member_view
+                    .as_ref()
+                    .and_then(|v| self.member_safety_bulk_ban_modal(v.guild, cx)),
+            )
             .into_any_element()
     }
 
@@ -231,17 +241,40 @@ impl Root {
                 cell
             }
         };
-        let box_mark = |disabled: bool| {
+        let box_mark = |ticked: bool, disabled: bool| {
             div()
                 .size(px(20.))
                 .rounded(px(4.))
                 .border_1()
-                .border_color(gpui::rgba(0x97979fa3))
-                .bg(gpui::rgba(0x00000014))
-                .when(disabled, |this| this.opacity(0.5))
+                .when(ticked, |this| {
+                    this.border_color(color("--control-primary-background-default"))
+                        .bg(color("--control-primary-background-default"))
+                })
+                .when(!ticked, |this| {
+                    this.border_color(gpui::rgba(0x97979fa3))
+                        .bg(gpui::rgba(0x00000014))
+                })
+                .when(disabled, |this| this.opacity(0.45))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(ticked, |this| {
+                    this.child(icon("checkbox_check", 16., "--white"))
+                })
         };
         let page_size = state.page_size.max(1) as usize;
         let skip = (state.current_page.saturating_sub(1) as usize).saturating_mul(page_size);
+        let visible_actionable: Vec<Id> = members
+            .iter()
+            .skip(skip)
+            .take(page_size)
+            .filter_map(|entry| entry["member"]["user"]["id"].as_str()?.parse::<Id>().ok())
+            .filter(|uid| Some(*uid) != owner && Some(*uid) != me)
+            .collect();
+        let all_visible_selected = !visible_actionable.is_empty()
+            && visible_actionable
+                .iter()
+                .all(|uid| state.selected_user_ids.contains(uid));
         let rows: Vec<AnyElement> = members
             .iter()
             .enumerate()
@@ -285,6 +318,7 @@ impl Root {
                         .child(text)
                 };
                 let user_id = id.parse::<Id>().ok();
+                let checked = user_id.is_some_and(|uid| state.selected_user_ids.contains(&uid));
                 div()
                     .id(SharedString::from(format!("member-row-{index}")))
                     .h(px(51.))
@@ -292,7 +326,26 @@ impl Root {
                     .hover(|style| style.bg(color("--background-mod-subtle")))
                     .flex()
                     .items_center()
-                    .child(column(36.).child(box_mark(!actionable)))
+                    .child(
+                        column(36.).child(
+                            div()
+                                .id(SharedString::from(format!("member-row-chk-{index}")))
+                                .when(actionable, |d| d.cursor_pointer())
+                                .child(box_mark(checked, !actionable))
+                                .when(actionable, |d| {
+                                    d.on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(uid) = user_id
+                                            && let Some(view) = this.member_view.as_mut()
+                                        {
+                                            if !view.state.selected_user_ids.remove(&uid) {
+                                                view.state.selected_user_ids.insert(uid);
+                                            }
+                                            cx.notify();
+                                        }
+                                    }))
+                                }),
+                        ),
+                    )
                     .child(
                         div()
                             .w(px(177.4))
@@ -461,7 +514,34 @@ impl Root {
                             .pb(px(8.))
                             .flex()
                             .items_center()
-                            .child(column(36.).child(box_mark(false)))
+                            .child(
+                                column(36.).child(
+                                    div()
+                                        .id("member-safety-select-all")
+                                        .when(!visible_actionable.is_empty(), |d| {
+                                            d.cursor_pointer()
+                                        })
+                                        .child(box_mark(
+                                            all_visible_selected,
+                                            visible_actionable.is_empty(),
+                                        ))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let Some(view) = this.member_view.as_mut() else {
+                                                return;
+                                            };
+                                            if all_visible_selected {
+                                                for uid in &visible_actionable {
+                                                    view.state.selected_user_ids.remove(uid);
+                                                }
+                                            } else {
+                                                for uid in &visible_actionable {
+                                                    view.state.selected_user_ids.insert(*uid);
+                                                }
+                                            }
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
                             .child(div().w(px(177.4)).flex_none().px(px(8.)).child(head("Name", false)))
                             .child(column(93.7).child(head("Member Since", true)))
                             .child(column(92.9).child(head("Joined Discord", true)))

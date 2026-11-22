@@ -80,6 +80,17 @@ impl CheckoutMethod {
     ];
 }
 
+/// Module 860215 (`OrderCreationProvider`): lifecycle of `POST /billing/orders`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum OrderCreateState {
+    #[default]
+    Idle,
+    Loading,
+    Created(String),
+    Error,
+}
+
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) struct ShopCheckoutReviewModal {
@@ -97,6 +108,246 @@ pub(crate) struct ShopCheckoutReviewModal {
     pub total_cents: Option<i64>,
     /// Module 773882: loading skeleton state while checkout invoice preview loads.
     pub is_loading: bool,
+    /// Module 860215 (`OrderCreationProvider`): OTP order creation state (`POST /billing/orders`).
+    pub order_create_state: OrderCreateState,
+    /// Module 886767 / 506426: selected lowercase ISO currency code (e.g. `"usd"`).
+    pub currency: String,
+    /// Module 886767 / 506426: allowed checkout currencies (dropdown hidden when `< 2`).
+    pub available_currencies: Vec<String>,
+    /// Module 886767 / 506426: whether the currency dropdown list is expanded.
+    pub currency_picker_open: bool,
+    /// Module 886767 (`SubscriptionLockedPaymentSourceSelector`): read-only locked subscription method.
+    pub locked_subscription_method: Option<CheckoutMethod>,
+    /// Module 886767: checkout store ISO-2 country (e.g. `"BR"` enables `"Pay with Pix"` `JPRQ9L`).
+    pub country: Option<String>,
+    /// Module 886767: Gift Card Credits checkbox checked (hides currency picker).
+    pub gift_card_checked: bool,
+    /// Module 891197 / 660505: 3DS / redirect signing overlay active (`eALkIR`).
+    pub awaiting_auth: bool,
+    /// Module 891197 / 660505: external redirect URL for `"Reopen"` (`fJnl1h`).
+    pub auth_redirect_url: Option<String>,
+    /// Module 891197 / 660505: critical signing/authentication error message.
+    pub auth_error: Option<String>,
+}
+
+/// Module 860215 (`OrderCreationProvider`): determines whether OTP billing order creation runs.
+#[allow(dead_code)]
+pub(crate) fn is_order_creation_enabled(
+    is_virtual_currency: bool,
+    is_otp_collectible_or_slayer: bool,
+    is_gift: bool,
+    experiment_enabled: bool,
+) -> bool {
+    is_virtual_currency || (is_otp_collectible_or_slayer && !is_gift && experiment_enabled)
+}
+
+/// Module 860215 (`624210.fS`): builds `POST /billing/orders` request payload.
+#[allow(dead_code)]
+pub(crate) fn create_order_request(
+    sku_id: &str,
+    payment_source_id: Option<&str>,
+    payment_gateway: Option<i32>,
+    test_mode: bool,
+    key: &str,
+) -> crate::net::Request {
+    let mut billing_facet = serde_json::Map::new();
+    if let Some(ps) = payment_source_id {
+        billing_facet.insert("payment_source_id".to_owned(), serde_json::json!(ps));
+    }
+    if let Some(gw) = payment_gateway {
+        billing_facet.insert("payment_gateway".to_owned(), serde_json::json!(gw));
+    }
+    let mut body = serde_json::json!({
+        "order_line_items": [{
+            "sku_id": sku_id,
+            "quantity": 1,
+            "purchase_type": 1,
+        }],
+        "billing_facet": billing_facet,
+    });
+    if test_mode {
+        body["application_facet"] = serde_json::json!({ "test_mode": true });
+    }
+    crate::net::Request::Rest {
+        key: Some(key.to_owned()),
+        method: reqwest::Method::POST,
+        route: "/billing/orders".to_owned(),
+        body: Some(body),
+    }
+}
+
+/// Module 886767 / 506426: maps all 28 official checkout currency codes to localized names (`177354`).
+pub(crate) fn currency_display_name(code: &str) -> Option<&'static str> {
+    let key = match code.to_ascii_lowercase().as_str() {
+        "usd" => "kJGVtL",
+        "eur" => "uhxR+U",
+        "gbp" => "RKkD0b",
+        "cad" => "efDdLA",
+        "aud" => "ylmkM5",
+        "brl" => "qEyr9g",
+        "pln" => "eAdNmS",
+        "try" => "J05KNY",
+        "jpy" => "QKSoIh",
+        "krw" => "20VnAz",
+        "mxn" => "t2RLng",
+        "ars" => "GTI3B6",
+        "cop" => "/FnP7L",
+        "clp" => "TPV/a1",
+        "pen" => "sKR+OL",
+        "php" => "0p6FTm",
+        "idr" => "UBrRGq",
+        "vnd" => "mEwyko",
+        "thb" => "9W3Guf",
+        "myr" => "MOaho3",
+        "bgn" => "EhetGH",
+        "czk" => "dWTAXT",
+        "dkk" => "a9hHzp",
+        "huf" => "abWUUC",
+        "ron" => "C7WDXG",
+        "sek" => "Z0ozta",
+        "rub" => "dYiAdi",
+        "nok" => "+SUW8y",
+        _ => return None,
+    };
+    Some(dc_intl::t(key))
+}
+
+/// Module 886767 / 506426: formats a currency dropdown option as `"{CODE} - {LocalizedName}"`.
+pub(crate) fn format_currency_option(code: &str) -> String {
+    let upper = code.to_ascii_uppercase();
+    match currency_display_name(code) {
+        Some(name) => format!("{upper} - {name}"),
+        None => upper,
+    }
+}
+
+/// Module 886767 / 451636 / 506426: currency dropdown is hidden when `< 2` currencies, locked,
+/// gift-card checked, or explicitly suppressed.
+pub(crate) fn should_show_currency_select(
+    currencies: &[String],
+    has_locked_selector: bool,
+    gift_card_checked: bool,
+    hide_currency_select: bool,
+) -> bool {
+    currencies.len() >= 2 && !has_locked_selector && !gift_card_checked && !hide_currency_select
+}
+
+/// Module 886767 (`P` Pix link): shown for Brazil non-gift collectibles or one-time premium gifts
+/// when the user does not already have a Pix payment source selected.
+pub(crate) fn should_show_pix_cta(
+    is_collectibles: bool,
+    is_gift: bool,
+    is_recurring_gift: bool,
+    country: Option<&str>,
+    has_existing_pix: bool,
+) -> bool {
+    let eligible_flow =
+        (is_collectibles && !is_gift) || (!is_collectibles && is_gift && !is_recurring_gift);
+    eligible_flow && country.is_some_and(|c| c.eq_ignore_ascii_case("BR")) && !has_existing_pix
+}
+
+/// Module 891197 (`AwaitingAuthenticationBody`) + 660505 signing overlay:
+/// renders `"Waiting for authentication..."` (`eALkIR`, `heading-sm/semibold`), optional `"Reopen"`
+/// redirect link (`fJnl1h`), or critical error alert (`683071.w`).
+pub(crate) fn render_awaiting_authentication_body(
+    redirect_url: Option<&str>,
+    error: Option<&str>,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    let redirect = redirect_url.map(str::to_owned);
+    div()
+        .id("checkout-awaiting-auth-body")
+        .py(px(16.))
+        .min_h(px(200.))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(16.))
+        .child(if let Some(err) = error {
+            div()
+                .w_full()
+                .p(px(12.))
+                .rounded(px(8.))
+                .bg(color("--background-feedback-critical"))
+                .border_1()
+                .border_color(color("--status-danger"))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(icon("circle_info", 18., "--text-feedback-critical"))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-feedback-critical"))
+                        .child(SharedString::from(err.to_owned())),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .size(px(36.))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(color("--control-primary-background-default"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(
+                            "oauth_entry_clock",
+                            16.,
+                            "--control-primary-background-default",
+                        )),
+                )
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("eALkIR")),
+                )
+                .when_some(redirect, |col, url| {
+                    let raw = intl_or("fJnl1h", "Don't see the payment window?");
+                    let prefix = raw
+                        .replace("{reopenHook}", "")
+                        .trim()
+                        .strip_suffix("Reopen")
+                        .unwrap_or(raw)
+                        .trim()
+                        .to_owned();
+                    col.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(SharedString::from(prefix))
+                            .child(
+                                div()
+                                    .id("checkout-awaiting-auth-reopen")
+                                    .cursor_pointer()
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-link"))
+                                    .child("Reopen")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.open_url(&url);
+                                    })),
+                            ),
+                    )
+                })
+                .into_any_element()
+        })
+        .into_any_element()
 }
 
 /// Module 773882 (`tenantProvidedReviewButtonProps`): selects review CTA label
@@ -378,11 +629,79 @@ impl Root {
         let modal = self.shop_checkout_review_modal.as_ref()?;
         let method_label = modal.method.label();
         let insufficient_orbs = modal.orb_cost.is_some_and(|cost| modal.orb_balance < cost);
+        let show_currency = should_show_currency_select(
+            &modal.available_currencies,
+            modal.locked_subscription_method.is_some(),
+            modal.gift_card_checked,
+            modal.orb_cost.is_some(),
+        );
+        let show_pix = should_show_pix_cta(
+            modal.orb_cost.is_none(),
+            modal.is_gift,
+            false,
+            modal.country.as_deref(),
+            matches!(
+                modal.method,
+                CheckoutMethod::Pix | CheckoutMethod::PixAutomatico
+            ),
+        );
+        let blocking_order_state = modal.orb_cost.is_some()
+            && matches!(
+                modal.order_create_state,
+                OrderCreateState::Loading | OrderCreateState::Error
+            );
+        // Module 860215 (`OrderCreationProvider`) blocking Loading / Error states for virtual-currency checkout,
+        // or Module 891197 / 660505 awaiting 3DS / redirect authentication overlay.
+        let body_override: Option<AnyElement> = if blocking_order_state {
+            Some(
+                div()
+                    .id("checkout-order-create-state")
+                    .min_h(px(180.))
+                    .py(px(24.))
+                    .px(px(20.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(12.))
+                    .child(if modal.order_create_state == OrderCreateState::Loading {
+                        div()
+                            .size(px(32.))
+                            .rounded_full()
+                            .border_2()
+                            .border_color(color("--control-primary-background-default"))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .text_center()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::t("F8FvUy"))
+                            .into_any_element()
+                    })
+                    .into_any_element(),
+            )
+        } else if modal.awaiting_auth {
+            Some(
+                div()
+                    .px(px(20.))
+                    .child(render_awaiting_authentication_body(
+                        modal.auth_redirect_url.as_deref(),
+                        modal.auth_error.as_deref(),
+                        cx,
+                    ))
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
 
         let dialog = div()
             .id("shop-checkout-review-modal")
             .occlude()
             .w(px(480.))
+            .max_h(px(640.))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-subtle"))
@@ -449,8 +768,14 @@ impl Root {
                             })),
                     ),
             )
-            .child(
+            .child(if let Some(override_body) = body_override {
+                override_body
+            } else {
                 div()
+                    .id("shop-checkout-review-scroll")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
                     .p(px(20.))
                     .flex()
                     .flex_col()
@@ -507,89 +832,308 @@ impl Root {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
-                            .child(
-                                div()
-                                    .id("checkout-review-method")
-                                    .h(px(40.))
-                                    .px(px(12.))
-                                    .rounded(px(8.))
-                                    .border_1()
-                                    .border_color(color("--input-border-default"))
-                                    .bg(color("--input-background-default"))
-                                    .cursor_pointer()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .text_size(px(14.))
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--text-strong"))
-                                            .child(method_label),
-                                    )
-                                    .child(icon("chevron_down", 16., "--interactive-icon-default"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if let Some(m) = this.shop_checkout_review_modal.as_mut() {
-                                            m.picker_open = !m.picker_open;
-                                        }
-                                        cx.notify();
-                                    })),
-                            )
-                            .when(modal.picker_open, |col| {
-                                col.child(
+                            // Module 886767 (`SubscriptionLockedPaymentSourceSelector` `165272.S` vs `PaymentSourceDropdown`):
+                            .child(if let Some(locked_method) = modal.locked_subscription_method {
+                                self.with_tip(
+                                    "checkout-locked-payment-tip",
+                                    crate::ui::tooltip::Tip::text(
+                                        intl_or(
+                                            "UdSuwf",
+                                            "This purchase requires your subscription payment method.",
+                                        ),
+                                        crate::ui::tooltip::Side::Top,
+                                    ),
                                     div()
-                                        .id("checkout-method-list")
-                                        .max_h(px(160.))
-                                        .overflow_y_scroll()
-                                        .p(px(4.))
+                                        .id("checkout-locked-payment-card")
+                                        .px(px(12.))
+                                        .py(px(18.))
                                         .rounded(px(8.))
+                                        .bg(color("--background-mod-subtle"))
                                         .border_1()
                                         .border_color(color("--border-subtle"))
-                                        .bg(color("--background-base-lower"))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(icon("access_lock", 20., "--interactive-icon-default"))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-strong"))
+                                                .child(locked_method.label()),
+                                        ),
+                                    cx,
+                                )
+                                .into_any_element()
+                            } else {
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .id("checkout-review-method")
+                                            .h(px(40.))
+                                            .px(px(12.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--input-border-default"))
+                                            .bg(color("--input-background-default"))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(500.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(method_label),
+                                            )
+                                            .child(icon(
+                                                "chevron_down",
+                                                16.,
+                                                "--interactive-icon-default",
+                                            ))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if let Some(m) =
+                                                    this.shop_checkout_review_modal.as_mut()
+                                                {
+                                                    m.picker_open = !m.picker_open;
+                                                }
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .when(modal.picker_open, |col| {
+                                        col.child(
+                                            div()
+                                                .id("checkout-method-list")
+                                                .max_h(px(160.))
+                                                .overflow_y_scroll()
+                                                .p(px(4.))
+                                                .rounded(px(8.))
+                                                .border_1()
+                                                .border_color(color("--border-subtle"))
+                                                .bg(color("--background-base-lower"))
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(2.))
+                                                .children(CheckoutMethod::ALL.iter().enumerate().map(
+                                                    |(i, &m_kind)| {
+                                                        let active = modal.method == m_kind;
+                                                        div()
+                                                            .id(SharedString::from(format!(
+                                                                "checkout-method-opt-{i}"
+                                                            )))
+                                                            .h(px(32.))
+                                                            .px(px(10.))
+                                                            .rounded(px(6.))
+                                                            .when(active, |d| {
+                                                                d.bg(color(
+                                                                    "--background-mod-strong",
+                                                                ))
+                                                            })
+                                                            .hover(|s| {
+                                                                s.bg(color(
+                                                                    "--background-mod-subtle",
+                                                                ))
+                                                            })
+                                                            .cursor_pointer()
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_between()
+                                                            .text_size(px(13.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(m_kind.label())
+                                                            .when(active, |d| {
+                                                                d.child(icon(
+                                                                    "select_check",
+                                                                    14.,
+                                                                    "--control-primary-background-default",
+                                                                ))
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _, cx| {
+                                                                    if let Some(m) = this
+                                                                        .shop_checkout_review_modal
+                                                                        .as_mut()
+                                                                    {
+                                                                        m.method = m_kind;
+                                                                        m.picker_open = false;
+                                                                    }
+                                                                    cx.notify();
+                                                                },
+                                                            ))
+                                                    },
+                                                )),
+                                        )
+                                    })
+                                    .when(modal.orb_cost.is_none(), |col| {
+                                        col.child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(color("--text-link"))
+                                                .child(intl_or(
+                                                    "BLu9EI",
+                                                    "Add a different payment method",
+                                                )),
+                                        )
+                                    })
+                                    .into_any_element()
+                            })
+                            // Module 886767 / 506426 (`currencyWrapper_eHAE5d`, 12px top margin):
+                            // Currency SingleSelect hidden when < 2 currencies, locked, or gift-card checked.
+                            .when(show_currency, |col| {
+                                let selected_cur = format_currency_option(&modal.currency);
+                                col.child(
+                                    div()
+                                        .mt(px(12.))
                                         .flex()
                                         .flex_col()
-                                        .gap(px(2.))
-                                        .children(CheckoutMethod::ALL.iter().enumerate().map(
-                                            |(i, &m_kind)| {
-                                                let active = modal.method == m_kind;
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-default"))
+                                                .child(dc_intl::t("/AAR02")),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("checkout-currency-select")
+                                                .h(px(38.))
+                                                .px(px(12.))
+                                                .rounded(px(8.))
+                                                .border_1()
+                                                .border_color(color("--input-border-default"))
+                                                .bg(color("--input-background-default"))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.))
+                                                        .text_color(color("--text-strong"))
+                                                        .child(SharedString::from(selected_cur)),
+                                                )
+                                                .child(icon(
+                                                    "chevron_down",
+                                                    16.,
+                                                    "--interactive-icon-default",
+                                                ))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    if let Some(m) =
+                                                        this.shop_checkout_review_modal.as_mut()
+                                                    {
+                                                        m.currency_picker_open =
+                                                            !m.currency_picker_open;
+                                                    }
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .when(modal.currency_picker_open, |cur_col| {
+                                            cur_col.child(
                                                 div()
-                                                    .id(SharedString::from(format!(
-                                                        "checkout-method-opt-{i}"
-                                                    )))
-                                                    .h(px(32.))
-                                                    .px(px(10.))
-                                                    .rounded(px(6.))
-                                                    .when(active, |d| {
-                                                        d.bg(color("--background-mod-strong"))
-                                                    })
-                                                    .hover(|s| {
-                                                        s.bg(color("--background-mod-subtle"))
-                                                    })
-                                                    .cursor_pointer()
+                                                    .id("checkout-currency-list")
+                                                    .max_h(px(150.))
+                                                    .overflow_y_scroll()
+                                                    .p(px(4.))
+                                                    .rounded(px(8.))
+                                                    .border_1()
+                                                    .border_color(color("--border-subtle"))
+                                                    .bg(color("--background-base-lower"))
                                                     .flex()
-                                                    .items_center()
-                                                    .justify_between()
-                                                    .text_size(px(13.))
-                                                    .text_color(color("--text-strong"))
-                                                    .child(m_kind.label())
-                                                    .when(active, |d| {
-                                                        d.child(icon(
-                                                            "select_check",
-                                                            14.,
-                                                            "--control-primary-background-default",
-                                                        ))
-                                                    })
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        if let Some(m) =
-                                                            this.shop_checkout_review_modal.as_mut()
-                                                        {
-                                                            m.method = m_kind;
-                                                            m.picker_open = false;
-                                                        }
-                                                        cx.notify();
-                                                    }))
-                                            },
-                                        )),
+                                                    .flex_col()
+                                                    .gap(px(2.))
+                                                    .children(
+                                                        modal
+                                                            .available_currencies
+                                                            .iter()
+                                                            .enumerate()
+                                                            .map(|(i, code)| {
+                                                                let active = modal
+                                                                    .currency
+                                                                    .eq_ignore_ascii_case(code);
+                                                                let code_owned = code.clone();
+                                                                div()
+                                                                    .id(SharedString::from(format!(
+                                                                        "checkout-currency-opt-{i}"
+                                                                    )))
+                                                                    .h(px(32.))
+                                                                    .px(px(10.))
+                                                                    .rounded(px(6.))
+                                                                    .when(active, |d| {
+                                                                        d.bg(color(
+                                                                            "--background-mod-strong",
+                                                                        ))
+                                                                    })
+                                                                    .hover(|s| {
+                                                                        s.bg(color(
+                                                                            "--background-mod-subtle",
+                                                                        ))
+                                                                    })
+                                                                    .cursor_pointer()
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .justify_between()
+                                                                    .text_size(px(13.))
+                                                                    .text_color(color(
+                                                                        "--text-strong",
+                                                                    ))
+                                                                    .child(SharedString::from(
+                                                                        format_currency_option(
+                                                                            code,
+                                                                        ),
+                                                                    ))
+                                                                    .when(active, |d| {
+                                                                        d.child(icon(
+                                                                            "select_check",
+                                                                            14.,
+                                                                            "--control-primary-background-default",
+                                                                        ))
+                                                                    })
+                                                                    .on_click(cx.listener(
+                                                                        move |this, _, _, cx| {
+                                                                            if let Some(m) = this
+                                                                                .shop_checkout_review_modal
+                                                                                .as_mut()
+                                                                            {
+                                                                                m.currency =
+                                                                                    code_owned
+                                                                                        .clone();
+                                                                                m.currency_picker_open =
+                                                                                    false;
+                                                                            }
+                                                                            cx.notify();
+                                                                        },
+                                                                    ))
+                                                            }),
+                                                    ),
+                                            )
+                                        }),
+                                )
+                            })
+                            // Module 886767 (`P` Pix link, `giftRedemptionLink_ESq30h`, 8px top margin):
+                            .when(show_pix, |col| {
+                                col.child(
+                                    div()
+                                        .id("checkout-pay-with-pix")
+                                        .mt(px(8.))
+                                        .cursor_pointer()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-link"))
+                                        .child(intl_or("JPRQ9L", "Pay with Pix"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(m) =
+                                                this.shop_checkout_review_modal.as_mut()
+                                            {
+                                                m.method = CheckoutMethod::Pix;
+                                            }
+                                            cx.notify();
+                                        })),
                                 )
                             }),
                     )
@@ -872,8 +1416,9 @@ impl Root {
                                         }))
                                     }),
                             ),
-                    ),
-            );
+                    )
+                    .into_any_element()
+            });
 
         Some(
             deferred(
@@ -903,6 +1448,10 @@ impl Root {
         arg: &str,
         cx: &mut Context<Self>,
     ) -> String {
+        let fiat_mode = matches!(
+            arg,
+            "express" | "gift" | "free" | "currency" | "locked" | "pix" | "auth-wait"
+        );
         self.shop_checkout_review_modal = Some(ShopCheckoutReviewModal {
             product_name: "Starlight Avatar Frame".to_owned(),
             price_label: "$5.99".to_owned(),
@@ -914,15 +1463,50 @@ impl Root {
                 CheckoutMethod::Card
             },
             orb_balance: 1200,
-            orb_cost: if arg == "express" || arg == "gift" || arg == "free" {
-                None
-            } else {
-                Some(2500)
-            },
-            picker_open: arg != "closed" && arg != "express" && arg != "gift" && arg != "free",
+            orb_cost: if fiat_mode { None } else { Some(2500) },
+            picker_open: !matches!(
+                arg,
+                "closed"
+                    | "express"
+                    | "gift"
+                    | "free"
+                    | "currency"
+                    | "locked"
+                    | "pix"
+                    | "order-error"
+                    | "auth-wait"
+            ),
             is_gift: arg == "gift",
             total_cents: if arg == "free" { Some(0) } else { Some(599) },
             is_loading: arg == "loading",
+            order_create_state: if arg == "order-error" {
+                OrderCreateState::Error
+            } else {
+                OrderCreateState::Idle
+            },
+            currency: if arg == "pix" {
+                "brl".to_owned()
+            } else {
+                "usd".to_owned()
+            },
+            available_currencies: if matches!(arg, "currency" | "pix") {
+                vec![
+                    "usd".to_owned(),
+                    "eur".to_owned(),
+                    "brl".to_owned(),
+                    "try".to_owned(),
+                ]
+            } else {
+                vec!["usd".to_owned()]
+            },
+            currency_picker_open: arg == "currency",
+            locked_subscription_method: (arg == "locked").then_some(CheckoutMethod::Card),
+            country: (arg == "pix").then(|| "BR".to_owned()),
+            gift_card_checked: false,
+            awaiting_auth: arg == "auth-wait",
+            auth_redirect_url: (arg == "auth-wait")
+                .then(|| "https://checkout.stripe.com/3ds-verify".to_owned()),
+            auth_error: None,
         });
         cx.notify();
         format!("shop-checkout-review: {arg}")
@@ -966,5 +1550,70 @@ mod tests {
         assert_eq!(review_cta_label(false, Some(0)), "Get Item");
         assert_eq!(review_cta_label(true, Some(599)), "Buy Gift");
         assert_eq!(review_cta_label(true, Some(0)), "Buy Gift");
+    }
+
+    #[test]
+    fn order_creation_860215_and_currency_886767_and_auth_891197() {
+        // 860215
+        assert!(is_order_creation_enabled(true, false, true, false));
+        assert!(is_order_creation_enabled(false, true, false, true));
+        assert!(!is_order_creation_enabled(false, true, true, true));
+        let req = create_order_request("sku_99", Some("ps_1"), Some(7), true, "order:99");
+        let crate::net::Request::Rest {
+            method,
+            route,
+            body,
+            ..
+        } = req
+        else {
+            panic!("expected Rest");
+        };
+        assert_eq!(method, reqwest::Method::POST);
+        assert_eq!(route, "/billing/orders");
+        assert_eq!(
+            body.as_ref().unwrap()["order_line_items"][0]["sku_id"],
+            "sku_99"
+        );
+        assert_eq!(
+            body.as_ref().unwrap()["application_facet"]["test_mode"],
+            true
+        );
+        assert!(!dc_intl::t("F8FvUy").is_empty());
+
+        // 886767: all 28 currency names + visibility rules + BR Pix
+        assert!(!dc_intl::t("/AAR02").is_empty());
+        for code in [
+            "usd", "eur", "gbp", "cad", "aud", "brl", "pln", "try", "jpy", "krw", "mxn", "ars",
+            "cop", "clp", "pen", "php", "idr", "vnd", "thb", "myr", "bgn", "czk", "dkk", "huf",
+            "ron", "sek", "rub", "nok",
+        ] {
+            let name = currency_display_name(code).expect("known currency");
+            assert!(!name.is_empty(), "empty currency name for {code}");
+            assert!(format_currency_option(code).starts_with(&code.to_ascii_uppercase()));
+        }
+        assert!(should_show_currency_select(
+            &["usd".into(), "eur".into()],
+            false,
+            false,
+            false
+        ));
+        assert!(!should_show_currency_select(
+            &["usd".into()],
+            false,
+            false,
+            false
+        ));
+        assert!(!should_show_currency_select(
+            &["usd".into(), "eur".into()],
+            true,
+            false,
+            false
+        ));
+        assert!(should_show_pix_cta(true, false, false, Some("BR"), false));
+        assert!(!should_show_pix_cta(true, false, false, Some("US"), false));
+        assert!(!should_show_pix_cta(true, false, false, Some("BR"), true));
+
+        // 891197
+        assert_eq!(dc_intl::t("eALkIR"), "Waiting for authentication...");
     }
 }

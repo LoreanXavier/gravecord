@@ -1,12 +1,21 @@
 //! Member Verification Preview Disabled / Join Request applicant status page (module 840336):
-//! Incomplete (`b`), Submitted (`P`), Rejected (`V`), and Withdraw/Discard confirmation dialog (`E`).
+//! Incomplete (`b`), Submitted (`P`), Rejected (`V`), Withdraw/Discard confirmation dialog (`E`),
+//! and moderator Reject Reason dialog (module 867276).
 
-use super::{Root, color, icon};
+use super::{Root, color, editor_style, icon};
+use crate::editor::Editor;
 use dc_intl::Arg;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, SharedString, deferred, div, prelude::*, px, rgba,
+    AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, SharedString, Window,
+    deferred, div, prelude::*, px, rgba,
 };
 use std::borrow::Cow;
+
+pub(crate) const ACTION_KEY_PREFIX: &str = "join-request-action:";
+/// Official `TextArea` maxLength in module 867276 (`103557.f`).
+pub(crate) const REJECT_REASON_MAX: usize = 160;
+/// `652215.t02.REQUEST_TO_JOIN_USER_INELIGIBLE` (checked in `624458.js` on `PATCH /guilds/{id}/requests/{req}`).
+pub(crate) const CODE_REQUEST_TO_JOIN_USER_INELIGIBLE: i64 = 150023;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -37,6 +46,41 @@ pub(crate) struct JoinRequestModal {
     pub rejection_reason: Option<String>,
     pub can_reapply: bool,
     pub confirm: Option<JoinConfirmKind>,
+    /// Interactive 160-char multiline `Editor` for module 867276 Reject Reason dialog.
+    pub reason_editor: Option<Entity<Editor>>,
+    /// True while `PATCH /guilds/{guild}/requests/{id}` is in flight.
+    pub submitting: bool,
+    /// Set when the API returns `REQUEST_TO_JOIN_USER_INELIGIBLE` (150023) -> `DxJj4e` / `rSAOk9` alert.
+    pub ineligible_alert: bool,
+}
+
+/// Detect `REQUEST_TO_JOIN_USER_INELIGIBLE` (150023) in a REST error reply (`624458.js`).
+pub(crate) fn is_join_request_ineligible(body: &serde_json::Value) -> bool {
+    let code = body["code"]
+        .as_i64()
+        .or_else(|| body["body"]["code"].as_i64());
+    code == Some(CODE_REQUEST_TO_JOIN_USER_INELIGIBLE)
+}
+
+/// Build the `PATCH /guilds/{guild}/requests/{id}` reject request (module 867276 / `624458.js`).
+pub(crate) fn reject_join_request(
+    guild_id: dc_state::Id,
+    request_id: &str,
+    reason: Option<String>,
+) -> crate::net::Request {
+    let trimmed = reason.and_then(|s| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_owned())
+    });
+    crate::net::Request::Rest {
+        key: Some(format!("{ACTION_KEY_PREFIX}{request_id}")),
+        method: reqwest::Method::PATCH,
+        route: format!("/guilds/{guild_id}/requests/{request_id}"),
+        body: Some(serde_json::json!({
+            "action": "REJECTED",
+            "rejection_reason": trimmed,
+        })),
+    }
 }
 
 /// Format bold-tagged `$b` runs as plain text segments for inline confirmation subtitles.
@@ -52,6 +96,81 @@ impl Root {
         self.join_request_modal.take().is_some()
     }
 
+    /// Open module 867276 Reject Reason modal with a live 160-char multiline `Editor`.
+    pub(crate) fn open_reject_reason_modal(
+        &mut self,
+        guild_id: dc_state::Id,
+        guild_name: String,
+        request_id: String,
+        initial_reason: Option<String>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let initial = initial_reason.clone().unwrap_or_default();
+        let editor = cx.new(|cx| {
+            let mut style = editor_style();
+            style.line_height = 20.;
+            let mut ed = Editor::new(style, cx);
+            ed.set_keeps_text(true);
+            ed.set_reports_all_edits(true);
+            ed.set_enter_inserts_newline(true);
+            ed.set_max_utf16(REJECT_REASON_MAX);
+            if !initial.is_empty() {
+                ed.set_text(&initial);
+            }
+            ed
+        });
+        if let Some(window) = window {
+            let handle = editor.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        }
+        self.join_request_modal = Some(JoinRequestModal {
+            guild_id: Some(guild_id),
+            guild_name: Some(guild_name),
+            status: JoinRequestStatus::Submitted,
+            rejection_reason: initial_reason,
+            can_reapply: true,
+            confirm: Some(JoinConfirmKind::RejectReason {
+                guild_id,
+                request_id,
+            }),
+            reason_editor: Some(editor),
+            submitting: false,
+            ineligible_alert: false,
+        });
+        cx.notify();
+    }
+
+    /// Handle REST response for `join-request-action:{id}` (`PATCH /guilds/{g}/requests/{id}`, module 867276 / `624458.js`).
+    pub(crate) fn join_request_action_answered(
+        &mut self,
+        _key: &str,
+        body: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let ok = body["ok"].as_bool() == Some(true)
+            || body.get("application_status").is_some()
+            || (body.get("code").is_none()
+                && body.get("error").is_none()
+                && body.get("message").is_none());
+        if ok {
+            self.join_request_modal = None;
+            cx.notify();
+            return;
+        }
+        // `123393.js`: onError shows critical toast `R0RpRX` ("Oops, something went wrong...").
+        self.show_app_toast(dc_intl::t("R0RpRX"), cx);
+        if is_join_request_ineligible(body) {
+            if let Some(modal) = self.join_request_modal.as_mut() {
+                modal.submitting = false;
+                modal.ineligible_alert = true;
+            }
+        } else {
+            self.join_request_modal = None;
+        }
+        cx.notify();
+    }
+
     pub(in crate::ui) fn join_request_modal_layer(
         &self,
         cx: &mut Context<Self>,
@@ -59,6 +178,80 @@ impl Root {
         let modal = self.join_request_modal.as_ref()?;
         let guild_name = modal.guild_name.as_deref();
         let can_reapply = modal.can_reapply;
+
+        // `624458.js` ineligible user alert modal (`DxJj4e` / `rSAOk9`).
+        if modal.ineligible_alert {
+            let alert = div()
+                .id("join-req-ineligible-modal")
+                .occlude()
+                .w(px(400.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .p(px(24.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .text_size(px(18.))
+                        .line_height(px(24.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("DxJj4e")),
+                )
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::t("rSAOk9")),
+                )
+                .child(
+                    div().flex().justify_end().mt(px(4.)).child(
+                        div()
+                            .id("join-req-ineligible-ok")
+                            .h(px(36.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .hover(|s| s.bg(color("--control-primary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--control-primary-text-default"))
+                            .child(dc_intl::t("BddRzS"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.join_request_modal = None;
+                                cx.notify();
+                            })),
+                    ),
+                );
+            return Some(
+                deferred(
+                    div()
+                        .id("join-req-ineligible-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b3))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.join_request_modal = None;
+                            cx.notify();
+                        }))
+                        .child(alert),
+                )
+                .with_priority(95)
+                .into_any_element(),
+            );
+        }
 
         // If a Withdraw / Discard / RejectReason confirmation is open, render official `E` / `867276` dialog above.
         if let Some(kind) = modal.confirm.as_ref() {
@@ -69,6 +262,51 @@ impl Root {
             {
                 let gid = *guild_id;
                 let rid = request_id.clone();
+                let submitting = modal.submitting;
+                let char_count = modal
+                    .reason_editor
+                    .as_ref()
+                    .map(|ed| ed.read(cx).text().encode_utf16().count())
+                    .unwrap_or_else(|| {
+                        modal
+                            .rejection_reason
+                            .as_deref()
+                            .map(|s| s.encode_utf16().count())
+                            .unwrap_or(0)
+                    });
+                let remaining = REJECT_REASON_MAX.saturating_sub(char_count);
+                let input_box = div()
+                    .min_h(px(84.))
+                    .p(px(10.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--input-border-default"))
+                    .bg(color("--input-background-default"))
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .gap(px(6.))
+                    .child(if let Some(ed) = modal.reason_editor.as_ref() {
+                        ed.clone().into_any_element()
+                    } else {
+                        div()
+                            .text_size(px(14.))
+                            .text_color(color("--text-muted"))
+                            .child(modal.rejection_reason.clone().unwrap_or_default())
+                            .into_any_element()
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .text_size(px(11.))
+                            .text_color(if remaining <= 20 {
+                                color("--text-feedback-critical")
+                            } else {
+                                color("--text-muted")
+                            })
+                            .child(format!("{char_count}/{REJECT_REASON_MAX}")),
+                    );
                 let reject_dialog = div()
                     .id("join-req-reject-modal")
                     .occlude()
@@ -90,18 +328,7 @@ impl Root {
                             .text_color(color("--text-strong"))
                             .child(dc_intl::t("mFP/qw")),
                     )
-                    .child(
-                        div()
-                            .h(px(84.))
-                            .p(px(12.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--input-border-default"))
-                            .bg(color("--input-background-default"))
-                            .text_size(px(14.))
-                            .text_color(color("--text-muted"))
-                            .child(modal.rejection_reason.clone().unwrap_or_default()),
-                    )
+                    .child(input_box)
                     .child(
                         div()
                             .flex()
@@ -135,10 +362,15 @@ impl Root {
                                     .px(px(16.))
                                     .rounded(px(8.))
                                     .bg(color("--control-critical-primary-background-default"))
-                                    .hover(|s| {
-                                        s.bg(color("--control-critical-primary-background-hover"))
+                                    .when(!submitting, |s| {
+                                        s.hover(|s| {
+                                            s.bg(color(
+                                                "--control-critical-primary-background-hover",
+                                            ))
+                                        })
+                                        .cursor_pointer()
                                     })
-                                    .cursor_pointer()
+                                    .when(submitting, |s| s.opacity(0.6))
                                     .flex()
                                     .items_center()
                                     .text_size(px(14.))
@@ -146,20 +378,21 @@ impl Root {
                                     .text_color(color("--white"))
                                     .child(dc_intl::t("hDtbsz"))
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        let reason = this
-                                            .join_request_modal
+                                        let Some(modal) = this.join_request_modal.as_mut() else {
+                                            return;
+                                        };
+                                        if modal.submitting {
+                                            return;
+                                        }
+                                        let reason = modal
+                                            .reason_editor
                                             .as_ref()
-                                            .and_then(|m| m.rejection_reason.clone());
-                                        let _ = this.requests.send(crate::net::Request::Rest {
-                                            key: Some(format!("join-request-action:{rid}")),
-                                            method: reqwest::Method::PATCH,
-                                            route: format!("/guilds/{gid}/requests/{rid}"),
-                                            body: Some(serde_json::json!({
-                                                "action": "REJECTED",
-                                                "rejection_reason": reason,
-                                            })),
-                                        });
-                                        this.join_request_modal = None;
+                                            .map(|ed| ed.read(cx).text().to_owned())
+                                            .or_else(|| modal.rejection_reason.clone());
+                                        modal.submitting = true;
+                                        let _ = this
+                                            .requests
+                                            .send(reject_join_request(gid, &rid, reason));
                                         cx.notify();
                                     })),
                             ),
@@ -658,19 +891,15 @@ impl Root {
             .font_weight(FontWeight(600.))
             .text_color(color("--white"))
             .child(dc_intl::t("hDtbsz"))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.join_request_modal = Some(JoinRequestModal {
-                    guild_id: Some(guild_id),
-                    guild_name: Some(guild_name.clone()),
-                    status: JoinRequestStatus::Submitted,
-                    rejection_reason: None,
-                    can_reapply: true,
-                    confirm: Some(JoinConfirmKind::RejectReason {
-                        guild_id,
-                        request_id: req_id_reject.clone(),
-                    }),
-                });
-                cx.notify();
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_reject_reason_modal(
+                    guild_id,
+                    guild_name.clone(),
+                    req_id_reject.clone(),
+                    None,
+                    Some(window),
+                    cx,
+                );
             }));
 
         Some(
@@ -726,14 +955,17 @@ impl Root {
                 None,
                 Some(JoinConfirmKind::Discard),
             ),
-            "reject-reason" => (
-                JoinRequestStatus::Submitted,
-                Some("Please read #rules and resubmit with your in-game tag.".to_owned()),
-                Some(JoinConfirmKind::RejectReason {
-                    guild_id: self.guild.unwrap_or(100),
-                    request_id: "req_demo_561446".to_owned(),
-                }),
-            ),
+            "reject-reason" => {
+                self.open_reject_reason_modal(
+                    self.guild.unwrap_or(100),
+                    "gravecord fixture".to_owned(),
+                    "req_demo_561446".to_owned(),
+                    Some("Please read #rules and resubmit with your in-game tag.".to_owned()),
+                    None,
+                    cx,
+                );
+                return format!("join-request: {arg}");
+            }
             _ => (
                 JoinRequestStatus::Rejected,
                 Some("Please include your GitHub handle in the introduction field.".to_owned()),
@@ -747,6 +979,9 @@ impl Root {
             rejection_reason: reason,
             can_reapply: true,
             confirm,
+            reason_editor: None,
+            submitting: false,
+            ineligible_alert: false,
         });
         cx.notify();
         format!("join-request: {arg}")
@@ -772,8 +1007,34 @@ mod tests {
 
     #[test]
     fn join_request_review_561446_and_reject_867276_keys_resolve() {
-        for key in ["BzjDQJ", "hDtbsz", "iXAna6", "cdPGbE", "mFP/qw", "ETE/oC"] {
+        for key in [
+            "BzjDQJ", "hDtbsz", "iXAna6", "cdPGbE", "mFP/qw", "ETE/oC", "R0RpRX", "DxJj4e",
+            "rSAOk9", "BddRzS",
+        ] {
             assert!(!dc_intl::t(key).is_empty(), "empty key {key}");
         }
+        let req = reject_join_request(42, "req-7", Some("  missing intro  ".to_owned()));
+        let crate::net::Request::Rest {
+            key,
+            method,
+            route,
+            body,
+        } = req
+        else {
+            panic!("expected Rest");
+        };
+        assert_eq!(key.as_deref(), Some("join-request-action:req-7"));
+        assert_eq!(method, reqwest::Method::PATCH);
+        assert_eq!(route, "/guilds/42/requests/req-7");
+        assert_eq!(
+            body.as_ref().and_then(|b| b["rejection_reason"].as_str()),
+            Some("missing intro")
+        );
+        assert!(is_join_request_ineligible(&serde_json::json!({
+            "code": CODE_REQUEST_TO_JOIN_USER_INELIGIBLE
+        })));
+        assert!(!is_join_request_ineligible(
+            &serde_json::json!({"ok": true})
+        ));
     }
 }

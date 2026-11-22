@@ -3,7 +3,7 @@
 //! `GET /guilds/{id}/templates` tells whether one exists. Without one: the title (at least 2 characters, `pg`), the
 //! description, and Generate Template (`POST` with name and description). With one: its `discord.new` link, Sync
 //! Template while it is dirty (`PUT /guilds/{id}/templates/{code}`), Delete Template behind a confirmation (`DELETE`)
-//! and Preview Template, which opens the template's page: the official preview dialog is not drawn.
+//! and Preview Template, which opens the in-app Guild Template preview modal (modules 584265 & 833397).
 //! Measured in `design/dom/settings/guild-template-darker-cozy.json`.
 
 use super::{Root, color};
@@ -345,7 +345,7 @@ impl Root {
                 let dirty = found["is_dirty"].as_bool() == Some(true);
                 let link = link_of(&code);
                 let copy_link = link.clone();
-                let preview = link.clone();
+                let preview_code = code.clone();
                 let sync_code = code.clone();
                 div()
                     .w_full()
@@ -433,7 +433,20 @@ impl Root {
                                                 cx.notify();
                                             })),
                                     )
-                                    .child(Self::template_button("server-template-preview", "Preview Template".to_owned(), false).on_click(cx.listener(move |_, _, _, cx| cx.open_url(&preview)))),
+                                    .child(
+                                        Self::template_button(
+                                            "server-template-preview",
+                                            "Preview Template".to_owned(),
+                                            false,
+                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_template_accept_modal(
+                                                &preview_code,
+                                                window,
+                                                cx,
+                                            );
+                                        })),
+                                    ),
                             ),
                     )
                     .into_any_element()

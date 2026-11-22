@@ -157,6 +157,8 @@ pub(super) struct State {
     pub variant_hover: Option<(String, usize)>,
     /// Module 814124: active Collectibles Shop Nagbar (`Some(nagbar)` between `<ShopHeader>` and scroller).
     pub nagbar: Option<ShopNagbar>,
+    /// Module 849134 (`SocialLayerStorefrontPopover`): Guild Sidebar Game Shop promo popover.
+    pub game_shop_popover: Option<game_shop::GameShopPopover>,
 }
 
 /// Visual gradient theme for `CollectiblesShopNagbar` (module 814124).

@@ -1602,11 +1602,12 @@ impl Root {
         // `variant: n ? "secondary" : "primary"` (module 873885): the waiting slide's Retry is the secondary button
         // (gpui takes one hover style per element, so the variant is chosen here).
         let primary = |id: &'static str,
-                       label: &'static str,
+                       label: &str,
                        secondary: bool,
                        run: fn(&mut Root, &mut Context<Root>)| {
             let family = if secondary { "secondary" } else { "primary" };
             let token = move |part: &str| color(&format!("--control-{family}-{part}"));
+            let label = label.to_owned();
             div()
                 .id(id)
                 .h(px(40.))
@@ -1795,10 +1796,20 @@ impl Root {
                 // The error slide (module 478474) offers "Try Again" with the window launch icon, back to the
                 // pre-connect slide (`gotoNext` of module 670404 from ERROR).
                 let label = match slide {
-                    Slide::Waiting => dc_intl::tr("Retry"),
+                    Slide::Waiting => dc_intl::format(
+                        "8Laby+",
+                        &[("popoutWindowIcon", dc_intl::Arg::Str("".into()))],
+                    )
+                    .trim()
+                    .to_owned(),
                     // `4X7vPo`: "Try Again " and the icon's hook.
-                    Slide::Error => dc_intl::tr("Try Again"),
-                    _ => dc_intl::tr("Continue"),
+                    Slide::Error => dc_intl::tr("Try Again").to_owned(),
+                    _ => dc_intl::format(
+                        "6623tt",
+                        &[("popoutWindowIcon", dc_intl::Arg::Str("".into()))],
+                    )
+                    .trim()
+                    .to_owned(),
                 };
                 let start: fn(&mut Root, &mut Context<Root>) = |this, cx| {
                     let Some(Dlg::Info(info)) = this.settings_extra.conn.as_mut() else {
@@ -1836,17 +1847,19 @@ impl Root {
                                     .line_height(px(18.))
                                     .text_color(color("--text-default"))
                                     .text_center()
-                                    .child(format!("You will be redirected to: {address}"))
+                                    .child(dc_intl::format(
+                                        "XhlYYn",
+                                        &[("redirectUrl", address.into())],
+                                    ))
                             }))
                         })
                         .into_any_element(),
-                    primary("settings-connect-start", label, waiting, start)
+                    primary("settings-connect-start", &label, waiting, start)
                         .w_full()
-                        // `launchIcon_N-Y7ZJ`: the 16px WindowLaunchIcon after the text's space, 1px up; `6623tt`
-                        // (Continue) and `8Laby+` (Retry) carry it too, in the button's text colour.
+                        // `launchIcon_N-Y7ZJ` (module 873885): 12px `WindowLaunchIcon` (`size="xs"`), 1px up.
                         .child(div().ml(px(4.)).mt(px(-1.)).child(mask_icon(
                             "access_launch",
-                            16.,
+                            12.,
                             if waiting {
                                 "--control-secondary-text-default"
                             } else {
@@ -1863,7 +1876,7 @@ impl Root {
             .paint_scale(pose.scale, gpui::point(0.5, 0.5))
             .occlude()
             .relative()
-            .w(px(410.))
+            .w(px(408.))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-subtle"))

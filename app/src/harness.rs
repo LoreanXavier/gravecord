@@ -2013,6 +2013,18 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_coupon_complete(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `game-shop-popover [sku|asset|video|close]`: Guild Sidebar Game Shop Promo Popover (849134).
+            ["game-shop-popover", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_game_shop_popover(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `member-bulk-bar [open|modal|close]`: Member Safety Bulk Selection Bar (856768).
+            ["member-bulk-bar", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_member_bulk_bar(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `friends-popout [open|all|pending|close]`: Title Bar Friends List Popout (824042).
             ["friends-popout", rest @ ..] => {
                 let arg = rest.join(" ");

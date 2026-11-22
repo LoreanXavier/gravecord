@@ -133,6 +133,98 @@ pub(in crate::ui) struct Page {
     pub background: Option<String>,
 }
 
+/// Module 849134 (`SocialLayerStorefrontPopover`): graphic source variants (`asset`, `video`, `sku`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum GameShopGraphicSource {
+    Asset {
+        url: String,
+    },
+    Video {
+        url: String,
+    },
+    Sku {
+        image_url: String,
+        background_image_url: Option<String>,
+        alt_text: &'static str,
+    },
+}
+
+/// Module 849134 (`SocialLayerStorefrontPopover`): Guild Sidebar Game Shop promo popover state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct GameShopPopover {
+    pub guild_id: dc_state::Id,
+    pub app_id: String,
+    pub title: String,
+    pub body: String,
+    pub action_label: String,
+    pub graphic: GameShopGraphicSource,
+}
+
+/// Module 849134 / 616740: build an application-drop Game Shop popover (`7PvvS9`, `9J4h1a`, `ulQB+t`, `RzWDqY`).
+/// Returns `None` if `asset_id` is empty (official `616740` guard).
+#[allow(dead_code)]
+pub(crate) fn application_announcement_popover(
+    guild_id: dc_state::Id,
+    app_id: &str,
+    app_name: &str,
+    asset_id: &str,
+    bg_asset_id: Option<&str>,
+) -> Option<GameShopPopover> {
+    if asset_id.trim().is_empty() {
+        return None;
+    }
+    Some(GameShopPopover {
+        guild_id,
+        app_id: app_id.to_owned(),
+        title: dc_intl::t("7PvvS9").to_owned(),
+        body: dc_intl::format(
+            "9J4h1a",
+            &[("applicationName", dc_intl::Arg::Str(app_name.into()))],
+        ),
+        action_label: dc_intl::t("RzWDqY").to_owned(),
+        graphic: GameShopGraphicSource::Sku {
+            image_url: asset_url(app_id, asset_id, 256),
+            background_image_url: bg_asset_id
+                .filter(|s| !s.trim().is_empty())
+                .map(|bg| asset_url(app_id, bg, 256)),
+            alt_text: dc_intl::t("ulQB+t"),
+        },
+    })
+}
+
+/// Module 849134 / 616740: build a Discord storefront announcement popover (`video` or `asset`).
+/// Returns `None` if both video and asset URLs are empty.
+#[allow(dead_code)]
+pub(crate) fn discord_announcement_popover(
+    guild_id: dc_state::Id,
+    app_id: &str,
+    title: &str,
+    body: &str,
+    cta: Option<&str>,
+    video_url: Option<&str>,
+    asset_url_opt: Option<&str>,
+) -> Option<GameShopPopover> {
+    let graphic = if let Some(v) = video_url.filter(|s| !s.trim().is_empty()) {
+        GameShopGraphicSource::Video { url: v.to_owned() }
+    } else {
+        let a = asset_url_opt.filter(|s| !s.trim().is_empty())?;
+        GameShopGraphicSource::Asset { url: a.to_owned() }
+    };
+    Some(GameShopPopover {
+        guild_id,
+        app_id: app_id.to_owned(),
+        title: title.to_owned(),
+        body: body.to_owned(),
+        action_label: cta
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| dc_intl::t("RzWDqY"))
+            .to_owned(),
+        graphic,
+    })
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(in crate::ui) struct Storefront {
     pub app: String,
@@ -1428,6 +1520,384 @@ impl Root {
         cx.notify();
         format!("coupon-complete: {mode}")
     }
+
+    /// Module 849134 / 616740 (`ia`): Guild Channel List `"Game Shop"` sidebar row (`vyaWs7`).
+    /// Shown when an active storefront promo popover targets the selected guild (or a storefront
+    /// app is linked to the guild).
+    pub(in crate::ui) fn guild_game_shop_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let guild_id = self.guild?;
+        let pop = self
+            .shop
+            .game_shop_popover
+            .as_ref()
+            .filter(|p| p.guild_id == guild_id);
+        let app_id = pop.map(|p| p.app_id.clone())?;
+        let app_for_hover = app_id.clone();
+        let has_new_badge = pop.is_some();
+        Some(
+            div()
+                .id(SharedString::from(format!("game-shop-{guild_id}")))
+                .mx(px(8.))
+                .h(px(34.))
+                .px(px(8.))
+                .rounded(px(8.))
+                .cursor_pointer()
+                .hover(|s| s.bg(color("--background-mod-subtle")))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon("shop", 18., "--interactive-icon-default"))
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .line_height(px(20.))
+                                .font_weight(gpui::FontWeight(500.))
+                                .text_color(color("--channels-default"))
+                                .child(dc_intl::t("vyaWs7")),
+                        ),
+                )
+                .when(has_new_badge, |row| {
+                    row.child(
+                        div()
+                            .px(px(6.))
+                            .h(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .flex()
+                            .items_center()
+                            .text_size(px(10.))
+                            .font_weight(gpui::FontWeight(700.))
+                            .text_color(color("--white"))
+                            .child("NEW"),
+                    )
+                })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _, _, _| {
+                        this.shop_request(
+                            &storefront_key(&app_for_hover),
+                            storefront_route(&app_for_hover),
+                        );
+                    }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.shop.game_shop_popover = None;
+                    this.shop.open = true;
+                    this.shop_open_game_shop(&app_id, 0, cx);
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// Module 849134 (`SocialLayerStorefrontPopover`): floating purple-gradient coachmark anchored
+    /// to the guild sidebar's `"Game Shop"` row (`size="lg"`, `gradientColor="purple"`, `NEW` badge,
+    /// `6/4` graphic preview `ulQB+t`, and `"Check it out"` `RzWDqY` CTA).
+    pub(in crate::ui) fn game_shop_popover_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let pop = self.shop.game_shop_popover.as_ref()?;
+        if self.guild.is_some_and(|g| g != pop.guild_id)
+            || self.member_view.is_some()
+            || self.join_request_modal.is_some()
+            || self.template_accept.is_some()
+            || self.shop_checkout_review_modal.is_some()
+            || self.shop.open
+        {
+            return None;
+        }
+        let app_id = pop.app_id.clone();
+        let app_prefetch = pop.app_id.clone();
+        let graphic_box: AnyElement = match &pop.graphic {
+            GameShopGraphicSource::Sku {
+                image_url,
+                background_image_url,
+                alt_text,
+            } => {
+                let fg_img = self.images.get(image_url).cloned();
+                let bg_img = background_image_url
+                    .as_ref()
+                    .and_then(|u| self.images.get(u))
+                    .cloned();
+                div()
+                    .w(px(288.))
+                    .h(px(192.))
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .relative()
+                    .bg(rgba(0x2b1d4cff))
+                    .border_1()
+                    .border_color(rgba(0xffffff24))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.))
+                    .when_some(bg_img, |b, img_data| {
+                        b.child(
+                            gpui::img(img_data)
+                                .absolute()
+                                .inset_0()
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Cover),
+                        )
+                    })
+                    .child(if let Some(img_data) = fg_img {
+                        gpui::img(img_data)
+                            .h_full()
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .into_any_element()
+                    } else {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(8.))
+                            .px(px(16.))
+                            .child(icon("shop", 36., "--white"))
+                            .child(
+                                div()
+                                    .text_center()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(rgba(0xffffffcc))
+                                    .child(*alt_text),
+                            )
+                            .into_any_element()
+                    })
+                    .into_any_element()
+            }
+            GameShopGraphicSource::Asset { url } => {
+                let asset_img = self.images.get(url).cloned();
+                div()
+                    .w(px(288.))
+                    .h(px(192.))
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .bg(rgba(0x2b1d4cff))
+                    .border_1()
+                    .border_color(rgba(0xffffff24))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(if let Some(img_data) = asset_img {
+                        gpui::img(img_data)
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .into_any_element()
+                    } else {
+                        icon("shop", 36., "--white").into_any_element()
+                    })
+                    .into_any_element()
+            }
+            GameShopGraphicSource::Video { .. } => div()
+                .w(px(288.))
+                .h(px(192.))
+                .rounded(px(8.))
+                .overflow_hidden()
+                .bg(rgba(0x1f1538ff))
+                .border_1()
+                .border_color(rgba(0xffffff24))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .size(px(44.))
+                        .rounded_full()
+                        .bg(rgba(0xffffff26))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("clips_play", 20., "--white")),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgba(0xffffffcc))
+                        .child(dc_intl::t("ulQB+t")),
+                )
+                .into_any_element(),
+        };
+
+        let card = div()
+            .id("game-shop-promo-popover")
+            .occlude()
+            .w(px(320.))
+            .p(px(16.))
+            .rounded(px(12.))
+            .bg(gpui::linear_gradient(
+                155.,
+                gpui::linear_color_stop(rgba(0x4b2a99ff), 0.),
+                gpui::linear_color_stop(rgba(0x1e1b2eff), 1.),
+            ))
+            .border_1()
+            .border_color(rgba(0xffffff2e))
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::hsla(0., 0., 0., 0.45),
+                offset: gpui::point(px(0.), px(10.)),
+                blur_radius: px(28.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .h(px(20.))
+                            .rounded(px(10.))
+                            .bg(rgba(0xffffff29))
+                            .flex()
+                            .items_center()
+                            .text_size(px(11.))
+                            .font_weight(gpui::FontWeight(700.))
+                            .text_color(color("--white"))
+                            .child("NEW"),
+                    )
+                    .child(
+                        div()
+                            .id("game-shop-popover-close")
+                            .size(px(24.))
+                            .rounded(px(6.))
+                            .hover(|s| s.bg(rgba(0xffffff22)))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 14., "--white"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.shop.game_shop_popover = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(graphic_box)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(gpui::FontWeight(700.))
+                            .text_color(color("--white"))
+                            .child(SharedString::from(pop.title.clone())),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(rgba(0xffffffd9))
+                            .child(SharedString::from(pop.body.clone())),
+                    ),
+            )
+            .child(
+                div()
+                    .id("game-shop-popover-cta")
+                    .w_full()
+                    .h(px(38.))
+                    .rounded(px(8.))
+                    .bg(color("--control-primary-background-default"))
+                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(gpui::FontWeight(600.))
+                    .text_color(color("--control-primary-text-default"))
+                    .child(SharedString::from(pop.action_label.clone()))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, _| {
+                            this.shop_request(
+                                &storefront_key(&app_prefetch),
+                                storefront_route(&app_prefetch),
+                            );
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.shop.game_shop_popover = None;
+                        this.shop.open = true;
+                        this.shop_open_game_shop(&app_id, 0, cx);
+                    })),
+            );
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("game-shop-popover-anchor")
+                    .absolute()
+                    .left(px(320.))
+                    .top(px(132.))
+                    .child(card),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture-harness opener for module 849134 (`game-shop-popover [sku|asset|video|close]`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_game_shop_popover(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let mode = arg.trim();
+        if mode == "close" {
+            self.shop.game_shop_popover = None;
+            cx.notify();
+            return "game-shop-popover: closed".to_owned();
+        }
+        let guild_id = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id))
+            .unwrap_or(100);
+        self.shop.game_shop_popover = match mode {
+            "video" => discord_announcement_popover(
+                guild_id,
+                "1346069614634864772",
+                "Season 2 Cosmetics Drop",
+                "Watch the trailer and grab limited-edition bundles directly in the Game Shop.",
+                None,
+                Some("https://cdn.discordapp.com/assets/game-shop-drop.webm"),
+                None,
+            ),
+            "asset" => discord_announcement_popover(
+                guild_id,
+                "1346069614634864772",
+                "New Hero Skins Available",
+                "Explore the latest drops for your squad in the Game Shop!",
+                None,
+                None,
+                Some("https://cdn.discordapp.com/app-assets/1346069614634864772/store/hero.webp"),
+            ),
+            _ => application_announcement_popover(
+                guild_id,
+                "1346069614634864772",
+                "Marvel Rivals",
+                "1346069614634864900",
+                Some("1346069614634864901"),
+            ),
+        };
+        cx.notify();
+        format!("game-shop-popover: {mode}")
+    }
 }
 
 #[cfg(test)]
@@ -1540,5 +2010,45 @@ mod tests {
             req,
             crate::net::Request::Rest { route, .. } if route == "/virtual-currency/skus/999/redeem"
         ));
+    }
+
+    #[test]
+    fn game_shop_popover_849134_builders_and_intl() {
+        for key in ["ulQB+t", "RzWDqY", "vyaWs7", "7PvvS9", "9J4h1a"] {
+            assert!(!dc_intl::t(key).is_empty(), "empty 849134 key {key}");
+        }
+        assert!(application_announcement_popover(1, "app9", "Marvel Rivals", "", None).is_none());
+        let sku_pop =
+            application_announcement_popover(1, "app9", "Marvel Rivals", "asset42", Some("bg7"))
+                .expect("sku popover");
+        assert_eq!(sku_pop.title, dc_intl::t("7PvvS9"));
+        assert!(sku_pop.body.contains("Marvel Rivals"));
+        assert_eq!(sku_pop.action_label, dc_intl::t("RzWDqY"));
+        assert!(matches!(
+            sku_pop.graphic,
+            GameShopGraphicSource::Sku {
+                ref image_url,
+                background_image_url: Some(ref bg),
+                alt_text,
+            } if image_url.ends_with("/app-assets/app9/store/asset42.webp?size=256")
+                && bg.ends_with("/app-assets/app9/store/bg7.webp?size=256")
+                && alt_text == dc_intl::t("ulQB+t")
+        ));
+        assert!(discord_announcement_popover(1, "app9", "t", "b", None, None, Some("")).is_none());
+        let vid_pop = discord_announcement_popover(
+            1,
+            "app9",
+            "Season Drop",
+            "Check out the new skins.",
+            None,
+            Some("https://cdn.example/drop.webm"),
+            Some("https://cdn.example/drop.png"),
+        )
+        .expect("video popover");
+        assert!(matches!(
+            vid_pop.graphic,
+            GameShopGraphicSource::Video { .. }
+        ));
+        assert_eq!(vid_pop.action_label, dc_intl::t("RzWDqY"));
     }
 }

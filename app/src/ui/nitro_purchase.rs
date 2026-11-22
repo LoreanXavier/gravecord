@@ -39,6 +39,8 @@ pub(crate) enum Step {
     Review,
     /// Purchase token email verification step (module 615456 `AWAITING_PURCHASE_TOKEN_AUTH`).
     AwaitingEmailAuth,
+    /// Payment 3DS / redirect authentication wait step (module 891197 / 615456 `AWAITING_AUTHENTICATION`).
+    AwaitingAuthentication,
     /// Purchase predicate error view (module 615456 `p8+qtU`).
     PredicateError,
     /// Post-purchase confirmation (module 231308 `G`, `B`, `b`; CSS 13792, 896554).
@@ -145,6 +147,8 @@ pub(crate) enum PaymentProviderStep {
     Przelewy24,
     Eps,
     BrowserHandoff,
+    /// Module 891197 / 671334: `AWAITING_AUTHENTICATION` sub-step (`eALkIR`).
+    AwaitingAuthentication,
 }
 
 /// Module 671334: client-side credit card form validation returning exact official intl errors.
@@ -193,6 +197,7 @@ pub(crate) fn payment_provider_copy(provider: PaymentProviderStep) -> (&'static 
         PaymentProviderStep::Przelewy24 => (dc_intl::t("w/qqKK"), dc_intl::t("De3b8t")),
         PaymentProviderStep::Eps => (dc_intl::t("sN3wrd"), dc_intl::t("dFyV07")),
         PaymentProviderStep::BrowserHandoff => (dc_intl::t("C4HYfy"), dc_intl::t("xfG7Jp")),
+        PaymentProviderStep::AwaitingAuthentication => (dc_intl::t("eALkIR"), dc_intl::t("eALkIR")),
     }
 }
 
@@ -1511,7 +1516,12 @@ impl Root {
             let active_idx: usize = match current_step {
                 Some(Step::Plans) => 0,
                 Some(Step::Checkout | Step::GiftSelect) => 1,
-                Some(Step::Payment | Step::AddPaymentCard | Step::AwaitingEmailAuth) => 2,
+                Some(
+                    Step::Payment
+                    | Step::AddPaymentCard
+                    | Step::AwaitingEmailAuth
+                    | Step::AwaitingAuthentication,
+                ) => 2,
                 _ => 3,
             };
             let steps: Vec<(usize, &str)> = if is_group {
@@ -1711,6 +1721,7 @@ impl Root {
             (Step::Payment, _) => self.payment_modal(window, cx),
             (Step::Review, _) => self.review_modal(window, cx),
             (Step::AwaitingEmailAuth, _) => self.awaiting_email_auth_modal(window, cx),
+            (Step::AwaitingAuthentication, _) => self.awaiting_authentication_modal(window, cx),
             (Step::PredicateError, _) => self.predicate_error_modal(window, cx),
             (Step::Confirm, _) => self.confirm_modal(window, cx),
             (Step::TierActivated, _) => self.tier_activated_modal(window, cx),
@@ -5548,6 +5559,23 @@ impl Root {
             true,
             body.into_any_element(),
             Some(footer),
+            window,
+            cx,
+        )
+    }
+
+    /// Payment 3DS / redirect authentication step (module 891197 `eALkIR`, 615456 `awaitingAuthenticationStep_l5U4US`).
+    fn awaiting_authentication_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let body = div().px(px(24.)).child(
+            super::shop::checkout_review::render_awaiting_authentication_body(None, None, cx),
+        );
+        self.purchase_shell(
+            "nitro-purchase-awaiting-auth",
+            460.,
+            dc_intl::t("QBnNHq"),
+            false,
+            body.into_any_element(),
+            None,
             window,
             cx,
         )

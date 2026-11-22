@@ -112,6 +112,27 @@ pub(super) fn ban_request(guild: Id, user: Id, seconds: i64, reason: &str, key: 
     }
 }
 
+/// Module 856768 / `778858.A.startBulkBan`: `POST /guilds/:g/bulk-ban/v2` with `user_ids`,
+/// `delete_message_seconds`, and `X-Audit-Log-Reason` header.
+pub(super) fn bulk_ban_request(
+    guild: Id,
+    user_ids: &[Id],
+    seconds: i64,
+    reason: &str,
+    key: String,
+) -> Request {
+    let ids: Vec<String> = user_ids.iter().map(Id::to_string).collect();
+    Request::Rest {
+        key: Some(key),
+        method: reqwest::Method::POST,
+        route: dc_http::with_audit_reason(&format!("/guilds/{guild}/bulk-ban/v2"), reason),
+        body: Some(json!({
+            "user_ids": ids,
+            "delete_message_seconds": seconds,
+        })),
+    }
+}
+
 /// `setCommunicationDisabledUntil`: `PATCH /guilds/:g/members/:u`; `until` is an ISO time, or `None` to lift it.
 pub(super) fn timeout_request(
     guild: Id,

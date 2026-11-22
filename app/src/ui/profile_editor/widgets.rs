@@ -880,13 +880,20 @@ impl Root {
         game_id: &str,
         cx: &mut Context<Self>,
     ) {
+        let mut removed = false;
         if let Some(open) = self.profile_editor.as_mut()
             && let Some(widget) = open.board_widgets.get_mut(widget_index)
             && let Some(games) = widget.data.games_mut()
         {
+            let before = games.len();
             games.retain(|existing| existing.game_id != game_id);
+            removed = games.len() < before;
         }
         self.profile_editor_sync_widgets_pending();
+        if removed {
+            // Module 858808: announce "Game removed" (`08HmMj`) when a game is removed from a widget.
+            self.show_app_toast(dc_intl::t("08HmMj"), cx);
+        }
         cx.notify();
     }
 
@@ -1336,10 +1343,64 @@ impl Root {
                     let gid_remove = entry.game_id.clone();
                     let gid_tag = entry.game_id.clone();
                     let active_tags = entry.tags.clone();
+                    let fav_group: gpui::SharedString =
+                        format!("fav-card-{index}-{}", entry.game_id).into();
+                    let remove_btn = self.with_tip(
+                        gpui::SharedString::from(format!(
+                            "fav-remove-tip-{index}-{}",
+                            entry.game_id
+                        )),
+                        crate::ui::tooltip::Tip::text(
+                            dc_intl::t("HUvyDc"),
+                            crate::ui::tooltip::Side::Top,
+                        ),
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "fav-remove-{index}-{}",
+                                entry.game_id
+                            )))
+                            .aria_label(dc_intl::t("HUvyDc"))
+                            .size(px(28.))
+                            .rounded(px(8.))
+                            .bg(palette.token("--control-overlay-secondary-background-default"))
+                            .hover(|style| {
+                                style
+                                    .bg(palette
+                                        .token("--control-overlay-secondary-background-hover"))
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .child(icon(
+                                "ob_trash",
+                                14.,
+                                "--control-overlay-secondary-text-default",
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.profile_editor_remove_game_from_widget(index, &gid_remove, cx);
+                            })),
+                        cx,
+                    );
+                    // Module 858808 (`removeGameButton_2y0Mhw`): overlay-secondary TrashIcon button
+                    // pinned top-right (8px) that reveals on card hover.
                     div()
+                        .relative()
+                        .group(fav_group.clone())
+                        .rounded(px(12.))
+                        .hover(|s| s.bg(palette.token("--background-mod-subtle")))
                         .flex()
                         .flex_col()
                         .gap(px(10.))
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(8.))
+                                .right(px(8.))
+                                .opacity(0.)
+                                .group_hover(fav_group, |s| s.opacity(1.))
+                                .child(remove_btn),
+                        )
                         .child(
                             div()
                                 .flex()
@@ -1375,6 +1436,7 @@ impl Root {
                                                 .flex()
                                                 .items_center()
                                                 .justify_between()
+                                                .pr(px(36.))
                                                 .child(
                                                     div()
                                                         .text_size(px(15.))
@@ -1382,38 +1444,6 @@ impl Root {
                                                         .font_weight(FontWeight(600.))
                                                         .text_color(palette.token("--text-strong"))
                                                         .child(resolved.name),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .id(gpui::SharedString::from(format!(
-                                                            "fav-remove-{index}-{}",
-                                                            entry.game_id
-                                                        )))
-                                                        .size(px(22.))
-                                                        .rounded(px(6.))
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .cursor_pointer()
-                                                        .hover(|style| {
-                                                            style.bg(palette.token(
-                                                                "--background-mod-subtle",
-                                                            ))
-                                                        })
-                                                        .child(icon(
-                                                            "modal_close",
-                                                            12.,
-                                                            "--text-muted",
-                                                        ))
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                this.profile_editor_remove_game_from_widget(
-                                                                    index,
-                                                                    &gid_remove,
-                                                                    cx,
-                                                                );
-                                                            },
-                                                        )),
                                                 ),
                                         )
                                         .child(
@@ -1531,6 +1561,49 @@ impl Root {
                                 .or(resolved.icon.as_deref())
                                 .and_then(|url| self.widget_image(url));
                             let gid = entry.game_id.clone();
+                            let cover_group: gpui::SharedString =
+                                format!("wg-cover-{index}-{}", entry.game_id).into();
+                            let remove_btn = self.with_tip(
+                                gpui::SharedString::from(format!(
+                                    "wg-rm-tip-{index}-{}",
+                                    entry.game_id
+                                )),
+                                crate::ui::tooltip::Tip::text(
+                                    dc_intl::t("HUvyDc"),
+                                    crate::ui::tooltip::Side::Top,
+                                ),
+                                div()
+                                    .id(gpui::SharedString::from(format!(
+                                        "wg-rm-{index}-{}",
+                                        entry.game_id
+                                    )))
+                                    .aria_label(dc_intl::t("HUvyDc"))
+                                    .size(px(24.))
+                                    .rounded(px(6.))
+                                    .bg(palette
+                                        .token("--control-overlay-secondary-background-default"))
+                                    .hover(|style| {
+                                        style.bg(palette
+                                            .token("--control-overlay-secondary-background-hover"))
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .child(icon(
+                                        "ob_trash",
+                                        12.,
+                                        "--control-overlay-secondary-text-default",
+                                    ))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.profile_editor_remove_game_from_widget(
+                                            index, &gid, cx,
+                                        );
+                                    })),
+                                cx,
+                            );
+                            // Module 858808 (`removeGameButton_I0Hvcn`): top-right 4px TrashIcon overlay
+                            // revealed on cover hover with "Remove Game" (`HUvyDc`) tooltip.
                             div()
                                 .w(px(72.))
                                 .flex()
@@ -1539,6 +1612,7 @@ impl Root {
                                 .child(
                                     div()
                                         .relative()
+                                        .group(cover_group.clone())
                                         .w(px(72.))
                                         .h(px(96.))
                                         .rounded(px(8.))
@@ -1555,26 +1629,12 @@ impl Root {
                                         }))
                                         .child(
                                             div()
-                                                .id(gpui::SharedString::from(format!(
-                                                    "wg-rm-{index}-{}",
-                                                    entry.game_id
-                                                )))
                                                 .absolute()
                                                 .top(px(4.))
                                                 .right(px(4.))
-                                                .size(px(20.))
-                                                .rounded(px(10.))
-                                                .bg(gpui::hsla(0., 0., 0., 0.65))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .cursor_pointer()
-                                                .child(icon("modal_close", 10., "--white"))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.profile_editor_remove_game_from_widget(
-                                                        index, &gid, cx,
-                                                    );
-                                                })),
+                                                .opacity(0.)
+                                                .group_hover(cover_group, |s| s.opacity(1.))
+                                                .child(remove_btn),
                                         ),
                                 )
                                 .child(
@@ -3234,5 +3294,11 @@ mod tests {
                 assert!(dc_intl::keys_of(widget.title()).next().is_some());
             }
         }
+    }
+
+    #[test]
+    fn widget_remove_game_858808_keys_resolve() {
+        assert_eq!(dc_intl::t("HUvyDc"), "Remove Game");
+        assert_eq!(dc_intl::t("08HmMj"), "Game removed");
     }
 }

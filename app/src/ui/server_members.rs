@@ -8,18 +8,19 @@
 //! The Join Method column's filter opens module 311567's `members-table-join-method-menu`: invite code search, All,
 //! the server's invites and the Other Join Methods view, which narrow the search by `source_invite_code` /
 //! `join_source_type` (module 406318's search state, sent by module 636496).
-//! Not drawn yet: the other column filters, row selection, Add Roles, Open Mod View and More Options.
+//! Not drawn yet: the other column filters, Add Roles, Open Mod View and More Options.
 
 use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, avatar_source, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
-use dc_state::{Id, User};
+use dc_state::{Id, User, permissions};
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, div,
-    img, prelude::*, px,
+    AnyElement, App, Context, Entity, FontWeight, IntoElement, SharedString, Subscription,
+    deferred, div, img, prelude::*, px, rgba,
 };
 use serde_json::Value;
+use std::collections::HashSet;
 
 pub(super) const MEMBERS_PREFIX: &str = "guild-members-search:";
 /// `GET /guilds/{id}/invites` for the join-method menu's invite rows.
@@ -47,6 +48,38 @@ pub(crate) struct MemberView {
     pub(super) guild: Id,
     pub(super) state: MembersState,
 }
+
+/// Module 856768 / 333179: Bulk Ban confirmation dialog state (`POST /guilds/{g}/bulk-ban/v2`).
+#[derive(Clone, Debug)]
+pub(super) struct BulkBanModal {
+    pub(super) delete_seconds: i64,
+    pub(super) reason_idx: usize,
+    pub(super) submitting: bool,
+}
+
+impl Default for BulkBanModal {
+    fn default() -> Self {
+        Self {
+            delete_seconds: 3600,
+            reason_idx: 0,
+            submitting: false,
+        }
+    }
+}
+
+/// Module 856768 / 333179: message history deletion options (default 1 hour = 3600s).
+const BULK_BAN_DELETE_OPTIONS: [(i64, &str); 7] = [
+    (0, "Don't Delete Any"),
+    (3600, "Previous Hour"),
+    (21600, "Previous 6 Hours"),
+    (43200, "Previous 12 Hours"),
+    (86400, "Previous 24 Hours"),
+    (259200, "Previous 3 Days"),
+    (604800, "Previous 7 Days"),
+];
+
+/// Module 856768 / 333179: bulk ban reason preset keys (`177354.js`).
+const BULK_BAN_REASONS: [&str; 4] = ["IrYX1y", "w4Ivys", "8l3W0y", "tamLhT"];
 
 pub(crate) struct MembersState {
     pub(super) search: Entity<Editor>,
@@ -77,6 +110,13 @@ pub(crate) struct MembersState {
     pub(super) current_page: u64,
     page_size_open: bool,
     loading: bool,
+    /// Module 856768 / 587426: selected actionable member IDs for bulk moderation actions.
+    pub(super) selected_user_ids: HashSet<Id>,
+    /// Module 856768 / 333179: active Bulk Ban confirmation modal.
+    pub(super) bulk_ban: Option<BulkBanModal>,
+    /// Capture-harness override allowing the bulk action bar to preview even on read-only fixtures.
+    #[allow(dead_code)]
+    pub(super) bulk_demo_override: bool,
     _events: Subscription,
     _join_events: Subscription,
 }
@@ -377,6 +417,9 @@ impl Root {
             current_page: 1,
             page_size_open: false,
             loading: false,
+            selected_user_ids: HashSet::new(),
+            bulk_ban: None,
+            bulk_demo_override: false,
             _events: events,
             _join_events: join_events,
         }
@@ -700,29 +743,42 @@ impl Root {
                 .text_color(color("--text-strong"))
                 .child(text)
         };
-        let box_mark = |ticked: bool| {
+        let box_mark = |ticked: bool, disabled: bool| {
             div()
                 .size(px(20.))
                 .rounded(px(4.))
                 .border_1()
                 .when(ticked, |this| {
-                    this.border_color(gpui::rgba(0x97979f1f))
+                    this.border_color(color("--control-primary-background-default"))
                         .bg(color("--control-primary-background-default"))
-                        .opacity(0.5)
                 })
                 .when(!ticked, |this| {
                     this.border_color(gpui::rgba(0x97979fa3))
                         .bg(gpui::rgba(0x00000014))
                 })
+                .when(disabled, |this| this.opacity(0.45))
                 .flex()
                 .items_center()
                 .justify_center()
                 .when(ticked, |this| {
-                    this.child(icon("checkbox_check", 18., "--white"))
+                    this.child(icon("checkbox_check", 16., "--white"))
                 })
         };
+        let owner = self.stores.guild(guild).and_then(|g| g.owner_id);
+        let me = self.stores.me().map(|u| u.id);
         let page_size = state.page_size.max(1) as usize;
         let skip = (state.current_page.saturating_sub(1) as usize).saturating_mul(page_size);
+        let visible_actionable: Vec<Id> = members
+            .iter()
+            .skip(skip)
+            .take(page_size)
+            .filter_map(|entry| entry["member"]["user"]["id"].as_str()?.parse::<Id>().ok())
+            .filter(|uid| Some(*uid) != owner && Some(*uid) != me)
+            .collect();
+        let all_visible_selected = !visible_actionable.is_empty()
+            && visible_actionable
+                .iter()
+                .all(|uid| state.selected_user_ids.contains(uid));
         let rows: Vec<AnyElement> = members
             .iter()
             .skip(skip)
@@ -734,6 +790,9 @@ impl Root {
                     .as_ref()
                     .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
                 let id = member["user"]["id"].as_str().unwrap_or_default();
+                let uid_opt = id.parse::<Id>().ok();
+                let actionable = uid_opt.is_some_and(|uid| Some(uid) != owner && Some(uid) != me);
+                let checked = uid_opt.is_some_and(|uid| state.selected_user_ids.contains(&uid));
                 let joined_server = member["joined_at"]
                     .as_str()
                     .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
@@ -769,7 +828,26 @@ impl Root {
                     .hover(|style| style.bg(color("--background-mod-subtle")))
                     .flex()
                     .items_center()
-                    .child(column(36.).child(box_mark(false)))
+                    .child(
+                        column(36.).child(
+                            div()
+                                .id(SharedString::from(format!("server-member-chk-{id}")))
+                                .when(actionable, |d| d.cursor_pointer())
+                                .child(box_mark(checked, !actionable))
+                                .when(actionable, |d| {
+                                    d.on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(uid) = uid_opt
+                                            && let Some(st) = this.members_state_mut()
+                                        {
+                                            if !st.selected_user_ids.remove(&uid) {
+                                                st.selected_user_ids.insert(uid);
+                                            }
+                                            cx.notify();
+                                        }
+                                    }))
+                                }),
+                        ),
+                    )
                     .child(
                         div()
                             .w(px(195.))
@@ -929,7 +1007,35 @@ impl Root {
                                             .h(px(60.))
                                             .flex()
                                             .items_center()
-                                            .child(column(36.).child(box_mark(true)))
+                                            .child(
+                                                column(36.).child(
+                                                    div()
+                                                        .id("server-members-select-all")
+                                                        .when(!visible_actionable.is_empty(), |d| {
+                                                            d.cursor_pointer()
+                                                        })
+                                                        .child(box_mark(
+                                                            all_visible_selected,
+                                                            visible_actionable.is_empty(),
+                                                        ))
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            let Some(st) = this.members_state_mut()
+                                                            else {
+                                                                return;
+                                                            };
+                                                            if all_visible_selected {
+                                                                for uid in &visible_actionable {
+                                                                    st.selected_user_ids.remove(uid);
+                                                                }
+                                                            } else {
+                                                                for uid in &visible_actionable {
+                                                                    st.selected_user_ids.insert(*uid);
+                                                                }
+                                                            }
+                                                            cx.notify();
+                                                        })),
+                                                ),
+                                            )
                                             .child(column(195.).child(head("Name")))
                                             .child(column(100.).child(head("Member Since")))
                                             .child(column(100.).child(head("Joined Discord")))
@@ -957,7 +1063,373 @@ impl Root {
                             }),
                     ),
             )
+            .children(self.member_safety_bulk_bar(guild, cx))
+            .children(self.member_safety_bulk_ban_modal(guild, cx))
             .into_any_element()
+    }
+
+    /// Module 856768 / `134413.vA`: bulk moderation requires `MANAGE_GUILD` + `BAN_MEMBERS` (or `ADMINISTRATOR`).
+    pub(super) fn can_bulk_ban(&self, guild: Id) -> bool {
+        let Some((known, me)) = self.stores.guild(guild).zip(self.stores.me()) else {
+            return false;
+        };
+        let perms = permissions::guild_permissions(known, me);
+        let is_admin = perms & permissions::ADMINISTRATOR == permissions::ADMINISTRATOR;
+        let has_manage_and_ban = perms & permissions::MANAGE_GUILD == permissions::MANAGE_GUILD
+            && perms & permissions::BAN_MEMBERS == permissions::BAN_MEMBERS;
+        is_admin || has_manage_and_ban
+    }
+
+    /// Module 856768 (`MemberSafetyPageActionNotice`): floating 660px bottom notice bar when ≥1
+    /// member is selected and user has bulk-ban permission (`TstoSZ`, `yW6ZdE`, `2a50fF`).
+    pub(super) fn member_safety_bulk_bar(
+        &self,
+        guild: Id,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let state = self.members_state()?;
+        let count = state.selected_user_ids.len();
+        if count == 0 || (!state.bulk_demo_override && !self.can_bulk_ban(guild)) {
+            return None;
+        }
+        let selected_label = dc_intl::format("TstoSZ", &[("count", (count as f64).into())]);
+        let bar = div()
+            .id("member-safety-bulk-bar")
+            .occlude()
+            .w(px(660.))
+            .py(px(10.))
+            .pl(px(16.))
+            .pr(px(10.))
+            .rounded(px(8.))
+            .bg(color("--background-surface-highest"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::hsla(0., 0., 0., 0.35),
+                offset: gpui::point(px(0.), px(8.)),
+                blur_radius: px(24.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(12.))
+            .child(
+                div()
+                    .max_w(px(432.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon("members_nav", 22., "--text-muted"))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-default"))
+                            .child(SharedString::from(selected_label)),
+                    )
+                    .child(
+                        div()
+                            .id("member-safety-bulk-clear")
+                            .cursor_pointer()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-link"))
+                            .child(dc_intl::t("yW6ZdE"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(st) = this.members_state_mut() {
+                                    st.selected_user_ids.clear();
+                                    st.bulk_ban = None;
+                                    st.bulk_demo_override = false;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("member-safety-bulk-ban")
+                    .h(px(36.))
+                    .px(px(14.))
+                    .rounded(px(8.))
+                    .bg(color("--control-critical-primary-background-default"))
+                    .hover(|s| s.bg(color("--control-critical-primary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon("oauth_entry_hammer", 18., "--white"))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("2a50fF")),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(st) = this.members_state_mut() {
+                            st.bulk_ban = Some(BulkBanModal::default());
+                        }
+                        cx.notify();
+                    })),
+            );
+        Some(
+            deferred(
+                div()
+                    .id("member-safety-bulk-bar-anchor")
+                    .absolute()
+                    .bottom(px(20.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(bar),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    /// Module 856768 / 333179: Bulk Ban confirm modal (`HVJexf`, `POST /guilds/{g}/bulk-ban/v2`).
+    pub(super) fn member_safety_bulk_ban_modal(
+        &self,
+        guild: Id,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let state = self.members_state()?;
+        let modal = state.bulk_ban.as_ref()?;
+        let count = state.selected_user_ids.len();
+        if count == 0 {
+            return None;
+        }
+        let title = dc_intl::format("HVJexf", &[("count", (count as f64).into())]);
+        let delete_seconds = modal.delete_seconds;
+        let reason_idx = modal.reason_idx;
+        let submitting = modal.submitting;
+        let card = div()
+            .id("member-safety-bulk-ban-modal")
+            .occlude()
+            .w(px(440.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .p(px(24.))
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .line_height(px(24.))
+                    .font_weight(FontWeight(700.))
+                    .text_color(color("--text-strong"))
+                    .child(SharedString::from(title)),
+            )
+            .child(div().flex().flex_col().gap(px(6.)).children(
+                BULK_BAN_REASONS.iter().enumerate().map(|(idx, &key)| {
+                    let active = idx == reason_idx;
+                    div()
+                        .id(SharedString::from(format!("bulk-ban-reason-{idx}")))
+                        .px(px(12.))
+                        .py(px(8.))
+                        .rounded(px(8.))
+                        .bg(if active {
+                            color("--background-mod-strong")
+                        } else {
+                            color("--background-base-lower")
+                        })
+                        .border_1()
+                        .border_color(if active {
+                            color("--control-primary-background-default")
+                        } else {
+                            color("--border-subtle")
+                        })
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .text_size(px(14.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t(key))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(m) =
+                                this.members_state_mut().and_then(|s| s.bulk_ban.as_mut())
+                            {
+                                m.reason_idx = idx;
+                            }
+                            cx.notify();
+                        }))
+                }),
+            ))
+            .child(
+                div().flex().flex_wrap().gap(px(6.)).children(
+                    BULK_BAN_DELETE_OPTIONS
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, &(secs, label))| {
+                            let active = secs == delete_seconds;
+                            div()
+                                .id(SharedString::from(format!("bulk-ban-del-{idx}")))
+                                .px(px(10.))
+                                .h(px(28.))
+                                .rounded(px(6.))
+                                .bg(if active {
+                                    color("--control-primary-background-default")
+                                } else {
+                                    color("--background-mod-subtle")
+                                })
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(if active {
+                                    color("--white")
+                                } else {
+                                    color("--text-default")
+                                })
+                                .child(label)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(m) =
+                                        this.members_state_mut().and_then(|s| s.bulk_ban.as_mut())
+                                    {
+                                        m.delete_seconds = secs;
+                                    }
+                                    cx.notify();
+                                }))
+                        }),
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .mt(px(4.))
+                    .child(
+                        div()
+                            .id("bulk-ban-cancel")
+                            .h(px(36.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--control-secondary-background-default"))
+                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--control-secondary-text-default"))
+                            .child(dc_intl::t("ETE/oC"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(st) = this.members_state_mut() {
+                                    st.bulk_ban = None;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("bulk-ban-confirm")
+                            .h(px(36.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--control-critical-primary-background-default"))
+                            .when(!submitting, |d| {
+                                d.hover(|s| {
+                                    s.bg(color("--control-critical-primary-background-hover"))
+                                })
+                                .cursor_pointer()
+                            })
+                            .when(submitting, |d| d.opacity(0.6))
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("5MBJ5M"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let Some(st) = this.members_state_mut() else {
+                                    return;
+                                };
+                                let ids: Vec<Id> = st.selected_user_ids.iter().copied().collect();
+                                let reason_key = BULK_BAN_REASONS
+                                    .get(reason_idx)
+                                    .copied()
+                                    .unwrap_or("IrYX1y");
+                                let reason = dc_intl::t(reason_key);
+                                st.selected_user_ids.clear();
+                                st.bulk_ban = None;
+                                st.bulk_demo_override = false;
+                                let _ =
+                                    this.requests.send(super::member_actions::bulk_ban_request(
+                                        guild,
+                                        &ids,
+                                        delete_seconds,
+                                        reason,
+                                        format!("guild-bulk-ban:{guild}"),
+                                    ));
+                                cx.notify();
+                            })),
+                    ),
+            );
+        Some(
+            deferred(
+                div()
+                    .id("member-safety-bulk-ban-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(st) = this.members_state_mut() {
+                            st.bulk_ban = None;
+                        }
+                        cx.notify();
+                    }))
+                    .child(card),
+            )
+            .with_priority(95)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture-harness helper for module 856768 (`member-bulk-bar [open|modal|close]`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_member_bulk_bar(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let mode = arg.trim();
+        if mode == "close" {
+            if let Some(st) = self.members_state_mut() {
+                st.selected_user_ids.clear();
+                st.bulk_ban = None;
+                st.bulk_demo_override = false;
+            }
+            cx.notify();
+            return "member-bulk-bar: closed".to_owned();
+        }
+        let guild = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id))
+            .unwrap_or(100);
+        self.open_member_view(guild, cx);
+        if let Some(st) = self.members_state_mut() {
+            st.bulk_demo_override = true;
+            st.selected_user_ids.insert(10001);
+            st.selected_user_ids.insert(10002);
+            st.selected_user_ids.insert(10003);
+            st.bulk_ban = (mode == "modal").then(BulkBanModal::default);
+        }
+        cx.notify();
+        format!("member-bulk-bar: {mode}")
     }
 }
 
@@ -2245,5 +2717,41 @@ mod tests {
         for key in ["jNwLu2", "RNDnQ/", "ZTNur7", "GZpwME"] {
             assert!(!dc_intl::t(key).is_empty(), "missing intl key {key}");
         }
+    }
+
+    #[test]
+    fn member_safety_bulk_bar_856768_request_and_intl() {
+        for key in ["TstoSZ", "yW6ZdE", "2a50fF", "HVJexf", "ETE/oC", "5MBJ5M"] {
+            assert!(dc_intl::has_key(key), "missing 856768 key {key}");
+        }
+        let one = dc_intl::format("TstoSZ", &[("count", 1.0.into())]);
+        let many = dc_intl::format("TstoSZ", &[("count", 3.0.into())]);
+        assert!(one.contains("1"), "got {one}");
+        assert!(many.contains("3"), "got {many}");
+        let ban_title = dc_intl::format("HVJexf", &[("count", 3.0.into())]);
+        assert!(ban_title.contains("3"), "got {ban_title}");
+        let req = super::super::member_actions::bulk_ban_request(
+            77,
+            &[101, 202],
+            3600,
+            "Raid accounts",
+            "bulk:77".to_owned(),
+        );
+        let Request::Rest {
+            method,
+            route,
+            body,
+            ..
+        } = req
+        else {
+            panic!("expected Rest");
+        };
+        assert_eq!(method, reqwest::Method::POST);
+        assert!(route.starts_with("/guilds/77/bulk-ban/v2"));
+        assert_eq!(body.as_ref().unwrap()["delete_message_seconds"], 3600);
+        assert_eq!(
+            body.as_ref().unwrap()["user_ids"],
+            serde_json::json!(["101", "202"])
+        );
     }
 }

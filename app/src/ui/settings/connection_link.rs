@@ -185,6 +185,7 @@ impl Root {
             }
             (Slide::Connect, None) => {
                 tracing::warn!("connection link: the authorize address has no state");
+                info.go_error(None);
             }
             // Retry on the waiting slide has no `onWaitingForConnection`: the expected state stays.
             _ => {}
