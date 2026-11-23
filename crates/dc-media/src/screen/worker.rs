@@ -137,7 +137,16 @@ impl Worker {
             }
         }
         if settings.audio {
-            match AudioCapture::start(audio) {
+            let pid = match settings.source {
+                super::SourceId::Window(handle) => super::enumerate::window_pid(handle),
+                super::SourceId::Display(_) => None,
+            };
+            let own = std::process::id();
+            let started = match soundshare_target(pid, own) {
+                Some(pid) => AudioCapture::start_process(pid, audio),
+                None => AudioCapture::start(audio),
+            };
+            match started {
                 Ok(capture) => worker._audio = Some(capture),
                 Err(_) => {
                     worker
@@ -239,6 +248,13 @@ impl Drop for Worker {
             let _ = thread.join();
         }
     }
+}
+
+/// Whose sound a share sends: for a shared window, only its process tree (the official `soundshareId`, the pid of
+/// the window's process from `getPidFromDesktopSource` in module 253400, used when it is above 1, module 754712);
+/// for a display (pid 1 in the official client) everything but this process tree. `None` means the whole machine.
+fn soundshare_target(window_pid: Option<u32>, own: u32) -> Option<u32> {
+    window_pid.filter(|&pid| pid > 1 && pid != own)
 }
 
 fn micros(origin: Instant) -> u64 {
@@ -716,6 +732,16 @@ mod tests {
                 take
             })
             .count()
+    }
+
+    #[test]
+    fn soundshare_follows_the_shared_window_s_process() {
+        assert_eq!(soundshare_target(Some(4242), 100), Some(4242));
+        // A display share, a window without a known process, or one of ours: the whole machine minus this process.
+        assert_eq!(soundshare_target(None, 100), None);
+        assert_eq!(soundshare_target(Some(0), 100), None);
+        assert_eq!(soundshare_target(Some(1), 100), None);
+        assert_eq!(soundshare_target(Some(100), 100), None);
     }
 
     #[test]

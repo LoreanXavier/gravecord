@@ -302,6 +302,16 @@ fn icon_pixels(icon: HICON) -> Option<Picture> {
     }
 }
 
+/// The process that owns a window, `None` when the handle is gone.
+pub(super) fn window_pid(hwnd: u64) -> Option<u32> {
+    let mut pid = 0u32;
+    // SAFETY: a read-only query; a stale handle leaves `pid` at 0.
+    unsafe {
+        GetWindowThreadProcessId(HWND(hwnd as usize as _), Some(&mut pid));
+    }
+    (pid != 0).then_some(pid)
+}
+
 /// Size of what a share of this window sends, the same crop the capture takes.
 pub(super) fn window_dimensions(hwnd: u64) -> Option<(u32, u32)> {
     let window = HWND(hwnd as usize as _);

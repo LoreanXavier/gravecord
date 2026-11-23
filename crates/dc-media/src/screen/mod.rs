@@ -2,7 +2,8 @@
 //! and a worker that captures one and produces H.264 plus optional system audio. No network, no Discord.
 //!
 //! Capture is Windows Graphics Capture over the `windows` crate, the encoder is Media Foundation hardware H.264 with
-//! openh264 as the fallback, and the audio is WASAPI process loopback that excludes this process tree. Other platforms
+//! openh264 as the fallback, and the audio is WASAPI process loopback: the shared window's process tree only, or for a
+//! display everything but this process tree. Other platforms
 //! compile to stubs that return [`crate::Error::Unsupported`].
 
 pub mod audio;
