@@ -19,6 +19,8 @@ pub(crate) fn ticks() -> Result<mpsc::Receiver<()>, &'static str> {
     std::thread::Builder::new()
         .name("dc-voice-clock".into())
         .spawn(move || {
+            // Windows slows a throttled thread while the app is in the background (a game in front after Alt-Tab).
+            let _unthrottled = dc_media::throttle::Guard::acquire();
             let mut next = Instant::now() + TICK;
             loop {
                 let now = Instant::now();
@@ -64,6 +66,7 @@ impl PacerClock {
         std::thread::Builder::new()
             .name("dc-voice-pacer".into())
             .spawn(move || {
+                let _unthrottled = dc_media::throttle::Guard::acquire();
                 let mut state = thread.state.lock().unwrap_or_else(|e| e.into_inner());
                 loop {
                     if state.1 {
@@ -164,6 +167,7 @@ where
     std::thread::Builder::new()
         .name(name.into())
         .spawn(move || {
+            let _unthrottled = dc_media::throttle::Guard::acquire();
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

@@ -140,6 +140,7 @@ mod native {
             let thread = std::thread::Builder::new()
                 .name("dc-media-audio".into())
                 .spawn(move || {
+                    let _unthrottled = crate::throttle::Guard::acquire();
                     let mut callback = callback;
                     if run(&thread_stop, &mut callback, started, mode).is_err() {
                         thread_stop.store(true, Ordering::Release);

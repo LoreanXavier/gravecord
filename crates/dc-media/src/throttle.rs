@@ -217,9 +217,126 @@ impl Drop for Guard {
     }
 }
 
+/// Process priority levels as the official client names them (`E6` in module 731854), with its values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessPriority {
+    Low = 2,
+    BelowNormal = 1,
+    Normal = 0,
+    AboveNormal = -1,
+    High = -2,
+}
+
+/// What the official client asks for while a voice or stream connection exists: the `2026-02-process-boost-on-voice`
+/// experiment's default (module 921747), passed to `connect`; module 31595 sets it when a connection is added and
+/// puts the process back to `NORMAL` when the last one goes.
+pub const CONNECTED_PRIORITY: ProcessPriority = ProcessPriority::High;
+
+/// The Windows priority class for a level; the native utilities call `SetPriorityClass` with it.
+#[cfg(windows)]
+fn priority_class(
+    level: ProcessPriority,
+) -> windows::Win32::System::Threading::PROCESS_CREATION_FLAGS {
+    use windows::Win32::System::Threading::*;
+    match level {
+        ProcessPriority::Low => IDLE_PRIORITY_CLASS,
+        ProcessPriority::BelowNormal => BELOW_NORMAL_PRIORITY_CLASS,
+        ProcessPriority::Normal => NORMAL_PRIORITY_CLASS,
+        ProcessPriority::AboveNormal => ABOVE_NORMAL_PRIORITY_CLASS,
+        ProcessPriority::High => HIGH_PRIORITY_CLASS,
+    }
+}
+
+#[cfg(windows)]
+fn set_process_priority(level: ProcessPriority) {
+    use windows::Win32::System::Threading::{GetCurrentProcess, SetPriorityClass};
+    // SAFETY: the current-process pseudo-handle is always valid; a refused change leaves the class as it was.
+    if let Err(error) = unsafe { SetPriorityClass(GetCurrentProcess(), priority_class(level)) } {
+        tracing::debug!(?level, "process priority unchanged: {error}");
+    }
+}
+
+static CONNECTIONS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+/// Holds the process at [`CONNECTED_PRIORITY`] while any voice or stream connection is alive: the first one raises
+/// it, dropping the last one sets it back to `NORMAL`, as the official media engine does.
+pub struct ConnectedPriority(());
+
+impl ConnectedPriority {
+    pub fn acquire() -> Self {
+        let mut count = CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
+        if *count == 0 {
+            #[cfg(windows)]
+            set_process_priority(CONNECTED_PRIORITY);
+        }
+        *count += 1;
+        Self(())
+    }
+
+    /// Connections holding the boost now.
+    pub fn held() -> usize {
+        *CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl Drop for ConnectedPriority {
+    fn drop(&mut self) {
+        let mut count = CONNECTIONS.lock().unwrap_or_else(|e| e.into_inner());
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            #[cfg(windows)]
+            set_process_priority(ProcessPriority::Normal);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn levels_map_to_the_windows_classes_of_the_same_name() {
+        use windows::Win32::System::Threading::*;
+        assert_eq!(ProcessPriority::High as i32, -2);
+        assert_eq!(ProcessPriority::Normal as i32, 0);
+        assert_eq!(priority_class(ProcessPriority::High), HIGH_PRIORITY_CLASS);
+        assert_eq!(
+            priority_class(ProcessPriority::AboveNormal),
+            ABOVE_NORMAL_PRIORITY_CLASS
+        );
+        assert_eq!(
+            priority_class(ProcessPriority::Normal),
+            NORMAL_PRIORITY_CLASS
+        );
+        assert_eq!(
+            priority_class(ProcessPriority::BelowNormal),
+            BELOW_NORMAL_PRIORITY_CLASS
+        );
+        assert_eq!(priority_class(ProcessPriority::Low), IDLE_PRIORITY_CLASS);
+        assert_eq!(CONNECTED_PRIORITY, ProcessPriority::High);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_process_is_high_while_a_connection_is_held_and_normal_after() {
+        use windows::Win32::System::Threading::{GetCurrentProcess, GetPriorityClass};
+        // SAFETY: a plain query of the current process.
+        let class = || unsafe { GetPriorityClass(GetCurrentProcess()) };
+        let first = ConnectedPriority::acquire();
+        let second = ConnectedPriority::acquire();
+        assert_eq!(class(), HIGH_PRIORITY_CLASS_VALUE);
+        drop(first);
+        assert_eq!(class(), HIGH_PRIORITY_CLASS_VALUE);
+        drop(second);
+        assert_eq!(ConnectedPriority::held(), 0);
+        assert_eq!(class(), NORMAL_PRIORITY_CLASS_VALUE);
+    }
+
+    #[cfg(windows)]
+    const HIGH_PRIORITY_CLASS_VALUE: u32 = 0x80;
+    #[cfg(windows)]
+    const NORMAL_PRIORITY_CLASS_VALUE: u32 = 0x20;
 
     #[test]
     fn guards_nest_and_release() {

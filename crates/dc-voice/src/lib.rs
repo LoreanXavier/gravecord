@@ -521,6 +521,8 @@ pub fn connect(
     };
     let session_events = events.clone();
     let task = tokio::spawn(async move {
+        // The official media engine raises the process priority while any connection exists.
+        let _priority = dc_media::throttle::ConnectedPriority::acquire();
         let result = clock::isolated("dc-voice", move || {
             session::run(credentials, state, session_events, shared)
         })
@@ -547,6 +549,7 @@ pub fn connect_stream(
     let hub = hub.clone();
     let session_events = events.clone();
     let task = tokio::spawn(async move {
+        let _priority = dc_media::throttle::ConnectedPriority::acquire();
         let result = clock::isolated("dc-voice-stream", move || {
             stream_conn::run(join, source, state, hub, session_events)
         })
