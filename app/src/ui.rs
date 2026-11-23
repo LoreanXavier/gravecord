@@ -7784,6 +7784,7 @@ impl Root {
             "bell" | "bell_muted" => self.notify_open,
             "pin" => self.pins_open.is_some(),
             "threads" => self.thread_browser.is_some(),
+            "members" => self.show_members,
             _ => false,
         };
         // `hasUnreadPins`: the pin button carries the `unread` badge at the bottom (module 287074 -> 58736): an 8px
@@ -8359,28 +8360,31 @@ impl Root {
                             })),
                         )
                         .child(
-                            self.header_stop(div().id("toggle-members"), "toggle-members", cx)
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.show_members = !this.show_members;
-                                    cx.notify();
-                                }))
-                                .child(
-                                    div()
-                                        .size(px(32.))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(icon(
-                                            "members",
-                                            20.,
-                                            if self.show_members {
-                                                "--text-strong"
-                                            } else {
-                                                "--text-muted"
-                                            },
-                                        )),
+                            // Show Member List / Hide Member List (`gxChDx` / `Axvx8c`), selected while the list
+                            // is shown, as the other header tools.
+                            self.header_stop(
+                                self.with_tip(
+                                    "toggle-members",
+                                    Tip::text(
+                                        if self.show_members {
+                                            dc_intl::t("Axvx8c")
+                                        } else {
+                                            dc_intl::t("gxChDx")
+                                        },
+                                        Side::Bottom,
+                                    ),
+                                    tool("members"),
+                                    cx,
                                 ),
+                                "toggle-members",
+                                cx,
+                            )
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.tip = None;
+                                this.show_members = !this.show_members;
+                                cx.notify();
+                            })),
                         )
                         // A forum post's header ends its tools with More (`forum-fixture-posted`, aria "More"):
                         // the thread's own menu.
