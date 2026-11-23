@@ -10186,7 +10186,14 @@ impl Root {
                 let lead = compact.then(|| self.compact_lead_of(message));
                 self.compact_lead_used.set(false);
                 let content = match (editing, upload) {
-                    (Some(editor), _) => self.edit_box(editor).into_any_element(),
+                    // The edit box takes the place of the content only: the attachments, embeds and reactions
+                    // stay under it (module 891522 passes `childrenAccessories` whether or not the message is
+                    // being edited).
+                    (Some(editor), _) => div()
+                        .child(self.edit_box(editor))
+                        .children(self.accessories(message, cx))
+                        .children((!is_starter).then(|| self.reactions(message, cx)).flatten())
+                        .into_any_element(),
                     (None, _) if missing_starter => self.starter_missing_line(message),
                     (None, Some(upload)) => upload,
                     (None, None) => div()
