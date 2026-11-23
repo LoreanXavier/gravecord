@@ -6315,8 +6315,11 @@ impl Root {
                         )
                         .child(div().flex_1())
                         // Create Channel inside this category, for those who may manage channels.
+                        // Module 616740 (`no`): the button sits in the "Create Channel" tooltip (`fUYU+j`).
                         .when(self.can_manage_channels(), |this| {
-                            this.child(
+                            this.child(self.with_tip(
+                                format!("category-add-{category}"),
+                                Tip::text(dc_intl::t("fUYU+j"), Side::Top),
                                 div()
                                     .id(SharedString::from(format!("category-add-{category}")))
                                     .cursor_pointer()
@@ -6333,6 +6336,7 @@ impl Root {
                                     })
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         cx.stop_propagation();
+                                        this.tip = None;
                                         this.open_create_channel(false, window, cx);
                                         if let Some(form) = this.create_channel.as_mut() {
                                             form.parent = Some(category);
@@ -6344,7 +6348,8 @@ impl Root {
                                             .size(px(16.))
                                             .flex_none(),
                                     ),
-                            )
+                                cx,
+                            ))
                         }),
                 )
                 // These are your channels! (`tutorial_tips`).
