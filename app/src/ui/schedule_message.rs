@@ -52,6 +52,10 @@ pub(super) struct Modal {
     channel: Id,
     /// When editing an existing scheduled message's timestamp (module 23395 `SCHEDULED_MESSAGE_EDIT_MODAL_KEY`).
     pub(super) editing_id: Option<Id>,
+    /// Opened from the poll editor (module 50518 `ex`): Set Schedule hands the time back to the poll form.
+    for_poll: bool,
+    /// The poll already has a time, so the secondary button reads Clear (`onClear` in module 896455).
+    clearable: bool,
     /// True while the `PATCH /users/@me/scheduled-messages/{id}` update request is in flight.
     submitting: bool,
     /// The picked date and time, local.
@@ -66,12 +70,31 @@ pub(super) struct Modal {
     _events: Subscription,
 }
 
+/// `POST /users/@me/scheduled-messages` for a poll (`sendPollMessage` with `scheduledTimestamp`, module 180662): the
+/// create body of `pr` carrying the poll under `poll`, with no content.
+pub(super) fn scheduled_poll_body(channel: Id, timestamp: &str, poll: &Value) -> Value {
+    let mut body = scheduled::create_body(scheduled::CreateRequest {
+        channel,
+        content: "",
+        scheduled_timestamp: timestamp,
+        flags: None,
+        message_reference: None,
+        allowed_mentions: None,
+        sticker_ids: &[],
+        attachments: Vec::new(),
+    });
+    body["poll"] = poll.clone();
+    body
+}
+
 /// The message a create request holds, for the composer to take it back when the server refuses.
 struct Pending {
     channel: Id,
     content: String,
     /// The time the message was scheduled for (the draft's), for the toast.
     when: String,
+    /// A scheduled poll: the composer's own scheduled draft stays.
+    poll: bool,
 }
 
 #[derive(Default)]
@@ -245,6 +268,8 @@ impl Root {
         self.schedule.modal = Some(Modal {
             channel,
             editing_id: None,
+            for_poll: false,
+            clearable: false,
             submitting: false,
             value,
             open: None,
@@ -256,6 +281,20 @@ impl Root {
         });
         window.focus(&self.focus, cx);
         cx.notify();
+    }
+
+    /// Module 50518 `ex`: the modal for the poll editor, on the poll's time (with Clear) or the default time.
+    pub(super) fn open_poll_schedule_modal(
+        &mut self,
+        value: Option<NaiveDateTime>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_schedule_modal(value, window, cx);
+        if let Some(modal) = self.schedule.modal.as_mut() {
+            modal.for_poll = true;
+            modal.clearable = value.is_some();
+        }
     }
 
     /// Module 23395 (`SCHEDULED_MESSAGE_EDIT_MODAL_KEY`): opens Update Scheduled Message pre-filled with the
@@ -293,6 +332,8 @@ impl Root {
         self.schedule.modal = Some(Modal {
             channel: 0,
             editing_id: Some(id),
+            for_poll: false,
+            clearable: false,
             submitting: false,
             value,
             open: None,
@@ -422,6 +463,19 @@ impl Root {
             }
             let iso = times::iso_utc(value);
             self.update_scheduled_message(id, Some(&iso), None, cx);
+            return;
+        }
+        if self
+            .schedule
+            .modal
+            .as_ref()
+            .is_some_and(|modal| modal.for_poll)
+        {
+            if let Some(form) = self.poll.as_mut() {
+                form.scheduled = Some(value);
+            }
+            self.schedule.modal = None;
+            cx.notify();
             return;
         }
         self.change_schedule(channel, value, cx);
@@ -626,6 +680,7 @@ impl Root {
             },
             |this, _, cx| this.set_schedule(cx),
         );
+        let clearable = modal.clearable;
         let spec = modal::Spec {
             id: if is_update {
                 "update-scheduled-message"
@@ -640,11 +695,19 @@ impl Root {
             subtitle: None,
             body: Some(body),
             buttons: vec![
+                // `onClear` replaces Cancel with Clear (`VkKicb`), which clears the time and closes.
                 modal::button(
                     "schedule-cancel",
-                    dc_intl::t("ETE/oC"),
+                    if clearable {
+                        dc_intl::t("VkKicb")
+                    } else {
+                        dc_intl::t("ETE/oC")
+                    },
                     Tone::Secondary,
-                    |this, _, _| {
+                    move |this, _, _| {
+                        if clearable && let Some(form) = this.poll.as_mut() {
+                            form.scheduled = None;
+                        }
                         this.schedule.modal = None;
                     },
                 ),
@@ -823,6 +886,7 @@ impl Root {
             channel,
             content: content.clone(),
             when: timestamp.clone(),
+            poll: false,
         });
         let _ = self.requests.send(Request::Schedule {
             channel,
@@ -831,6 +895,22 @@ impl Root {
             reply,
             sticker_ids,
             timestamp,
+        });
+    }
+
+    /// Posts a poll for later: the create request answers under the same key as a scheduled message.
+    pub(super) fn send_scheduled_poll(&mut self, channel: Id, timestamp: String, poll: &Value) {
+        self.schedule.pending = Some(Pending {
+            channel,
+            content: String::new(),
+            when: timestamp.clone(),
+            poll: true,
+        });
+        let _ = self.requests.send(Request::Rest {
+            key: Some(CREATE_KEY.to_owned()),
+            method: reqwest::Method::POST,
+            route: "/users/@me/scheduled-messages".to_owned(),
+            body: Some(scheduled_poll_body(channel, &timestamp, poll)),
         });
     }
 
@@ -1138,7 +1218,9 @@ impl Root {
             let created = scheduled::ScheduledMessageSend::from_value(&body["body"]);
             if let Some(pending) = pending.as_ref() {
                 // Creating takes the draft away: the bar goes, the next message is sent at once again.
-                self.stores.scheduled_drafts.clear(pending.channel);
+                if !pending.poll {
+                    self.stores.scheduled_drafts.clear(pending.channel);
+                }
                 if let Some(when) = scheduled::to_local(&pending.when) {
                     self.show_toast(scheduled::scheduled_toast(when), ToastIcon::Clock, cx);
                 }
@@ -1271,5 +1353,19 @@ mod limit_tests {
         assert_eq!(dc_intl::t("VZANAD"), "Update");
         assert_eq!(dc_intl::t("SBcdAN"), "Edit schedule time");
         assert_eq!(dc_intl::t("JLba51"), "Send now");
+    }
+}
+
+#[cfg(test)]
+mod poll_tests {
+    /// Module 180662 sends a scheduled poll as a scheduled message: empty content, the time, and the poll under `poll`.
+    #[test]
+    fn a_scheduled_poll_is_a_scheduled_message_with_the_poll() {
+        let poll = serde_json::json!({ "question": { "text": "Lunch?" }, "duration": 24 });
+        let body = super::scheduled_poll_body(42, "2026-11-24T12:00:00.000Z", &poll);
+        assert_eq!(body["channel_id"], "42");
+        assert_eq!(body["content"], "");
+        assert_eq!(body["scheduled_timestamp"], "2026-11-24T12:00:00.000Z");
+        assert_eq!(body["poll"], poll);
     }
 }

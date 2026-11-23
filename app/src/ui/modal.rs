@@ -49,6 +49,13 @@ impl Button {
         self.icon = Some((name, size, token));
         self
     }
+
+    /// The icon-only button (`text: undefined`, `fullWidth: false`): a 40px square with just the icon.
+    pub(super) fn icon_only(mut self, name: &'static str, size: f32, token: &'static str) -> Self {
+        self.label = SharedString::default();
+        self.icon = Some((name, size, token));
+        self
+    }
 }
 
 pub(super) fn button(
@@ -245,6 +252,7 @@ fn footer_button_shape(
         })
     });
     let focus = spec_focus.clone();
+    let icon_only = spec.icon.is_some() && spec.label.is_empty();
     super::keyboard::ring_when_focused(div().id(spec.id))
         // A button of a dialog is a tab stop; Enter and Space click it (gpui turns them into the click below).
         .when(spec_focus.is_none() && !disabled, |button| {
@@ -255,11 +263,14 @@ fn footer_button_shape(
             |button, focus| button.track_focus(&focus),
         )
         .when(fill, |this| this.flex_1())
-        .when(!fill, |this| this.px(px(if small { 11. } else { 15. })))
+        .when(icon_only, |this| this.w(px(40.)).flex_none())
+        .when(!fill && !icon_only, |this| {
+            this.px(px(if small { 11. } else { 15. }))
+        })
         .when(small, |this| this.min_w(px(60.)))
         // A button beside an action bar input is at least 100 wide (Cancel in Filters; Okay of "We can't hear you!",
         // measured on the live dialog).
-        .when(!small && !fill, |this| this.min_w(px(100.)))
+        .when(!small && !fill && !icon_only, |this| this.min_w(px(100.)))
         .h(px(if small { 32. } else { 40. }))
         .rounded(px(8.))
         .border_1()
@@ -286,14 +297,16 @@ fn footer_button_shape(
         })
         .rule(motion::Rule::Button)
         .when_some(spec.icon, |this, (name, size, token)| {
-            this.gap(px(4.)).child(
+            this.when(!icon_only, |this| this.gap(px(4.))).child(
                 gpui::svg()
                     .path(format!("icons/{name}.svg"))
                     .size(px(size))
                     .text_color(color(token)),
             )
         })
-        .when(!loading, |this| this.child(spec.label.clone()))
+        .when(!loading && !icon_only, |this| {
+            this.child(spec.label.clone())
+        })
         .when(loading, |this| {
             // `.buttonChildren.loading{opacity:0}` keeps the label's width; the dots sit centred over it
             // (`.spinnerWrapper` absolute, 100% size; `.spinner-md{transform:scale(.9)}`).

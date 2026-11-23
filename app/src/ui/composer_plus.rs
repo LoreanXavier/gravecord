@@ -55,6 +55,8 @@ pub(super) struct PollForm {
     pub multiple: bool,
     pub duration_open: bool,
     pub error: Option<&'static str>,
+    /// The time the poll is scheduled for (module 50518 `Z`), local; `None` posts it at once.
+    pub scheduled: Option<chrono::NaiveDateTime>,
     _events: Vec<Subscription>,
 }
 
@@ -141,7 +143,10 @@ impl Root {
         events: &mut Vec<Subscription>,
     ) -> Entity<Editor> {
         let editor = cx.new(|cx| {
-            let mut editor = Editor::new(super::editor_style(), cx);
+            // Module 95477's input: no inline padding, the placeholder in `--input-placeholder-text-default`.
+            let mut style = super::editor_style();
+            style.placeholder = super::hsla("--input-placeholder-text-default");
+            let mut editor = Editor::new(style, cx);
             editor.set_placeholder_message("Type your answer");
             editor
         });
@@ -213,6 +218,7 @@ impl Root {
             multiple: false,
             duration_open: false,
             error: None,
+            scheduled: None,
             _events: events,
         });
         cx.notify();
@@ -250,6 +256,7 @@ impl Root {
             .map(|editor| editor.read(cx).text().to_owned())
             .collect();
         let question = form.question.read(cx).text().to_owned();
+        let scheduled = form.scheduled;
         let Some(body) = poll_body(&question, &answers, form.multiple, form.duration) else {
             form.error = Some(if question.trim().is_empty() {
                 "Please enter a question."
@@ -259,12 +266,18 @@ impl Root {
             cx.notify();
             return;
         };
-        let _ = self.requests.send(Request::Rest {
-            key: None,
-            method: reqwest::Method::POST,
-            route: format!("/channels/{channel}/messages"),
-            body: Some(body),
-        });
+        // `sendPollMessage` with `scheduledTimestamp` (module 180662) creates a scheduled message instead.
+        if let Some(when) = scheduled {
+            let timestamp = super::guild_events::schedule::iso_utc(when);
+            self.send_scheduled_poll(channel, timestamp, &body["poll"]);
+        } else {
+            let _ = self.requests.send(Request::Rest {
+                key: None,
+                method: reqwest::Method::POST,
+                route: format!("/channels/{channel}/messages"),
+                body: Some(body),
+            });
+        }
         self.poll = None;
         cx.notify();
     }
@@ -522,25 +535,47 @@ impl Root {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(px(4.))
                     .h(px(40.))
-                    .px(px(12.))
+                    .px(px(4.))
                     .rounded(px(8.))
                     .border_1()
-                    .border_color(color("--border-muted"))
+                    .border_color(color("--input-border-default"))
                     .bg(color("--input-background-default"))
-                    .child(icon("pm_emoji", 24., "--interactive-icon-default"))
+                    // The leading slot: 40x30 with a transparent 1px border, the 18px `reaction` icon 14px from its
+                    // left edge, `--interactive-text-default` and `--interactive-text-active` on hover.
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("poll-reaction-{index}")))
+                            .w(px(40.))
+                            .h(px(30.))
+                            .flex_none()
+                            .pl(px(13.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(gpui::transparent_black())
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .text_color(color("--interactive-text-default"))
+                            .hover(|this| this.text_color(color("--interactive-text-active")))
+                            .child(gpui::svg().path("icons/reaction.svg").size(px(18.))),
+                    )
                     .child(div().flex_1().min_w(px(0.)).child(editor.clone()))
                     .when(many, |this| {
                         this.child(
                             div()
                                 .id(SharedString::from(format!("poll-remove-{index}")))
                                 .size(px(32.))
+                                .flex_none()
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(gpui::transparent_black())
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .cursor_pointer()
-                                .child(icon("ob_trash", 20., "--interactive-icon-default"))
+                                .child(icon("ob_trash", 16., "--icon-strong"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.remove_poll_answer(index, cx)
                                 })),
@@ -673,18 +708,26 @@ impl Root {
                             .relative()
                             .child(self.anchor_probe("poll-duration"))
                             .h(px(40.))
-                            .px(px(12.))
+                            .pl(px(12.))
                             .rounded(px(8.))
                             .border_1()
-                            .border_color(color("--border-muted"))
+                            .border_color(color("--input-border-default"))
                             .bg(color("--input-background-default"))
                             .flex()
                             .items_center()
                             .cursor_pointer()
                             .text_size(px(16.))
-                            .text_color(color("--text-default"))
+                            .text_color(color("--text-strong"))
                             .child(div().flex_1().child(duration_label))
-                            .child(icon("chevron_down", 16., "--interactive-icon-default"))
+                            // `.chevronButton_vWC4bk`: 36px wide with `padding-inline: 0 var(--space-4)`.
+                            .child(
+                                div()
+                                    .w(px(36.))
+                                    .pr(px(4.))
+                                    .flex()
+                                    .justify_center()
+                                    .child(icon("select_chevron", 20., "--icon-strong")),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(form) = this.poll.as_mut() {
                                     form.duration_open = !form.duration_open;
@@ -734,12 +777,30 @@ impl Root {
             title: dc_intl::tr("Create a Poll").into(),
             subtitle: None,
             body: Some(body.into_any_element()),
-            buttons: vec![modal::button(
-                "poll-post",
-                dc_intl::tr("Post"),
-                Tone::Primary,
-                |this, _, cx| this.post_poll(cx),
-            )],
+            // Module 50518 `ek`: the schedule button (`CalendarPlusIcon`, `rlf0tb`) is always there, `active` once a
+            // time is set, ahead of Post.
+            buttons: vec![
+                modal::button(
+                    "poll-schedule",
+                    dc_intl::t("rlf0tb"),
+                    if form.scheduled.is_some() {
+                        Tone::Active
+                    } else {
+                        Tone::Secondary
+                    },
+                    |this, window, cx| {
+                        let value = this.poll.as_ref().and_then(|form| form.scheduled);
+                        this.open_poll_schedule_modal(value, window, cx);
+                    },
+                )
+                .icon_only("cp_schedule", 20., "--control-secondary-text-default"),
+                modal::button(
+                    "poll-post",
+                    dc_intl::tr("Post"),
+                    Tone::Primary,
+                    |this, _, cx| this.post_poll(cx),
+                ),
+            ],
             close: Box::new(|this, _, _| this.poll = None),
         };
         Some(modal::render_with_input(spec, checkbox, cx))
