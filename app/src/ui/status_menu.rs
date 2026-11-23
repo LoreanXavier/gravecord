@@ -811,8 +811,10 @@ impl Root {
                 .hover(|style| style.bg(color("--interactive-background-hover")))
                 .child(icon(status_menu_icon(key), 10., status_tint(key)))
                 .child(
+                    // The text may shrink: the chevron keeps its place at the row's end on every row.
                     div()
                         .flex_1()
+                        .min_w_0()
                         .flex()
                         .flex_col()
                         .child(
