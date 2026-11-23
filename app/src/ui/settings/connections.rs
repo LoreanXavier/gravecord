@@ -468,34 +468,14 @@ impl Root {
             .flex()
             .flex_col()
             .gap(px(8.))
+            // Module 158935 `TQ`: the section's label only (`t+aGse`); the grid follows it, with no link beside it.
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child(dc_intl::tr("Add a new connection")),
-                    )
-                    .child(
-                        div()
-                            .id("connections-view-more")
-                            .cursor_pointer()
-                            .text_size(px(13.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-link"))
-                            .hover(|s| s.underline())
-                            .child(dc_intl::t("syl6HS"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.settings_extra.conn =
-                                    Some(super::connection_dialogs::Dlg::AddConnection);
-                                cx.notify();
-                            })),
-                    ),
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child(dc_intl::tr("Add a new connection")),
             )
             // `.connectionsContainer_yX-kzH`: wrapping, 8px gaps, 8px above and below.
             .child(
