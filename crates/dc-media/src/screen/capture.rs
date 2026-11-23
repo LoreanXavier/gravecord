@@ -886,5 +886,14 @@ mod tests {
             .expect("a first frame");
         // The first frame comes at once, not when a second one arrives.
         assert!(delivered.duration_since(at) < Duration::from_millis(100));
+        // The read-back of each following frame, copy and map included, against a 60 fps frame interval.
+        let mut waits: Vec<Duration> = (0..30)
+            .filter_map(|_| receive.recv_timeout(Duration::from_secs(2)).ok())
+            .map(|(at, delivered)| delivered.duration_since(at))
+            .collect();
+        waits.sort();
+        if let (Some(median), Some(worst)) = (waits.get(waits.len() / 2), waits.last()) {
+            println!("{} frames: read-back median {median:?}, worst {worst:?}", waits.len());
+        }
     }
 }

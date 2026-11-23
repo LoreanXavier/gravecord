@@ -306,6 +306,7 @@ fn drain_pending_outputs(
     video: &mut impl FnMut(EncodedFrame),
     last_encoded: &mut Instant,
     stats: &mut ShareStats,
+    last_out: &mut Option<Duration>,
 ) -> Result<()> {
     while let Some(out) = encoder.take_pending_output()? {
         state.encoded.fetch_add(1, Ordering::AcqRel);
@@ -315,11 +316,19 @@ fn drain_pending_outputs(
         video(EncodedFrame {
             data: out.data,
             keyframe: out.keyframe,
-            timestamp: rtp_ticks(out.at),
+            timestamp: rtp_ticks(out_time(out.at, last_out)),
         });
         *last_encoded = Instant::now();
     }
     Ok(())
+}
+
+/// The time an output is sent with: its picture's, held strictly after the previous output's so the RTP timestamps
+/// rise even if an encoder hands a time back out of order.
+fn out_time(at: Duration, last: &mut Option<Duration>) -> Duration {
+    let at = rising(at, *last);
+    *last = Some(at);
+    at
 }
 
 /// The capture time a picture is encoded with: its own, held strictly after the previous picture's so RTP timestamps
@@ -393,6 +402,7 @@ fn run(
     let mut keyframe_wait: Option<Instant> = None;
     let mut stats = ShareStats::new();
     let mut last_at: Option<Duration> = None;
+    let mut last_out: Option<Duration> = None;
     // The last fresh frame and the stale-source steps taken since.
     let mut last_fresh = Instant::now();
     let mut stale_taken = 0u32;
@@ -422,7 +432,14 @@ fn run(
             }
             None => {
                 if let Some(enc) = encoder.as_mut() {
-                    drain_pending_outputs(state, enc, &mut video, &mut last_encoded, &mut stats)?;
+                    drain_pending_outputs(
+                        state,
+                        enc,
+                        &mut video,
+                        &mut last_encoded,
+                        &mut stats,
+                        &mut last_out,
+                    )?;
                 }
                 // Held frames are skipped on purpose; only a source that stopped delivering is stale.
                 if state.held.load(Ordering::Acquire) {
@@ -522,7 +539,7 @@ fn run(
                 video(EncodedFrame {
                     data: output.data,
                     keyframe: output.keyframe,
-                    timestamp: rtp_ticks(output.at),
+                    timestamp: rtp_ticks(out_time(output.at, &mut last_out)),
                 });
             }
             None => {
@@ -531,7 +548,14 @@ fn run(
                 }
             }
         }
-        drain_pending_outputs(state, encoder, &mut video, &mut last_encoded, &mut stats)?;
+        drain_pending_outputs(
+            state,
+            encoder,
+            &mut video,
+            &mut last_encoded,
+            &mut stats,
+            &mut last_out,
+        )?;
         stats.report(
             (frame_w, frame_h),
             (settings.width, settings.height),
@@ -758,6 +782,14 @@ mod tests {
         assert_eq!(
             rising(ms(5), Some(ms(250))),
             ms(250) + Duration::from_micros(1)
+        );
+        // Outputs keep their picture's time and rise strictly whatever order an encoder gives them in.
+        let mut last = None;
+        assert_eq!(out_time(ms(10), &mut last), ms(10));
+        assert_eq!(out_time(ms(43), &mut last), ms(43));
+        assert_eq!(
+            out_time(ms(30), &mut last),
+            ms(43) + Duration::from_micros(1)
         );
     }
 

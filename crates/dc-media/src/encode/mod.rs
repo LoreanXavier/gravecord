@@ -74,15 +74,21 @@ impl Config {
     }
 }
 
-/// Consecutive pictures the hardware encoder may take without emitting output before it is reopened (~1.5–3 s at
-/// 30–60 fps). A stall is not a failure: a foreground game after Alt-Tab can starve the GPU's encoder for a while, and
-/// a fresh session recovers it, where openh264 at the same size would cost the CPU and the picture for good.
+/// The hardware encoder has stalled when it took this many pictures in a row and gave nothing back for
+/// [`HARDWARE_STALL_TIME`]. A stall is not a failure: a foreground game after Alt-Tab can starve the GPU's encoder for
+/// a while, and a fresh session recovers it, where openh264 at the same size would cost the CPU and the picture. Both
+/// limits are our own rules, not official values.
 const HARDWARE_STALL: u32 = 90;
+const HARDWARE_STALL_TIME: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// After a hardware failure openh264 carries the stream, and the hardware encoder is tried again this often. Our own
-/// rule, not an official value: often enough that one bad moment does not cost a share's quality, rare enough that a
-/// broken driver costs one failed open every ten seconds.
+/// A stalled encoder is reopened once; another stall this soon after the reopen hands the stream to openh264. Our own
+/// rule: opening a session costs about a second, so a starved encoder must not be reopened over and over.
+const REOPEN_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// After a hardware failure openh264 carries the stream, and the hardware encoder is tried again after this long,
+/// doubling after each further failure up to [`HARDWARE_RETRY_MAX`]. Our own rule, not an official value.
 const HARDWARE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+const HARDWARE_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(320);
 
 pub(crate) struct Output {
     pub data: Vec<u8>,
@@ -103,10 +109,21 @@ pub(crate) struct Encoder {
     hardware: Option<mf::Encoder>,
     software: Option<SoftwareEncoder>,
     empty_run: u32,
+    /// When the running encoder last gave a picture back (or opened).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    last_output: std::time::Instant,
+    /// When a stalled hardware encoder was last reopened.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    reopened_at: Option<std::time::Instant>,
+    /// The target the paced hardware rate was last worked out from.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    applied_target: u32,
     /// openh264 carries the stream because the hardware encoder failed; it is tried again at `retry_at`.
     fell_back: bool,
     #[cfg_attr(not(windows), allow(dead_code))]
     retry_at: Option<std::time::Instant>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    retry_interval: std::time::Duration,
     /// The time base of [`Encoder::encode`], for callers that do not give a capture time.
     origin: std::time::Instant,
     /// The hardware encoder refused a live rate change once: from then on it is reopened only for large moves.
@@ -115,16 +132,17 @@ pub(crate) struct Encoder {
     oversized_keyframe: bool,
 }
 
-/// A live rate change smaller than this share of the current rate (one twentieth) waits for a larger one when the rate
-/// goes up. libwebrtc hands every change to the encoder (`VideoStreamEncoder::SetEncoderRates` skips only equal ones);
-/// this is our own rule, to keep a hardware encoder from being reconfigured on every small step of the estimator. A
-/// lower rate is always taken: at a pacing factor of 1 an encoder above the target only builds queue.
+/// A live rate change smaller than this share of the current rate (one twentieth) waits for a larger one. libwebrtc
+/// hands every change to the encoder (`VideoStreamEncoder::SetEncoderRates` skips only equal ones); this is our own
+/// rule, to keep a hardware encoder from being reconfigured on every small step of the estimator or of the input rate.
+/// A lower target is always taken: at a pacing factor of 1 an encoder above the target only builds queue.
 const LIVE_RATE_STEP: u32 = 20;
 
-/// Whether a live change from `current` to `target` is worth making.
-pub(crate) fn live_rate_change(current: u32, target: u32) -> bool {
-    target < current
-        || u64::from(target - current) * u64::from(LIVE_RATE_STEP) >= u64::from(current)
+/// Whether a live change of the encoder's rate from `current` to `want` is worth making. `target_dropped`: the caller
+/// lowered its target since the rate was last set, which is always followed down.
+pub(crate) fn live_rate_change(current: u32, want: u32, target_dropped: bool) -> bool {
+    (target_dropped && want < current)
+        || u64::from(want.abs_diff(current)) * u64::from(LIVE_RATE_STEP) >= u64::from(current)
 }
 
 impl Encoder {
@@ -143,8 +161,12 @@ impl Encoder {
                         hardware: Some(hardware),
                         software: None,
                         empty_run: 0,
+                        last_output: std::time::Instant::now(),
+                        reopened_at: None,
+                        applied_target: config.bitrate,
                         fell_back: false,
                         retry_at: None,
+                        retry_interval: HARDWARE_RETRY,
                         origin: std::time::Instant::now(),
                         live_refused: false,
                         oversized_keyframe: false,
@@ -168,8 +190,12 @@ impl Encoder {
             hardware: None,
             software: Some(software_encoder(config, config.bitrate)?),
             empty_run: 0,
+            last_output: std::time::Instant::now(),
+            reopened_at: None,
+            applied_target: config.bitrate,
             fell_back: false,
             retry_at: None,
+            retry_interval: HARDWARE_RETRY,
             origin: std::time::Instant::now(),
             live_refused: false,
             oversized_keyframe: false,
@@ -205,7 +231,6 @@ impl Encoder {
 
     /// The frame rate pictures have been arriving at over the last [`INPUT_RATE_WINDOW`]; the configured rate until
     /// a second of them has been seen.
-    #[cfg_attr(not(windows), allow(dead_code))]
     fn input_fps(&self) -> f64 {
         input_fps(&self.inputs, self.config.fps)
     }
@@ -221,18 +246,20 @@ impl Encoder {
         }
     }
 
-    /// Gives the running encoder the rate it should have now. A hardware encoder spends its rate per picture at its
-    /// configured frame rate whatever the sample times say (`hardware_rate_follows_sample_time_when_capture_slows`),
-    /// so it is given the target scaled to the input rate. openh264 reads the timestamps itself.
+    /// Gives the running encoder the rate it should have now. Both encoders spend their rate per picture at the
+    /// configured frame rate whatever the timestamps say (`hardware_rate_follows_sample_time_when_capture_slows`), so
+    /// they are given the target scaled to the input rate; openh264 follows it only in large steps, since each change
+    /// restarts it. A hardware encoder that refused a live change is kept at the target.
     fn update_rate(&mut self) -> Result<bool> {
         #[cfg(windows)]
-        let bitrate = if self.hardware.is_some() && !self.live_refused {
+        let paced = !(self.hardware.is_some() && self.live_refused);
+        #[cfg(not(windows))]
+        let paced = true;
+        let bitrate = if paced {
             paced_rate(self.target, self.config.fps, self.input_fps())
         } else {
             self.target
         };
-        #[cfg(not(windows))]
-        let bitrate = self.target;
         if bitrate == self.bitrate {
             return Ok(false);
         }
@@ -244,11 +271,12 @@ impl Encoder {
                     return Ok(false);
                 }
             } else {
-                if !live_rate_change(self.bitrate, bitrate) {
+                if !live_rate_change(self.bitrate, bitrate, self.target < self.applied_target) {
                     return Ok(false);
                 }
                 if hardware.set_bitrate(bitrate).is_ok() {
                     self.bitrate = bitrate;
+                    self.applied_target = self.target;
                     return Ok(false);
                 }
                 self.live_refused = true;
@@ -316,6 +344,7 @@ impl Encoder {
             match hardware.encode(&nv12, force_keyframe, at) {
                 Ok(Some(output)) if output.data.len() <= self.config.max_bytes => {
                     self.empty_run = 0;
+                    self.last_output = std::time::Instant::now();
                     return Ok(Some(output));
                 }
                 Ok(Some(_)) => {
@@ -327,25 +356,39 @@ impl Encoder {
                 }
                 Ok(None) => {
                     self.empty_run += 1;
-                    if self.empty_run < HARDWARE_STALL {
-                        if force_keyframe {
-                            self.oversized_keyframe = true;
-                        }
-                        return Ok(None);
-                    }
-                    tracing::warn!("hardware H.264 encoder stalled; reopening it");
-                    // Release the scarce session before opening its replacement.
-                    self.hardware = None;
-                    self.empty_run = 0;
-                    match mf::Encoder::new(self.current_config()) {
-                        Ok(hardware) => {
-                            self.hardware = Some(hardware);
-                            // The new session starts a new reference chain.
-                            self.oversized_keyframe = true;
+                    let now = std::time::Instant::now();
+                    match stall_step(
+                        self.empty_run,
+                        now.saturating_duration_since(self.last_output),
+                        self.reopened_at.map(|at| now.saturating_duration_since(at)),
+                    ) {
+                        None => {
+                            if force_keyframe {
+                                self.oversized_keyframe = true;
+                            }
                             return Ok(None);
                         }
-                        Err(error) => tracing::warn!(
-                            "hardware H.264 encoder did not reopen ({error}); using openh264"
+                        Some(StallStep::Reopen) => {
+                            tracing::warn!("hardware H.264 encoder stalled; reopening it");
+                            // Release the scarce session before opening its replacement.
+                            self.hardware = None;
+                            self.empty_run = 0;
+                            self.reopened_at = Some(now);
+                            match mf::Encoder::new(self.current_config()) {
+                                Ok(hardware) => {
+                                    self.hardware = Some(hardware);
+                                    self.last_output = std::time::Instant::now();
+                                    // The new session starts a new reference chain.
+                                    self.oversized_keyframe = true;
+                                    return Ok(None);
+                                }
+                                Err(error) => tracing::warn!(
+                                    "hardware H.264 encoder did not reopen ({error}); using openh264"
+                                ),
+                            }
+                        }
+                        Some(StallStep::FallBack) => tracing::warn!(
+                            "hardware H.264 encoder stalled again after a reopen; using openh264"
                         ),
                     }
                 }
@@ -364,6 +407,7 @@ impl Encoder {
     #[cfg_attr(not(windows), allow(dead_code))]
     fn current_config(&mut self) -> Config {
         self.bitrate = self.target;
+        self.applied_target = self.target;
         Config {
             bitrate: self.target,
             ..self.config
@@ -377,7 +421,8 @@ impl Encoder {
         self.fell_back = true;
         self.empty_run = 0;
         self.oversized_keyframe = false;
-        self.retry_at = Some(std::time::Instant::now() + HARDWARE_RETRY);
+        self.retry_at = Some(std::time::Instant::now() + self.retry_interval);
+        self.retry_interval = next_retry(self.retry_interval);
         self.bitrate = self.target;
         self.software = Some(software_encoder(self.config, self.bitrate)?);
         Ok(())
@@ -397,11 +442,13 @@ impl Encoder {
                 self.fell_back = false;
                 self.retry_at = None;
                 self.empty_run = 0;
+                self.last_output = std::time::Instant::now();
                 self.oversized_keyframe = true;
             }
             Err(error) => {
                 tracing::debug!("hardware H.264 encoder still unavailable: {error}");
-                self.retry_at = Some(now + HARDWARE_RETRY);
+                self.retry_at = Some(now + self.retry_interval);
+                self.retry_interval = next_retry(self.retry_interval);
             }
         }
     }
@@ -413,6 +460,7 @@ impl Encoder {
             match hardware.take_pending_output() {
                 Ok(Some(output)) => {
                     self.empty_run = 0;
+                    self.last_output = std::time::Instant::now();
                     return Ok(Some(output));
                 }
                 Ok(None) => return Ok(None),
@@ -484,29 +532,80 @@ impl Encoder {
     }
 }
 
-/// How far back the input frame rate is measured: libwebrtc's `VideoStreamEncoder` averages the input frame rate it
-/// hands the encoder over `kFrameRateAvergingWindowSizeMs` = 3 s.
+/// How far back the input frame rate is measured. Our own rule: libwebrtc's `VideoStreamEncoder` hands the encoder
+/// a measured input frame rate averaged over a few seconds, but its source is not in this checkout to quote.
 const INPUT_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The newest pictures also give a rate of their own, and the higher of the two is used: when motion resumes after a
+/// still screen (pictures every 500 ms) the window would still read a slow input for seconds and over-budget every
+/// picture. Our own rule.
+const FAST_ATTACK_PICTURES: usize = 4;
 
 /// The lowest frame rate a share offers (`FRAME_RATES`): a slower input is not given a bigger share of the rate per
 /// picture than a 5 fps share would get.
 const SLOWEST_INPUT_FPS: f64 = 5.;
 
-/// Pictures per second over `inputs` (capture times, oldest first); `configured` until they span a second.
+/// Pictures per second over `inputs` (capture times, oldest first); `configured` until they span a second. The rate
+/// of the newest [`FAST_ATTACK_PICTURES`] wins when it is higher.
 fn input_fps(inputs: &std::collections::VecDeque<std::time::Duration>, configured: u32) -> f64 {
-    match (inputs.front(), inputs.back()) {
+    let rate = |count: usize, first: std::time::Duration, last: std::time::Duration| {
+        let span = last.saturating_sub(first).as_secs_f64();
+        (span > 0.).then(|| (count - 1) as f64 / span)
+    };
+    let windowed = match (inputs.front(), inputs.back()) {
         (Some(first), Some(last))
             if last.saturating_sub(*first) >= std::time::Duration::from_secs(1) =>
         {
-            (inputs.len() - 1) as f64 / last.saturating_sub(*first).as_secs_f64()
+            rate(inputs.len(), *first, *last)
         }
-        _ => f64::from(configured),
+        _ => None,
+    };
+    let Some(windowed) = windowed else {
+        return f64::from(configured);
+    };
+    let fast = (inputs.len() >= FAST_ATTACK_PICTURES)
+        .then(|| {
+            rate(
+                FAST_ATTACK_PICTURES,
+                inputs[inputs.len() - FAST_ATTACK_PICTURES],
+                *inputs.back()?,
+            )
+        })
+        .flatten();
+    fast.map_or(windowed, |fast| fast.max(windowed))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StallStep {
+    Reopen,
+    FallBack,
+}
+
+/// What a hardware encoder that gave nothing back for `empty_run` pictures and `since_output` needs, given how long
+/// ago it was last reopened.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn stall_step(
+    empty_run: u32,
+    since_output: std::time::Duration,
+    since_reopen: Option<std::time::Duration>,
+) -> Option<StallStep> {
+    if empty_run < HARDWARE_STALL || since_output < HARDWARE_STALL_TIME {
+        return None;
     }
+    Some(match since_reopen {
+        Some(since) if since < REOPEN_GRACE => StallStep::FallBack,
+        _ => StallStep::Reopen,
+    })
+}
+
+/// The wait before the hardware retry after the next one.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn next_retry(interval: std::time::Duration) -> std::time::Duration {
+    interval.saturating_mul(2).min(HARDWARE_RETRY_MAX)
 }
 
 /// The rate to give an encoder that spends `rate / configured` per picture so that pictures arriving at `input_fps`
 /// still add up to `target` a second, as libwebrtc does by handing the encoder the measured frame rate.
-#[cfg_attr(not(windows), allow(dead_code))]
 fn paced_rate(target: u32, configured: u32, input_fps: f64) -> u32 {
     let configured = f64::from(configured.max(1));
     let input = input_fps.clamp(SLOWEST_INPUT_FPS.min(configured), configured);
@@ -600,51 +699,92 @@ pub(crate) mod tests {
         }
     }
 
-    /// The rate a 60 fps hardware session gives when pictures arrive at 60 or at 15 a second, counted against the
-    /// pictures' own sample times. With frame-counter sample times a 15 fps capture got a quarter of the rate.
+    /// The rate a 60 fps session gives when pictures arrive at 60 or at 15 a second, and when motion resumes at
+    /// 60 fps after four seconds of repeats every 500 ms, counted against the pictures' own times, for the hardware
+    /// encoder and for openh264. Every output carries the time of a picture that went in, rising strictly. Before
+    /// pacing a 15 fps capture got a quarter of the rate from the hardware encoder here.
     #[cfg(windows)]
     #[test]
     #[ignore = "opens the machine's hardware H.264 encoder"]
     fn hardware_rate_follows_sample_time_when_capture_slows() {
         let (w, h) = (1280u32, 720u32);
         let bitrate = 4_000_000;
-        for spacing_ms in [16u64, 66] {
-            let Ok(mut encoder) = Encoder::new(Config {
-                fps: 60,
-                bitrate,
-                ..config(w, h)
-            }) else {
-                println!("hardware encoder unavailable");
-                return;
-            };
-            let mut bytes = 0usize;
-            let pictures = 120u64;
-            for i in 0..pictures {
-                // A scrolling pattern with fine detail: compressible, but with more detail than the rate buys.
-                let nv12: Vec<u8> = (0..(w * h * 3 / 2) as usize)
-                    .map(|p| {
-                        let (x, y) = (p as u64 % u64::from(w), p as u64 / u64::from(w));
-                        (x / 2 + y / 3 + i * 6 + (x * 13 + y * 7) % 11) as u8
-                    })
-                    .collect();
-                let at = std::time::Duration::from_millis(spacing_ms * i);
-                if let Some(out) = encoder
-                    .encode_at(&nv12, Chroma::Interleaved, i == 0, at)
-                    .unwrap()
-                {
-                    bytes += out.data.len();
+        let pattern = |i: u64| -> Vec<u8> {
+            (0..(w * h * 3 / 2) as usize)
+                .map(|p| {
+                    let (x, y) = (p as u64 % u64::from(w), p as u64 / u64::from(w));
+                    (x / 2 + y / 3 + i * 6 + (x * 13 + y * 7) % 11) as u8
+                })
+                .collect()
+        };
+        let runs: [(&str, Vec<u64>); 3] = [
+            ("60 fps", (0..120).map(|i| i * 16_667).collect()),
+            ("15 fps", (0..120).map(|i| i * 66_667).collect()),
+            (
+                "still, then 60 fps",
+                (0..8)
+                    .map(|i| i * 500_000)
+                    .chain((0..120).map(|i| 4_000_000 + i * 16_667))
+                    .collect(),
+            ),
+        ];
+        for software in [false, true] {
+            for (name, times) in &runs {
+                let config = Config {
+                    fps: 60,
+                    bitrate,
+                    ..config(w, h)
+                };
+                let Ok(mut encoder) = (if software {
+                    Encoder::software(config)
+                } else {
+                    Encoder::new(config)
+                }) else {
+                    println!("encoder unavailable");
+                    return;
+                };
+                let chroma = encoder.chroma();
+                let mut outputs: Vec<(std::time::Duration, usize)> = Vec::new();
+                for (i, &micros) in times.iter().enumerate() {
+                    let mut picture = pattern(i as u64);
+                    if chroma == Chroma::Planar {
+                        picture = nv12_to_i420(&picture, w as usize, h as usize).unwrap();
+                    }
+                    let at = std::time::Duration::from_micros(micros);
+                    if let Some(out) = encoder.encode_at(&picture, chroma, i == 0, at).unwrap() {
+                        outputs.push((out.at, out.data.len()));
+                    }
+                    while let Some(out) = encoder.take_pending_output().unwrap() {
+                        outputs.push((out.at, out.data.len()));
+                    }
                 }
-                while let Some(out) = encoder.take_pending_output().unwrap() {
-                    bytes += out.data.len();
-                }
+                let submitted: std::collections::HashSet<u64> = times.iter().copied().collect();
+                assert!(
+                    outputs.windows(2).all(|pair| pair[1].0 > pair[0].0),
+                    "{name}: times rise"
+                );
+                assert!(
+                    outputs
+                        .iter()
+                        .all(|(at, _)| submitted.contains(&(at.as_micros() as u64))),
+                    "{name}: every output carries a submitted time"
+                );
+                // The rate over the moving part only: the last 120 pictures.
+                let moving = &times[times.len() - 120..];
+                let (start, end) = (moving[0], *moving.last().unwrap());
+                let bytes: usize = outputs
+                    .iter()
+                    .filter(|(at, _)| at.as_micros() as u64 >= start)
+                    .map(|(_, len)| len)
+                    .sum();
+                let seconds = (end - start) as f64 / 1e6;
+                println!(
+                    "{:?} {name}: {:.0} kb/s against {} kb/s",
+                    encoder.backend(),
+                    bytes as f64 * 8. / seconds / 1000.,
+                    bitrate / 1000
+                );
             }
-            let seconds = (spacing_ms * pictures) as f64 / 1000.;
-            println!(
-                "{spacing_ms} ms apart: {:.0} kb/s against {} kb/s, backend {:?}",
-                bytes as f64 * 8. / seconds / 1000.,
-                bitrate / 1000,
-                encoder.backend()
-            );
         }
     }
 
@@ -787,10 +927,91 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn live_rate_changes_wait_for_a_twentieth_upwards_and_always_go_down() {
-        assert!(!live_rate_change(1_000_000, 1_049_999));
-        assert!(live_rate_change(1_000_000, 1_050_000));
-        assert!(live_rate_change(1_000_000, 999_000));
-        assert!(live_rate_change(600_000, 1_800_000));
+    fn live_rate_changes_wait_for_a_twentieth_and_follow_a_lower_target_down() {
+        assert!(!live_rate_change(1_000_000, 1_049_999, false));
+        assert!(live_rate_change(1_000_000, 1_050_000, false));
+        assert!(live_rate_change(600_000, 1_800_000, false));
+        // Small pacing moves either way wait; a lower target is taken at once.
+        assert!(!live_rate_change(1_000_000, 999_000, false));
+        assert!(live_rate_change(1_000_000, 999_000, true));
+        assert!(live_rate_change(1_000_000, 940_000, false));
+    }
+
+    #[test]
+    fn a_jittering_input_rate_does_not_move_the_encoder_rate_every_picture() {
+        use std::time::Duration;
+        // A game at 45 to 55 fps in a 60 fps share: the paced rate wanders by a few percent.
+        let target = 6_000_000;
+        let mut inputs = std::collections::VecDeque::new();
+        let mut at = Duration::ZERO;
+        let mut current = target;
+        let mut changes = 0;
+        for i in 0..600u64 {
+            at += Duration::from_micros(if i % 2 == 0 { 18_200 } else { 22_200 });
+            inputs.push_back(at);
+            while inputs
+                .front()
+                .is_some_and(|first| at - *first > INPUT_RATE_WINDOW)
+            {
+                inputs.pop_front();
+            }
+            let want = paced_rate(target, 60, input_fps(&inputs, 60));
+            if want != current && live_rate_change(current, want, false) {
+                current = want;
+                changes += 1;
+            }
+        }
+        assert!(changes <= 3, "{changes} rate changes over 600 pictures");
+        assert!(current > target);
+    }
+
+    #[test]
+    fn motion_after_a_still_screen_is_paced_at_its_own_rate_at_once() {
+        use std::time::Duration;
+        let mut inputs = std::collections::VecDeque::new();
+        // Four seconds of repeats every 500 ms, then motion at 60 fps.
+        let mut at = Duration::ZERO;
+        for _ in 0..8 {
+            at += Duration::from_millis(500);
+            inputs.push_back(at);
+        }
+        assert!(input_fps(&inputs, 60) < 3.);
+        for _ in 0..FAST_ATTACK_PICTURES {
+            at += Duration::from_micros(16_667);
+            inputs.push_back(at);
+            while inputs
+                .front()
+                .is_some_and(|first| at - *first > INPUT_RATE_WINDOW)
+            {
+                inputs.pop_front();
+            }
+        }
+        let fps = input_fps(&inputs, 60);
+        assert!(fps > 59., "{fps}");
+        assert!(paced_rate(9_000_000, 60, fps).abs_diff(9_000_000) < 9_000);
+    }
+
+    #[test]
+    fn a_stall_reopens_once_then_falls_back_with_growing_retries() {
+        use std::time::Duration;
+        let s = Duration::from_secs;
+        // Neither a short run of empty pictures nor a long quiet time alone is a stall.
+        assert_eq!(stall_step(HARDWARE_STALL - 1, s(10), None), None);
+        assert_eq!(stall_step(HARDWARE_STALL, s(2), None), None);
+        assert_eq!(
+            stall_step(HARDWARE_STALL, s(3), None),
+            Some(StallStep::Reopen)
+        );
+        // Stalling again soon after a reopen gives up on hardware; much later it is reopened again.
+        assert_eq!(
+            stall_step(HARDWARE_STALL, s(3), Some(s(20))),
+            Some(StallStep::FallBack)
+        );
+        assert_eq!(
+            stall_step(HARDWARE_STALL, s(3), Some(s(61))),
+            Some(StallStep::Reopen)
+        );
+        assert_eq!(next_retry(s(10)), s(20));
+        assert_eq!(next_retry(s(200)), HARDWARE_RETRY_MAX);
     }
 }
