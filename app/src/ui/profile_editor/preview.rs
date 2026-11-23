@@ -822,13 +822,17 @@ impl Root {
         };
         let connections = (!nitro).then(|| {
             let muted = palette.token("--text-muted");
+            // Module 927071: the button opens the Add Connection grid (`tQ`).
             section("Connections", &palette).child(
                 div()
+                    .id("profile-editor-add-connection")
+                    .cursor_pointer()
                     .flex()
                     .items_center()
                     .gap(px(2.))
                     .child(tinted_icon("plus_small", 18., muted))
-                    .child(tinted_text("Add Connection", 12., 16., 500., muted)),
+                    .child(tinted_text("Add Connection", 12., 16., 500., muted))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_add_connection(cx))),
             )
         });
         // `profileBody_s3DB6Y`: the card's padding, scrolling under the header when it does not fit.

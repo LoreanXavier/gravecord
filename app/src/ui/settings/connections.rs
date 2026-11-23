@@ -391,78 +391,7 @@ impl Root {
     /// "Add a new connection" (`CONNECTIONS_ADD_CONNECTIONS_SETTING`, module 158935 `TZ`): the two application buttons,
     /// then one button per platform, 44px squares 8px apart.
     pub(super) fn connection_grid(&self, cx: &mut Context<Self>) -> AnyElement {
-        let dark = !matches!(crate::ui::theme(), dc_tokens::Theme::Light);
-        let connected: Vec<String> =
-            accounts_of(self.settings_extra.connections.as_deref().unwrap_or(&[]))
-                .into_iter()
-                .map(|account| account.kind)
-                .collect();
-        let tile = |id: String, picture: Option<Arc<gpui::Image>>, round: bool| {
-            div()
-                .id(SharedString::from(id))
-                .size(px(44.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(8.))
-                .border_1()
-                // `.accountButtonInner_yX-kzH`
-                .border_color(color("--control-secondary-border-default"))
-                .bg(color("--control-secondary-background-default"))
-                .cursor_pointer()
-                .hover(|style| {
-                    style
-                        .bg(color("--control-secondary-background-hover"))
-                        .border_color(color("--control-secondary-border-hover"))
-                })
-                // `.applicationIcon_jn4e52` rounds the application buttons' icons only; a platform's is the
-                // background image of its button.
-                .children(picture.map(|picture| {
-                    img(picture)
-                        .size(px(28.))
-                        .when(round, |image| image.rounded(px(28.)))
-                }))
-        };
-        let mut tiles: Vec<AnyElement> = Vec::new();
-        for id in GRID_APPS {
-            let name = self
-                .settings_extra
-                .connection_apps
-                .iter()
-                .flatten()
-                .find(|app| app["id"].as_str() == Some(id))
-                .and_then(|app| app["name"].as_str())
-                .unwrap_or_default()
-                .to_owned();
-            let picture = self.images.get(&app_icon_key(id)).cloned();
-            let button = tile(format!("connect-app-{id}"), picture, true)
-                .on_click(cx.listener(move |this, _, _, cx| this.connection_app_clicked(id, cx)));
-            tiles.push(
-                self.with_tip(
-                    format!("connect-tip-{id}"),
-                    Tip::body(Body::Text(name.into()), Side::Top),
-                    button,
-                    cx,
-                )
-                .into_any_element(),
-            );
-        }
-        for index in grid_order(&connected) {
-            let (kind, name, ..) = PROVIDERS[index];
-            let picture = self.images.get(&icon_key(kind, dark)).cloned();
-            let button = tile(format!("connect-{kind}"), picture, false)
-                .on_click(cx.listener(move |this, _, _, cx| this.connection_clicked(kind, cx)));
-            tiles.push(
-                self.with_tip(
-                    format!("connect-tip-{kind}"),
-                    Tip::body(Body::Text(name.into()), Side::Top),
-                    button,
-                    cx,
-                )
-                .into_any_element(),
-            );
-        }
+        let tiles = self.connection_tiles(false, cx);
         div()
             .pt(px(8.))
             .flex()
@@ -487,6 +416,107 @@ impl Root {
                     .children(tiles),
             )
             .into_any_element()
+    }
+
+    /// The connection buttons, applications first, as `TZ` of module 158935 and `N` of module 58829 list them. In
+    /// the Add Connection dialog (`in_dialog`) the buttons are `.accountBtnInner_g9DJn9` (the lower background, no
+    /// border) and a pick closes the dialog (`onComplete`, then `onClose`).
+    pub(super) fn connection_tiles(
+        &self,
+        in_dialog: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let dark = !matches!(crate::ui::theme(), dc_tokens::Theme::Light);
+        let connected: Vec<String> =
+            accounts_of(self.settings_extra.connections.as_deref().unwrap_or(&[]))
+                .into_iter()
+                .map(|account| account.kind)
+                .collect();
+        let tile = |id: String, picture: Option<Arc<gpui::Image>>, round: bool| {
+            div()
+                .id(SharedString::from(id))
+                .size(px(44.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(8.))
+                .cursor_pointer()
+                .when(in_dialog, |tile| {
+                    tile.bg(color("--background-base-lower"))
+                        .hover(|style| style.bg(color("--background-mod-normal")))
+                })
+                .when(!in_dialog, |tile| {
+                    tile.border_1()
+                        // `.accountButtonInner_yX-kzH`
+                        .border_color(color("--control-secondary-border-default"))
+                        .bg(color("--control-secondary-background-default"))
+                        .hover(|style| {
+                            style
+                                .bg(color("--control-secondary-background-hover"))
+                                .border_color(color("--control-secondary-border-hover"))
+                        })
+                })
+                // `.applicationIcon_jn4e52` rounds the application buttons' icons only; a platform's is the
+                // background image of its button.
+                .children(picture.map(|picture| {
+                    img(picture)
+                        .size(px(28.))
+                        .when(round, |image| image.rounded(px(28.)))
+                }))
+        };
+        let mut tiles: Vec<AnyElement> = Vec::new();
+        for id in GRID_APPS {
+            let name = self
+                .settings_extra
+                .connection_apps
+                .iter()
+                .flatten()
+                .find(|app| app["id"].as_str() == Some(id))
+                .and_then(|app| app["name"].as_str())
+                .unwrap_or_default()
+                .to_owned();
+            let picture = self.images.get(&app_icon_key(id)).cloned();
+            let button = tile(format!("connect-app-{id}"), picture, true).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    if in_dialog {
+                        this.settings_extra.conn = None;
+                    }
+                    this.connection_app_clicked(id, cx)
+                },
+            ));
+            tiles.push(
+                self.with_tip(
+                    format!("connect-tip-{id}"),
+                    Tip::body(Body::Text(name.into()), Side::Top),
+                    button,
+                    cx,
+                )
+                .into_any_element(),
+            );
+        }
+        for index in grid_order(&connected) {
+            let (kind, name, ..) = PROVIDERS[index];
+            let picture = self.images.get(&icon_key(kind, dark)).cloned();
+            let button = tile(format!("connect-{kind}"), picture, false).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    if in_dialog {
+                        this.settings_extra.conn = None;
+                    }
+                    this.connection_clicked(kind, cx)
+                },
+            ));
+            tiles.push(
+                self.with_tip(
+                    format!("connect-tip-{kind}"),
+                    Tip::body(Body::Text(name.into()), Side::Top),
+                    button,
+                    cx,
+                )
+                .into_any_element(),
+            );
+        }
+        tiles
     }
 
     /// The address the last settings link or connection button would have opened (harness runs open nothing).

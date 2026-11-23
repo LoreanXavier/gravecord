@@ -665,6 +665,12 @@ impl Root {
     }
 
     /// Capture helper for module 58829 (`add-connection open|close`).
+    /// `CONNECTIONS_GRID_MODAL_SHOW` (`tQ` of module 927071): the Add Connection grid, stacked over the page.
+    pub(in crate::ui) fn open_add_connection(&mut self, cx: &mut Context<Self>) {
+        self.settings_extra.conn = Some(Dlg::AddConnection);
+        cx.notify();
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_add_connection(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         if arg.trim() == "close" {
@@ -672,290 +678,44 @@ impl Root {
             cx.notify();
             return "add-connection: closed".to_owned();
         }
-        self.settings_extra.conn = Some(Dlg::AddConnection);
-        cx.notify();
+        self.open_add_connection(cx);
         "add-connection: open".to_owned()
     }
 
-    /// Renders Add Connection modal (module 58829: `syl6HS`, platform grid, `PHjkRE` Apps cards,
-    /// `y3ZnnU` Claimed Games cards).
+    /// Module 58829 opened from the profile editor (`tQ` of module 927071): the title and the connection grid
+    /// (`N`), no actions. Its Apps (`PHjkRE`) and Claimed Games (`y3ZnnU`) sections need integrations or game ids,
+    /// which that caller does not pass.
     fn add_connection_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
-        const PLATFORMS: [(&str, &str, u32); 8] = [
-            ("spotify", "Spotify", 0x1db954),
-            ("steam", "Steam", 0x171a21),
-            ("twitch", "Twitch", 0x9146ff),
-            ("youtube", "YouTube", 0xff0000),
-            ("github", "GitHub", 0x24292e),
-            ("xbox", "Xbox", 0x107c10),
-            ("playstation", "PlayStation", 0x003791),
-            ("crunchyroll", "Crunchyroll", 0xf47521),
-        ];
-        const APPS: [(&str, &str); 2] = [
-            (
-                "Linked Roles Bot",
-                "Verify server roles with external accounts.",
-            ),
-            ("Creator Hub", "Connect your community storefront & perks."),
-        ];
-        const CLAIMED_GAMES: [(&str, &str); 2] = [
-            ("League of Legends", "Display your rank and summoner stats."),
-            ("Destiny 2", "Link your Bungie.net Guardian profile."),
-        ];
-
-        let card = div()
-            .id("add-connection-modal")
-            .occlude()
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .w(px(620.))
-            .max_h(px(620.))
-            .rounded(px(12.))
-            .border_1()
-            .border_color(color("--border-subtle"))
-            .bg(color("--background-base-low"))
+        let tiles = self.connection_tiles(true, cx);
+        let last = tiles.len().saturating_sub(1);
+        // `.connectionsContainer_g9DJn9`: wrapping and centred, 16px above, 8px below, `margin-inline-end: -8px`;
+        // `.accountBtn_g9DJn9` keeps 8px after and below each button.
+        let body = div()
+            .mt(px(16.))
+            .mb(px(8.))
+            .mr(px(-8.))
             .flex()
-            .flex_col()
-            .child(
+            .flex_wrap()
+            .justify_center()
+            .children(tiles.into_iter().enumerate().map(|(index, tile)| {
+                // `.accountBtn_g9DJn9:last-child` drops its end margin.
                 div()
-                    .px(px(24.))
-                    .pt(px(20.))
-                    .pb(px(12.))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(20.))
-                            .line_height(px(24.))
-                            .font_weight(FontWeight(700.))
-                            .text_color(color("--text-strong"))
-                            .child(dc_intl::t("syl6HS")),
-                    )
-                    .child(
-                        div()
-                            .id("add-connection-close")
-                            .size(px(28.))
-                            .rounded(px(6.))
-                            .hover(|s| s.bg(color("--background-mod-subtle")))
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.close_connection_dialog();
-                                cx.notify();
-                            }))
-                            .child(mask_icon(
-                                "modal_close",
-                                18.,
-                                "--control-icon-only-icon-default",
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .px(px(24.))
-                    .pb(px(24.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(20.))
-                    .child(
-                        // Section 1: Platform & App connection buttons grid (`connectionsContainer_g9DJn9`).
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(10.))
-                            .children(PLATFORMS.iter().map(|&(kind, name, col)| {
-                                div()
-                                    .id(SharedString::from(format!("add-conn-plat-{kind}")))
-                                    .w(px(134.))
-                                    .h(px(44.))
-                                    .px(px(10.))
-                                    .rounded(px(8.))
-                                    .border_1()
-                                    .border_color(color("--border-subtle"))
-                                    .bg(color("--background-base-lower"))
-                                    .hover(|s| s.bg(color("--background-mod-subtle")))
-                                    .cursor_pointer()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .child(div().size(px(22.)).rounded(px(6.)).bg(gpui::rgb(col)))
-                                    .child(
-                                        div()
-                                            .text_size(px(13.))
-                                            .font_weight(FontWeight(600.))
-                                            .text_color(color("--text-strong"))
-                                            .child(name),
-                                    )
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.close_connection_dialog();
-                                        if matches!(kind, "xbox" | "playstation" | "crunchyroll") {
-                                            this.open_connection_dialog(kind, cx);
-                                        }
-                                        cx.notify();
-                                    }))
-                            })),
-                    )
-                    .child(
-                        // Section 2: `PHjkRE` ("Apps") — 184px Role Connection Integrations cards.
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(10.))
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .font_weight(FontWeight(700.))
-                                    .text_color(color("--text-muted"))
-                                    .child(dc_intl::t("PHjkRE")),
-                            )
-                            .child(div().flex().flex_wrap().gap(px(12.)).children(
-                                APPS.iter().enumerate().map(|(i, &(name, desc))| {
-                                    div()
-                                        .id(SharedString::from(format!("add-conn-app-{i}")))
-                                        .w(px(184.))
-                                        .p(px(14.))
-                                        .rounded(px(8.))
-                                        .border_1()
-                                        .border_color(color("--border-subtle"))
-                                        .bg(color("--background-base-lower"))
-                                        .hover(|s| s.bg(color("--background-mod-subtle")))
-                                        .cursor_pointer()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(8.))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap(px(8.))
-                                                .child(
-                                                    div()
-                                                        .size(px(32.))
-                                                        .rounded(px(8.))
-                                                        .bg(color("--brand-500"))
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .text_size(px(14.))
-                                                        .font_weight(FontWeight(700.))
-                                                        .text_color(color("--white"))
-                                                        .child(&name[..1]),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .overflow_hidden()
-                                                        .text_ellipsis()
-                                                        .text_size(px(14.))
-                                                        .font_weight(FontWeight(600.))
-                                                        .text_color(color("--text-strong"))
-                                                        .child(name),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(12.))
-                                                .line_height(px(16.))
-                                                .text_color(color("--text-muted"))
-                                                .child(desc),
-                                        )
-                                }),
-                            )),
-                    )
-                    .child(
-                        // Section 3: `y3ZnnU` ("Claimed Games") — 184px identity game cards.
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(10.))
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .font_weight(FontWeight(700.))
-                                    .text_color(color("--text-muted"))
-                                    .child(dc_intl::t("y3ZnnU")),
-                            )
-                            .child(div().flex().flex_wrap().gap(px(12.)).children(
-                                CLAIMED_GAMES.iter().enumerate().map(|(i, &(name, desc))| {
-                                    div()
-                                        .id(SharedString::from(format!("add-conn-game-{i}")))
-                                        .w(px(184.))
-                                        .p(px(14.))
-                                        .rounded(px(8.))
-                                        .border_1()
-                                        .border_color(color("--border-subtle"))
-                                        .bg(color("--background-base-lower"))
-                                        .hover(|s| s.bg(color("--background-mod-subtle")))
-                                        .cursor_pointer()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(8.))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap(px(8.))
-                                                .child(
-                                                    div()
-                                                        .size(px(32.))
-                                                        .rounded(px(8.))
-                                                        .bg(color("--background-surface-higher"))
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .child(crate::ui::icon(
-                                                            "activity_game",
-                                                            18.,
-                                                            "--text-strong",
-                                                        )),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .overflow_hidden()
-                                                        .text_ellipsis()
-                                                        .text_size(px(14.))
-                                                        .font_weight(FontWeight(600.))
-                                                        .text_color(color("--text-strong"))
-                                                        .child(name),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(12.))
-                                                .line_height(px(16.))
-                                                .text_color(color("--text-muted"))
-                                                .child(desc),
-                                        )
-                                }),
-                            )),
-                    ),
-            );
-
-        deferred(
-            div()
-                .id("add-connection-backdrop")
-                .occlude()
-                .absolute()
-                .inset_0()
-                .bg(rgba(0x000000b3))
-                .flex()
-                .items_center()
-                .justify_center()
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.close_connection_dialog();
-                        cx.notify();
-                    }),
-                )
-                .child(card),
+                    .when(index != last, |button| button.mr(px(8.)))
+                    .mb(px(8.))
+                    .child(tile)
+            }))
+            .into_any_element();
+        modal::render_over_layers(
+            modal::Spec {
+                id: "settings-add-connection",
+                title: dc_intl::t("syl6HS").into(),
+                subtitle: None,
+                body: Some(body),
+                buttons: Vec::new(),
+                close: Box::new(|this, _, _| this.close_connection_dialog()),
+            },
+            cx,
         )
-        .with_priority(95)
-        .into_any_element()
     }
 
     fn close_connection_dialog(&mut self) {
