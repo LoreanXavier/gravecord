@@ -785,13 +785,16 @@ impl Root {
                 labelled("Pinned", "If the message is pinned or not", pinned),
             ));
         let scroll = filters.scroll.clone();
+        // Module 430993 with a scrolling body: `bodySpacerTopBorder` and `bodyScrollingSpacerBottom` draw 1px
+        // `--border-subtle` lines above and below the 444px scroller (frame modals/search-filters: rows 129 and 574).
         let body = div()
             .relative()
             .ml(px(-24.))
-            .mt(px(1.))
-            .mb(px(1.))
             .w(px(478.))
-            .h(px(444.))
+            .h(px(446.))
+            .border_t_1()
+            .border_b_1()
+            .border_color(color("--border-subtle"))
             .child(
                 div()
                     .id("search-filters-scroll")
