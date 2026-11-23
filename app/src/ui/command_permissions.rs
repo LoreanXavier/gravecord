@@ -113,8 +113,25 @@ pub(crate) struct CommandPermissionsModal {
     pub picker_search: Entity<Editor>,
     _picker_events: Subscription,
     pub picker_query: String,
+    /// Module 192991 (`q`): pending multi-selected overrides (`(kind, id) -> display_name`) committed on "Add" (`OYkgVk`).
+    pub picker_selected: BTreeMap<(TargetType, Id), String>,
     pub lockout_alert: Option<LockoutReason>,
     focus: FocusHandle,
+}
+
+/// Module 192991 (`S`): true when pending picker selections + existing overrides reach the 100-item cap.
+pub(crate) fn picker_at_override_limit(existing_count: usize, selected_count: usize) -> bool {
+    existing_count.saturating_add(selected_count) >= MAX_OVERRIDES
+}
+
+/// Module 192991 (`778858.A.requestMembers(guildId, query, 200, false)`): Gateway OP 8 request for picker open/search.
+pub(crate) fn command_perm_request_members(guild_id: Id, query: String) -> Request {
+    Request::GuildMembers {
+        guilds: vec![guild_id],
+        query,
+        limit: 200,
+        user_ids: Vec::new(),
+    }
 }
 
 impl Root {
@@ -135,10 +152,21 @@ impl Root {
     ) {
         let picker_search = cx.new(|cx| Editor::new(editor_style(), cx));
         let events = cx.subscribe(&picker_search, |this, ed, event: &EditorEvent, cx| {
-            if matches!(event, EditorEvent::Edited)
-                && let Some(m) = this.command_permissions.as_mut()
-            {
-                m.picker_query = ed.read(cx).text().to_owned();
+            if matches!(event, EditorEvent::Edited) {
+                let req = if let Some(m) = this.command_permissions.as_mut() {
+                    m.picker_query = ed.read(cx).text().to_owned();
+                    let trimmed = m.picker_query.trim().to_owned();
+                    if m.picker == Some(PickerMode::RolesAndMembers) && !trimmed.is_empty() {
+                        Some(command_perm_request_members(m.guild_id, trimmed))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(r) = req {
+                    let _ = this.requests.send(r);
+                }
                 cx.notify();
             }
         });
@@ -180,6 +208,7 @@ impl Root {
             picker_search,
             _picker_events: events,
             picker_query: String::new(),
+            picker_selected: BTreeMap::new(),
             lockout_alert: None,
             focus: cx.focus_handle(),
         });
@@ -205,6 +234,7 @@ impl Root {
                 cx.notify();
             } else if m.picker.is_some() {
                 m.picker = None;
+                m.picker_selected.clear();
                 cx.notify();
             } else {
                 self.close_command_permissions(cx);
@@ -350,9 +380,10 @@ impl Root {
                     d.cursor_pointer()
                         .hover(|s| s.bg(color("--background-mod-subtle")))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(m) = this.command_permissions.as_mut() {
+                            let req = if let Some(m) = this.command_permissions.as_mut() {
                                 m.picker = Some(picker_mode);
                                 m.picker_query.clear();
+                                m.picker_selected.clear();
                                 let placeholder = match picker_mode {
                                     PickerMode::RolesAndMembers => dc_intl::t("wAfO5Y"),
                                     PickerMode::Channels => dc_intl::t("TLQo/i"),
@@ -361,6 +392,12 @@ impl Root {
                                     ed.set_text("");
                                     ed.set_placeholder(placeholder.to_owned());
                                 });
+                                Some(command_perm_request_members(m.guild_id, String::new()))
+                            } else {
+                                None
+                            };
+                            if let Some(r) = req {
+                                let _ = this.requests.send(r);
                             }
                             cx.notify();
                         }))
@@ -585,6 +622,8 @@ impl Root {
                         }
                     };
 
+                    let guild_id_for_menu = modal.guild_id;
+                    let allow_context_menu = row_kind == TargetType::Role || !is_sentinel;
                     list = list.child(
                         div()
                             .id(SharedString::from(format!(
@@ -598,15 +637,19 @@ impl Root {
                             .items_center()
                             .justify_between()
                             .gap(px(12.))
-                            .when(!is_sentinel, |d| {
+                            .when(allow_context_menu, |d| {
                                 d.on_mouse_up(
                                     gpui::MouseButton::Right,
                                     cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
-                                        this.open_context_menu(
-                                            super::context_menu::Target::CommandPermId(row_id),
-                                            event.position,
-                                            cx,
-                                        );
+                                        let target = if row_kind == TargetType::Role {
+                                            super::context_menu::Target::CommandPermRole {
+                                                guild: guild_id_for_menu,
+                                                role: row_id,
+                                            }
+                                        } else {
+                                            super::context_menu::Target::CommandPermId(row_id)
+                                        };
+                                        this.open_context_menu(target, event.position, cx);
                                         cx.stop_propagation();
                                     }),
                                 )
@@ -767,6 +810,8 @@ impl Root {
                 )
         });
 
+        // Module 192991 (`Add Application Command Permission Overrides Modal`): multi-select checkboxes,
+        // 100-override cap (`XTwtW/`), rich 36px identifier rows, and Cancel (`ETE/oC`) / Add (`OYkgVk`) footer.
         let picker_overlay = modal.picker.map(|mode| {
             let title = match mode {
                 PickerMode::RolesAndMembers => dc_intl::t("56jRn8"),
@@ -777,7 +822,7 @@ impl Root {
                 .trim()
                 .trim_start_matches(['@', '#'])
                 .to_lowercase();
-            let mut candidates: Vec<(TargetType, Id, String)> = Vec::new();
+            let mut candidates: Vec<(TargetType, Id, String, Option<String>)> = Vec::new();
             if let Some(guild) = self.stores.guild(modal.guild_id) {
                 match mode {
                     PickerMode::RolesAndMembers => {
@@ -785,7 +830,7 @@ impl Root {
                             if !modal.overwrites.contains_key(&(TargetType::Role, rid))
                                 && (q.is_empty() || name.to_lowercase().contains(&q))
                             {
-                                candidates.push((TargetType::Role, rid, name.clone()));
+                                candidates.push((TargetType::Role, rid, name.clone(), None));
                             }
                         }
                         for (uid, user) in &self.stores.users {
@@ -795,10 +840,16 @@ impl Root {
                                     || user.username.to_lowercase().contains(&q)
                                     || user.display_name().to_lowercase().contains(&q))
                             {
+                                let tag = if user.display_name() != user.username {
+                                    Some(format!("@{}", user.username))
+                                } else {
+                                    None
+                                };
                                 candidates.push((
                                     TargetType::User,
                                     *uid,
                                     user.display_name().to_owned(),
+                                    tag,
                                 ));
                             }
                         }
@@ -808,48 +859,132 @@ impl Root {
                             if !modal.overwrites.contains_key(&(TargetType::Channel, ch.id))
                                 && (q.is_empty() || ch.name.to_lowercase().contains(&q))
                             {
+                                let parent_tag = ch.parent_id.and_then(|pid| {
+                                    guild
+                                        .channels
+                                        .iter()
+                                        .find(|c| c.id == pid)
+                                        .map(|c| format!("({})", c.name))
+                                });
                                 candidates.push((
                                     TargetType::Channel,
                                     ch.id,
                                     format!("#{}", ch.name),
+                                    parent_tag,
                                 ));
                             }
                         }
                     }
                 }
             }
-            candidates.truncate(20);
-            let mut items = div().flex().flex_col().gap(px(4.));
-            for (kind, cid, cname) in candidates {
+            let selected_count = modal.picker_selected.len();
+            let picker_at_limit = picker_at_override_limit(total_count, selected_count);
+            let mut items = div().flex().flex_col().gap(px(2.));
+            for (kind, cid, cname, secondary_tag) in candidates {
+                let checked = modal.picker_selected.contains_key(&(kind, cid));
+                let row_disabled = picker_at_limit && !checked;
                 let add_name = cname.clone();
+                let leading: AnyElement = match kind {
+                    TargetType::Channel => {
+                        icon("channel_type_text", 18., "--text-default").into_any_element()
+                    }
+                    TargetType::Role => {
+                        icon("role_shield", 18., "--icon-strong").into_any_element()
+                    }
+                    TargetType::User => {
+                        let av = self.stores.users.get(&cid).and_then(|u| {
+                            let (k, _) = super::avatar_source(u);
+                            self.images.get(&k).cloned()
+                        });
+                        div()
+                            .size(px(22.))
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(color("--background-surface-higher"))
+                            .children(av.map(|im| gpui::img(im).size(px(22.)).rounded_full()))
+                            .into_any_element()
+                    }
+                };
                 items = items.child(
                     div()
                         .id(SharedString::from(format!("cmd-pick-{}-{cid}", kind as u8)))
-                        .px(px(10.))
-                        .py(px(8.))
+                        .h(px(36.))
+                        .mr(px(8.))
+                        .pl(px(4.))
+                        .pr(px(8.))
                         .rounded(px(6.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(color("--background-mod-subtle")))
-                        .text_size(px(14.))
-                        .text_color(color("--text-strong"))
-                        .child(cname)
+                        .when(!row_disabled, |d| {
+                            d.cursor_pointer()
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                        })
+                        .when(row_disabled, |d| d.opacity(0.45))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(m) = this.command_permissions.as_mut() {
-                                m.overwrites.insert(
-                                    (kind, cid),
-                                    PermissionOverwrite {
-                                        id: cid,
-                                        kind,
-                                        name: add_name.clone(),
-                                        permission: true,
-                                        can_write: true,
-                                        is_sentinel: false,
-                                    },
-                                );
-                                m.picker = None;
+                                let key = (kind, cid);
+                                if m.picker_selected.remove(&key).is_none()
+                                    && !picker_at_override_limit(
+                                        m.overwrites.len(),
+                                        m.picker_selected.len(),
+                                    )
+                                {
+                                    m.picker_selected.insert(key, add_name.clone());
+                                }
                             }
-                            this.save_command_permissions(cx);
-                        })),
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .size(px(18.))
+                                .flex_none()
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(color(if checked {
+                                    "--control-primary-background-default"
+                                } else {
+                                    "--border-strong"
+                                }))
+                                .bg(if checked {
+                                    color("--white")
+                                } else {
+                                    rgba(0x00000000)
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when(checked, |d| {
+                                    d.child(icon(
+                                        "checkmark_large",
+                                        12.,
+                                        "--control-primary-background-default",
+                                    ))
+                                }),
+                        )
+                        .child(leading)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .text_color(color("--text-strong"))
+                                        .truncate()
+                                        .child(cname),
+                                )
+                                .children(secondary_tag.map(|tag| {
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(13.))
+                                        .text_color(color("--text-muted"))
+                                        .child(tag)
+                                })),
+                        ),
                 );
             }
             div()
@@ -863,15 +998,16 @@ impl Root {
                 .on_click(cx.listener(|this, _, _, cx| {
                     if let Some(m) = this.command_permissions.as_mut() {
                         m.picker = None;
+                        m.picker_selected.clear();
                     }
                     cx.notify();
                 }))
                 .child(
                     div()
                         .id("cmd-perms-picker-modal")
-                        .w(px(420.))
-                        .max_h(px(420.))
-                        .p(px(16.))
+                        .aria_label(dc_intl::t("N+InBa"))
+                        .w(px(480.))
+                        .max_h(px(520.))
                         .rounded(px(12.))
                         .bg(color("--background-surface-high"))
                         .border_1()
@@ -879,34 +1015,143 @@ impl Root {
                         .shadow_xl()
                         .flex()
                         .flex_col()
-                        .gap(px(10.))
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .child(
                             div()
-                                .text_size(px(16.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--text-strong"))
-                                .child(title),
+                                .px(px(20.))
+                                .pt(px(18.))
+                                .pb(px(10.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(18.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(title),
+                                )
+                                .when(picker_at_limit, |d| {
+                                    d.child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .text_color(color("--text-feedback-critical"))
+                                            .child(dc_intl::t("XTwtW/")),
+                                    )
+                                }),
                         )
                         .child(
-                            div()
-                                .h(px(36.))
-                                .px(px(10.))
-                                .rounded(px(6.))
-                                .border_1()
-                                .border_color(color("--input-border-default"))
-                                .bg(color("--input-background-default"))
-                                .flex()
-                                .items_center()
-                                .child(modal.picker_search.clone()),
+                            div().px(px(20.)).pb(px(10.)).child(
+                                div()
+                                    .h(px(36.))
+                                    .px(px(10.))
+                                    .rounded(px(6.))
+                                    .border_1()
+                                    .border_color(color("--input-border-default"))
+                                    .bg(color("--input-background-default"))
+                                    .flex()
+                                    .items_center()
+                                    .child(modal.picker_search.clone()),
+                            ),
                         )
                         .child(
                             div()
                                 .id("cmd-perms-picker-list")
                                 .flex_1()
-                                .min_h(px(0.))
+                                .min_h(px(120.))
+                                .max_h(px(280.))
+                                .px(px(16.))
                                 .overflow_y_scroll()
                                 .child(items),
+                        )
+                        .child(
+                            div()
+                                .px(px(20.))
+                                .py(px(14.))
+                                .border_t_1()
+                                .border_color(color("--border-subtle"))
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .id("cmd-perms-picker-cancel")
+                                        .h(px(36.))
+                                        .px(px(16.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--border-muted"))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .child(dc_intl::t("ETE/oC"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(m) = this.command_permissions.as_mut() {
+                                                m.picker = None;
+                                                m.picker_selected.clear();
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("cmd-perms-picker-add")
+                                        .h(px(36.))
+                                        .px(px(18.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-primary-background-default"))
+                                        .when(selected_count > 0, |d| {
+                                            d.cursor_pointer().hover(|s| {
+                                                s.bg(color("--control-primary-background-hover"))
+                                            })
+                                        })
+                                        .when(selected_count == 0, |d| d.opacity(0.5))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(dc_intl::t("OYkgVk"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let commit = if let Some(m) =
+                                                this.command_permissions.as_mut()
+                                                && !m.picker_selected.is_empty()
+                                            {
+                                                let pending =
+                                                    std::mem::take(&mut m.picker_selected);
+                                                for ((kind, cid), name) in pending {
+                                                    m.overwrites.insert(
+                                                        (kind, cid),
+                                                        PermissionOverwrite {
+                                                            id: cid,
+                                                            kind,
+                                                            name,
+                                                            permission: true,
+                                                            can_write: true,
+                                                            is_sentinel: false,
+                                                        },
+                                                    );
+                                                }
+                                                m.picker = None;
+                                                true
+                                            } else {
+                                                false
+                                            };
+                                            if commit {
+                                                this.save_command_permissions(cx);
+                                            }
+                                        })),
+                                ),
                         ),
                 )
         });
@@ -1201,5 +1446,22 @@ mod tests {
                 .body()
                 .contains("@everyone")
         );
+    }
+
+    #[test]
+    fn command_perm_role_165747_and_picker_192991_rules() {
+        for key in [
+            "337Ja9", "arFPfJ", "sMsaLg", "N+InBa", "XTwtW/", "ETE/oC", "OYkgVk",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 165747/192991 key {key}");
+        }
+        assert!(!picker_at_override_limit(98, 1));
+        assert!(picker_at_override_limit(98, 2));
+        assert!(picker_at_override_limit(100, 0));
+        assert!(matches!(
+            command_perm_request_members(42, "mod".into()),
+            Request::GuildMembers { guilds, query, limit: 200, .. }
+                if guilds == vec![42] && query == "mod"
+        ));
     }
 }

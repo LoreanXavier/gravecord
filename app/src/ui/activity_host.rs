@@ -1027,6 +1027,25 @@ impl Root {
                     cx,
                 );
             }
+            Ask::ShareMoment { nonce, media_url } => {
+                let (app_id, app_name) = self
+                    .activities
+                    .running
+                    .as_ref()
+                    .map(|r| (r.application_id.clone(), r.name.clone()))
+                    .unwrap_or_else(|| ("0".to_owned(), "Activity".to_owned()));
+                self.open_share_moment(
+                    super::forward::ShareMoment {
+                        application_id: app_id,
+                        application_name: app_name,
+                        media_url,
+                        copied: false,
+                        sdk_cmd: Some(("OPEN_SHARE_MOMENT_DIALOG".to_owned(), nonce)),
+                    },
+                    None,
+                    cx,
+                );
+            }
         }
     }
 

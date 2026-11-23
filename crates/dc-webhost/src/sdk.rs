@@ -72,6 +72,8 @@ pub enum Ask {
     },
     /// `SHARE_CONTENT` (module 529999): open the Activity share modal with custom title/subtitle/media.
     ShareContent { nonce: String, args: Value },
+    /// `OPEN_SHARE_MOMENT_DIALOG` (module 190930): open the Activity Share Moment modal for a Discord CDN media URL.
+    ShareMoment { nonce: String, media_url: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -459,6 +461,31 @@ impl Bridge {
                 vec![Action::Ask(Ask::ShareContent {
                     nonce: nonce.to_owned(),
                     args: args.clone(),
+                })]
+            }
+            "OPEN_SHARE_MOMENT_DIALOG" => {
+                if let Some(denied) = need_auth(self) {
+                    return denied;
+                }
+                let media_url = args["mediaUrl"]
+                    .as_str()
+                    .or_else(|| args["media_url"].as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
+                let is_cdn = media_url.starts_with("https://cdn.discordapp.com/")
+                    || media_url.starts_with("https://media.discordapp.net/");
+                if !is_cdn {
+                    return vec![Action::Post(error(
+                        cmd,
+                        nonce,
+                        code::INVALID_PAYLOAD,
+                        "mediaUrl must be a Discord CDN URL",
+                    ))];
+                }
+                vec![Action::Ask(Ask::ShareMoment {
+                    nonce: nonce.to_owned(),
+                    media_url,
                 })]
             }
             "SUBSCRIBE" | "UNSUBSCRIBE" => {

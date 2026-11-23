@@ -189,6 +189,72 @@ impl ShareStorefront {
     }
 }
 
+/// Module 190930 (`OPEN_SHARE_MOMENT_DIALOG`): max destination count (`10`).
+pub(crate) const MAX_MOMENT_DESTINATIONS: usize = 10;
+
+/// Module 190930 (`OPEN_SHARE_MOMENT_DIALOG`): payload for the Activity Share Moment modal.
+#[derive(Clone, Debug)]
+pub(crate) struct ShareMoment {
+    pub application_id: String,
+    pub application_name: String,
+    pub media_url: String,
+    pub copied: bool,
+    pub sdk_cmd: Option<(String, String)>,
+}
+
+/// Module 190930: verifies a Share Moment `mediaUrl` points to a Discord CDN host.
+pub(crate) fn is_discord_cdn_media_url(url: &str) -> bool {
+    url.starts_with("https://cdn.discordapp.com/")
+        || url.starts_with("https://media.discordapp.net/")
+}
+
+/// Module 213453 (`CustomThemesShareModalWrapper`): serialized `shared_client_theme` payload (`138399`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SharedCustomTheme {
+    /// 6-char hex RGB strings without `#` (`colors.map(c => c.replace("#", ""))`).
+    pub colors: Vec<String>,
+    pub gradient_angle: u32,
+    pub base_mix: u32,
+    /// `ProtoTheme` (`195255.O`): 0=UNSET (dark), 1=DARK (ash), 2=LIGHT, 3=DARKER, 4=MIDNIGHT (onyx).
+    pub base_theme: u8,
+}
+
+/// Module 213453 (`195255.O`): maps client theme name to `ProtoTheme` enum value.
+#[allow(dead_code)]
+pub(crate) fn proto_base_theme(theme: &str) -> u8 {
+    match theme {
+        "ash" => 1,
+        "light" => 2,
+        "darker" => 3,
+        "onyx" | "midnight" => 4,
+        _ => 0,
+    }
+}
+
+/// Module 213453 (`138399._sendMessage`): `POST /channels/{channelId}/messages` with `shared_client_theme`.
+pub(crate) fn shared_custom_theme_message_request(
+    channel_id: Id,
+    content: &str,
+    theme: &SharedCustomTheme,
+) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: None,
+        method: reqwest::Method::POST,
+        route: format!("/channels/{channel_id}/messages"),
+        body: Some(serde_json::json!({
+            "content": content,
+            "tts": false,
+            "flags": 0,
+            "shared_client_theme": {
+                "colors": theme.colors,
+                "gradient_angle": theme.gradient_angle,
+                "base_mix": theme.base_mix,
+                "base_theme": theme.base_theme,
+            }
+        })),
+    }
+}
+
 pub(crate) struct Forward {
     /// The forwarded message; none when a profile is shared.
     pub message: Option<Message>,
@@ -200,6 +266,10 @@ pub(crate) struct Forward {
     pub(super) activity: Option<ShareActivity>,
     /// Module 714892: Share in-game item (`SOCIAL_LAYER_STOREFRONT`, up to 6 SKUs).
     pub(super) storefront: Option<ShareStorefront>,
+    /// Module 190930: Activity Share Moment (`OPEN_SHARE_MOMENT_DIALOG`, up to 10 destinations).
+    pub(super) moment: Option<ShareMoment>,
+    /// Module 213453: Custom Themes Share Modal (`CustomThemesShareModalWrapper`, up to 5 destinations).
+    pub(super) custom_theme: Option<SharedCustomTheme>,
     pub(super) search: Entity<Editor>,
     pub(super) note: Entity<Editor>,
     _events: [Subscription; 2],
@@ -308,6 +378,130 @@ impl Root {
             clips: Vec::new(),
             activity: Some(share),
             storefront: None,
+            moment: None,
+            custom_theme: None,
+            search,
+            note,
+            _events: [search_events, note_events],
+            query: String::new(),
+            selected: Vec::new(),
+        });
+        cx.notify();
+    }
+
+    /// Module 190930 (`OPEN_SHARE_MOMENT_DIALOG`): opens the Activity Share Moment modal.
+    pub(super) fn open_share_moment(
+        &mut self,
+        moment: ShareMoment,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        if is_discord_cdn_media_url(&moment.media_url) {
+            self.request_image(
+                format!("activity-moment:{}", moment.application_id),
+                moment.media_url.clone(),
+            );
+        }
+        let search = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_placeholder(dc_intl::t("5h0QOP").to_owned());
+            editor
+        });
+        let note = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_placeholder(dc_intl::t("ZroO3G").to_owned());
+            editor
+        });
+        let search_events = cx.subscribe(&search, |this, editor, event: &EditorEvent, cx| {
+            if let Some(forward) = this.forward.as_mut() {
+                match event {
+                    EditorEvent::Edited => forward.query = editor.read(cx).text().to_owned(),
+                    EditorEvent::Cancel => this.close_forward(cx),
+                    EditorEvent::Submit(_) => {}
+                }
+            }
+            cx.notify();
+        });
+        let note_events = cx.subscribe(&note, |this, _, event: &EditorEvent, cx| {
+            match event {
+                EditorEvent::Submit(text) => {
+                    let text = text.clone();
+                    this.send_forward(Some(text), cx);
+                }
+                EditorEvent::Cancel => this.close_forward(cx),
+                EditorEvent::Edited => {}
+            }
+            cx.notify();
+        });
+        if let Some(window) = window {
+            window.focus(&search.read(cx).focus_handle(cx), cx);
+        }
+        self.forward = Some(Forward {
+            message: None,
+            profile: None,
+            clips: Vec::new(),
+            activity: None,
+            storefront: None,
+            moment: Some(moment),
+            custom_theme: None,
+            search,
+            note,
+            _events: [search_events, note_events],
+            query: String::new(),
+            selected: Vec::new(),
+        });
+        cx.notify();
+    }
+
+    /// Module 213453 (`CustomThemesShareModalWrapper`): opens the Custom Themes Share modal.
+    pub(super) fn open_share_custom_theme(
+        &mut self,
+        theme: SharedCustomTheme,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        let search = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_placeholder(dc_intl::t("5h0QOP").to_owned());
+            editor
+        });
+        let note = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_placeholder(dc_intl::t("ZroO3G").to_owned());
+            editor
+        });
+        let search_events = cx.subscribe(&search, |this, editor, event: &EditorEvent, cx| {
+            if let Some(forward) = this.forward.as_mut() {
+                match event {
+                    EditorEvent::Edited => forward.query = editor.read(cx).text().to_owned(),
+                    EditorEvent::Cancel => this.close_forward(cx),
+                    EditorEvent::Submit(_) => {}
+                }
+            }
+            cx.notify();
+        });
+        let note_events = cx.subscribe(&note, |this, _, event: &EditorEvent, cx| {
+            match event {
+                EditorEvent::Submit(text) => {
+                    let text = text.clone();
+                    this.send_forward(Some(text), cx);
+                }
+                EditorEvent::Cancel => this.close_forward(cx),
+                EditorEvent::Edited => {}
+            }
+            cx.notify();
+        });
+        if let Some(window) = window {
+            window.focus(&search.read(cx).focus_handle(cx), cx);
+        }
+        self.forward = Some(Forward {
+            message: None,
+            profile: None,
+            clips: Vec::new(),
+            activity: None,
+            storefront: None,
+            moment: None,
+            custom_theme: Some(theme),
             search,
             note,
             _events: [search_events, note_events],
@@ -319,20 +513,25 @@ impl Root {
 
     /// Closes the forward modal, resolving any pending Activity SDK share promise as cancelled.
     pub(super) fn close_forward(&mut self, cx: &mut Context<Self>) {
-        if let Some(forward) = self.forward.take()
-            && let Some(act) = forward.activity
-            && let Some((cmd, nonce)) = act.sdk_cmd
-        {
-            self.activity_reply(
-                &cmd,
-                &nonce,
-                Ok(serde_json::json!({
-                    "success": act.did_copy_link,
-                    "didCopyLink": act.did_copy_link,
-                    "didSendMessage": false,
-                })),
-                cx,
-            );
+        if let Some(forward) = self.forward.take() {
+            if let Some(act) = forward.activity
+                && let Some((cmd, nonce)) = act.sdk_cmd
+            {
+                self.activity_reply(
+                    &cmd,
+                    &nonce,
+                    Ok(serde_json::json!({
+                        "success": act.did_copy_link,
+                        "didCopyLink": act.did_copy_link,
+                        "didSendMessage": false,
+                    })),
+                    cx,
+                );
+            } else if let Some(moment) = forward.moment
+                && let Some((cmd, nonce)) = moment.sdk_cmd
+            {
+                self.activity_reply(&cmd, &nonce, Ok(serde_json::json!({})), cx);
+            }
         }
         cx.notify();
     }
@@ -385,6 +584,8 @@ impl Root {
             clips: Vec::new(),
             activity: None,
             storefront: None,
+            moment: None,
+            custom_theme: None,
             search,
             note,
             _events: [search_events, note_events],
@@ -511,13 +712,18 @@ impl Root {
         let Some(forward) = self.forward.as_mut() else {
             return;
         };
+        let max_dest = if forward.moment.is_some() {
+            MAX_MOMENT_DESTINATIONS
+        } else {
+            MAX_DESTINATIONS
+        };
         if let Some(index) = forward
             .selected
             .iter()
             .position(|known| *known == destination)
         {
             forward.selected.remove(index);
-        } else if forward.selected.len() < MAX_DESTINATIONS {
+        } else if forward.selected.len() < max_dest {
             forward.selected.insert(0, destination);
         }
     }
@@ -576,6 +782,50 @@ impl Root {
                 dc_intl::t("kwmYkt")
             };
             self.show_success_toast(toast.to_owned(), cx);
+            return;
+        }
+        if let Some(moment) = forward.moment {
+            // Module 190930 (`OPEN_SHARE_MOMENT_DIALOG`): posts "Shared from **{app}**" + media URL
+            // to each destination (up to 10), shows `jQULqL` success toast, and resolves RPC promise.
+            let bold_app = format!("**{}**", moment.application_name);
+            let caption = if moment.application_name.is_empty() {
+                String::new()
+            } else {
+                dc_intl::format("jQULqL", &[("applicationName", bold_app.as_str().into())])
+            };
+            let body = if caption.is_empty() {
+                moment.media_url.clone()
+            } else {
+                format!("{caption}\n{}", moment.media_url)
+            };
+            for destination in &forward.selected {
+                self.start_local_text(destination.channel(), body.clone());
+            }
+            if let Some((cmd, nonce)) = moment.sdk_cmd {
+                self.activity_reply(&cmd, &nonce, Ok(serde_json::json!({})), cx);
+            }
+            self.go_to_destination(&forward.selected);
+            if !moment.application_name.is_empty() {
+                let toast = dc_intl::format(
+                    "jQULqL",
+                    &[("applicationName", moment.application_name.as_str().into())],
+                );
+                self.show_success_toast(toast, cx);
+            }
+            return;
+        }
+        if let Some(theme) = forward.custom_theme.as_ref() {
+            // Module 213453 (`CustomThemesShareModalWrapper`): posts `shared_client_theme` JSON
+            // + optional note to up to 5 channels/DMs.
+            for destination in &forward.selected {
+                let _ = self.requests.send(shared_custom_theme_message_request(
+                    destination.channel(),
+                    &note,
+                    theme,
+                ));
+            }
+            self.go_to_destination(&forward.selected);
+            self.show_success_toast(dc_intl::t("kwmYkt").to_owned(), cx);
             return;
         }
         if let Some(sf) = forward.storefront.as_ref() {
@@ -1165,6 +1415,166 @@ impl Root {
         "storefront-share: open".to_owned()
     }
 
+    /// Module 190930 (`OPEN_SHARE_MOMENT_DIALOG`): `.previewImage_5fWTxo` (max 400x250) + `mdE9iE` 10-cap hint.
+    fn moment_share_preview(&self, moment: &ShareMoment, selected_count: usize) -> AnyElement {
+        let key = format!("activity-moment:{}", moment.application_id);
+        let art = self.images.get(&key).cloned();
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(400.))
+                    .h(px(140.))
+                    .max_h(px(250.))
+                    .rounded(px(8.))
+                    .bg(color("--background-base-lowest"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(if let Some(im) = art {
+                        img(im)
+                            .max_w(px(400.))
+                            .max_h(px(250.))
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .into_any_element()
+                    } else {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(super::icon("bot_game_controller", 28., "--brand-500"))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::format(
+                                        "jQULqL",
+                                        &[(
+                                            "applicationName",
+                                            moment.application_name.as_str().into(),
+                                        )],
+                                    )),
+                            )
+                            .into_any_element()
+                    }),
+            )
+            .when(selected_count >= MAX_MOMENT_DESTINATIONS, |d| {
+                d.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::format(
+                            "mdE9iE",
+                            &[(
+                                "maxShares",
+                                dc_intl::Arg::Num(MAX_MOMENT_DESTINATIONS as f64),
+                            )],
+                        )),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// Module 213453 (`CustomThemesShareModalWrapper`): swatch preview of the shared custom client theme.
+    fn custom_theme_share_preview(&self, theme: &SharedCustomTheme) -> AnyElement {
+        let swatches = theme.colors.iter().take(5).map(|hex| {
+            let rgb = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0x5865f2);
+            div()
+                .size(px(28.))
+                .rounded_full()
+                .border_2()
+                .border_color(color("--border-strong"))
+                .bg(gpui::rgb(rgb))
+        });
+        div()
+            .w_full()
+            .p(px(12.))
+            .rounded(px(8.))
+            .bg(color("--background-base-lowest"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(12.))
+            .child(div().flex().items_center().gap(px(6.)).children(swatches))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(color("--text-muted"))
+                    .child(format!(
+                        "{}° · {}% mix",
+                        theme.gradient_angle, theme.base_mix
+                    )),
+            )
+            .into_any_element()
+    }
+
+    /// Capture helper for module 190930 (`OPEN_SHARE_MOMENT_DIALOG`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_share_moment(
+        &mut self,
+        arg: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.eq_ignore_ascii_case("close") {
+            self.close_forward(cx);
+            return "share-moment: closed".to_owned();
+        }
+        self.open_share_moment(
+            ShareMoment {
+                application_id: "1234567890".to_owned(),
+                application_name: "Starlight Odyssey".to_owned(),
+                media_url: "https://cdn.discordapp.com/attachments/1/2/moment.png".to_owned(),
+                copied: arg.eq_ignore_ascii_case("copied"),
+                sdk_cmd: None,
+            },
+            Some(window),
+            cx,
+        );
+        "share-moment: open".to_owned()
+    }
+
+    /// Capture helper for module 213453 (`CustomThemesShareModalWrapper`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_share_custom_theme(
+        &mut self,
+        arg: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.eq_ignore_ascii_case("close") {
+            self.close_forward(cx);
+            return "share-custom-theme: closed".to_owned();
+        }
+        self.open_share_custom_theme(
+            SharedCustomTheme {
+                colors: vec![
+                    "5865f2".to_owned(),
+                    "eb459e".to_owned(),
+                    "3ba55c".to_owned(),
+                ],
+                gradient_angle: 135,
+                base_mix: 68,
+                base_theme: 3,
+            },
+            Some(window),
+            cx,
+        );
+        "share-custom-theme: open".to_owned()
+    }
+
     pub(super) fn forward_modal(
         &self,
         window: &Window,
@@ -1173,7 +1583,12 @@ impl Root {
         let forward = self.forward.as_ref()?;
         let results = self.forward_results(forward);
         let count = forward.selected.len();
-        let full = count >= MAX_DESTINATIONS;
+        let max_dest = if forward.moment.is_some() {
+            MAX_MOMENT_DESTINATIONS
+        } else {
+            MAX_DESTINATIONS
+        };
+        let full = count >= max_dest;
         let search_focused = forward.search.read(cx).focus_handle(cx).is_focused(window);
         // `size-md` (design/dom/modals/forward-*): at most 800 tall (`max-height: min(800px, 100%)`), the list filling
         // it, 56px of the window kept above and below; 480 wide, or the window less 24px each side when narrower.
@@ -1209,6 +1624,10 @@ impl Root {
                     self.clips_share_preview(&forward.clips)
                 } else if let Some(act) = &forward.activity {
                     self.activity_share_preview(act)
+                } else if let Some(moment) = &forward.moment {
+                    self.moment_share_preview(moment, count)
+                } else if let Some(theme) = &forward.custom_theme {
+                    self.custom_theme_share_preview(theme)
                 } else if let Some(sf) = &forward.storefront {
                     self.storefront_share_preview(sf)
                 } else {
@@ -1279,6 +1698,10 @@ impl Root {
                                     .text_color(color("--text-strong"))
                                     .child(if !forward.clips.is_empty() {
                                         "Share Clip".to_owned()
+                                    } else if forward.moment.is_some() {
+                                        dc_intl::t("r9qKow").to_owned()
+                                    } else if forward.custom_theme.is_some() {
+                                        dc_intl::t("zgFs8C").to_owned()
                                     } else if let Some(act) = forward.activity.as_ref() {
                                         act.preview_title
                                             .clone()
@@ -1485,6 +1908,8 @@ impl Root {
                                 } else if sharing.is_some()
                                     || !forward.clips.is_empty()
                                     || forward.activity.is_some()
+                                    || forward.moment.is_some()
+                                    || forward.custom_theme.is_some()
                                     || forward.storefront.is_some()
                                 {
                                     div().child(preview)
@@ -1507,46 +1932,93 @@ impl Root {
                     .pb(px(8.))
                     .px(px(24.))
                     .flex()
+                    .when(forward.moment.is_some(), |d| d.justify_end())
                     .gap(px(8.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .h(px(40.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--border-normal"))
-                            .bg(color("--input-background-default"))
-                            .pl(px(16.))
-                            .pr(px(12.))
-                            .flex()
-                            .items_center()
-                            .child(div().flex_1().min_w(px(0.)).child(forward.note.clone()))
-                            .child(
+                    .when(forward.moment.is_none(), |d| {
+                        d.child(
+                            div()
+                                .flex_1()
+                                .h(px(40.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--border-normal"))
+                                .bg(color("--input-background-default"))
+                                .pl(px(16.))
+                                .pr(px(12.))
+                                .flex()
+                                .items_center()
+                                .child(div().flex_1().min_w(px(0.)).child(forward.note.clone()))
+                                .child(
+                                    div()
+                                        .id("forward-emoji")
+                                        .size(px(32.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor_pointer()
+                                        .children(
+                                            self.images
+                                                .get("emoji_button")
+                                                .cloned()
+                                                .map(|picture| img(picture).size(px(18.))),
+                                        )
+                                        .on_click(cx.listener(
+                                            |this, event: &gpui::ClickEvent, window, cx| {
+                                                let at = event.position();
+                                                this.open_picker(
+                                                    super::picker::Target::ForwardNote,
+                                                    gpui::point(at.x, at.y - px(24.)),
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                ),
+                        )
+                    })
+                    .when_some(
+                        forward
+                            .moment
+                            .as_ref()
+                            .map(|m| (m.media_url.clone(), m.copied)),
+                        |this, (media_url, copied)| {
+                            // Module 190930: "Copy Image" (`tvUqWn`) / "Copied" (`t5VZ88`) secondary button.
+                            this.child(
                                 div()
-                                    .id("forward-emoji")
-                                    .size(px(32.))
+                                    .id("moment-share-copy-image")
+                                    .h(px(40.))
+                                    .px(px(14.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .when(!copied, |d| {
+                                        d.cursor_pointer().hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                    })
+                                    .when(copied, |d| d.opacity(0.6))
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .cursor_pointer()
-                                    .children(
-                                        self.images
-                                            .get("emoji_button")
-                                            .cloned()
-                                            .map(|picture| img(picture).size(px(18.))),
-                                    )
-                                    .on_click(cx.listener(
-                                        |this, event: &gpui::ClickEvent, window, cx| {
-                                            let at = event.position();
-                                            this.open_picker(
-                                                super::picker::Target::ForwardNote,
-                                                gpui::point(at.x, at.y - px(24.)),
-                                                window,
-                                                cx,
-                                            );
-                                        },
-                                    )),
-                            ),
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--control-secondary-text-default"))
+                                    .child(dc_intl::t(if copied { "t5VZ88" } else { "tvUqWn" }))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(m) =
+                                            this.forward.as_mut().and_then(|f| f.moment.as_mut())
+                                        {
+                                            if m.copied {
+                                                return;
+                                            }
+                                            m.copied = true;
+                                        }
+                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                            media_url.clone(),
+                                        ));
+                                        cx.notify();
+                                    })),
+                            )
+                        },
                     )
                     .when_some(activity_share_url, |this, url| {
                         // Module 529999 Copy Link secondary icon button (`WqhZss` / `L/PwZf`).
@@ -2080,5 +2552,44 @@ mod tests {
         for k in ["yiaXeN", "j7Go5A", "CqpEC+", "kwmYkt", "iufib1", "L/PwZf"] {
             assert!(dc_intl::has_key(k), "missing 714892/763375 key {k}");
         }
+    }
+
+    #[test]
+    fn share_moment_190930_and_custom_theme_213453() {
+        for k in [
+            "r9qKow", "5h0QOP", "V6nAfF", "mdE9iE", "tvUqWn", "t5VZ88", "TXNS7S", "jQULqL",
+            "PanA4J", "zgFs8C", "ZroO3G",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 190930/213453 key {k}");
+        }
+        assert!(is_discord_cdn_media_url(
+            "https://cdn.discordapp.com/attachments/1/2/a.png"
+        ));
+        assert!(is_discord_cdn_media_url(
+            "https://media.discordapp.net/attachments/1/2/a.png"
+        ));
+        assert!(!is_discord_cdn_media_url("https://evil.example/a.png"));
+        assert_eq!(MAX_MOMENT_DESTINATIONS, 10);
+        assert_eq!(proto_base_theme("dark"), 0);
+        assert_eq!(proto_base_theme("ash"), 1);
+        assert_eq!(proto_base_theme("light"), 2);
+        assert_eq!(proto_base_theme("darker"), 3);
+        assert_eq!(proto_base_theme("onyx"), 4);
+
+        let theme = SharedCustomTheme {
+            colors: vec!["5865f2".into(), "eb459e".into()],
+            gradient_angle: 180,
+            base_mix: 74,
+            base_theme: 3,
+        };
+        assert!(matches!(
+            shared_custom_theme_message_request(77, "check this", &theme),
+            crate::net::Request::Rest { route, body: Some(ref b), .. }
+                if route == "/channels/77/messages"
+                    && b["content"] == "check this"
+                    && b["shared_client_theme"]["gradient_angle"] == 180
+                    && b["shared_client_theme"]["base_mix"] == 74
+                    && b["shared_client_theme"]["base_theme"] == 3
+        ));
     }
 }

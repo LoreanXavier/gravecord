@@ -954,6 +954,8 @@ pub struct Root {
     /// Primary Age Verification Get Started modal (module 929180).
     age_verification_modal: Option<age_verification_modal::AgeVerificationModalState>,
     incode_age_verify: Option<age_verification_modal::IncodeAgeVerificationState>,
+    age_verify_manual_review_pending: bool,
+    favorites_thread_settings: Option<favorites::FavoritesThreadSettingsModal>,
     guild_room_selector: Option<guild_space::GuildRoomSelectorModal>,
     game_org_error_modal: Option<game_org_invite::GameOrgErrorModalState>,
     app_channels: app_channel::AppChannelState,
@@ -1635,6 +1637,8 @@ impl Root {
             guild_space: None,
             age_verification_modal: None,
             incode_age_verify: None,
+            age_verify_manual_review_pending: false,
+            favorites_thread_settings: None,
             guild_room_selector: None,
             game_org_error_modal: None,
             app_channels: app_channel::AppChannelState::default(),
@@ -8445,7 +8449,7 @@ impl Root {
         None
     }
 
-    /// Module 654255 / 188841: "Game could not be found" fallback modal (`C5biF4`/`3Dy1Rh`/`BddRzS`).
+    /// Module 654255 / 188841: "Game could not be found" fallback modal (`C5biF4`/`3Dy1Rh`/`BddRzS`, `size="sm"` 400px).
     fn game_not_found_modal_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.game_not_found_modal {
             return None;
@@ -8469,7 +8473,7 @@ impl Root {
                         div()
                             .id("game-not-found-modal")
                             .occlude()
-                            .w(px(440.))
+                            .w(px(400.))
                             .p(px(24.))
                             .rounded(px(12.))
                             .border_1()
@@ -8481,10 +8485,39 @@ impl Root {
                             .gap(px(12.))
                             .child(
                                 div()
-                                    .text_size(px(20.))
-                                    .font_weight(FontWeight(700.))
-                                    .text_color(color("--text-strong"))
-                                    .child(dc_intl::t("C5biF4")),
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .text_size(px(20.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("C5biF4")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("game-not-found-close")
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(
+                                                "modal_close",
+                                                16.,
+                                                "--interactive-text-default",
+                                            ))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.game_not_found_modal = false;
+                                                cx.notify();
+                                            })),
+                                    ),
                             )
                             .child(
                                 div()
@@ -8494,16 +8527,20 @@ impl Root {
                                     .child(dc_intl::t("3Dy1Rh")),
                             )
                             .child(
-                                div().pt(px(8.)).flex().justify_end().child(
+                                div().pt(px(8.)).w_full().child(
                                     div()
                                         .id("game-not-found-ok")
-                                        .h(px(36.))
-                                        .px(px(20.))
+                                        .w_full()
+                                        .h(px(38.))
                                         .rounded(px(8.))
-                                        .bg(color("--brand-500"))
+                                        .bg(color("--control-primary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-primary-background-hover"))
+                                        })
                                         .cursor_pointer()
                                         .flex()
                                         .items_center()
+                                        .justify_center()
                                         .text_size(px(14.))
                                         .font_weight(FontWeight(600.))
                                         .text_color(color("--white"))
@@ -12387,7 +12424,10 @@ impl Render for Root {
                         || this.library.uninstall_confirm.is_some()
                         || this.family_center.request_connection.is_some()
                         || this.family_center.accept_link.is_some()
+                        || this.family_center.disconnect_link.is_some()
                         || this.incode_age_verify.is_some()
+                        || this.age_verify_manual_review_pending
+                        || this.favorites_thread_settings.is_some()
                         || this.guild_room_selector.is_some()
                         || this.game_org_error_modal.is_some()
                         || this.app_channels.preview.is_some()
@@ -12443,6 +12483,8 @@ impl Render for Root {
                     this.close_user_activity_preview();
                     this.close_age_verification_modal();
                     this.incode_age_verify = None;
+                    this.age_verify_manual_review_pending = false;
+                    this.favorites_thread_settings = None;
                     this.guild_room_selector = None;
                     this.game_org_error_modal = None;
                     this.app_channels.preview = None;
@@ -13913,6 +13955,9 @@ impl Render for Root {
             .children(self.frames_announcement_layer(cx))
             .children(self.age_verification_modal_layer(cx))
             .children(self.incode_age_verification_modal(cx))
+            .children(self.age_verify_manual_review_pending_layer(cx))
+            .children(self.favorites_thread_settings_modal_layer(cx))
+            .children(self.family_center_disconnect_link_modal(cx))
             .children(self.premium_announcement_modal_layer(cx))
             .children(self.guild_space_layer(cx))
             .children(self.guild_room_selector_modal(cx))

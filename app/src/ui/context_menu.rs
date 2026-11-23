@@ -193,6 +193,11 @@ pub(super) enum Target {
     Link,
     /// Application Command Permission target right-click (`dev-context`, module 739174 -> 646938, `oJ1Muw`).
     CommandPermId(Id),
+    /// Application Command Permission role right-click (`guild-integrations-permission-role-context`, module 165747, `337Ja9`).
+    CommandPermRole {
+        guild: Id,
+        role: Id,
+    },
     /// Standalone embedded text-selection context menu (`text-context`, module 898811, `s285pq`);
     /// selected string stored in `State::text_selection_target`.
     TextSelection,
@@ -233,6 +238,8 @@ pub(super) enum Act {
     MoveTo,
     CopyLink,
     CopyId,
+    /// Module 165747 / 292024 (`arFPfJ` "View Server As Role"): impersonates a role from command permissions.
+    ViewAsRole,
     EditChannel,
     Duplicate,
     DeleteChannel,
@@ -908,6 +915,7 @@ impl Act {
             Act::DevicePermissions => 195,
             Act::CopyContact => 196,
             Act::SendSms => 197,
+            Act::ViewAsRole => 198,
         }
     }
 }
@@ -1115,7 +1123,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::OpenModView
         | Act::PinChannelTab
         | Act::CloseChannelTab
-        | Act::SetVoiceStatus => Wired,
+        | Act::SetVoiceStatus
+        | Act::ViewAsRole => Wired,
     }
 }
 
@@ -2272,10 +2281,28 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::GameMention(_) => Some(dc_intl::t("Hf9fuS")),
         Target::Image | Target::Link => Some(dc_intl::t("Zow2V5")),
         Target::CommandPermId(_) => Some(dc_intl::t("ogxXGq")),
+        Target::CommandPermRole { .. } => Some(dc_intl::t("337Ja9")),
         Target::TextSelection => Some(dc_intl::t("s285pq")),
         Target::ActivityPopoutOverflow { .. } => Some(dc_intl::t("SS9Y6P")),
         _ => None,
     }
+}
+
+/// Module 165747 (`guild-integrations-permission-role-context`, `aria-label` `337Ja9` "Server Role Actions"):
+/// Emits `arFPfJ` ("View Server As Role", gated on `canImpersonateRole`) and `sMsaLg` ("Copy Role ID", gated on developer mode).
+pub(super) fn command_perm_role_items(can_view_as_role: bool, developer: bool) -> Vec<Entry> {
+    let mut items = Vec::new();
+    if can_view_as_role {
+        items.push(Entry::Row(
+            Row::new(Act::ViewAsRole, dc_intl::t("arFPfJ")).icon("arrow_large_right"),
+        ));
+    }
+    if developer {
+        items.push(Entry::Row(
+            Row::new(Act::CopyId, dc_intl::t("sMsaLg")).icon("menu_id"),
+        ));
+    }
+    items
 }
 
 /// Module 177079 (`image-context`, `aria-label` `Zow2V5` "Image Actions"):
@@ -5394,6 +5421,14 @@ impl Root {
             Target::CommandPermId(_) => vec![Entry::Row(
                 Row::new(Act::CopyId, dc_intl::t("oJ1Muw")).icon("menu_id"),
             )],
+            Target::CommandPermRole { guild, role } => {
+                let can_impersonate = self.can_view_as_role(guild, role);
+                let items = command_perm_role_items(can_impersonate, developer);
+                if items.is_empty() {
+                    return;
+                }
+                items
+            }
             Target::GameShopSku => {
                 let items = game_shop_sku_items(developer);
                 if items.is_empty() {
@@ -6292,6 +6327,10 @@ impl Root {
                     self.better_role_members(role, anchor, cx);
                 }
             }
+            (Act::ViewAsRole, Target::CommandPermRole { guild, role }) => {
+                self.close_command_permissions(cx);
+                self.start_view_as_role(guild, role, cx);
+            }
             (Act::PluginHideMentionBadge, Target::Channel(channel) | Target::Thread(channel)) => {
                 self.toggle_hidden_mentions(channel);
                 cx.notify();
@@ -6971,7 +7010,9 @@ impl Root {
                     | Target::BrowseChannels(guild)
                     | Target::EditProfileMenu(guild) => guild,
                     Target::RtcChannel { channel, .. } => channel,
-                    Target::Role { role, .. } | Target::PluginPermissionRole { role, .. } => role,
+                    Target::Role { role, .. }
+                    | Target::PluginPermissionRole { role, .. }
+                    | Target::CommandPermRole { role, .. } => role,
                     Target::PluginPermissionUser(user) => user,
                     Target::PinCategory(_) | Target::Greet { .. } | Target::PluginBadge => return,
                     Target::ProfileWidget { .. }

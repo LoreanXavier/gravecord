@@ -962,14 +962,148 @@ impl Root {
         )
     }
 
+    /// Module 174453 (`871309.A.showManualReviewPendingModal`): opens the "Manual review in progress" dialog.
+    #[allow(dead_code)]
+    pub(crate) fn open_age_verification_manual_review_pending(&mut self, cx: &mut Context<Self>) {
+        self.age_verification_modal = None;
+        self.incode_age_verify = None;
+        self.age_verify_manual_review_pending = true;
+        cx.notify();
+    }
+
+    /// Module 174453: Age Verification Manual Review Pending modal (`size="sm"` 400px, `CNm4w6` / `14Fje3` / `NX+WJN`).
+    pub(super) fn age_verify_manual_review_pending_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.age_verify_manual_review_pending {
+            return None;
+        }
+        Some(
+            deferred(
+                div()
+                    .id("age-verify-manual-review-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.age_verify_manual_review_pending = false;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("age-verify-manual-review-modal")
+                            .occlude()
+                            .w(px(400.))
+                            .p(px(24.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .shadow_xl()
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .text_size(px(20.))
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("CNm4w6")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("age-verify-manual-review-close")
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(
+                                                "modal_close",
+                                                16.,
+                                                "--interactive-text-default",
+                                            ))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.age_verify_manual_review_pending = false;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(dc_intl::t("14Fje3")),
+                            )
+                            .child(
+                                div().pt(px(8.)).w_full().child(
+                                    div()
+                                        .id("age-verify-manual-review-ok")
+                                        .w_full()
+                                        .h(px(38.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-primary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-primary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(dc_intl::t("NX+WJN"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.age_verify_manual_review_pending = false;
+                                            cx.notify();
+                                        })),
+                                ),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_age_verify_modal(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         match arg.trim() {
             "close" => {
                 self.close_age_verification_modal();
                 self.incode_age_verify = None;
+                self.age_verify_manual_review_pending = false;
                 cx.notify();
                 "age verification modal closed".to_owned()
+            }
+            "manual-review-pending" => {
+                self.open_age_verification_manual_review_pending(cx);
+                "age verification manual review pending opened".to_owned()
             }
             "stage" => {
                 self.open_age_verification_modal(AgeVerificationEntryPoint::StageChannelPrompt, cx);
@@ -1093,5 +1227,13 @@ mod tests {
             Request::Rest { route, body: Some(ref b), .. }
                 if route == "/age-verification/incode/session" && b["previous_interview_id"] == "int-1"
         ));
+    }
+
+    #[test]
+    fn age_verification_manual_review_pending_174453_intl() {
+        for key in ["CNm4w6", "14Fje3", "NX+WJN"] {
+            assert!(dc_intl::has_key(key), "missing 174453 intl key {key}");
+        }
+        assert!(dc_intl::t("14Fje3").contains("48-72"));
     }
 }

@@ -1629,9 +1629,30 @@ impl Root {
                     .flex_none()
                     .rounded(px(8.))
                     .bg(color("--control-secondary-background-default"))
+                    .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                    .cursor_pointer()
                     .flex()
                     .items_center()
                     .justify_center()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let shared = with_state(|state| {
+                            let custom = &state.custom;
+                            let colors = custom
+                                .colors
+                                .iter()
+                                .map(|rgb| format!("{rgb:06x}"))
+                                .collect();
+                            crate::ui::forward::SharedCustomTheme {
+                                colors,
+                                gradient_angle: custom.angle.round() as u32,
+                                base_mix: custom.base_mix.round() as u32,
+                                base_theme: if custom.light { 2 } else { 3 },
+                            }
+                        });
+                        if let Some(theme) = shared {
+                            this.open_share_custom_theme(theme, Some(window), cx);
+                        }
+                    }))
                     .child(mask_icon(
                         "clips_share",
                         20.,

@@ -17,6 +17,117 @@ use gpui::{
 /// `FavoriteChannelType.REFERENCE` (1) and `FavoriteChannelType.CATEGORY` (2).
 use dc_proto::settings::{FAVORITE_CATEGORY, FAVORITE_REFERENCE};
 
+/// Module 349828 (`A`): literal category name auto-created when enabling Auto-Add Threads.
+pub(crate) const AUTO_ADDED_THREADS_CATEGORY: &str = "Auto-Added Threads";
+/// Module 349828 (`Rq`): allowed inactive-thread prune day thresholds (`0` = when archived, `7`, `14`).
+pub(crate) const FAVORITES_PRUNE_DAYS: [u64; 3] = [0, 7, 14];
+
+/// Module 167846: Favorites Thread Settings modal state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FavoritesThreadSettingsModal {
+    pub auto_add: bool,
+    pub prune: bool,
+    pub days: u64,
+    pub prune_all: bool,
+    pub store_auto_add: bool,
+    pub store_prune: bool,
+    pub store_days: u64,
+    pub store_prune_all: bool,
+    pub loading: bool,
+    pub error: bool,
+}
+
+impl FavoritesThreadSettingsModal {
+    pub(crate) fn from_favorites(fav: &dc_proto::settings::Favorites) -> Self {
+        let store_auto_add = fav.auto_add_joined_threads;
+        let store_prune = fav
+            .prune_inactive_threads
+            .unwrap_or_else(|| fav.guild_enabled());
+        let store_days = if FAVORITES_PRUNE_DAYS.contains(&fav.prune_inactive_threads_days) {
+            fav.prune_inactive_threads_days
+        } else {
+            0
+        };
+        let store_prune_all = fav.prune_all_favorited_threads;
+        Self {
+            auto_add: store_auto_add,
+            prune: store_prune,
+            days: store_days,
+            prune_all: store_prune_all,
+            store_auto_add,
+            store_prune,
+            store_days,
+            store_prune_all,
+            loading: false,
+            error: false,
+        }
+    }
+
+    /// Official `canSave` dirty check from module 167846.
+    pub(crate) fn can_save(&self) -> bool {
+        self.auto_add != self.store_auto_add
+            || self.prune != self.store_prune
+            || (self.prune
+                && (self.days != self.store_days || self.prune_all != self.store_prune_all))
+    }
+}
+
+/// Applies module 167846 / 146092 (`Ub` + `u$`) updates onto `Favorites`.
+/// Returns `false` if turning on `auto_add` requires creating `"Auto-Added Threads"` when already at the 200-item cap.
+pub(crate) fn apply_favorites_thread_settings(
+    fav: &mut dc_proto::settings::Favorites,
+    modal: &FavoritesThreadSettingsModal,
+) -> bool {
+    if modal.auto_add {
+        let has_cat = fav
+            .channels
+            .iter()
+            .any(|(_, c)| c.kind == FAVORITE_CATEGORY && c.nickname == AUTO_ADDED_THREADS_CATEGORY);
+        if !has_cat {
+            if fav.channels.len() >= 200 {
+                return false;
+            }
+            let next_pos = fav
+                .channels
+                .iter()
+                .map(|(_, c)| c.position)
+                .max()
+                .map_or(1, |m| m + 1);
+            let next_id = fav
+                .channels
+                .iter()
+                .map(|(id, _)| *id)
+                .max()
+                .map_or(10_000, |m| m.saturating_add(1));
+            fav.channels.push((
+                next_id,
+                dc_proto::settings::FavoriteChannel {
+                    nickname: AUTO_ADDED_THREADS_CATEGORY.to_owned(),
+                    kind: FAVORITE_CATEGORY,
+                    position: next_pos,
+                    ..dc_proto::settings::FavoriteChannel::default()
+                },
+            ));
+        }
+    }
+    fav.auto_add_joined_threads = modal.auto_add;
+    fav.prune_inactive_threads = Some(modal.prune);
+    if modal.prune {
+        fav.prune_inactive_threads_days = modal.days;
+        fav.prune_all_favorited_threads = modal.prune_all;
+    }
+    true
+}
+
+/// Module 167846: radio option label for `0` (`EIVQqq`) or non-zero days (`eic1d0`).
+pub(crate) fn favorites_prune_days_label(days: u64) -> String {
+    if days == 0 {
+        dc_intl::t("EIVQqq").to_owned()
+    } else {
+        dc_intl::format("eic1d0", &[("days", dc_intl::Arg::Num(days as f64))])
+    }
+}
+
 impl Root {
     /// Whether the rail shows the star (`favoriteGuildEnabled`).
     pub(super) fn favorites_guild_enabled(&self) -> bool {
@@ -217,14 +328,460 @@ impl Root {
                     self.in_favorites()
                 )
             }
-            _ => "usage: favorites on <ids>|off|open|state".to_owned(),
+            ["settings"] => {
+                self.open_favorites_settings(cx);
+                "favorites: thread settings opened".to_owned()
+            }
+            _ => "usage: favorites on <ids>|off|open|state|settings".to_owned(),
         };
         cx.notify();
         note
     }
 
-    /// "Thread Settings" of the Favorites server: its modal is not built yet (no capture of it).
-    pub(super) fn open_favorites_settings(&mut self, _cx: &mut Context<Self>) {}
+    /// Module 167846: opens the Favorites "Thread Settings" modal (`hklnjs`).
+    pub(super) fn open_favorites_settings(&mut self, cx: &mut Context<Self>) {
+        let fav = self.stores.favorites();
+        self.favorites_thread_settings = Some(FavoritesThreadSettingsModal::from_favorites(&fav));
+        cx.notify();
+    }
+
+    /// Module 167846: Favorites Thread Settings modal (`size="md"` 480px, `hklnjs` / `DIyQIF` / `bI/czq` / `THUVKS` / `KIzpqi`).
+    pub(super) fn favorites_thread_settings_modal_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.favorites_thread_settings.as_ref()?;
+        let can_save = modal.can_save() && !modal.loading;
+        let loading = modal.loading;
+
+        let switch_row = |id: &'static str,
+                          title: &'static str,
+                          desc: &'static str,
+                          checked: bool,
+                          toggle: fn(&mut Root)| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(16.))
+                .when(!loading, |d| d.cursor_pointer())
+                .when(loading, |d| d.opacity(0.6))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this
+                        .favorites_thread_settings
+                        .as_ref()
+                        .is_some_and(|m| m.loading)
+                    {
+                        return;
+                    }
+                    toggle(this);
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-muted"))
+                                .child(desc),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(40.))
+                        .h(px(24.))
+                        .flex_none()
+                        .rounded_full()
+                        .p(px(3.))
+                        .bg(color(if checked {
+                            "--control-primary-background-default"
+                        } else {
+                            "--background-surface-higher"
+                        }))
+                        .border_1()
+                        .border_color(color(if checked {
+                            "--control-primary-border-default"
+                        } else {
+                            "--border-subtle"
+                        }))
+                        .flex()
+                        .items_center()
+                        .when(checked, |d| d.justify_end())
+                        .child(div().size(px(16.)).rounded_full().bg(color("--white"))),
+                )
+        };
+
+        let radio_row = |id: SharedString,
+                         label: String,
+                         selected: bool,
+                         on_select: Box<dyn Fn(&mut Root) + 'static>| {
+            div()
+                .id(id)
+                .px(px(12.))
+                .py(px(10.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color(if selected {
+                    "--control-primary-border-default"
+                } else {
+                    "--border-subtle"
+                }))
+                .bg(color(if selected {
+                    "--background-mod-subtle"
+                } else {
+                    "--background-base-low"
+                }))
+                .when(!loading, |d| {
+                    d.cursor_pointer()
+                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                })
+                .when(loading, |d| d.opacity(0.6))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this
+                        .favorites_thread_settings
+                        .as_ref()
+                        .is_some_and(|m| m.loading)
+                    {
+                        return;
+                    }
+                    on_select(this);
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .size(px(18.))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(color(if selected {
+                            "--control-primary-background-default"
+                        } else {
+                            "--interactive-icon-default"
+                        }))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(selected, |d| {
+                            d.child(
+                                div()
+                                    .size(px(8.))
+                                    .rounded_full()
+                                    .bg(color("--control-primary-background-default")),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(if selected { 600. } else { 400. }))
+                        .text_color(color("--text-strong"))
+                        .child(label),
+                )
+        };
+
+        let mut stack = div()
+            .px(px(24.))
+            .pb(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .child(switch_row(
+                "fav-settings-auto-add",
+                dc_intl::t("DIyQIF"),
+                dc_intl::t("d15FpO"),
+                modal.auto_add,
+                |this| {
+                    if let Some(m) = this.favorites_thread_settings.as_mut() {
+                        m.auto_add = !m.auto_add;
+                        m.error = false;
+                    }
+                },
+            ))
+            .child(switch_row(
+                "fav-settings-prune",
+                dc_intl::t("bI/czq"),
+                dc_intl::t("RRsgY0"),
+                modal.prune,
+                |this| {
+                    if let Some(m) = this.favorites_thread_settings.as_mut() {
+                        m.prune = !m.prune;
+                        m.error = false;
+                    }
+                },
+            ));
+
+        if modal.prune {
+            let mut days_group = div().flex().flex_col().gap(px(8.)).child(
+                div()
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-muted"))
+                    .child(dc_intl::t("THUVKS")),
+            );
+            for d in FAVORITES_PRUNE_DAYS {
+                days_group = days_group.child(radio_row(
+                    SharedString::from(format!("fav-prune-days-{d}")),
+                    favorites_prune_days_label(d),
+                    modal.days == d,
+                    Box::new(move |this| {
+                        if let Some(m) = this.favorites_thread_settings.as_mut() {
+                            m.days = d;
+                            m.error = false;
+                        }
+                    }),
+                ));
+            }
+            let scope_group = div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("KIzpqi")),
+                )
+                .child(radio_row(
+                    SharedString::from("fav-prune-scope-auto-added"),
+                    AUTO_ADDED_THREADS_CATEGORY.to_owned(),
+                    !modal.prune_all,
+                    Box::new(|this| {
+                        if let Some(m) = this.favorites_thread_settings.as_mut() {
+                            m.prune_all = false;
+                            m.error = false;
+                        }
+                    }),
+                ))
+                .child(radio_row(
+                    SharedString::from("fav-prune-scope-all"),
+                    dc_intl::t("gOUr+P").to_owned(),
+                    modal.prune_all,
+                    Box::new(|this| {
+                        if let Some(m) = this.favorites_thread_settings.as_mut() {
+                            m.prune_all = true;
+                            m.error = false;
+                        }
+                    }),
+                ));
+            stack = stack.child(days_group).child(scope_group);
+        }
+
+        if modal.error {
+            stack = stack.child(
+                div()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-feedback-critical"))
+                    .child(dc_intl::t("toOYQw")),
+            );
+        }
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("favorites-thread-settings-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            if !this
+                                .favorites_thread_settings
+                                .as_ref()
+                                .is_some_and(|m| m.loading)
+                            {
+                                this.favorites_thread_settings = None;
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("favorites-thread-settings-modal")
+                            .occlude()
+                            .w(px(480.))
+                            .max_h(px(760.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .shadow_xl()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .pt(px(20.))
+                                    .pb(px(16.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("hklnjs")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("fav-settings-close")
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(
+                                                "modal_close",
+                                                16.,
+                                                "--interactive-text-default",
+                                            ))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if !this
+                                                    .favorites_thread_settings
+                                                    .as_ref()
+                                                    .is_some_and(|m| m.loading)
+                                                {
+                                                    this.favorites_thread_settings = None;
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    ),
+                            )
+                            .child(stack)
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .py(px(16.))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .id("fav-settings-cancel")
+                                            .h(px(38.))
+                                            .px(px(16.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-muted"))
+                                            .bg(color("--control-secondary-background-default"))
+                                            .hover(|s| {
+                                                s.bg(color("--control-secondary-background-hover"))
+                                            })
+                                            .when(!loading, |d| d.cursor_pointer())
+                                            .when(loading, |d| d.opacity(0.5))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--control-secondary-text-default"))
+                                            .child(dc_intl::t("ETE/oC"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if !this
+                                                    .favorites_thread_settings
+                                                    .as_ref()
+                                                    .is_some_and(|m| m.loading)
+                                                {
+                                                    this.favorites_thread_settings = None;
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("fav-settings-save")
+                                            .h(px(38.))
+                                            .px(px(18.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .when(can_save, |d| {
+                                                d.cursor_pointer().hover(|s| {
+                                                    s.bg(color(
+                                                        "--control-primary-background-hover",
+                                                    ))
+                                                })
+                                            })
+                                            .when(!can_save, |d| d.opacity(0.5))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(dc_intl::t("R3BPH+"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                let Some(snapshot) =
+                                                    this.favorites_thread_settings.clone()
+                                                else {
+                                                    return;
+                                                };
+                                                if !snapshot.can_save() || snapshot.loading {
+                                                    return;
+                                                }
+                                                let mut fav = this.stores.favorites();
+                                                if !apply_favorites_thread_settings(
+                                                    &mut fav, &snapshot,
+                                                ) {
+                                                    if let Some(m) =
+                                                        this.favorites_thread_settings.as_mut()
+                                                    {
+                                                        m.error = true;
+                                                    }
+                                                    cx.notify();
+                                                    return;
+                                                }
+                                                this.send_favorites(
+                                                    &fav,
+                                                    "Favorites thread settings",
+                                                );
+                                                this.favorites_thread_settings = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(90)
+            .into_any_element(),
+        )
+    }
 
     /// The Appearance switch "Show Favorites server".
     pub(super) fn favorites_toggled(&mut self, on: bool) {
@@ -1326,10 +1883,54 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn favorites_empty_205375_intl_keys() {
         for k in ["wh+Rz1", "+SuGKb", "6kk0gM", "ai6Lbr", "LTr+x9"] {
             assert!(dc_intl::has_key(k), "missing 205375 key {k}");
         }
+    }
+
+    #[test]
+    fn favorites_thread_settings_167846_dirty_apply_and_intl() {
+        for k in [
+            "hklnjs", "ETE/oC", "R3BPH+", "DIyQIF", "d15FpO", "bI/czq", "RRsgY0", "THUVKS",
+            "EIVQqq", "eic1d0", "KIzpqi", "gOUr+P", "toOYQw",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 167846 key {k}");
+        }
+        assert_eq!(favorites_prune_days_label(0), dc_intl::t("EIVQqq"));
+        assert!(favorites_prune_days_label(7).contains('7'));
+        assert!(favorites_prune_days_label(14).contains("14"));
+
+        let mut fav = dc_proto::settings::Favorites {
+            guild_visible: Some(true),
+            ..Default::default()
+        };
+        let mut modal = FavoritesThreadSettingsModal::from_favorites(&fav);
+        assert!(modal.prune);
+        assert!(!modal.can_save());
+
+        modal.days = 7;
+        assert!(modal.can_save());
+        modal.prune = false;
+        assert!(modal.can_save());
+        modal.prune = true;
+        modal.days = 0;
+        assert!(!modal.can_save());
+
+        modal.auto_add = true;
+        modal.days = 14;
+        modal.prune_all = true;
+        assert!(modal.can_save());
+        assert!(apply_favorites_thread_settings(&mut fav, &modal));
+        assert!(fav.auto_add_joined_threads);
+        assert_eq!(fav.prune_inactive_threads, Some(true));
+        assert_eq!(fav.prune_inactive_threads_days, 14);
+        assert!(fav.prune_all_favorited_threads);
+        assert!(fav.channels.iter().any(|(_, c)| {
+            c.kind == FAVORITE_CATEGORY && c.nickname == AUTO_ADDED_THREADS_CATEGORY
+        }));
     }
 }

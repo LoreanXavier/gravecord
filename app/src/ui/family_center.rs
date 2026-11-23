@@ -75,6 +75,25 @@ pub(crate) struct AcceptLinkModal {
     pub has_error: bool,
 }
 
+/// Module 179950 (`FamilyCenterDisconnectLinkModal`): two-checkbox disconnect confirmation state.
+#[derive(Clone, Debug)]
+pub(crate) struct DisconnectLinkModal {
+    pub other_user_id: String,
+    pub other_user_name: String,
+    pub is_adult: bool,
+    pub requires_consent: bool,
+    pub ack1: bool,
+    pub ack2: bool,
+    pub submitting: bool,
+    pub has_error: bool,
+}
+
+impl DisconnectLinkModal {
+    pub(crate) fn can_disconnect(&self) -> bool {
+        self.ack1 && self.ack2 && !self.submitting
+    }
+}
+
 /// Module 41527: `GET /family-center/connection-prerequisites?teen_id={teen_id}&link_code={link_code}`.
 #[allow(dead_code)]
 pub(crate) fn family_center_prereqs_request(teen_id: &str, link_code: &str) -> crate::net::Request {
@@ -117,6 +136,19 @@ pub(crate) fn family_center_accept_link_request(other_user_id: &str) -> crate::n
     }
 }
 
+/// Module 179950 (`899847.nt`, `Ef.INACTIVE = 3`): `PATCH /users/@me/linked-users` (`{ linked_user_id, link_status: 3 }`).
+pub(crate) fn family_center_disconnect_link_request(other_user_id: &str) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("family-center:disconnect-link:{other_user_id}")),
+        method: reqwest::Method::PATCH,
+        route: "/users/@me/linked-users".to_owned(),
+        body: Some(serde_json::json!({
+            "linked_user_id": other_user_id,
+            "link_status": 3,
+        })),
+    }
+}
+
 fn fc_copy(key: &str, fallback: &str) -> String {
     if dc_intl::has_key(key) {
         let s = dc_intl::t(key);
@@ -137,6 +169,8 @@ pub(super) struct State {
     pub request_connection: Option<RequestConnectionModal>,
     /// Module 58144: Teen Accept Link modal.
     pub accept_link: Option<AcceptLinkModal>,
+    /// Module 179950: Family Center Disconnect Link modal.
+    pub disconnect_link: Option<DisconnectLinkModal>,
     /// Cached link code (override or fetched from `GET /family-center/@me/link-code`).
     pub link_code: Option<String>,
     /// Timestamp when the current link code was acquired (for 5-minute `M:SS` countdown).
@@ -629,11 +663,12 @@ impl Root {
     pub(crate) fn close_family_center_modals(&mut self) -> bool {
         let a = self.family_center.request_connection.take().is_some();
         let b = self.family_center.accept_link.take().is_some();
-        a || b
+        let c = self.family_center.disconnect_link.take().is_some();
+        a || b || c
     }
 
     /// Handles REST responses for `POST /users/@me/linked-users` (module 41527) and
-    /// `PATCH /users/@me/linked-users` (module 58144), mapping API error codes (`290000`/`290005`/`290002`).
+    /// `PATCH /users/@me/linked-users` (modules 58144 & 179950), mapping API error codes.
     pub(super) fn handle_family_center_fetched(
         &mut self,
         key: &str,
@@ -661,6 +696,21 @@ impl Root {
                     m.has_error = true;
                 } else {
                     self.family_center.accept_link = None;
+                }
+                cx.notify();
+            }
+            return true;
+        }
+        if key.starts_with("family-center:disconnect-link:") {
+            if let Some(m) = self.family_center.disconnect_link.as_mut() {
+                m.submitting = false;
+                if body["code"].as_u64().is_some() {
+                    m.has_error = true;
+                    // Official 179950 catch handler resets both acknowledgement checkboxes on error.
+                    m.ack1 = false;
+                    m.ack2 = false;
+                } else {
+                    self.family_center.disconnect_link = None;
                 }
                 cx.notify();
             }
@@ -1411,6 +1461,391 @@ impl Root {
         )
     }
 
+    /// Module 179950 (`FamilyCenterDisconnectLinkModal`, CSS `815298` / `756308`):
+    /// Two-checkbox disconnect confirmation modal (`480px`, `o0JXuK`, adult/teen copy & consent warning).
+    pub(in crate::ui) fn family_center_disconnect_link_modal(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.family_center.disconnect_link.as_ref()?;
+        let username = modal.other_user_name.clone();
+        let other_id = modal.other_user_id.clone();
+        let is_adult = modal.is_adult;
+        let requires_consent = modal.requires_consent;
+        let ack1 = modal.ack1;
+        let ack2 = modal.ack2;
+        let submitting = modal.submitting;
+        let has_error = modal.has_error;
+        let can_disconnect = modal.can_disconnect();
+
+        let me_initial: String = self
+            .stores
+            .current_user
+            .as_ref()
+            .and_then(|u| u.display_name().chars().next())
+            .unwrap_or('U')
+            .to_uppercase()
+            .collect();
+        let other_initial: String = username
+            .chars()
+            .next()
+            .unwrap_or('G')
+            .to_uppercase()
+            .collect();
+
+        let title = dc_intl::format("o0JXuK", &[("username", username.as_str().into())]);
+        let subtitle = if is_adult {
+            dc_intl::t("WH+Gba").to_owned()
+        } else {
+            dc_intl::format("F2lccv", &[("username", username.as_str().into())])
+        };
+        let consent_notice = requires_consent.then(|| {
+            if is_adult {
+                dc_intl::format("Or6hgl", &[("username", username.as_str().into())])
+            } else {
+                dc_intl::t("hOEHFn").to_owned()
+            }
+        });
+        let body_text = if is_adult {
+            dc_intl::format("PlrZal", &[("username", username.as_str().into())])
+        } else {
+            dc_intl::format("XyRW4c", &[("username", username.as_str().into())])
+        };
+        let ack1_label = dc_intl::t(if is_adult { "PGQBnk" } else { "eiABQz" });
+        let ack2_label = dc_intl::t(if is_adult { "0ki7+P" } else { "sCbKs4" });
+
+        let ack_checkbox = |id: &'static str, checked: bool, label: &'static str, which: u8| {
+            div()
+                .id(id)
+                .flex()
+                .items_start()
+                .gap(px(10.))
+                .when(!submitting, |d| d.cursor_pointer())
+                .when(submitting, |d| d.opacity(0.6))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(m) = this.family_center.disconnect_link.as_mut() {
+                        if m.submitting {
+                            return;
+                        }
+                        if which == 1 {
+                            m.ack1 = !m.ack1;
+                        } else {
+                            m.ack2 = !m.ack2;
+                        }
+                        m.has_error = false;
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    div()
+                        .mt(px(1.))
+                        .size(px(18.))
+                        .flex_none()
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(color(if checked {
+                            "--control-primary-background-default"
+                        } else {
+                            "--border-strong"
+                        }))
+                        .bg(if checked {
+                            color("--control-primary-background-default")
+                        } else {
+                            rgba(0x00000000)
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(checked, |d| {
+                            d.child(icon("checkmark_large", 12., "--white"))
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-default"))
+                        .child(label),
+                )
+        };
+
+        Some(
+            deferred(
+                div()
+                    .id("family-center-disconnect-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            if !submitting {
+                                this.family_center.disconnect_link = None;
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("family-center-disconnect-modal")
+                            .occlude()
+                            .w(px(480.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .overflow_hidden()
+                            .shadow_xl()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .when(has_error, |card| {
+                                card.child(
+                                    div()
+                                        .px(px(16.))
+                                        .py(px(10.))
+                                        .bg(color("--input-background-error-default"))
+                                        .border_b_1()
+                                        .border_color(color("--input-border-error-default"))
+                                        .text_size(px(13.))
+                                        .text_color(color("--text-feedback-critical"))
+                                        .child(dc_intl::t("krIDdy")),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .p(px(24.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(20.))
+                                    // `.header_5noEM3` + `.avatarPair_W7mUFH`
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .gap(px(16.))
+                                            .child(
+                                                div()
+                                                    .p(px(8.))
+                                                    .rounded_full()
+                                                    .bg(color("--background-surface-higher"))
+                                                    .border_1()
+                                                    .border_color(color("--border-muted"))
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(12.))
+                                                    .child(
+                                                        div()
+                                                            .size(px(48.))
+                                                            .rounded_full()
+                                                            .bg(color(
+                                                                "--control-primary-background-default",
+                                                            ))
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .text_size(px(18.))
+                                                            .font_weight(FontWeight(700.))
+                                                            .text_color(color("--white"))
+                                                            .child(me_initial),
+                                                    )
+                                                    .child(icon(
+                                                        "modal_close",
+                                                        18.,
+                                                        "--text-feedback-critical",
+                                                    ))
+                                                    .child(
+                                                        div()
+                                                            .size(px(48.))
+                                                            .rounded_full()
+                                                            .bg(rgba(0xe060a855))
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .text_size(px(18.))
+                                                            .font_weight(FontWeight(700.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(other_initial),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .items_center()
+                                                    .gap(px(6.))
+                                                    .text_center()
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(18.))
+                                                            .line_height(px(22.))
+                                                            .font_weight(FontWeight(600.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(title),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(14.))
+                                                            .line_height(px(18.))
+                                                            .text_color(color("--text-muted"))
+                                                            .child(subtitle),
+                                                    ),
+                                            ),
+                                    )
+                                    .children(consent_notice.map(|notice| {
+                                        div()
+                                            .p(px(12.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--status-warning"))
+                                            .bg(rgba(0xf0b2321a))
+                                            .text_size(px(13.))
+                                            .line_height(px(18.))
+                                            .text_color(color("--text-default"))
+                                            .child(notice)
+                                    }))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-default"))
+                                            .child(body_text),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(12.))
+                                            .child(ack_checkbox("fc-disconnect-ack1", ack1, ack1_label, 1))
+                                            .child(ack_checkbox("fc-disconnect-ack2", ack2, ack2_label, 2)),
+                                    ),
+                            )
+                            // Full-width footer (`actionsFullWidth: true`)
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .py(px(16.))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-base-lower"))
+                                    .flex()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .id("fc-disconnect-cancel")
+                                            .flex_1()
+                                            .h(px(38.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-muted"))
+                                            .bg(color("--control-secondary-background-default"))
+                                            .hover(|s| {
+                                                s.bg(color("--control-secondary-background-hover"))
+                                            })
+                                            .when(!submitting, |d| d.cursor_pointer())
+                                            .when(submitting, |d| d.opacity(0.5))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--control-secondary-text-default"))
+                                            .child(dc_intl::t("3ilveh"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !submitting {
+                                                    this.family_center.disconnect_link = None;
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("fc-disconnect-confirm")
+                                            .flex_1()
+                                            .h(px(38.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-critical-primary-background-default"))
+                                            .when(can_disconnect, |d| {
+                                                d.cursor_pointer().hover(|s| {
+                                                    s.bg(color(
+                                                        "--control-critical-primary-background-hover",
+                                                    ))
+                                                })
+                                            })
+                                            .when(!can_disconnect, |d| d.opacity(0.5))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(dc_intl::t("c5L+sl"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(m) =
+                                                    this.family_center.disconnect_link.as_mut()
+                                                {
+                                                    if !m.can_disconnect() {
+                                                        return;
+                                                    }
+                                                    m.has_error = false;
+                                                    m.submitting = true;
+                                                } else {
+                                                    return;
+                                                }
+                                                let _ = this.requests.send(
+                                                    family_center_disconnect_link_request(&other_id),
+                                                );
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_family_disconnect_link(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.family_center.disconnect_link = None;
+            cx.notify();
+            return "family disconnect closed".to_owned();
+        }
+        let is_adult = arg.trim() != "teen";
+        self.family_center.disconnect_link = Some(DisconnectLinkModal {
+            other_user_id: "11223344".into(),
+            other_user_name: if is_adult {
+                "alex_teen".into()
+            } else {
+                "ParentGuardian".into()
+            },
+            is_adult,
+            requires_consent: true,
+            ack1: false,
+            ack2: false,
+            submitting: false,
+            has_error: arg.trim() == "error",
+        });
+        cx.notify();
+        format!("family disconnect opened (adult={is_adult})")
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_family_request_connection(
         &mut self,
@@ -1536,6 +1971,40 @@ mod tests {
         assert!(matches!(
             family_center_accept_link_request("2"),
             crate::net::Request::Rest { route, .. } if route == "/users/@me/linked-users"
+        ));
+    }
+
+    #[test]
+    fn family_center_disconnect_179950_intl_guard_and_request() {
+        for key in [
+            "o0JXuK", "WH+Gba", "F2lccv", "Or6hgl", "hOEHFn", "PlrZal", "XyRW4c", "PGQBnk",
+            "eiABQz", "0ki7+P", "sCbKs4", "krIDdy", "3ilveh", "c5L+sl", "kFj4h1",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 179950 key {key}");
+        }
+        let mut m = DisconnectLinkModal {
+            other_user_id: "55".into(),
+            other_user_name: "alex".into(),
+            is_adult: true,
+            requires_consent: true,
+            ack1: false,
+            ack2: false,
+            submitting: false,
+            has_error: false,
+        };
+        assert!(!m.can_disconnect());
+        m.ack1 = true;
+        assert!(!m.can_disconnect());
+        m.ack2 = true;
+        assert!(m.can_disconnect());
+        m.submitting = true;
+        assert!(!m.can_disconnect());
+        assert!(matches!(
+            family_center_disconnect_link_request("55"),
+            crate::net::Request::Rest { route, body: Some(ref b), .. }
+                if route == "/users/@me/linked-users"
+                    && b["linked_user_id"] == "55"
+                    && b["link_status"] == 3
         ));
     }
 }

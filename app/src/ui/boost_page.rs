@@ -27,6 +27,67 @@ pub(super) const SKU_SERVER_TAG: &str = "1351706802684952639";
 pub(super) const SKU_ROLE_STYLES: &str = "1354906318279807056";
 pub(super) const SKU_VANITY_URL: &str = "1387197800336330924";
 pub(super) const SKU_GUILD_THEME: &str = "1493634428604252161";
+/// Module 512750 (`YG` / `OJ` / `jF` / `Ht` / `tv`): Boost Level 3 & Server Tag Badge Pack SKUs for module 179413 warnings.
+pub(crate) const SKU_BOOST_LEVEL_3: &str = "1341586379779604623";
+pub(crate) const SKU_TAG_BADGE_PACKS: [&str; 4] = [
+    "1395150519886024775",
+    "1395150923734581339",
+    "1466209416922667288",
+    "1466209416931055898",
+];
+
+/// Module 179413: computes SKU-specific `(text, is_critical)` deactivation warning segments.
+pub(crate) fn powerup_deactivate_warnings(
+    sku_id: &str,
+    perk_name: &str,
+    member_count: u64,
+    gradient_role_members: u64,
+    has_vanity_url: bool,
+) -> Vec<(String, bool)> {
+    let mut warnings = Vec::new();
+    if sku_id == SKU_ROLE_STYLES {
+        if gradient_role_members > 0 {
+            warnings.push((
+                dc_intl::format(
+                    "4jSvr1",
+                    &[
+                        ("perk", perk_name.into()),
+                        (
+                            "memberCount",
+                            dc_intl::Arg::Num(gradient_role_members as f64),
+                        ),
+                    ],
+                ),
+                false,
+            ));
+        } else {
+            warnings.push((
+                dc_intl::format("cavtEo", &[("perk", perk_name.into())]),
+                false,
+            ));
+        }
+    } else if sku_id == SKU_VANITY_URL {
+        let key = if has_vanity_url { "hN75yb" } else { "Du91Rb" };
+        warnings.push((dc_intl::t(key).to_owned(), true));
+    } else if SKU_TAG_BADGE_PACKS.contains(&sku_id) {
+        warnings.push((dc_intl::t("Vf2ZcR").to_owned(), false));
+    } else {
+        warnings.push((
+            dc_intl::format(
+                "4jSvr1",
+                &[
+                    ("perk", perk_name.into()),
+                    ("memberCount", dc_intl::Arg::Num(member_count as f64)),
+                ],
+            ),
+            false,
+        ));
+    }
+    if has_vanity_url && sku_id == SKU_BOOST_LEVEL_3 {
+        warnings.push((dc_intl::t("M4XL5n").to_owned(), true));
+    }
+    warnings
+}
 
 const VANITY_HELP_URL: &str = "https://support.discord.com/hc/en-us/articles/115001542132";
 
@@ -2009,13 +2070,29 @@ impl Root {
             &[("numSubscriptions", dc_intl::Arg::Num(f64::from(cost)))],
         );
 
-        // `933337` / `179413`: Deactivate Perk Confirmation modal (`size="sm"` 400px).
+        // Module `179413` (`GuildPowerupDeactivateModal` + `DeactivateConfirmationModal` `O`, CSS `721721`):
+        // `size="sm"` (400px) for Perks, title `iEBw1M({perk})`, subtitle `7o0K+2({perk})`, preview box
+        // `.image_OgsNUm`, neutral `.warningContainer_OgsNUm` (`--background-mod-subtle`, `--border-muted`,
+        // `--text-feedback-critical` `"Warning"` header + SKU-specific warning segments), inline error `.errorText_OgsNUm`.
         if modal.confirm_disable {
-            let warning_copy = if sku_id == SKU_VANITY_URL {
-                dc_intl::t("M4XL5n").to_owned()
-            } else {
-                dc_intl::format("cavtEo", &[("perk", modal.title.as_str().into())])
-            };
+            let member_count = self
+                .stores
+                .member_counts
+                .get_member_count(guild_id)
+                .unwrap_or(1)
+                .max(1);
+            let has_vanity = !modal.vanity_code.is_empty();
+            let warnings = powerup_deactivate_warnings(
+                sku_id,
+                &modal.title,
+                member_count,
+                member_count,
+                has_vanity,
+            );
+            let confirm_title = dc_intl::format("iEBw1M", &[("perk", modal.title.as_str().into())]);
+            let confirm_subtitle =
+                dc_intl::format("7o0K+2", &[("perk", modal.title.as_str().into())]);
+            let inline_error = modal.error.clone();
             let confirm_card = div()
                 .id("powerup-disable-confirm")
                 .occlude()
@@ -2024,7 +2101,8 @@ impl Root {
                 .rounded(px(12.))
                 .border_1()
                 .border_color(color("--border-subtle"))
-                .bg(color("--background-base-low"))
+                .bg(color("--background-surface-high"))
+                .shadow_xl()
                 .flex()
                 .flex_col()
                 .child(
@@ -2033,9 +2111,21 @@ impl Root {
                         .pt(px(20.))
                         .pb(px(12.))
                         .flex()
-                        .items_center()
+                        .items_start()
                         .justify_between()
-                        .child(text(18., 22., 700., "--text-strong").child(dc_intl::t("TZsu1U")))
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(text(20., 24., 700., "--text-strong").child(confirm_title))
+                                .child(
+                                    text(14., 20., 400., "--text-subtle").child(confirm_subtitle),
+                                ),
+                        )
                         .child(
                             div()
                                 .id("powerup-disable-close")
@@ -2052,7 +2142,7 @@ impl Root {
                                     }
                                     cx.notify();
                                 }))
-                                .child(icon("close", 16., "--interactive-text-default")),
+                                .child(icon("modal_close", 16., "--interactive-text-default")),
                         ),
                 )
                 .child(
@@ -2061,32 +2151,64 @@ impl Root {
                         .pb(px(18.))
                         .flex()
                         .flex_col()
-                        .gap(px(12.))
+                        .gap(px(16.))
+                        // `.image_OgsNUm`: `--background-base-lowest`, `--radius-sm`, `max-height: 205px`.
                         .child(
                             div()
-                                .p(px(12.))
+                                .w_full()
+                                .h(px(108.))
+                                .rounded(px(8.))
+                                .bg(color("--background-base-lowest"))
+                                .px(px(16.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(10.))
+                                .child(icon("boost_gem", 28., "--brand-500"))
+                                .child(
+                                    text(15., 20., 600., "--text-strong")
+                                        .child(modal.title.clone()),
+                                ),
+                        )
+                        // `.warningContainer_OgsNUm`: `--background-mod-subtle`, `1px solid --border-muted`.
+                        .child(
+                            div()
+                                .p(px(16.))
                                 .rounded(px(8.))
                                 .border_1()
-                                .border_color(color("--status-warning"))
-                                .bg(rgba(0xf0b2321a))
+                                .border_color(color("--border-muted"))
+                                .bg(color("--background-mod-subtle"))
                                 .flex()
                                 .flex_col()
                                 .gap(px(4.))
                                 .child(
-                                    text(13., 18., 700., "--status-warning")
+                                    text(14., 18., 600., "--text-feedback-critical")
                                         .child(dc_intl::t("OVt5CC")),
                                 )
-                                .child(text(13., 18., 400., "--text-default").child(warning_copy)),
+                                .child(div().flex().flex_col().gap(px(2.)).children(
+                                    warnings.into_iter().map(|(msg, critical)| {
+                                        text(
+                                            14.,
+                                            18.,
+                                            if critical { 600. } else { 400. },
+                                            if critical {
+                                                "--text-feedback-critical"
+                                            } else {
+                                                "--text-default"
+                                            },
+                                        )
+                                        .child(msg)
+                                    }),
+                                )),
                         )
-                        .child(text(13., 18., 500., "--text-muted").child(dc_intl::format(
-                            "5HQUzD",
-                            &[("boostCount", dc_intl::Arg::Num(f64::from(cost)))],
-                        ))),
+                        .children(inline_error.map(|err| {
+                            text(14., 18., 600., "--text-feedback-critical").child(err)
+                        })),
                 )
                 .child(
                     div()
                         .px(px(24.))
-                        .py(px(14.))
+                        .py(px(16.))
                         .border_t_1()
                         .border_color(color("--border-subtle"))
                         .bg(color("--background-base-lower"))
@@ -2098,16 +2220,19 @@ impl Root {
                         .child(
                             div()
                                 .id("powerup-disable-cancel")
-                                .h(px(36.))
+                                .h(px(38.))
                                 .px(px(16.))
                                 .rounded(px(8.))
-                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .border_1()
+                                .border_color(color("--border-muted"))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
                                 .cursor_pointer()
                                 .flex()
                                 .items_center()
                                 .text_size(px(14.))
                                 .font_weight(FontWeight(500.))
-                                .text_color(color("--text-default"))
+                                .text_color(color("--control-secondary-text-default"))
                                 .child(dc_intl::t("ETE/oC"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if let Some(m) = this.powerup_perk_modal.as_mut() {
@@ -2119,11 +2244,13 @@ impl Root {
                         .child(
                             div()
                                 .id("powerup-disable-submit")
-                                .h(px(36.))
-                                .px(px(16.))
+                                .h(px(38.))
+                                .px(px(18.))
                                 .rounded(px(8.))
-                                .bg(color("--status-danger"))
-                                .hover(|s| s.opacity(0.9))
+                                .bg(color("--control-critical-primary-background-default"))
+                                .hover(|s| {
+                                    s.bg(color("--control-critical-primary-background-hover"))
+                                })
                                 .cursor_pointer()
                                 .flex()
                                 .items_center()
@@ -3020,6 +3147,230 @@ impl Root {
         let disabled_reason = modal.disabled_reason.clone();
         let error = modal.error.clone();
         let confirm_disable = modal.confirm_disable;
+
+        // Module 179413 (`size="md"` 480px): Level deactivation confirmation modal with `.levelContainer_o7nzA2`
+        // 2-col perk grid (`870247`) + `.warningContainer_OgsNUm` (`721721`, including extra `M4XL5n` on Level 3).
+        if confirm_disable {
+            let member_count = self
+                .stores
+                .member_counts
+                .get_member_count(guild_id)
+                .unwrap_or(1)
+                .max(1);
+            let effective_sku = if tier == 3 {
+                SKU_BOOST_LEVEL_3
+            } else {
+                sku_id.as_str()
+            };
+            let warnings =
+                powerup_deactivate_warnings(effective_sku, tier_title, member_count, 0, tier == 3);
+            let confirm_title = dc_intl::format("iEBw1M", &[("perk", tier_title.into())]);
+            let confirm_subtitle = dc_intl::format("7o0K+2", &[("perk", tier_title.into())]);
+            let level_grid = div()
+                .w_full()
+                .p(px(16.))
+                .rounded(px(8.))
+                .bg(color("--background-base-lowest"))
+                .flex()
+                .flex_wrap()
+                .gap(px(12.))
+                .children(perks.iter().map(|(ico, label)| {
+                    div()
+                        .w(px(192.))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(icon(ico, 20., "--text-subtle"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-default"))
+                                .child(*label),
+                        )
+                }));
+            let level_confirm = div()
+                .id("powerup-level-disable-confirm")
+                .occlude()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .w(px(480.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .shadow_xl()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pt(px(20.))
+                        .pb(px(12.))
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(text(20., 24., 700., "--text-strong").child(confirm_title))
+                                .child(
+                                    text(14., 20., 400., "--text-subtle").child(confirm_subtitle),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("powerup-level-disable-close")
+                                .size(px(28.))
+                                .rounded(px(6.))
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(m) = this.powerup_level_modal.as_mut() {
+                                        m.confirm_disable = false;
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(icon("modal_close", 16., "--interactive-text-default")),
+                        ),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pb(px(18.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(16.))
+                        .child(level_grid)
+                        .child(
+                            div()
+                                .p(px(16.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--border-muted"))
+                                .bg(color("--background-mod-subtle"))
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(
+                                    text(14., 18., 600., "--text-feedback-critical")
+                                        .child(dc_intl::t("OVt5CC")),
+                                )
+                                .child(div().flex().flex_col().gap(px(2.)).children(
+                                    warnings.into_iter().map(|(msg, critical)| {
+                                        text(
+                                            14.,
+                                            18.,
+                                            if critical { 600. } else { 400. },
+                                            if critical {
+                                                "--text-feedback-critical"
+                                            } else {
+                                                "--text-default"
+                                            },
+                                        )
+                                        .child(msg)
+                                    }),
+                                )),
+                        )
+                        .children(error.map(|err| {
+                            text(14., 18., 600., "--text-feedback-critical").child(err)
+                        })),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .py(px(16.))
+                        .border_t_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-base-lower"))
+                        .rounded_b(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .id("powerup-level-disable-cancel")
+                                .h(px(38.))
+                                .px(px(16.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--border-muted"))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--control-secondary-text-default"))
+                                .child(dc_intl::t("ETE/oC"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(m) = this.powerup_level_modal.as_mut() {
+                                        m.confirm_disable = false;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("powerup-level-disable-submit")
+                                .h(px(38.))
+                                .px(px(18.))
+                                .rounded(px(8.))
+                                .bg(color("--control-critical-primary-background-default"))
+                                .hover(|s| {
+                                    s.bg(color("--control-critical-primary-background-hover"))
+                                })
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("PYPdl4"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let _ = this.requests.send(toggle_guild_powerup_request(
+                                        guild_id, &sku_id, false,
+                                    ));
+                                    this.powerup_level_modal = None;
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            return Some(
+                deferred(
+                    div()
+                        .id("powerup-level-disable-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b8))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.powerup_level_modal = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(level_confirm),
+                )
+                .with_priority(97)
+                .into_any_element(),
+            );
+        }
 
         let perk_grid = div()
             .w_full()
@@ -4326,5 +4677,31 @@ mod tests {
         let packs = PowerupMultiPerkModal::badge_packs(42, true);
         assert_eq!(packs.perks.len(), 3);
         assert!(packs.perks.iter().any(|p| p.is_new));
+    }
+
+    #[test]
+    fn powerup_deactivate_179413_warnings_and_intl() {
+        for key in [
+            "iEBw1M", "7o0K+2", "ETE/oC", "PYPdl4", "OVt5CC", "4jSvr1", "cavtEo", "hN75yb",
+            "Du91Rb", "Vf2ZcR", "M4XL5n", "NXvV0+", "ZEvvPz", "s9u/E7",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 179413 key {key}");
+        }
+        let role_with = powerup_deactivate_warnings(SKU_ROLE_STYLES, "Role Styles", 50, 4, false);
+        assert_eq!(role_with.len(), 1);
+        assert!(role_with[0].0.contains('4'));
+        let role_none = powerup_deactivate_warnings(SKU_ROLE_STYLES, "Role Styles", 50, 0, false);
+        assert!(role_none[0].0.contains("all members"));
+        let vanity_set = powerup_deactivate_warnings(SKU_VANITY_URL, "Vanity", 50, 0, true);
+        assert!(vanity_set[0].1);
+        assert_eq!(vanity_set[0].0, dc_intl::t("hN75yb"));
+        let vanity_unset = powerup_deactivate_warnings(SKU_VANITY_URL, "Vanity", 50, 0, false);
+        assert_eq!(vanity_unset[0].0, dc_intl::t("Du91Rb"));
+        let pack = powerup_deactivate_warnings(SKU_TAG_BADGE_PACKS[0], "Badges", 50, 0, false);
+        assert_eq!(pack[0].0, dc_intl::t("Vf2ZcR"));
+        let lvl3 = powerup_deactivate_warnings(SKU_BOOST_LEVEL_3, "Level 3", 50, 0, true);
+        assert_eq!(lvl3.len(), 2);
+        assert!(lvl3[1].1);
+        assert_eq!(lvl3[1].0, dc_intl::t("M4XL5n"));
     }
 }

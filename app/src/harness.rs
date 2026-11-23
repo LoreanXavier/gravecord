@@ -3307,6 +3307,31 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_conjure_workspace(&arg, cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["family-disconnect", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_family_disconnect_link(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["share-moment", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_share_moment(&arg, window, cx))
+                    })
+                    .unwrap_or_else(|_| "share-moment: window closed".to_owned());
+                let _ = writeln!(output, "{msg}");
+            }
+            ["share-custom-theme", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| {
+                            root.script_share_custom_theme(&arg, window, cx)
+                        })
+                    })
+                    .unwrap_or_else(|_| "share-custom-theme: window closed".to_owned());
+                let _ = writeln!(output, "{msg}");
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));

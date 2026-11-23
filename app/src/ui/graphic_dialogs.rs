@@ -20,6 +20,13 @@ use gpui::{
 const DOWNLOAD_GRAPHIC: &str = "https://cdn.discordapp.com/assets/content/40db7db5eefbabf36afe02e04e420d2306c57a91a34bebb7da82ca6bee9a8b2a.svg";
 /// Module 31008, the graphic of 752313.
 const URGENT_GRAPHIC: &str = "https://cdn.discordapp.com/assets/content/88cde2b0ab4c8015cee8fdb8732b85b01df4fc78a75b3aa5e621539ea94b1803.svg";
+/// Module 175077: Nitro Turbo Shop Drop free Shop item announcement graphic (`16/9` aspect ratio).
+pub(crate) const TURBO_SHOP_DROP_GRAPHIC: &str = "https://cdn.discordapp.com/assets/content/d4a35e70f4690b501fc8daa265f8b10d78b4fd705e6e48477e30e03ab92a2e19.png";
+/// Module 175077 (`b = new Date(2026, 8, 11)`): September 11, 2026 in en-US short date (`M/D/YY`).
+pub(crate) const TURBO_SHOP_DROP_DEADLINE: &str = "9/11/26";
+/// Module 37126 (`Ym`): Turbo Shop Drop promotion ID.
+#[allow(dead_code)]
+pub(crate) const TURBO_SHOP_DROP_PROMO_ID: &str = "1529541762920615998";
 /// `K` of module 716371: the Discord system account whose DM holds urgent messages.
 const SYSTEM_USER: dc_state::Id = 643_945_264_868_098_049;
 /// `UserFlags.HAS_UNREAD_URGENT_MESSAGES` (module 652215).
@@ -181,8 +188,13 @@ const DANGEROUS: [&str; 149] = [
 /// One open graphic dialog.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum GraphicDialog {
-    DangerousDownload { url: String },
+    DangerousDownload {
+        url: String,
+    },
     UrgentMessage,
+    /// Module 175077: Nitro Turbo Shop Drop free Shop item announcement modal (`nitro-pink`).
+    #[allow(dead_code)]
+    TurboShopDrop,
 }
 
 /// The decoded path of a URL (`toURLSafe(...).pathname`), with its host; `None` for something that is not a URL.
@@ -362,8 +374,25 @@ impl Root {
                 self.follow_link(url, "", cx);
                 format!("graphic: {:?}", self.chat_extra.graphic)
             }
-            _ => "usage: graphic urgent | graphic download <url>".to_owned(),
+            ["turbo-shop-drop"] => {
+                self.open_turbo_shop_drop_modal(cx);
+                format!("graphic: {:?}", self.chat_extra.graphic)
+            }
+            _ => "usage: graphic urgent | graphic download <url> | graphic turbo-shop-drop"
+                .to_owned(),
         }
+    }
+
+    /// Module 175077 / 37126 `tu()`: opens the Nitro Turbo Shop Drop announcement modal.
+    #[allow(dead_code)]
+    pub(crate) fn open_turbo_shop_drop_modal(&mut self, cx: &mut Context<Self>) {
+        self.chat_extra.graphic = Some(GraphicDialog::TurboShopDrop);
+        self.want_image(
+            TURBO_SHOP_DROP_GRAPHIC.to_owned(),
+            TURBO_SHOP_DROP_GRAPHIC.to_owned(),
+            cx,
+        );
+        cx.notify();
     }
 
     fn graphic_action(&mut self, primary: bool, cx: &mut Context<Self>) {
@@ -381,6 +410,13 @@ impl Root {
                     self.select_home(Some(channel));
                 }
             }
+            GraphicDialog::TurboShopDrop => {
+                if primary {
+                    self.open_shop(cx);
+                } else {
+                    self.open_nitro(cx);
+                }
+            }
         }
         cx.notify();
     }
@@ -392,28 +428,43 @@ impl Root {
 
     pub(super) fn graphic_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let dialog = self.chat_extra.graphic.as_ref()?;
-        let (graphic, title, subtitle, actions): (_, _, _, Vec<(&str, bool)>) = match dialog {
+        let (graphic, title, subtitle, grad_start, grad_end, actions) = match dialog {
             GraphicDialog::DangerousDownload { .. } => (
                 DOWNLOAD_GRAPHIC,
-                dc_intl::t("XtDo9Z"),
-                dc_intl::t("L9yFko"),
-                vec![(dc_intl::t("j7Vi2i"), true), (dc_intl::t("/bHu89"), false)],
+                dc_intl::t("XtDo9Z").to_owned(),
+                dc_intl::t("L9yFko").to_owned(),
+                "--expressive-gradient-blue-start",
+                "--expressive-gradient-blue-end",
+                vec![
+                    (dc_intl::t("j7Vi2i").to_owned(), true, None::<&'static str>),
+                    (dc_intl::t("/bHu89").to_owned(), false, None),
+                ],
             ),
             GraphicDialog::UrgentMessage => (
                 URGENT_GRAPHIC,
-                dc_intl::t("bAhz9l"),
-                dc_intl::t("7KjxW3"),
-                vec![(dc_intl::t("BddRzS"), true)],
+                dc_intl::t("bAhz9l").to_owned(),
+                dc_intl::t("7KjxW3").to_owned(),
+                "--expressive-gradient-blue-start",
+                "--expressive-gradient-blue-end",
+                vec![(dc_intl::t("BddRzS").to_owned(), true, None)],
+            ),
+            GraphicDialog::TurboShopDrop => (
+                TURBO_SHOP_DROP_GRAPHIC,
+                dc_intl::t("qIVU1h").to_owned(),
+                dc_intl::format("SlS71X", &[("date", TURBO_SHOP_DROP_DEADLINE.into())]),
+                "--expressive-gradient-nitro-pink-start",
+                "--expressive-gradient-nitro-pink-end",
+                vec![
+                    (dc_intl::t("UvLTEv").to_owned(), false, None),
+                    (dc_intl::t("F7Swt9").to_owned(), true, Some("home_shop")),
+                ],
             ),
         };
         let art = self.images.get(graphic).cloned();
         if art.is_none() {
             self.want_image(graphic.to_owned(), graphic.to_owned(), cx);
         }
-        let gradient = header_gradient(
-            color("--expressive-gradient-blue-start"),
-            color("--expressive-gradient-blue-end"),
-        );
+        let gradient = header_gradient(color(grad_start), color(grad_end));
         let header = div()
             .relative()
             .flex_none()
@@ -444,13 +495,12 @@ impl Root {
                 div()
                     .mt(px(24.))
                     .w_full()
-                    .flex()
-                    .justify_center()
+                    .text_center()
                     .text_size(px(24.))
                     .line_height(px(32.))
                     .font_weight(FontWeight(600.))
                     .text_color(color("--text-strong"))
-                    .child(title.to_owned()),
+                    .child(title),
             )
             .child(
                 div()
@@ -460,7 +510,7 @@ impl Root {
                     .text_size(px(16.))
                     .line_height(px(20.))
                     .text_color(color("--text-subtle"))
-                    .child(subtitle.to_owned()),
+                    .child(subtitle),
             );
         let footer = div()
             .flex_none()
@@ -468,49 +518,48 @@ impl Root {
             .py(px(16.))
             .flex()
             .gap(px(8.))
-            .children(
-                actions
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (label, primary))| {
-                        let (border, background, hover, text) = if primary {
-                            (
-                                "--control-primary-border-default",
-                                "--control-primary-background-default",
-                                "--control-primary-background-hover",
-                                "--white",
-                            )
-                        } else {
-                            (
-                                "--border-muted",
-                                "--control-secondary-background-default",
-                                "--control-secondary-background-hover",
-                                "--control-secondary-text-default",
-                            )
-                        };
-                        div()
-                            .id(("graphic-dialog-action", index))
-                            .flex_1()
-                            .h(px(40.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color(border))
-                            .bg(color(background))
-                            .hover(|style| style.bg(color(hover)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color(text))
-                            .child(label.to_owned())
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.graphic_action(primary, cx)),
-                            )
-                    }),
-            );
+            .children(actions.into_iter().enumerate().map(
+                |(index, (label, primary, leading_icon))| {
+                    let (border, background, hover, text) = if primary {
+                        (
+                            "--control-primary-border-default",
+                            "--control-primary-background-default",
+                            "--control-primary-background-hover",
+                            "--white",
+                        )
+                    } else {
+                        (
+                            "--border-muted",
+                            "--control-secondary-background-default",
+                            "--control-secondary-background-hover",
+                            "--control-secondary-text-default",
+                        )
+                    };
+                    div()
+                        .id(("graphic-dialog-action", index))
+                        .flex_1()
+                        .h(px(40.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color(border))
+                        .bg(color(background))
+                        .hover(|style| style.bg(color(hover)))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(6.))
+                        .cursor_pointer()
+                        .text_size(px(15.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color(text))
+                        .children(leading_icon.map(|ic| icon(ic, 16., text)))
+                        .child(label)
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.graphic_action(primary, cx)),
+                        )
+                },
+            ));
         let pose = crate::ui::motion::modal_pose("graphic-dialog");
         let panel = div()
             .parity_with_border("graphic-dialog", 1.)
@@ -621,5 +670,21 @@ mod tests {
             dangerous_extension("https://gitlab.com/o/r/-/downloads/app.zip").as_deref(),
             Some("zip")
         );
+    }
+
+    #[test]
+    fn turbo_shop_drop_175077_intl_and_deadline() {
+        for key in ["qIVU1h", "SlS71X", "UvLTEv", "F7Swt9"] {
+            assert!(dc_intl::has_key(key), "missing 175077 intl key {key}");
+        }
+        let subtitle = dc_intl::format(
+            "SlS71X",
+            &[("date", super::TURBO_SHOP_DROP_DEADLINE.into())],
+        );
+        assert!(
+            subtitle.contains("9/11/26"),
+            "unexpected subtitle: {subtitle}"
+        );
+        assert!(super::TURBO_SHOP_DROP_GRAPHIC.ends_with(".png"));
     }
 }
