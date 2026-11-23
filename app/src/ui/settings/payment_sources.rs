@@ -831,6 +831,340 @@ impl Root {
     }
 }
 
+/// Module 302810: 4-step 3DS payment authentication state (`0=Required`, `1=Failed`, `2=Success`, `3=Canceled`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(in crate::ui) enum PaymentAuthStep {
+    Required = 0,
+    Failed = 1,
+    Success = 2,
+    Canceled = 3,
+}
+
+/// Module 302810 (`PAYMENT_AUTHENTICATION_MODAL`): 3DS payment authentication modal state.
+#[derive(Clone, Debug)]
+pub(in crate::ui) struct PaymentAuthModalState {
+    pub payment_id: String,
+    pub price_formatted: String,
+    pub item_description: String,
+    pub step: PaymentAuthStep,
+    pub awaiting_auth: bool,
+}
+
+/// Module 302810 (`781300.N`): `POST /users/@me/billing/payments/{payment_id}/void`.
+pub(in crate::ui) fn payment_void_request(payment_id: &str) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("billing:payment-void:{payment_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/users/@me/billing/payments/{payment_id}/void"),
+        body: None,
+    }
+}
+
+/// Module 302810 (`558740.ap`): `GET /users/@me/billing/stripe/payment-intents/payments/{payment_id}`.
+pub(in crate::ui) fn payment_intent_request(payment_id: &str) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("billing:payment-intent:{payment_id}")),
+        method: reqwest::Method::GET,
+        route: format!("/users/@me/billing/stripe/payment-intents/payments/{payment_id}"),
+        body: None,
+    }
+}
+
+impl crate::ui::Root {
+    /// Renders module 302810 (`PAYMENT_AUTHENTICATION_MODAL`): 4-step 3DS authentication dialog.
+    pub(in crate::ui) fn payment_auth_modal_layer(
+        &self,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        use crate::ui::{color, icon};
+        use dc_intl::Arg;
+        use gpui::{FontWeight, IntoElement, div, prelude::*, px, rgba};
+        use std::borrow::Cow;
+
+        let state = self.payment_auth_modal.as_ref()?;
+        let (title, message, badge_icon, badge_bg, badge_fg) = match state.step {
+            PaymentAuthStep::Required => (
+                dc_intl::t("N65ZrW").to_owned(),
+                dc_intl::format(
+                    "RoxWET",
+                    &[
+                        ("price", Arg::Str(Cow::Borrowed(&state.price_formatted))),
+                        ("item", Arg::Str(Cow::Borrowed(&state.item_description))),
+                    ],
+                ),
+                "role_shield",
+                rgba(0x5865f226),
+                "--brand-400",
+            ),
+            PaymentAuthStep::Success => (
+                dc_intl::t("DPgrRk").to_owned(),
+                dc_intl::t("PZskfs").to_owned(),
+                "circle_check",
+                rgba(0x23a55a26),
+                "--status-positive",
+            ),
+            PaymentAuthStep::Canceled => (
+                dc_intl::t("xypuIv").to_owned(),
+                dc_intl::format(
+                    "j0tI/b",
+                    &[("item", Arg::Str(Cow::Borrowed(&state.item_description)))],
+                ),
+                "warning_triangle",
+                rgba(0xda373c26),
+                "--status-danger",
+            ),
+            PaymentAuthStep::Failed => (
+                dc_intl::t("uEoQdA").to_owned(),
+                dc_intl::t("BAr3rB").to_owned(),
+                "warning_triangle",
+                rgba(0xda373c26),
+                "--status-danger",
+            ),
+        };
+        let payment_id = state.payment_id.clone();
+        let step = state.step;
+        let awaiting = state.awaiting_auth;
+
+        let actions = if step == PaymentAuthStep::Required {
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .id("payment-auth-cancel")
+                        .h(px(38.))
+                        .px(px(16.))
+                        .rounded(px(8.))
+                        .bg(color("--control-secondary-background-default"))
+                        .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--control-secondary-text-default"))
+                        .child(dc_intl::t("2NeVoY"))
+                        .on_click(cx.listener({
+                            let pid = payment_id.clone();
+                            move |this, _, _, cx| {
+                                let _ = this.requests.send(payment_void_request(&pid));
+                                if let Some(m) = this.payment_auth_modal.as_mut() {
+                                    m.step = PaymentAuthStep::Canceled;
+                                    m.awaiting_auth = false;
+                                }
+                                cx.notify();
+                            }
+                        })),
+                )
+                .child(
+                    div()
+                        .id("payment-auth-continue")
+                        .h(px(38.))
+                        .px(px(16.))
+                        .rounded(px(8.))
+                        .bg(color("--control-primary-background-default"))
+                        .when(awaiting, |d| d.opacity(0.65))
+                        .when(!awaiting, |d| {
+                            d.cursor_pointer()
+                                .hover(|s| s.bg(color("--control-primary-background-hover")))
+                        })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child(dc_intl::t("VAqBoE"))
+                        .on_click(cx.listener({
+                            let pid = payment_id.clone();
+                            move |this, _, _, cx| {
+                                if let Some(m) = this.payment_auth_modal.as_mut() {
+                                    if m.awaiting_auth {
+                                        return;
+                                    }
+                                    m.awaiting_auth = true;
+                                }
+                                let _ = this.requests.send(payment_intent_request(&pid));
+                                cx.notify();
+                            }
+                        })),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .child(
+                    div()
+                        .id("payment-auth-close")
+                        .h(px(38.))
+                        .px(px(18.))
+                        .rounded(px(8.))
+                        .bg(color("--control-primary-background-default"))
+                        .hover(|s| s.bg(color("--control-primary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child(dc_intl::t("cpT0Cq"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.payment_auth_modal = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element()
+        };
+
+        let dialog = div()
+            .id("payment-auth-dialog")
+            .w(px(440.))
+            .rounded(px(12.))
+            .bg(color("--background-surface-high"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .px(px(20.))
+                    .pt(px(20.))
+                    .pb(px(12.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .id("payment-auth-x")
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 16., "--interactive-icon-default"))
+                            .on_click(cx.listener({
+                                let pid = payment_id.clone();
+                                move |this, _, _, cx| {
+                                    if step == PaymentAuthStep::Required {
+                                        let _ = this.requests.send(payment_void_request(&pid));
+                                    }
+                                    this.payment_auth_modal = None;
+                                    cx.notify();
+                                }
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(20.))
+                    .pb(px(20.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .size(px(72.))
+                            .rounded_full()
+                            .bg(badge_bg)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(badge_icon, 36., badge_fg)),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .text_center()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(message),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(20.))
+                    .py(px(14.))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-base-lower"))
+                    .child(actions),
+            );
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("payment-auth-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if step == PaymentAuthStep::Required {
+                            let _ = this.requests.send(payment_void_request(&payment_id));
+                        }
+                        this.payment_auth_modal = None;
+                        cx.notify();
+                    }))
+                    .child(dialog),
+            )
+            .with_priority(4)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_payment_auth(
+        &mut self,
+        arg: &str,
+        cx: &mut gpui::Context<Self>,
+    ) -> String {
+        let mode = arg.trim();
+        if mode == "close" {
+            self.payment_auth_modal = None;
+            cx.notify();
+            return "payment-auth: closed".to_owned();
+        }
+        let step = match mode {
+            "failed" => PaymentAuthStep::Failed,
+            "success" => PaymentAuthStep::Success,
+            "canceled" => PaymentAuthStep::Canceled,
+            _ => PaymentAuthStep::Required,
+        };
+        self.payment_auth_modal = Some(Box::new(PaymentAuthModalState {
+            payment_id: "pay-302810".to_owned(),
+            price_formatted: "$9.99".to_owned(),
+            item_description: "Nitro Monthly".to_owned(),
+            step,
+            awaiting_auth: false,
+        }));
+        cx.notify();
+        format!("payment-auth: {mode}")
+    }
+}
+
 /// Module 6151 (`a`): sentinel option ID for "Add new payment method".
 pub(in crate::ui) const NEW_PAYMENT_SOURCE_ID: &str = "new_payment_source_id";
 
@@ -1055,5 +1389,27 @@ mod tests {
         assert_eq!(NEW_PAYMENT_SOURCE_ID, "new_payment_source_id");
         assert_eq!(dc_intl::t("u+Cw58"), "Payment method");
         assert_eq!(dc_intl::t("rNF29q"), "Add new payment method");
+    }
+
+    #[test]
+    fn payment_auth_302810_routes_and_intl() {
+        for key in [
+            "N65ZrW", "DPgrRk", "xypuIv", "uEoQdA", "RoxWET", "PZskfs", "j0tI/b", "BAr3rB",
+            "2NeVoY", "VAqBoE", "cpT0Cq",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 302810 key {key}");
+        }
+        assert!(matches!(
+            payment_void_request("p42"),
+            crate::net::Request::Rest { method, route, .. }
+                if method == reqwest::Method::POST
+                    && route == "/users/@me/billing/payments/p42/void"
+        ));
+        assert!(matches!(
+            payment_intent_request("p42"),
+            crate::net::Request::Rest { method, route, .. }
+                if method == reqwest::Method::GET
+                    && route == "/users/@me/billing/stripe/payment-intents/payments/p42"
+        ));
     }
 }

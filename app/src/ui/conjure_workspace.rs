@@ -153,6 +153,108 @@ pub(crate) struct ConjureAgentBrowserState {
     pub control_state: AgentControlState,
 }
 
+/// Module 312405: Conjure Remix vs Install (Copy) modal mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ConjureCopyMode {
+    Copy,
+    Remix,
+}
+
+/// Shared auxiliary modal for Conjure AI App Builder (modules 300874 & 312405).
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) enum ConjureAuxModal {
+    /// Module 300874: Patch notes composer modal (`lsYQII`, `r4du8k`, `aYQksU`/`3hV1Gc`,
+    /// `Em8bo+`, `Gd63Fl`, `7CvxMC`, `2ECgBx`, `69aIG4`, `6oEjjD`).
+    PatchNotes {
+        #[allow(dead_code)]
+        project_id: String,
+        project_name: String,
+        app_channel_id: Option<String>,
+        channels: Vec<(String, String)>,
+        selected_channel_id: Option<String>,
+        text: String,
+        drafting: bool,
+        draft_failed: bool,
+        sending: bool,
+        max_len: usize,
+    },
+    /// Module 312405: Remix / Install (Copy) modal (`UsUa/c`/`276ll6`, `GzGb2w`/`QN8T+C`,
+    /// `cvvDlE`/`u3W0k0`, `PuVQeX`, `cIWtCk`, `Cn8H0Y`).
+    RemixOrCopy {
+        project_id: String,
+        project_name: String,
+        mode: ConjureCopyMode,
+        prompt: String,
+        copy_name: String,
+        guilds: Vec<(String, String)>,
+        selected_guild_id: Option<String>,
+        submitting: bool,
+    },
+}
+
+const CONJURE_COPY_SUFFIX: &str = " (Copy)";
+
+/// Module 312405: default copy name (`"{name} (Copy)"` capped to 128 chars).
+pub(crate) fn conjure_default_copy_name(name: &str) -> String {
+    let limit = 128usize.saturating_sub(CONJURE_COPY_SUFFIX.len());
+    let prefix: String = name.chars().take(limit).collect();
+    format!("{prefix}{CONJURE_COPY_SUFFIX}")
+}
+
+/// Module 300874 (`w`): builds `\n\nTry it here: <#channelId>` footer appended to sent patch notes.
+pub(crate) fn conjure_patch_notes_footer(channel_mention: &str) -> String {
+    let line = dc_intl::format("2ECgBx", &[("channel", channel_mention.into())]);
+    format!("\n\n{line}")
+}
+
+/// Module 300874: `POST /channels/{channel_id}/messages` with optional `Try it here:` footer.
+pub(crate) fn conjure_patch_notes_send_request(
+    channel_id: &str,
+    notes: &str,
+    app_channel_id: Option<&str>,
+) -> Request {
+    let trimmed = notes.trim();
+    let content = match app_channel_id {
+        Some(app_ch) if !app_ch.is_empty() => {
+            format!(
+                "{trimmed}{}",
+                conjure_patch_notes_footer(&format!("<#{app_ch}>"))
+            )
+        }
+        _ => trimmed.to_owned(),
+    };
+    Request::Rest {
+        key: Some(format!("conjure:patch-notes:{channel_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/channels/{channel_id}/messages"),
+        body: Some(json!({ "content": content })),
+    }
+}
+
+/// Module 312405 (`233470.iR`): `POST /conjure/projects` for remixing or copying a project.
+pub(crate) fn conjure_create_remix_request(
+    name: &str,
+    guild_id: &str,
+    install_scope: &str,
+    remix_source_project_id: &str,
+    nonce: &str,
+) -> Request {
+    Request::Rest {
+        key: Some(format!("conjure:create-remix:{remix_source_project_id}")),
+        method: reqwest::Method::POST,
+        route: "/conjure/projects".to_owned(),
+        body: Some(json!({
+            "name": name.trim(),
+            "guild_id": guild_id,
+            "install_scope": install_scope,
+            "remix_source_project_id": remix_source_project_id,
+            "nonce": nonce,
+        })),
+    }
+}
+
 /// Module 164254 (`472119.dv`): `POST /conjure/projects/{id}/ws-ticket`.
 #[allow(dead_code)]
 pub(crate) fn conjure_ws_ticket_request(project_id: &str) -> Request {
@@ -1025,6 +1127,730 @@ impl Root {
         )
     }
 
+    /// Renders `ConjureAuxModal` (module 300874 Patch Notes & module 312405 Remix/Install Copy).
+    pub(super) fn conjure_aux_modal_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.conjure_aux_modal.as_deref()?;
+        let dialog: AnyElement = match modal {
+            ConjureAuxModal::PatchNotes {
+                project_name,
+                app_channel_id,
+                channels,
+                selected_channel_id,
+                text,
+                drafting,
+                draft_failed,
+                sending,
+                max_len,
+                ..
+            } => {
+                let title =
+                    dc_intl::format("lsYQII", &[("projectName", project_name.as_str().into())]);
+                let trimmed = text.trim();
+                let can_send = !trimmed.is_empty()
+                    && trimmed.chars().count() <= *max_len
+                    && selected_channel_id.is_some()
+                    && !*sending;
+                let selected_label = selected_channel_id
+                    .as_deref()
+                    .and_then(|id| channels.iter().find(|(cid, _)| cid == id))
+                    .map(|(_, name)| format!("#{name}"))
+                    .unwrap_or_else(|| dc_intl::t("7CvxMC").to_owned());
+                let footer_preview = app_channel_id.as_deref().map(|ch_id| {
+                    let ch_label = channels
+                        .iter()
+                        .find(|(cid, _)| cid == ch_id)
+                        .map(|(_, n)| format!("#{n}"))
+                        .unwrap_or_else(|| format!("<#{ch_id}>"));
+                    dc_intl::format("2ECgBx", &[("channel", ch_label.as_str().into())])
+                });
+                let send_channel = selected_channel_id.clone();
+                let send_notes = text.clone();
+                let send_app_ch = app_channel_id.clone();
+                let is_drafting = *drafting;
+                let is_failed = *draft_failed;
+                let is_sending = *sending;
+                let char_count = trimmed.chars().count();
+                let max_chars = *max_len;
+
+                div()
+                    .id("conjure-patch-notes-dialog")
+                    .w(px(580.))
+                    .rounded(px(12.))
+                    .bg(color("--background-surface-high"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .py(px(16.))
+                            .border_b_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(18.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .id("cj-pn-close")
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("modal_close", 16., "--interactive-icon-default"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.conjure_aux_modal = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .p(px(20.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("r4du8k")),
+                            )
+                            .child(
+                                div()
+                                    .min_h(px(220.))
+                                    .p(px(12.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color("--input-border-default"))
+                                    .bg(color("--input-background-default"))
+                                    .flex()
+                                    .flex_col()
+                                    .justify_between()
+                                    .gap(px(10.))
+                                    .child(if text.is_empty() {
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-muted"))
+                                            .child(dc_intl::t(if is_drafting {
+                                                "aYQksU"
+                                            } else {
+                                                "3hV1Gc"
+                                            }))
+                                    } else {
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-default"))
+                                            .child(text.clone())
+                                    })
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap(px(8.))
+                                            .children(footer_preview.map(|line| {
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .text_color(color("--text-link"))
+                                                    .child(line)
+                                            }))
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .text_color(color(if char_count > max_chars {
+                                                        "--text-feedback-critical"
+                                                    } else {
+                                                        "--text-muted"
+                                                    }))
+                                                    .child(format!("{char_count}/{max_chars}")),
+                                            ),
+                                    ),
+                            )
+                            .when(is_failed, |col| {
+                                col.child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(color("--text-muted"))
+                                        .child(dc_intl::t("Em8bo+")),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-subtle"))
+                                            .child(dc_intl::t("Gd63Fl")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_wrap()
+                                            .gap(px(6.))
+                                            .children(channels.iter().enumerate().map(
+                                                |(idx, (cid, cname))| {
+                                                    let active =
+                                                        selected_channel_id.as_deref() == Some(cid);
+                                                    let cid_owned = cid.clone();
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "cj-pn-ch-{idx}"
+                                                        )))
+                                                        .px(px(10.))
+                                                        .py(px(6.))
+                                                        .rounded(px(6.))
+                                                        .border_1()
+                                                        .border_color(color(if active {
+                                                            "--control-primary-background-default"
+                                                        } else {
+                                                            "--border-subtle"
+                                                        }))
+                                                        .bg(color(if active {
+                                                            "--background-mod-strong"
+                                                        } else {
+                                                            "--background-base-lower"
+                                                        }))
+                                                        .cursor_pointer()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(6.))
+                                                        .child(icon(
+                                                            "channel_type_text",
+                                                            14.,
+                                                            if active {
+                                                                "--text-strong"
+                                                            } else {
+                                                                "--icon-muted"
+                                                            },
+                                                        ))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.))
+                                                                .font_weight(FontWeight(
+                                                                    if active {
+                                                                        600.
+                                                                    } else {
+                                                                        500.
+                                                                    },
+                                                                ))
+                                                                .text_color(color(if active {
+                                                                    "--text-strong"
+                                                                } else {
+                                                                    "--text-default"
+                                                                }))
+                                                                .child(cname.clone()),
+                                                        )
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                if let Some(
+                                                                    ConjureAuxModal::PatchNotes {
+                                                                        selected_channel_id,
+                                                                        ..
+                                                                    },
+                                                                ) = this
+                                                                    .conjure_aux_modal
+                                                                    .as_deref_mut()
+                                                                {
+                                                                    *selected_channel_id =
+                                                                        Some(cid_owned.clone());
+                                                                }
+                                                                cx.notify();
+                                                            },
+                                                        ))
+                                                },
+                                            ))
+                                            .when(channels.is_empty(), |row| {
+                                                row.child(
+                                                    div()
+                                                        .text_size(px(13.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(selected_label),
+                                                )
+                                            }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .py(px(14.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-base-lower"))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .id("cj-pn-cancel")
+                                    .h(px(36.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--control-secondary-text-default"))
+                                    .child(dc_intl::t("ETE/oC"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.conjure_aux_modal = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("cj-pn-send")
+                                    .h(px(36.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .when(!can_send, |d| d.opacity(0.5))
+                                    .when(can_send, |d| d.cursor_pointer())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(dc_intl::t("69aIG4"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if !can_send || is_sending {
+                                            return;
+                                        }
+                                        let Some(ch_id) = send_channel.as_deref() else {
+                                            this.show_app_toast(dc_intl::t("6oEjjD"), cx);
+                                            return;
+                                        };
+                                        let _ =
+                                            this.requests.send(conjure_patch_notes_send_request(
+                                                ch_id,
+                                                &send_notes,
+                                                send_app_ch.as_deref(),
+                                            ));
+                                        this.conjure_aux_modal = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            ConjureAuxModal::RemixOrCopy {
+                project_id,
+                project_name,
+                mode,
+                prompt,
+                copy_name,
+                guilds,
+                selected_guild_id,
+                submitting,
+            } => {
+                let is_copy = *mode == ConjureCopyMode::Copy;
+                let title_key = if is_copy { "UsUa/c" } else { "276ll6" };
+                let subtitle = dc_intl::format(
+                    if is_copy { "GzGb2w" } else { "QN8T+C" },
+                    &[("projectName", project_name.as_str().into())],
+                );
+                let name_valid = is_copy || copy_name.trim().chars().count() >= 2;
+                let can_submit = name_valid && selected_guild_id.is_some() && !*submitting;
+                let submit_name = if is_copy {
+                    project_name.clone()
+                } else {
+                    copy_name.clone()
+                };
+                let submit_pid = project_id.clone();
+                let submit_gid = selected_guild_id.clone();
+                let is_submitting = *submitting;
+
+                div()
+                    .id("conjure-remix-dialog")
+                    .w(px(460.))
+                    .rounded(px(12.))
+                    .bg(color("--background-surface-high"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .pt(px(20.))
+                            .pb(px(14.))
+                            .border_b_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_start()
+                            .justify_between()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(18.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t(title_key)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .line_height(px(18.))
+                                            .text_color(color("--text-muted"))
+                                            .child(subtitle),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("cj-rmx-close")
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("modal_close", 16., "--interactive-icon-default"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.conjure_aux_modal = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .p(px(20.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(14.))
+                            .when(!is_copy, |col| {
+                                col.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::t("cvvDlE")),
+                                        )
+                                        .child(
+                                            div()
+                                                .min_h(px(68.))
+                                                .p(px(10.))
+                                                .rounded(px(8.))
+                                                .border_1()
+                                                .border_color(color("--input-border-default"))
+                                                .bg(color("--input-background-default"))
+                                                .text_size(px(13.))
+                                                .line_height(px(18.))
+                                                .text_color(color(if prompt.is_empty() {
+                                                    "--text-muted"
+                                                } else {
+                                                    "--text-default"
+                                                }))
+                                                .child(if prompt.is_empty() {
+                                                    dc_intl::t("u3W0k0").to_owned()
+                                                } else {
+                                                    prompt.clone()
+                                                }),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::t("PuVQeX")),
+                                        )
+                                        .child(
+                                            div()
+                                                .h(px(38.))
+                                                .px(px(10.))
+                                                .rounded(px(8.))
+                                                .border_1()
+                                                .border_color(color("--input-border-default"))
+                                                .bg(color("--input-background-default"))
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.))
+                                                        .text_color(color("--text-strong"))
+                                                        .child(copy_name.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(11.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(format!(
+                                                            "{}/128",
+                                                            copy_name.chars().count()
+                                                        )),
+                                                ),
+                                        ),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("cIWtCk")),
+                                    )
+                                    .child(div().flex().flex_col().gap(px(4.)).children(
+                                        guilds.iter().enumerate().map(|(idx, (gid, gname))| {
+                                            let active = selected_guild_id.as_deref() == Some(gid);
+                                            let gid_owned = gid.clone();
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "cj-rmx-guild-{idx}"
+                                                )))
+                                                .h(px(38.))
+                                                .px(px(10.))
+                                                .rounded(px(8.))
+                                                .border_1()
+                                                .border_color(color(if active {
+                                                    "--control-primary-background-default"
+                                                } else {
+                                                    "--border-subtle"
+                                                }))
+                                                .bg(color(if active {
+                                                    "--background-mod-strong"
+                                                } else {
+                                                    "--background-base-lower"
+                                                }))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.))
+                                                        .font_weight(FontWeight(500.))
+                                                        .text_color(color("--text-strong"))
+                                                        .child(gname.clone()),
+                                                )
+                                                .when(active, |d| {
+                                                    d.child(icon(
+                                                        "circle_check",
+                                                        16.,
+                                                        "--brand-400",
+                                                    ))
+                                                })
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if let Some(ConjureAuxModal::RemixOrCopy {
+                                                        selected_guild_id,
+                                                        ..
+                                                    }) = this.conjure_aux_modal.as_deref_mut()
+                                                    {
+                                                        *selected_guild_id =
+                                                            Some(gid_owned.clone());
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                        }),
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .py(px(14.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-base-lower"))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .id("cj-rmx-cancel")
+                                    .h(px(36.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .when(!is_submitting, |d| d.cursor_pointer())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--control-secondary-text-default"))
+                                    .child(dc_intl::t("ETE/oC"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.conjure_aux_modal = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("cj-rmx-submit")
+                                    .h(px(36.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .when(!can_submit, |d| d.opacity(0.5))
+                                    .when(can_submit, |d| d.cursor_pointer())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(dc_intl::t(title_key))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if !can_submit {
+                                            return;
+                                        }
+                                        let Some(gid) = submit_gid.as_deref() else {
+                                            this.show_app_toast(dc_intl::t("Cn8H0Y"), cx);
+                                            return;
+                                        };
+                                        let _ = this.requests.send(conjure_create_remix_request(
+                                            &submit_name,
+                                            gid,
+                                            "guild",
+                                            &submit_pid,
+                                            "nonce-312405",
+                                        ));
+                                        this.conjure_aux_modal = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            }
+        };
+
+        Some(
+            deferred(
+                div()
+                    .id("conjure-aux-modal-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.conjure_aux_modal = None;
+                        cx.notify();
+                    }))
+                    .child(dialog),
+            )
+            .with_priority(4)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_conjure_aux_modal(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "close" => {
+                self.conjure_aux_modal = None;
+                cx.notify();
+                "conjure-aux: closed".to_owned()
+            }
+            "patch-notes" | "patch-notes-failed" => {
+                let failed = arg.trim() == "patch-notes-failed";
+                self.conjure_aux_modal = Some(Box::new(ConjureAuxModal::PatchNotes {
+                    project_id: "proj-300874".to_owned(),
+                    project_name: "Raid Planner App".to_owned(),
+                    app_channel_id: Some("9001".to_owned()),
+                    channels: vec![
+                        ("9001".to_owned(), "raid-announcements".to_owned()),
+                        ("9002".to_owned(), "general".to_owned()),
+                    ],
+                    selected_channel_id: Some("9001".to_owned()),
+                    text: if failed {
+                        String::new()
+                    } else {
+                        "- Added tank & healer role signup queues\n- Live voice roster sync for raid nights"
+                            .to_owned()
+                    },
+                    drafting: false,
+                    draft_failed: failed,
+                    sending: false,
+                    max_len: 1960,
+                }));
+                cx.notify();
+                format!("conjure-aux: {}", arg.trim())
+            }
+            "copy" | "remix" => {
+                let mode = if arg.trim() == "copy" {
+                    ConjureCopyMode::Copy
+                } else {
+                    ConjureCopyMode::Remix
+                };
+                self.conjure_aux_modal = Some(Box::new(ConjureAuxModal::RemixOrCopy {
+                    project_id: "proj-312405".to_owned(),
+                    project_name: "Raid Planner App".to_owned(),
+                    mode,
+                    prompt: if mode == ConjureCopyMode::Remix {
+                        "Add a weekly boss loot tracker tab".to_owned()
+                    } else {
+                        String::new()
+                    },
+                    copy_name: conjure_default_copy_name("Raid Planner App"),
+                    guilds: vec![
+                        ("1001".to_owned(), "Graveyard Guild".to_owned()),
+                        ("1002".to_owned(), "Design Sandbox".to_owned()),
+                    ],
+                    selected_guild_id: Some("1001".to_owned()),
+                    submitting: false,
+                }));
+                cx.notify();
+                format!("conjure-aux: {}", arg.trim())
+            }
+            other => format!("conjure-aux: unknown mode {other}"),
+        }
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_conjure_agent_browser(
         &mut self,
@@ -1152,5 +1978,34 @@ mod tests {
         let (seq, w, h, jpg) = parse_agent_browser_frame(&buf).expect("valid frame");
         assert_eq!((seq, w, h, jpg), (7, 1280, 720, &[0xff, 0xd8][..]));
         assert!(parse_agent_browser_frame(&[2, 0, 0, 0, 1, 0, 1, 0, 1, 0]).is_none());
+    }
+
+    #[test]
+    fn conjure_patch_notes_300874_and_remix_312405_requests_and_intl() {
+        for key in [
+            "lsYQII", "ETE/oC", "69aIG4", "r4du8k", "aYQksU", "3hV1Gc", "Em8bo+", "Gd63Fl",
+            "7CvxMC", "2ECgBx", "6oEjjD", "UsUa/c", "276ll6", "GzGb2w", "QN8T+C", "cvvDlE",
+            "u3W0k0", "PuVQeX", "cIWtCk", "Cn8H0Y",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 300874/312405 key {key}");
+        }
+        assert_eq!(conjure_default_copy_name("My App"), "My App (Copy)");
+        assert_eq!(
+            conjure_default_copy_name(&"a".repeat(200)).chars().count(),
+            128
+        );
+        assert!(matches!(
+            conjure_patch_notes_send_request("55", "v2 shipped", Some("77")),
+            Request::Rest { route, body: Some(ref b), .. }
+                if route == "/channels/55/messages"
+                    && b["content"].as_str().is_some_and(|s| s.contains("v2 shipped") && s.contains("<#77>"))
+        ));
+        assert!(matches!(
+            conjure_create_remix_request("My App (Copy)", "99", "guild", "p1", "n1"),
+            Request::Rest { route, body: Some(ref b), .. }
+                if route == "/conjure/projects"
+                    && b["guild_id"] == "99"
+                    && b["remix_source_project_id"] == "p1"
+        ));
     }
 }

@@ -94,6 +94,31 @@ impl DisconnectLinkModal {
     }
 }
 
+/// Module 320742 (`FamilyCenterQRCodeModal`): decoy URL shown on blurred QR before reveal (`191627.EC`).
+pub(crate) const TEEN_QR_DECOY_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+/// Module 320742: official Family Center learn-more article URL (`LyyCsE`).
+pub(crate) const TEEN_QR_HELP_URL: &str = "https://support.discord.com/hc/articles/14155060633623";
+
+/// Module 320742: teen-only blurred QR code modal state (`FamilyCenterQRCodeModal`).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TeenQrCodeModal {
+    pub revealed: bool,
+    pub loading: bool,
+}
+
+/// Module 320742: returns the QR payload URL (decoy until revealed with a valid link code).
+pub(crate) fn teen_qr_payload_url(
+    revealed: bool,
+    user_id: dc_state::Id,
+    link_code: Option<&str>,
+) -> String {
+    if revealed && let Some(code) = link_code.filter(|c| !c.is_empty()) {
+        family_center_share_url(user_id, code)
+    } else {
+        TEEN_QR_DECOY_URL.to_owned()
+    }
+}
+
 /// Module 270915 (`Change spending cap`): Family Center teen monthly spending cap modal state.
 #[derive(Clone, Debug)]
 pub(crate) struct SpendingCapModal {
@@ -272,6 +297,8 @@ pub(super) struct State {
     pub disconnect_link: Option<DisconnectLinkModal>,
     /// Module 270915: Family Center Teen Spending Cap modal.
     pub spending_cap: Option<SpendingCapModal>,
+    /// Module 320742: Family Center Teen QR Code modal (`FamilyCenterQRCodeModal`).
+    pub teen_qr_modal: Option<TeenQrCodeModal>,
     /// Cached link code (override or fetched from `GET /family-center/@me/link-code`).
     pub link_code: Option<String>,
     /// Timestamp when the current link code was acquired (for 5-minute `M:SS` countdown).
@@ -766,7 +793,8 @@ impl Root {
         let b = self.family_center.accept_link.take().is_some();
         let c = self.family_center.disconnect_link.take().is_some();
         let d = self.family_center.spending_cap.take().is_some();
-        a || b || c || d
+        let e = self.family_center.teen_qr_modal.take().is_some();
+        a || b || c || d || e
     }
 
     /// Handles REST responses for `POST /users/@me/linked-users` (module 41527) and
@@ -2244,6 +2272,283 @@ impl Root {
         )
     }
 
+    /// Module 320742 (`FamilyCenterQRCodeModal`, CSS `804050` `DzIB9D`):
+    /// Teen-only blurred QR modal (`iHYMAz` top warning banner, `AVTZaN` / `LyyCsE`, 272px QR card
+    /// with decoy URL until revealed, `goDyoe` reminder, full-width Close `cpT0Cq` + Reveal/Hide QR).
+    pub(in crate::ui) fn family_center_teen_qr_modal(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.family_center.teen_qr_modal.as_ref()?;
+        let revealed = modal.revealed;
+        let loading = modal.loading;
+        let user_id = self.stores.current_user.as_ref().map_or(100_001, |u| u.id);
+        let qr_url =
+            teen_qr_payload_url(revealed, user_id, self.family_center.link_code.as_deref());
+        let qr_card = super::login::qr_code_card(&qr_url, 224., 8., 8.);
+        let desc_runs = dc_intl::format_runs("LyyCsE", &[]);
+        let mut desc_text = String::new();
+        let mut desc_highlights = Vec::new();
+        for (seg, hook) in desc_runs {
+            let start = desc_text.len();
+            desc_text.push_str(&seg);
+            if hook.is_some() && start < desc_text.len() {
+                desc_highlights.push((
+                    start..desc_text.len(),
+                    gpui::HighlightStyle {
+                        color: Some(color("--text-link").into()),
+                        ..gpui::HighlightStyle::default()
+                    },
+                ));
+            }
+        }
+        let desc_line = div()
+            .id("fc-teen-qr-desc")
+            .w_full()
+            .min_w_0()
+            .text_center()
+            .text_size(px(14.))
+            .line_height(px(20.))
+            .text_color(color("--text-default"))
+            .cursor_pointer()
+            .child(gpui::StyledText::new(desc_text).with_highlights(desc_highlights))
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.open_url(TEEN_QR_HELP_URL);
+            }));
+
+        Some(
+            deferred(
+                div()
+                    .id("family-center-teen-qr-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.family_center.teen_qr_modal = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("family-center-teen-qr-modal")
+                            .occlude()
+                            .w(px(460.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .overflow_hidden()
+                            .shadow_xl()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            // Top full-width warning notice banner (`.notice_DzIB9D`)
+                            .child(
+                                div()
+                                    .w_full()
+                                    .px(px(16.))
+                                    .py(px(10.))
+                                    .bg(color("--status-warning"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(6.))
+                                    .child(icon("circle_info", 16., "--background-base-lowest"))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--background-base-lowest"))
+                                            .child(dc_intl::t("iHYMAz")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .p(px(24.))
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .text_center()
+                                            .child(dc_intl::t("AVTZaN")),
+                                    )
+                                    .child(desc_line)
+                                    // QR code container (`.qrCodeContainer_DzIB9D`, obscured until revealed)
+                                    .child(
+                                        div()
+                                            .id("fc-teen-qr-box")
+                                            .relative()
+                                            .mt(px(4.))
+                                            .size(px(240.))
+                                            .rounded(px(12.))
+                                            .overflow_hidden()
+                                            .border_1()
+                                            .border_color(color("--border-muted"))
+                                            .bg(color("--white"))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                div()
+                                                    .opacity(if revealed { 1.0 } else { 0.14 })
+                                                    .children(qr_card),
+                                            )
+                                            .when(!revealed, |d| {
+                                                d.child(
+                                                    div()
+                                                        .absolute()
+                                                        .inset_0()
+                                                        .bg(rgba(0x111214cc))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .child(
+                                                            div()
+                                                                .px(px(14.))
+                                                                .py(px(8.))
+                                                                .rounded(px(8.))
+                                                                .bg(color(
+                                                                    "--background-surface-higher",
+                                                                ))
+                                                                .border_1()
+                                                                .border_color(color(
+                                                                    "--border-muted",
+                                                                ))
+                                                                .text_size(px(13.))
+                                                                .font_weight(FontWeight(600.))
+                                                                .text_color(color("--text-strong"))
+                                                                .child(dc_intl::t("10dX6U")),
+                                                        ),
+                                                )
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if let Some(m) =
+                                                    this.family_center.teen_qr_modal.as_mut()
+                                                {
+                                                    m.revealed = !m.revealed;
+                                                }
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .mt(px(4.))
+                                            .text_center()
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-muted"))
+                                            .child(dc_intl::t("goDyoe")),
+                                    ),
+                            )
+                            // Full-width footer (`actionsFullWidth: true`)
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .py(px(16.))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-base-lower"))
+                                    .flex()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .id("fc-teen-qr-close")
+                                            .flex_1()
+                                            .h(px(38.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-muted"))
+                                            .bg(color("--control-secondary-background-default"))
+                                            .hover(|s| {
+                                                s.bg(color("--control-secondary-background-hover"))
+                                            })
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--control-secondary-text-default"))
+                                            .child(dc_intl::t("cpT0Cq"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.family_center.teen_qr_modal = None;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("fc-teen-qr-toggle")
+                                            .flex_1()
+                                            .h(px(38.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .hover(|s| {
+                                                s.bg(color("--control-primary-background-hover"))
+                                            })
+                                            .when(!loading, |d| d.cursor_pointer())
+                                            .when(loading, |d| d.opacity(0.6))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(dc_intl::t(if revealed {
+                                                "wg2xwQ"
+                                            } else {
+                                                "10dX6U"
+                                            }))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if let Some(m) =
+                                                    this.family_center.teen_qr_modal.as_mut()
+                                                {
+                                                    m.revealed = !m.revealed;
+                                                }
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_family_teen_qr(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.family_center.teen_qr_modal = None;
+            cx.notify();
+            return "family teen-qr closed".to_owned();
+        }
+        if self.family_center.link_code.is_none() {
+            self.family_center.link_code = Some("TEEN-QR-2026".to_owned());
+        }
+        self.family_center.teen_qr_modal = Some(TeenQrCodeModal {
+            revealed: arg.trim() == "revealed",
+            loading: false,
+        });
+        cx.notify();
+        format!("family teen-qr opened ({})", arg.trim())
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_family_spending_cap(
         &mut self,
@@ -2495,5 +2800,23 @@ mod tests {
             family_center_spending_cap_request("99", "e30="),
             crate::net::Request::Rest { route, .. } if route == "/family-center/99/settings-proto"
         ));
+    }
+
+    #[test]
+    fn family_center_teen_qr_320742_decoy_and_intl() {
+        for key in [
+            "iHYMAz", "AVTZaN", "LyyCsE", "goDyoe", "cpT0Cq", "wg2xwQ", "10dX6U",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 320742 key {key}");
+        }
+        assert_eq!(
+            teen_qr_payload_url(false, 42, Some("SECRET")),
+            TEEN_QR_DECOY_URL
+        );
+        assert_eq!(teen_qr_payload_url(true, 42, None), TEEN_QR_DECOY_URL);
+        assert_eq!(
+            teen_qr_payload_url(true, 42, Some("SECRET")),
+            "https://discord.com/feature/family-center/my-family/42/SECRET"
+        );
     }
 }

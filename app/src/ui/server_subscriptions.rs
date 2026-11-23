@@ -71,6 +71,14 @@ pub(crate) struct ServerSubscriptionsPage {
     pub pending_change: Option<PendingTierChange>,
     pub unavailable: Option<StorefrontUnavailable>,
     pub tiers: Vec<StorefrontTier>,
+    /// Module 316369 (`6XH7h0`): true once user scrolls the horizontal tier carousel (hides `RfAAH9` hint).
+    pub carousel_scrolled: bool,
+}
+
+/// Module 316369 (`6XH7h0` / `VF6Jyi`): returns true when the horizontal tier carousel should display the
+/// `"Scroll for more options!"` (`RfAAH9`) orange hint pill (more than 2 tiers & user has not scrolled yet).
+pub(crate) fn show_carousel_scroll_hint(tier_count: usize, has_scrolled: bool) -> bool {
+    tier_count > 2 && !has_scrolled
 }
 
 /// `GET /guilds/{id}/role-subscriptions/group-listings` (module 602844).
@@ -130,6 +138,7 @@ impl Root {
             pending_change: None,
             unavailable: None,
             tiers: Vec::new(),
+            carousel_scrolled: false,
         });
         let _ = self.requests.send(group_listings_request(guild_id));
         let _ = self.requests.send(settings_request(guild_id));
@@ -558,7 +567,53 @@ impl Root {
                             .child(page.description.clone()),
                     )
                 })
-                .child(div().flex().flex_row().gap(px(14.)).children(tier_cards))
+                .child(
+                    // Module 316369 (`VF6Jyi` + `6XH7h0`): horizontal tier carousel with floating
+                    // "Scroll for more options!" (`RfAAH9`) orange pill at `top: 40px, right: 0`.
+                    div()
+                        .relative()
+                        .w_full()
+                        .child(
+                            div()
+                                .id("server-subs-tier-carousel")
+                                .w_full()
+                                .overflow_x_scroll()
+                                .flex()
+                                .flex_row()
+                                .gap(px(14.))
+                                .pb(px(8.))
+                                .children(tier_cards),
+                        )
+                        .when(
+                            show_carousel_scroll_hint(page.tiers.len(), page.carousel_scrolled),
+                            |d| {
+                                d.child(
+                                    div()
+                                        .id("server-subs-scroll-hint")
+                                        .absolute()
+                                        .top(px(40.))
+                                        .right(px(0.))
+                                        .px(px(16.))
+                                        .py(px(8.))
+                                        .rounded(px(4.))
+                                        .bg(color("--status-warning"))
+                                        .shadow_md()
+                                        .cursor_pointer()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(dc_intl::t("RfAAH9"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(p) = this.server_subscriptions_page.as_mut()
+                                            {
+                                                p.carousel_scrolled = true;
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                            },
+                        ),
+                )
                 .into_any_element()
         };
 
@@ -688,6 +743,18 @@ impl Root {
                 ],
                 subscribed: false,
             },
+            StorefrontTier {
+                id: "tier_3".to_owned(),
+                name: "Legend".to_owned(),
+                price_label: "$19.99/mo".to_owned(),
+                description: "Everything above plus monthly 1-on-1 AMA and custom sticker slot."
+                    .to_owned(),
+                perks: vec![
+                    "All VIP Creator benefits".to_owned(),
+                    "Custom server sticker slot".to_owned(),
+                ],
+                subscribed: false,
+            },
         ];
         let mut page = ServerSubscriptionsPage {
             guild_id,
@@ -698,6 +765,7 @@ impl Root {
             pending_change: None,
             unavailable: None,
             tiers: sample_tiers,
+            carousel_scrolled: false,
         };
         match arg.trim() {
             "" | "storefront" => {
@@ -767,5 +835,14 @@ mod tests {
             ],
         );
         assert!(text.contains("Supporter") && text.contains("VIP") && text.contains("Dec 1, 2026"));
+    }
+
+    #[test]
+    fn carousel_scroll_hint_316369_intl_and_visibility() {
+        assert!(dc_intl::has_key("RfAAH9"));
+        assert_eq!(dc_intl::t("RfAAH9"), "Scroll for more options!");
+        assert!(!show_carousel_scroll_hint(2, false));
+        assert!(show_carousel_scroll_hint(3, false));
+        assert!(!show_carousel_scroll_hint(3, true));
     }
 }

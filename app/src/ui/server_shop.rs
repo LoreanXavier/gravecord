@@ -72,6 +72,75 @@ pub(crate) struct ServerShopReportModal {
     pub submitted: bool,
 }
 
+/// Module 324269 / 284683 (`aq`): Server Shop product listing sort options in official menu order `[4, 2, 3, 1]`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ServerShopSort {
+    #[default]
+    NewestArrivals = 4,
+    PriceAsc = 2,
+    PriceDesc = 3,
+    Name = 1,
+}
+
+impl ServerShopSort {
+    pub(crate) const MENU_ORDER: [Self; 4] = [
+        Self::NewestArrivals,
+        Self::PriceAsc,
+        Self::PriceDesc,
+        Self::Name,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::NewestArrivals => dc_intl::t("5tzSRP"),
+            Self::PriceAsc => dc_intl::t("WWIr54"),
+            Self::PriceDesc => dc_intl::t("WlSInQ"),
+            Self::Name => dc_intl::t("uOU7P1"),
+        }
+    }
+}
+
+/// Parses a formatted price string like `"$4.99"` to minor cents for module 324269 price sorting.
+pub(crate) fn parse_product_price_cents(price: &str) -> u64 {
+    let digits: String = price
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    digits
+        .parse::<f64>()
+        .ok()
+        .map_or(u64::MAX, |v| (v * 100.).round() as u64)
+}
+
+/// Module 324269: returns indices into `products` sorted according to `sort`.
+pub(crate) fn sorted_server_shop_indices(
+    products: &[ServerShopProduct],
+    sort: ServerShopSort,
+) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..products.len()).collect();
+    match sort {
+        ServerShopSort::NewestArrivals => {}
+        ServerShopSort::PriceAsc => {
+            indices.sort_by_key(|&i| parse_product_price_cents(&products[i].price));
+        }
+        ServerShopSort::PriceDesc => {
+            indices.sort_by(|&a, &b| {
+                parse_product_price_cents(&products[b].price)
+                    .cmp(&parse_product_price_cents(&products[a].price))
+            });
+        }
+        ServerShopSort::Name => {
+            indices.sort_by(|&a, &b| {
+                products[a]
+                    .name
+                    .to_lowercase()
+                    .cmp(&products[b].name.to_lowercase())
+            });
+        }
+    }
+    indices
+}
+
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) struct ServerShopModal {
@@ -91,6 +160,10 @@ pub(crate) struct ServerShopModal {
     pub description: Option<String>,
     /// Active Server Shop Description modal (module 13197: `xPum5Q`, `D98gRz`, `wdo1oB`).
     pub description_modal_open: bool,
+    /// Module 324269: active & default Server Shop listings sort + popout menu open flag.
+    pub sort_option: ServerShopSort,
+    pub default_sort_option: ServerShopSort,
+    pub sort_menu_open: bool,
 }
 
 /// Module 724609 (`.draftBadge_jGF6_I` + `805251.E` warning `Badge`, `vosPk5` "Draft"):
@@ -835,17 +908,184 @@ impl Root {
                             )
                         })
                         .child(
+                            // Header row + Module 324269 Server Shop Listings Sort Menu (`4jfWTK`, `mBvLev`, `3b//lO`)
                             div()
-                                .text_size(px(12.))
-                                .font_weight(FontWeight(700.))
-                                .text_color(color("--text-muted"))
-                                .child(dc_intl::t("qe4kTa").to_uppercase()),
+                                .relative()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-muted"))
+                                        .child(dc_intl::t("qe4kTa").to_uppercase()),
+                                )
+                                .child(
+                                    div()
+                                        .id("server-shop-sort-btn")
+                                        .aria_label(SharedString::from(dc_intl::t("4jfWTK")))
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .rounded(px(6.))
+                                        .border_1()
+                                        .border_color(color("--border-muted"))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .child(modal.sort_option.label())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(m) = this.server_shop_modal.as_mut() {
+                                                m.sort_menu_open = !m.sort_menu_open;
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                                .when(modal.sort_menu_open, |row| {
+                                    let current = modal.sort_option;
+                                    row.child(
+                                        deferred(
+                                            div()
+                                                .id("server-shop-sort-menu")
+                                                .aria_label(SharedString::from(dc_intl::t(
+                                                    "4jfWTK",
+                                                )))
+                                                .occlude()
+                                                .absolute()
+                                                .bottom(px(36.))
+                                                .right(px(0.))
+                                                .w(px(220.))
+                                                .p(px(8.))
+                                                .rounded(px(8.))
+                                                .border_1()
+                                                .border_color(color("--border-subtle"))
+                                                .bg(color("--background-surface-higher"))
+                                                .shadow_xl()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(2.))
+                                                .child(
+                                                    div()
+                                                        .px(px(8.))
+                                                        .py(px(4.))
+                                                        .text_size(px(11.))
+                                                        .font_weight(FontWeight(700.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(dc_intl::t("mBvLev").to_uppercase()),
+                                                )
+                                                .children(
+                                                    ServerShopSort::MENU_ORDER.into_iter().map(
+                                                        |opt| {
+                                                            let checked = opt == current;
+                                                            div()
+                                                                .id(SharedString::from(format!(
+                                                                    "server-shop-sort-{}",
+                                                                    opt as u8
+                                                                )))
+                                                                .px(px(8.))
+                                                                .py(px(6.))
+                                                                .rounded(px(4.))
+                                                                .cursor_pointer()
+                                                                .hover(|s| {
+                                                                    s.bg(color(
+                                                                        "--background-mod-subtle",
+                                                                    ))
+                                                                })
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_between()
+                                                                .text_size(px(13.))
+                                                                .font_weight(FontWeight(
+                                                                    if checked {
+                                                                        600.
+                                                                    } else {
+                                                                        400.
+                                                                    },
+                                                                ))
+                                                                .text_color(color("--text-strong"))
+                                                                .child(opt.label())
+                                                                .when(checked, |d| {
+                                                                    d.child(icon(
+                                                                        "checkmark_large",
+                                                                        14.,
+                                                                        "--brand-500",
+                                                                    ))
+                                                                })
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        if let Some(m) = this
+                                                                            .server_shop_modal
+                                                                            .as_mut()
+                                                                        {
+                                                                            m.sort_option = opt;
+                                                                            m.sort_menu_open =
+                                                                                false;
+                                                                        }
+                                                                        cx.notify();
+                                                                    },
+                                                                ))
+                                                        },
+                                                    ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .my(px(4.))
+                                                        .h(px(1.))
+                                                        .w_full()
+                                                        .bg(color("--border-subtle")),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("server-shop-sort-reset")
+                                                        .px(px(8.))
+                                                        .py(px(6.))
+                                                        .rounded(px(4.))
+                                                        .cursor_pointer()
+                                                        .hover(|s| {
+                                                            s.bg(color("--background-mod-subtle"))
+                                                        })
+                                                        .text_size(px(13.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(dc_intl::t("3b//lO"))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            if let Some(m) =
+                                                                this.server_shop_modal.as_mut()
+                                                            {
+                                                                m.sort_option =
+                                                                    m.default_sort_option;
+                                                                m.sort_menu_open = false;
+                                                            }
+                                                            cx.notify();
+                                                        })),
+                                                ),
+                                        )
+                                        .with_priority(9),
+                                    )
+                                }),
                         )
-                        .child(div().flex().gap(px(12.)).children(
-                            modal.products.iter().enumerate().map(|(i, prod)| {
-                                self.server_shop_product_card(i, prod, modal.is_creator_preview, cx)
-                            }),
-                        ))
+                        .child(
+                            div().flex().gap(px(12.)).children(
+                                sorted_server_shop_indices(&modal.products, modal.sort_option)
+                                    .into_iter()
+                                    .map(|i| {
+                                        let prod = &modal.products[i];
+                                        self.server_shop_product_card(
+                                            i,
+                                            prod,
+                                            modal.is_creator_preview,
+                                            cx,
+                                        )
+                                    }),
+                            ),
+                        )
                         .into_any_element()
                 }
             }
@@ -1654,6 +1894,11 @@ impl Root {
 
     #[cfg(feature = "capture")]
     pub(crate) fn script_server_shop(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.server_shop_modal = None;
+            cx.notify();
+            return "server-shop: closed".to_owned();
+        }
         let sample_bundle = ServerShopProduct {
             id: "p1".to_owned(),
             name: "Starter Wallpaper Pack".to_owned(),
@@ -1744,6 +1989,9 @@ impl Root {
                     .to_owned(),
             ),
             description_modal_open: arg == "description",
+            sort_option: ServerShopSort::NewestArrivals,
+            default_sort_option: ServerShopSort::NewestArrivals,
+            sort_menu_open: arg == "sort",
         });
         cx.notify();
         format!("server-shop: {arg}")
@@ -2292,5 +2540,50 @@ mod tests {
         }
         assert_eq!(dc_intl::t("xPum5Q"), "Read up on the shop");
         assert_eq!(dc_intl::t("wdo1oB"), "Sounds good");
+    }
+
+    #[test]
+    fn server_shop_sort_324269_order_prices_and_intl() {
+        use super::*;
+        for key in [
+            "4jfWTK", "mBvLev", "3b//lO", "5tzSRP", "WWIr54", "WlSInQ", "uOU7P1",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 324269 key {key}");
+        }
+        let mk = |name: &str, price: &str| ServerShopProduct {
+            id: name.into(),
+            name: name.into(),
+            price: price.into(),
+            is_bundle: false,
+            description: String::new(),
+            attachments: Vec::new(),
+            role: None,
+            has_entitlement: false,
+            image_url: None,
+            is_draft: false,
+            show_unlock_badge: false,
+            published: true,
+        };
+        let list = vec![
+            mk("Zeta", "$9.99"),
+            mk("Alpha", "$2.50"),
+            mk("Beta", "$5.00"),
+        ];
+        assert_eq!(
+            sorted_server_shop_indices(&list, ServerShopSort::PriceAsc),
+            vec![1, 2, 0]
+        );
+        assert_eq!(
+            sorted_server_shop_indices(&list, ServerShopSort::PriceDesc),
+            vec![0, 2, 1]
+        );
+        assert_eq!(
+            sorted_server_shop_indices(&list, ServerShopSort::Name),
+            vec![1, 2, 0]
+        );
+        assert_eq!(
+            sorted_server_shop_indices(&list, ServerShopSort::NewestArrivals),
+            vec![0, 1, 2]
+        );
     }
 }

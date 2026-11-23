@@ -959,6 +959,9 @@ pub struct Root {
     favorites_limit_upsell: Option<u32>,
     in_game_auth_check_modal: bool,
     conjure_agent_browser: Option<Box<conjure_workspace::ConjureAgentBrowserState>>,
+    conjure_aux_modal: Option<Box<conjure_workspace::ConjureAuxModal>>,
+    payment_auth_modal: Option<Box<settings::payment_sources::PaymentAuthModalState>>,
+    gift_coachmark: Option<GiftCoachmark>,
     how_boosting_works: Option<boost_page::HowBoostingWorksModal>,
     guild_room_selector: Option<guild_space::GuildRoomSelectorModal>,
     game_org_error_modal: Option<game_org_invite::GameOrgErrorModalState>,
@@ -1646,6 +1649,9 @@ impl Root {
             favorites_limit_upsell: None,
             in_game_auth_check_modal: false,
             conjure_agent_browser: None,
+            conjure_aux_modal: None,
+            payment_auth_modal: None,
+            gift_coachmark: None,
             how_boosting_works: None,
             guild_room_selector: None,
             game_org_error_modal: None,
@@ -11248,9 +11254,23 @@ impl Root {
             }
         }));
         let docked = self.voice_chat_docked();
-        // The gift button opens the gift purchase modal (`openGiftModal`, module 194509, location "gift-button").
-        let gift_button = tool("gift", cx)
-            .on_click(cx.listener(move |this, _, _, cx| this.open_purchase(true, cx)));
+        // Module 307069 (`ChannelPremiumGiftButton`): gift button opens the gift purchase modal
+        // (`openGiftModal`, module 194509, location "gift-button"), with generic/Nitro tooltip
+        // (`TW4JV0` / `sWtWDX` / `Z1RnTk`) and mutually exclusive coachmark dismissal on click.
+        let is_generic_gift = self.guild.is_none();
+        let gift_tip = dc_intl::t(if is_generic_gift { "TW4JV0" } else { "sWtWDX" });
+        let gift_aria = dc_intl::t(if is_generic_gift { "TW4JV0" } else { "Z1RnTk" });
+        let gift_button = self.with_tip(
+            "composer-gift",
+            tooltip::Tip::text(gift_tip, tooltip::Side::Top),
+            tool("gift", cx)
+                .aria_label(gift_aria)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.gift_coachmark = None;
+                    this.open_purchase(true, cx);
+                })),
+            cx,
+        );
         // Not in the pinned client: PreviewMessage's eye, first in the bar (`plugin_hooks/preview_message.rs`).
         let preview_button = self.preview_message_shown(cx).then(|| {
             tool("clips_eye", cx).on_click(cx.listener(|this, _, _, cx| this.preview_message(cx)))
@@ -12434,12 +12454,16 @@ impl Render for Root {
                         || this.family_center.accept_link.is_some()
                         || this.family_center.disconnect_link.is_some()
                         || this.family_center.spending_cap.is_some()
+                        || this.family_center.teen_qr_modal.is_some()
                         || this.incode_age_verify.is_some()
                         || this.age_verify_aux.is_some()
                         || this.favorites_thread_settings.is_some()
                         || this.favorites_limit_upsell.is_some()
                         || this.in_game_auth_check_modal
                         || this.conjure_agent_browser.is_some()
+                        || this.conjure_aux_modal.is_some()
+                        || this.payment_auth_modal.is_some()
+                        || this.gift_coachmark.is_some()
                         || this.how_boosting_works.is_some()
                         || this.guild_room_selector.is_some()
                         || this.game_org_error_modal.is_some()
@@ -12501,6 +12525,9 @@ impl Render for Root {
                     this.favorites_limit_upsell = None;
                     this.in_game_auth_check_modal = false;
                     this.conjure_agent_browser = None;
+                    this.conjure_aux_modal = None;
+                    this.payment_auth_modal = None;
+                    this.gift_coachmark = None;
                     this.how_boosting_works = None;
                     this.guild_room_selector = None;
                     this.game_org_error_modal = None;
@@ -13977,8 +14004,12 @@ impl Render for Root {
             .children(self.favorites_limit_upsell_layer(cx))
             .children(self.family_center_disconnect_link_modal(cx))
             .children(self.family_center_spending_cap_modal(cx))
+            .children(self.family_center_teen_qr_modal(cx))
             .children(self.in_game_auth_check_modal_layer(cx))
             .children(self.conjure_agent_browser_layer(cx))
+            .children(self.conjure_aux_modal_layer(cx))
+            .children(self.payment_auth_modal_layer(cx))
+            .children(self.gift_coachmark_layer(cx))
             .children(self.how_boosting_works_overlay(cx))
             .children(self.premium_announcement_modal_layer(cx))
             .children(self.guild_space_layer(cx))
@@ -14409,12 +14440,252 @@ impl Root {
         cx.notify();
         format!("rail scrolled to bottom (max_y={:?})", max_y)
     }
+
+    /// Capture only: open/close Composer Gift Button coachmarks (module 307069).
+    pub(crate) fn script_gift_coachmark(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        self.gift_coachmark = match arg.trim() {
+            "close" => None,
+            "promo" => Some(GiftCoachmark::FirstTimePromo),
+            "badge-earned" => Some(GiftCoachmark::NewGiftingBadgeEarned {
+                gift_count: 5,
+                show_count: true,
+            }),
+            "badge-nocount" => Some(GiftCoachmark::NewGiftingBadgeEarned {
+                gift_count: 0,
+                show_count: false,
+            }),
+            "badge-unearned" => Some(GiftCoachmark::NewGiftingBadgeUnearned),
+            _ => Some(GiftCoachmark::GiftedSubscriptions),
+        };
+        cx.notify();
+        format!("gift-coachmark: {}", arg.trim())
+    }
+}
+
+/// Mutually exclusive Composer Gift Button coachmarks (`ChannelPremiumGiftButton`, module 307069).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum GiftCoachmark {
+    /// First-time Gifting Promotion popover (`Ve9Ge6`).
+    FirstTimePromo,
+    /// New Gifting Badges earned (`a+jfuy`, `0N8fCf` or `QxRA6w`, `RzWDqY`).
+    NewGiftingBadgeEarned { gift_count: u32, show_count: bool },
+    /// New Gifting Badges unearned (`Q2RQka`, `3EQnkg`, `DZnomS`).
+    NewGiftingBadgeUnearned,
+    /// Gifted Subscriptions DM nitro-pink popover (`3NxgUL`, `IMRvdN`, `Ve9Ge6`).
+    GiftedSubscriptions,
+}
+
+impl Root {
+    /// Renders module 307069 (`ChannelPremiumGiftButton`) floating coachmark popover anchored above `#gift`.
+    pub(crate) fn gift_coachmark_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let mode = self.gift_coachmark?;
+        let (title, body, cta_text, nitro_pink, opens_profile) = match mode {
+            GiftCoachmark::FirstTimePromo => (
+                dc_intl::t("TW4JV0").to_owned(),
+                dc_intl::t("IMRvdN").to_owned(),
+                dc_intl::t("Ve9Ge6").to_owned(),
+                false,
+                false,
+            ),
+            GiftCoachmark::NewGiftingBadgeEarned {
+                gift_count,
+                show_count,
+            } => (
+                dc_intl::format("a+jfuy", &[("tierName", "Gifting Tier II".into())]),
+                if show_count {
+                    dc_intl::format("QxRA6w", &[("giftCount", (gift_count as f64).into())])
+                } else {
+                    dc_intl::t("0N8fCf").to_owned()
+                },
+                dc_intl::t("RzWDqY").to_owned(),
+                false,
+                true,
+            ),
+            GiftCoachmark::NewGiftingBadgeUnearned => (
+                dc_intl::t("Q2RQka").to_owned(),
+                dc_intl::t("3EQnkg").to_owned(),
+                dc_intl::t("DZnomS").to_owned(),
+                false,
+                false,
+            ),
+            GiftCoachmark::GiftedSubscriptions => (
+                dc_intl::t("3NxgUL").to_owned(),
+                dc_intl::t("IMRvdN").to_owned(),
+                dc_intl::t("Ve9Ge6").to_owned(),
+                true,
+                false,
+            ),
+        };
+        let card = div()
+            .id("gift-coachmark-popover")
+            .w(px(300.))
+            .p(px(16.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(if nitro_pink {
+                rgba(0xeb459e88)
+            } else {
+                color("--border-subtle")
+            })
+            .bg(if nitro_pink {
+                gpui::Fill::from(gpui::linear_gradient(
+                    135.,
+                    gpui::linear_color_stop(rgba(0x6d35a3ff), 0.),
+                    gpui::linear_color_stop(rgba(0xc83f8eff), 1.),
+                ))
+            } else {
+                gpui::Fill::from(color("--background-surface-high"))
+            })
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .size(px(32.))
+                                    .rounded(px(8.))
+                                    .bg(rgba(0xeb459e33))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("gift", 18., "--white")),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(15.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(if nitro_pink {
+                                        color("--white")
+                                    } else {
+                                        color("--text-strong")
+                                    })
+                                    .child(title),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("gift-coachmark-close")
+                            .size(px(24.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(0xffffff1a)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(
+                                "modal_close",
+                                14.,
+                                if nitro_pink {
+                                    "--white"
+                                } else {
+                                    "--interactive-icon-default"
+                                },
+                            ))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.gift_coachmark = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(if nitro_pink {
+                        rgba(0xffffffe6)
+                    } else {
+                        color("--text-default")
+                    })
+                    .child(body),
+            )
+            .child(
+                div()
+                    .id("gift-coachmark-cta")
+                    .h(px(34.))
+                    .px(px(12.))
+                    .rounded(px(8.))
+                    .bg(if nitro_pink {
+                        color("--white")
+                    } else {
+                        color("--control-primary-background-default")
+                    })
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .text_size(px(13.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(if nitro_pink {
+                        rgba(0x1e1f22ff)
+                    } else {
+                        color("--white")
+                    })
+                    .when(!opens_profile, |d| {
+                        d.child(icon(
+                            "gift",
+                            14.,
+                            if nitro_pink { "--brand-500" } else { "--white" },
+                        ))
+                    })
+                    .child(cta_text)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.gift_coachmark = None;
+                        if opens_profile {
+                            if let Some(me) = this.stores.me() {
+                                this.open_profile(me.id, gpui::Bounds::default(), false, cx);
+                            }
+                        } else {
+                            this.open_purchase(true, cx);
+                        }
+                        cx.notify();
+                    })),
+            );
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("gift-coachmark-layer")
+                    .absolute()
+                    .right(px(96.))
+                    .bottom(px(74.))
+                    .child(card),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{block_gaps, relative_time};
     use dc_markdown::parse;
+
+    #[test]
+    fn gift_coachmark_307069_intl_keys_resolve() {
+        for key in [
+            "3NxgUL", "IMRvdN", "Ve9Ge6", "a+jfuy", "0N8fCf", "QxRA6w", "RzWDqY", "Q2RQka",
+            "3EQnkg", "DZnomS", "Z1RnTk", "TW4JV0", "sWtWDX",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 307069 key {key}");
+        }
+    }
 
     #[test]
     fn relative_time_follows_the_captured_wording() {

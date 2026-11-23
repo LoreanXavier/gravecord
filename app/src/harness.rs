@@ -3327,6 +3327,26 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_conjure_agent_browser(&arg, cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["conjure-aux", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_conjure_aux_modal(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["payment-auth", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_payment_auth(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["gift-coachmark", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_gift_coachmark(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["family-teen-qr", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_family_teen_qr(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
             ["how-boosting-works", rest @ ..] => {
                 let arg = rest.join(" ");
                 let msg = root.update(cx, |root, cx| root.script_how_boosting_works(&arg, cx));

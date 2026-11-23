@@ -289,6 +289,69 @@ pub(in crate::ui) enum NitroMgmtOverlay {
         has_error: bool,
         submitting: bool,
     },
+    /// `307399` PremiumGroupInviteMembersModal 2-step flow (`Um/7BM`, `qSWXaf`, `wRS8vo`,
+    /// `5fZHp3`, `gaamNe`, `nQcM39`, `5tzM9V`, `54lM5y`, `zrtwpV`, `ONaJLH`, `0LHbPc`,
+    /// `MIiPur`, `olkQkj`, `Y/oMwY`, `g33r/P`, `aFBQ3d`).
+    InviteSquadMembers {
+        subscription_id: String,
+        step: u8,
+        available_seats: usize,
+        search_query: String,
+        candidates: Vec<SquadInviteCandidate>,
+        selected_ids: Vec<String>,
+        fetch_error: bool,
+        submitting: bool,
+        results: Vec<SquadInviteOutcome>,
+    },
+}
+
+/// Candidate row in module 307399 Step 1 eligible-users picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::ui) struct SquadInviteCandidate {
+    pub user_id: String,
+    pub name: String,
+    pub username: String,
+    pub eligible: bool,
+}
+
+/// Per-recipient outcome row in module 307399 Step 2 expressive result screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::ui) struct SquadInviteOutcome {
+    pub user_id: String,
+    pub name: String,
+    pub is_success: bool,
+}
+
+/// Builds `GET /users/@me/billing/subscriptions/{sub_id}/eligible-users` (`470147.EQ`, module 307399).
+pub(in crate::ui) fn squad_eligible_users_request(
+    sub_id: &str,
+    index: usize,
+    query: &str,
+) -> Request {
+    let route = if query.trim().is_empty() {
+        format!("/users/@me/billing/subscriptions/{sub_id}/eligible-users?index={index}")
+    } else {
+        format!(
+            "/users/@me/billing/subscriptions/{sub_id}/eligible-users?index={index}&query={}",
+            query.trim()
+        )
+    };
+    Request::Rest {
+        key: Some(format!("billing:squad-eligible:{sub_id}:{index}")),
+        method: reqwest::Method::GET,
+        route,
+        body: None,
+    }
+}
+
+/// Builds `POST /users/@me/billing/subscriptions/{sub_id}/invites` (`470147.n2`, module 307399).
+pub(in crate::ui) fn squad_send_invites_request(sub_id: &str, user_ids: &[String]) -> Request {
+    Request::Rest {
+        key: Some(format!("billing:squad-send-invites:{sub_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/users/@me/billing/subscriptions/{sub_id}/invites"),
+        body: Some(json!({ "user_ids": user_ids })),
+    }
 }
 
 /// Official error code `88001.Hy.BILLING_SUBSCRIPTION_GROUP_INVITE_ALREADY_ACCEPTED` (module 115225).
@@ -841,6 +904,34 @@ pub(super) fn render_squad_card(
                                             .rounded(px(8.))
                                             .bg(color("--control-primary-background-default"))
                                             .when(!can_invite, |s| s.opacity(0.5))
+                                            .when(can_invite, |s| {
+                                                s.cursor_pointer().on_click(cx.listener(
+                                                    |this, _, _, cx| {
+                                                        let _ = this.requests.send(
+                                                            squad_eligible_users_request(
+                                                                "sub_squad",
+                                                                0,
+                                                                "",
+                                                            ),
+                                                        );
+                                                        this.nitro_mgmt_overlay = Some(
+                                                            NitroMgmtOverlay::InviteSquadMembers {
+                                                                subscription_id: "sub_squad"
+                                                                    .to_owned(),
+                                                                step: 1,
+                                                                available_seats: 3,
+                                                                search_query: String::new(),
+                                                                candidates: Vec::new(),
+                                                                selected_ids: Vec::new(),
+                                                                fetch_error: false,
+                                                                submitting: false,
+                                                                results: Vec::new(),
+                                                            },
+                                                        );
+                                                        cx.notify();
+                                                    },
+                                                ))
+                                            })
                                             .flex()
                                             .items_center()
                                             .justify_center()
@@ -2854,6 +2945,675 @@ impl Root {
                     )
                     .into_any_element()
             }
+            NitroMgmtOverlay::InviteSquadMembers {
+                subscription_id,
+                step,
+                available_seats,
+                search_query,
+                candidates,
+                selected_ids,
+                fetch_error,
+                submitting,
+                results,
+            } => {
+                let sub_id = subscription_id.clone();
+                let product = dc_intl::t("aFBQ3d");
+                if *step == 2 {
+                    let sent_count = results.iter().filter(|r| r.is_success).count();
+                    let title = dc_intl::format(
+                        "MIiPur",
+                        &[
+                            ("premiumGroupProductName", Arg::Str(Cow::Borrowed(product))),
+                            ("sentCount", Arg::Num(sent_count as f64)),
+                        ],
+                    );
+                    let subtitle = format_plain("olkQkj", &[]);
+                    div()
+                        .id("nitro-invite-squad-step2")
+                        .w(px(460.))
+                        .rounded(px(12.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .p(px(20.))
+                                .bg(linear_gradient(
+                                    135.,
+                                    linear_color_stop(rgba(0x8547c644), 0.),
+                                    linear_color_stop(rgba(0xeb459e44), 1.),
+                                ))
+                                .border_b_1()
+                                .border_color(color("--border-subtle"))
+                                .flex()
+                                .items_start()
+                                .justify_between()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .size(px(44.))
+                                                .rounded(px(10.))
+                                                .bg(linear_gradient(
+                                                    135.,
+                                                    linear_color_stop(rgba(0x8547c6ff), 0.),
+                                                    linear_color_stop(rgba(0xeb459eff), 1.),
+                                                ))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon("nitro_wheel", 24., "--white")),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(18.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(color("--text-strong"))
+                                                .child(title),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .line_height(px(18.))
+                                                .text_color(color("--text-muted"))
+                                                .child(subtitle),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("nitro-invite-squad-s2-close")
+                                        .size(px(28.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon(
+                                            "modal_close",
+                                            16.,
+                                            "--interactive-icon-default",
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.nitro_mgmt_overlay = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(div().p(px(16.)).flex().flex_col().gap(px(8.)).children(
+                            results.iter().enumerate().map(|(i, rec)| {
+                                let is_err = !rec.is_success;
+                                let fail_msg = dc_intl::format(
+                                    "Y/oMwY",
+                                    &[("userName", Arg::Str(Cow::Borrowed(&rec.name)))],
+                                );
+                                let initial = rec
+                                    .name
+                                    .chars()
+                                    .next()
+                                    .unwrap_or('?')
+                                    .to_uppercase()
+                                    .to_string();
+                                div()
+                                    .id(SharedString::from(format!("squad-res-{i}")))
+                                    .p(px(10.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(if is_err {
+                                        color("--status-danger")
+                                    } else {
+                                        color("--border-subtle")
+                                    })
+                                    .bg(if is_err {
+                                        rgba(0xda373c1a)
+                                    } else {
+                                        color("--background-base-lower")
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .size(px(32.))
+                                            .rounded_full()
+                                            .bg(color("--brand-500"))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--white"))
+                                            .child(initial),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(2.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(600.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(rec.name.clone()),
+                                            )
+                                            .when(is_err, |col| {
+                                                col.child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .line_height(px(16.))
+                                                        .text_color(color("--text-default"))
+                                                        .child(fail_msg),
+                                                )
+                                            }),
+                                    )
+                                    .when(rec.is_success, |row| {
+                                        row.child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "squad-res-msg-{i}"
+                                                )))
+                                                .h(px(30.))
+                                                .px(px(12.))
+                                                .rounded(px(6.))
+                                                .bg(color("--control-secondary-background-default"))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color(
+                                                    "--control-secondary-text-default",
+                                                ))
+                                                .child(dc_intl::t("g33r/P"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.nitro_mgmt_overlay = None;
+                                                    cx.notify();
+                                                })),
+                                        )
+                                    })
+                            }),
+                        ))
+                        .into_any_element()
+                } else if *fetch_error {
+                    div()
+                        .id("nitro-invite-squad-error")
+                        .w(px(400.))
+                        .p(px(20.))
+                        .rounded(px(12.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(18.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("54lM5y")),
+                                )
+                                .child(
+                                    div()
+                                        .id("nitro-invite-squad-err-x")
+                                        .size(px(28.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon(
+                                            "modal_close",
+                                            16.,
+                                            "--interactive-icon-default",
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.nitro_mgmt_overlay = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t("zrtwpV")),
+                        )
+                        .into_any_element()
+                } else if candidates.is_empty() && search_query.is_empty() {
+                    div()
+                        .id("nitro-invite-squad-empty")
+                        .w(px(400.))
+                        .p(px(20.))
+                        .rounded(px(12.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(18.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("ONaJLH")),
+                                )
+                                .child(
+                                    div()
+                                        .id("nitro-invite-squad-empty-x")
+                                        .size(px(28.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon(
+                                            "modal_close",
+                                            16.,
+                                            "--interactive-icon-default",
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.nitro_mgmt_overlay = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-muted"))
+                                .child(format_plain("0LHbPc", &[])),
+                        )
+                        .into_any_element()
+                } else {
+                    let subtitle = format_plain(
+                        "qSWXaf",
+                        &[
+                            ("totalSeats", Arg::Num(5.)),
+                            ("premiumGroupProductName", Arg::Str(Cow::Borrowed(product))),
+                        ],
+                    );
+                    let seats = *available_seats;
+                    let can_send = !selected_ids.is_empty() && !*submitting;
+                    let selected_tags: Vec<(String, String)> = selected_ids
+                        .iter()
+                        .filter_map(|uid| {
+                            candidates
+                                .iter()
+                                .find(|c| &c.user_id == uid)
+                                .map(|c| (c.user_id.clone(), c.name.clone()))
+                        })
+                        .collect();
+                    let send_ids = selected_ids.clone();
+                    let send_candidates = candidates.clone();
+
+                    div()
+                        .id("nitro-invite-squad-step1")
+                        .w(px(460.))
+                        .rounded(px(12.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .px(px(20.))
+                                .pt(px(20.))
+                                .pb(px(12.))
+                                .flex()
+                                .items_start()
+                                .justify_between()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.))
+                                        .child(
+                                            div()
+                                                .text_size(px(18.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::t("Um/7BM")),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .line_height(px(18.))
+                                                .text_color(color("--text-muted"))
+                                                .child(subtitle),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("nitro-invite-squad-s1-x")
+                                        .size(px(28.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon(
+                                            "modal_close",
+                                            16.,
+                                            "--interactive-icon-default",
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.nitro_mgmt_overlay = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        // Tag & search input row (`wRS8vo`)
+                        .child(
+                            div()
+                                .mx(px(20.))
+                                .mb(px(12.))
+                                .min_h(px(40.))
+                                .px(px(10.))
+                                .py(px(6.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--input-border-default"))
+                                .bg(color("--input-background-default"))
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap(px(6.))
+                                .children(selected_tags.into_iter().enumerate().map(
+                                    |(i, (uid, uname))| {
+                                        div()
+                                            .id(SharedString::from(format!("squad-tag-{i}")))
+                                            .px(px(8.))
+                                            .py(px(3.))
+                                            .rounded(px(6.))
+                                            .bg(color("--background-mod-strong"))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(uname)
+                                            .child(icon(
+                                                "modal_close",
+                                                12.,
+                                                "--interactive-icon-default",
+                                            ))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(
+                                                    NitroMgmtOverlay::InviteSquadMembers {
+                                                        selected_ids,
+                                                        ..
+                                                    },
+                                                ) = this.nitro_mgmt_overlay.as_mut()
+                                                {
+                                                    selected_ids.retain(|id| id != &uid);
+                                                }
+                                                cx.notify();
+                                            }))
+                                    },
+                                ))
+                                .when(selected_ids.is_empty(), |row| {
+                                    row.child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .text_color(color("--text-muted"))
+                                            .child(dc_intl::t("wRS8vo")),
+                                    )
+                                }),
+                        )
+                        // 288px scrollable eligible + ineligible candidate list
+                        .child(
+                            div()
+                                .mx(px(20.))
+                                .h(px(288.))
+                                .overflow_hidden()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .when(candidates.is_empty(), |col| {
+                                    col.items_center()
+                                        .justify_center()
+                                        .child(
+                                            div()
+                                                .text_size(px(15.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::t("gaamNe")),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .text_color(color("--text-muted"))
+                                                .child(dc_intl::t("nQcM39")),
+                                        )
+                                })
+                                .children(candidates.iter().enumerate().map(|(idx, cand)| {
+                                    let is_selected = selected_ids.contains(&cand.user_id);
+                                    let at_cap = selected_ids.len() >= seats && !is_selected;
+                                    let disabled = !cand.eligible || at_cap;
+                                    let uid = cand.user_id.clone();
+                                    let initial = cand
+                                        .name
+                                        .chars()
+                                        .next()
+                                        .unwrap_or('?')
+                                        .to_uppercase()
+                                        .to_string();
+                                    let reason = (!cand.eligible).then(|| {
+                                        dc_intl::format(
+                                            "5tzM9V",
+                                            &[
+                                                (
+                                                    "disabledUserName",
+                                                    Arg::Str(Cow::Borrowed(&cand.name)),
+                                                ),
+                                                (
+                                                    "premiumGroupProductName",
+                                                    Arg::Str(Cow::Borrowed(product)),
+                                                ),
+                                            ],
+                                        )
+                                    });
+                                    div()
+                                        .id(SharedString::from(format!("squad-cand-{idx}")))
+                                        .px(px(10.))
+                                        .py(px(8.))
+                                        .rounded(px(8.))
+                                        .bg(color(if is_selected {
+                                            "--background-mod-strong"
+                                        } else {
+                                            "--background-base-lower"
+                                        }))
+                                        .when(disabled, |d| d.opacity(0.55))
+                                        .when(!disabled, |d| {
+                                            d.cursor_pointer()
+                                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                        })
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(10.))
+                                        .child(
+                                            div()
+                                                .size(px(32.))
+                                                .rounded_full()
+                                                .bg(color("--brand-500"))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(13.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(color("--white"))
+                                                .child(initial),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .flex()
+                                                .flex_col()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.))
+                                                        .font_weight(FontWeight(600.))
+                                                        .text_color(color("--text-strong"))
+                                                        .child(cand.name.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(reason.unwrap_or_else(|| {
+                                                            cand.username.clone()
+                                                        })),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .size(px(20.))
+                                                .rounded(px(5.))
+                                                .border_1()
+                                                .border_color(color(if is_selected {
+                                                    "--control-primary-background-default"
+                                                } else {
+                                                    "--border-strong"
+                                                }))
+                                                .when(is_selected, |b| {
+                                                    b.bg(color(
+                                                        "--control-primary-background-default",
+                                                    ))
+                                                })
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .when(is_selected, |b| {
+                                                    b.child(icon("ob_check", 12., "--white"))
+                                                }),
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if disabled {
+                                                return;
+                                            }
+                                            if let Some(NitroMgmtOverlay::InviteSquadMembers {
+                                                selected_ids,
+                                                available_seats,
+                                                ..
+                                            }) = this.nitro_mgmt_overlay.as_mut()
+                                            {
+                                                if let Some(pos) =
+                                                    selected_ids.iter().position(|id| id == &uid)
+                                                {
+                                                    selected_ids.remove(pos);
+                                                } else if selected_ids.len() < *available_seats {
+                                                    selected_ids.push(uid.clone());
+                                                }
+                                            }
+                                            cx.notify();
+                                        }))
+                                })),
+                        )
+                        // Action bar: full-width Send Invite (`5fZHp3`)
+                        .child(
+                            div()
+                                .p(px(20.))
+                                .border_t_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-base-lower"))
+                                .child(
+                                    div()
+                                        .id("nitro-invite-squad-send")
+                                        .w_full()
+                                        .h(px(38.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-primary-background-default"))
+                                        .when(!can_send, |d| d.opacity(0.5))
+                                        .when(can_send, |d| d.cursor_pointer())
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(dc_intl::t("5fZHp3"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if !can_send {
+                                                return;
+                                            }
+                                            let _ = this.requests.send(squad_send_invites_request(
+                                                &sub_id, &send_ids,
+                                            ));
+                                            let outcomes: Vec<SquadInviteOutcome> = send_ids
+                                                .iter()
+                                                .map(|uid| {
+                                                    let name = send_candidates
+                                                        .iter()
+                                                        .find(|c| &c.user_id == uid)
+                                                        .map_or_else(
+                                                            || uid.clone(),
+                                                            |c| c.name.clone(),
+                                                        );
+                                                    SquadInviteOutcome {
+                                                        user_id: uid.clone(),
+                                                        name,
+                                                        is_success: true,
+                                                    }
+                                                })
+                                                .collect();
+                                            if let Some(NitroMgmtOverlay::InviteSquadMembers {
+                                                step,
+                                                results,
+                                                submitting,
+                                                ..
+                                            }) = this.nitro_mgmt_overlay.as_mut()
+                                            {
+                                                *step = 2;
+                                                *submitting = false;
+                                                *results = outcomes;
+                                            }
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .into_any_element()
+                }
+            }
         };
 
         Some(
@@ -3078,6 +3838,96 @@ impl Root {
                 cx.notify();
                 "nitro-mgmt: cancel-invite-accepted".into()
             }
+            "invite-squad-1" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::InviteSquadMembers {
+                    subscription_id: "sub_squad_1".into(),
+                    step: 1,
+                    available_seats: 3,
+                    search_query: String::new(),
+                    candidates: vec![
+                        SquadInviteCandidate {
+                            user_id: "u1".into(),
+                            name: "Mina".into(),
+                            username: "@mina".into(),
+                            eligible: true,
+                        },
+                        SquadInviteCandidate {
+                            user_id: "u2".into(),
+                            name: "Kaan".into(),
+                            username: "@kaan".into(),
+                            eligible: true,
+                        },
+                        SquadInviteCandidate {
+                            user_id: "u3".into(),
+                            name: "Devon".into(),
+                            username: "@devon".into(),
+                            eligible: false,
+                        },
+                    ],
+                    selected_ids: vec!["u1".into()],
+                    fetch_error: false,
+                    submitting: false,
+                    results: Vec::new(),
+                });
+                cx.notify();
+                "nitro-mgmt: invite-squad-1".into()
+            }
+            "invite-squad-2" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::InviteSquadMembers {
+                    subscription_id: "sub_squad_1".into(),
+                    step: 2,
+                    available_seats: 3,
+                    search_query: String::new(),
+                    candidates: Vec::new(),
+                    selected_ids: Vec::new(),
+                    fetch_error: false,
+                    submitting: false,
+                    results: vec![
+                        SquadInviteOutcome {
+                            user_id: "u1".into(),
+                            name: "Mina".into(),
+                            is_success: true,
+                        },
+                        SquadInviteOutcome {
+                            user_id: "u3".into(),
+                            name: "Devon".into(),
+                            is_success: false,
+                        },
+                    ],
+                });
+                cx.notify();
+                "nitro-mgmt: invite-squad-2".into()
+            }
+            "invite-squad-empty" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::InviteSquadMembers {
+                    subscription_id: "sub_squad_1".into(),
+                    step: 1,
+                    available_seats: 3,
+                    search_query: String::new(),
+                    candidates: Vec::new(),
+                    selected_ids: Vec::new(),
+                    fetch_error: false,
+                    submitting: false,
+                    results: Vec::new(),
+                });
+                cx.notify();
+                "nitro-mgmt: invite-squad-empty".into()
+            }
+            "invite-squad-error" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::InviteSquadMembers {
+                    subscription_id: "sub_squad_1".into(),
+                    step: 1,
+                    available_seats: 3,
+                    search_query: String::new(),
+                    candidates: Vec::new(),
+                    selected_ids: Vec::new(),
+                    fetch_error: true,
+                    submitting: false,
+                    results: Vec::new(),
+                });
+                cx.notify();
+                "nitro-mgmt: invite-squad-error".into()
+            }
             "close" => {
                 self.nitro_mgmt_overlay = None;
                 cx.notify();
@@ -3181,5 +4031,28 @@ mod tests {
         ] {
             assert!(dc_intl::has_key(k), "missing 115225 key {k}");
         }
+    }
+
+    #[test]
+    fn invite_squad_members_307399_routes_and_intl() {
+        for k in [
+            "Um/7BM", "qSWXaf", "wRS8vo", "5fZHp3", "gaamNe", "nQcM39", "5tzM9V", "54lM5y",
+            "zrtwpV", "ONaJLH", "0LHbPc", "MIiPur", "olkQkj", "Y/oMwY", "g33r/P", "aFBQ3d",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 307399 key {k}");
+        }
+        assert!(matches!(
+            squad_eligible_users_request("sub-99", 0, "alex"),
+            Request::Rest { method, route, .. }
+                if method == reqwest::Method::GET
+                    && route == "/users/@me/billing/subscriptions/sub-99/eligible-users?index=0&query=alex"
+        ));
+        assert!(matches!(
+            squad_send_invites_request("sub-99", &["1".to_owned(), "2".to_owned()]),
+            Request::Rest { method, route, body: Some(ref b), .. }
+                if method == reqwest::Method::POST
+                    && route == "/users/@me/billing/subscriptions/sub-99/invites"
+                    && b["user_ids"][0] == "1"
+        ));
     }
 }

@@ -2062,6 +2062,44 @@ pub(crate) fn pdp_labels(
     )
 }
 
+/// Module 325802 (`4guu7-`): `"Promo"` (`nb5PC/`) offer-eligibility pill badge (`expressive` in PDP
+/// modal `355735`, `inverted` on featured marketing tiles `196231`) with tooltip `cNtuKF` (`"Item is eligible for offer: {offerName}"`).
+pub(crate) fn promo_offer_tooltip(offer_name: &str) -> String {
+    dc_intl::format("cNtuKF", &[("offerName", offer_name.into())])
+}
+
+#[allow(dead_code)]
+pub(crate) fn promo_offer_badge(
+    id: impl Into<SharedString>,
+    offer_name: &str,
+    inverted: bool,
+) -> AnyElement {
+    let tip = promo_offer_tooltip(offer_name);
+    let (bg, border, text_tok) = if inverted {
+        ("--white", "--border-muted", "--background-base-lowest")
+    } else {
+        ("--brand-500", "--brand-500", "--white")
+    };
+    div()
+        .id(id.into())
+        .aria_label(SharedString::from(tip))
+        .px(px(8.))
+        .py(px(2.))
+        .rounded_full()
+        .bg(color(bg))
+        .border_1()
+        .border_color(color(border))
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .text_size(px(11.))
+        .line_height(px(16.))
+        .font_weight(gpui::FontWeight(600.))
+        .text_color(color(text_tok))
+        .child(dc_intl::t("nb5PC/"))
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod storefront_pdp_tests {
     use super::*;
@@ -2099,5 +2137,15 @@ mod storefront_pdp_tests {
         assert_eq!(shop, "Go to Shop");
         assert_eq!(share, "Share Link");
         assert_eq!(mute, "Unmute");
+    }
+
+    #[test]
+    fn shop_promo_offer_badge_325802_intl() {
+        for key in ["nb5PC/", "cNtuKF"] {
+            assert!(dc_intl::has_key(key), "missing 325802 key {key}");
+        }
+        assert_eq!(dc_intl::t("nb5PC/"), "Promo");
+        let tip = promo_offer_tooltip("Nitro 20% Off");
+        assert!(tip.contains("Nitro 20% Off"), "got {tip}");
     }
 }

@@ -105,10 +105,16 @@ pub(crate) struct CommandPermissionsModal {
     pub bot_name: String,
     pub command_id: Option<Id>,
     pub command_name: Option<String>,
+    /// Module 326993: command description shown under `/{command_name}` in the preview header.
+    pub command_description: Option<String>,
     pub has_default_member_permissions: bool,
     pub has_access: bool,
     pub show_migration_callout: bool,
     pub overwrites: BTreeMap<(TargetType, Id), PermissionOverwrite>,
+    /// Module 326993: snapshot of initial overwrites to compute dirty `has_changes` for Save (`R3BPH+`).
+    pub original_overwrites: BTreeMap<(TargetType, Id), bool>,
+    pub saving: bool,
+    pub save_error: Option<String>,
     pub picker: Option<PickerMode>,
     pub picker_search: Entity<Editor>,
     _picker_events: Subscription,
@@ -194,16 +200,22 @@ impl Root {
                 is_sentinel: true,
             },
         );
+        let original_overwrites: BTreeMap<(TargetType, Id), bool> =
+            overwrites.iter().map(|(&k, v)| (k, v.permission)).collect();
         self.command_permissions = Some(CommandPermissionsModal {
             guild_id,
             application_id,
             bot_name,
             command_id,
             command_name,
+            command_description: Some("Generate artwork from a text prompt.".to_owned()),
             has_default_member_permissions: command_id.is_some(),
             has_access: true,
             show_migration_callout: false,
             overwrites,
+            original_overwrites,
+            saving: false,
+            save_error: None,
             picker: None,
             picker_search,
             _picker_events: events,
@@ -279,6 +291,11 @@ impl Root {
         arg: &str,
         cx: &mut Context<Self>,
     ) -> String {
+        if arg.trim() == "close" {
+            self.command_permissions = None;
+            cx.notify();
+            return "command-permissions: closed".to_owned();
+        }
         let guild_id = self
             .guild
             .or_else(|| self.stores.guilds.first().map(|g| g.id))
@@ -1240,10 +1257,34 @@ impl Root {
                 )
         });
 
-        let heading = match &modal.command_name {
-            Some(cmd) => format!("{} — {cmd}", modal.bot_name),
+        // Module 326993 (`Modify Command Permissions`): title `N+InBa`, 40px app icon + `/{command}` +
+        // description preview header, dirty `has_changes` tracking, critical save error banner, Cancel/Save footer.
+        let has_changes = modal.overwrites.len() != modal.original_overwrites.len()
+            || modal
+                .overwrites
+                .iter()
+                .any(|(k, v)| modal.original_overwrites.get(k) != Some(&v.permission));
+        let can_save = has_changes && !modal.saving;
+        let heading = dc_intl::t("N+InBa");
+        let cmd_title = match &modal.command_name {
+            Some(cmd) => {
+                if cmd.starts_with('/') {
+                    cmd.clone()
+                } else {
+                    format!("/{cmd}")
+                }
+            }
             None => modal.bot_name.clone(),
         };
+        let bot_initial: String = modal
+            .bot_name
+            .chars()
+            .next()
+            .unwrap_or('A')
+            .to_uppercase()
+            .collect();
+        let save_error = modal.save_error.clone();
+        let cmd_desc = modal.command_description.clone();
 
         Some(
             div()
@@ -1259,6 +1300,7 @@ impl Root {
                 .child(
                     div()
                         .id("cmd-perms-modal")
+                        .aria_label(SharedString::from(dc_intl::t("N+InBa")))
                         .relative()
                         .w(px(600.))
                         .max_h(px(650.))
@@ -1278,35 +1320,94 @@ impl Root {
                                 .border_b_1()
                                 .border_color(color("--border-subtle"))
                                 .flex()
-                                .items_center()
-                                .justify_between()
+                                .flex_col()
+                                .gap(px(12.))
                                 .child(
                                     div()
-                                        .text_size(px(18.))
-                                        .font_weight(FontWeight(600.))
-                                        .text_color(color("--text-strong"))
-                                        .child(heading),
-                                )
-                                .child(
-                                    div()
-                                        .id("cmd-perms-close")
-                                        .size(px(28.))
-                                        .rounded(px(6.))
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(color("--background-mod-subtle")))
                                         .flex()
                                         .items_center()
-                                        .justify_center()
-                                        .child(icon(
-                                            "modal_close",
-                                            18.,
-                                            "--interactive-text-default",
-                                        ))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.close_command_permissions(cx);
-                                        })),
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .text_size(px(18.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(color("--text-strong"))
+                                                .child(heading),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("cmd-perms-close")
+                                                .size(px(28.))
+                                                .rounded(px(6.))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon(
+                                                    "modal_close",
+                                                    18.,
+                                                    "--interactive-text-default",
+                                                ))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.close_command_permissions(cx);
+                                                })),
+                                        ),
+                                )
+                                // Preview Header (`331322.B` horizontal, 40px circular app icon + name + description)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(12.))
+                                        .child(
+                                            div()
+                                                .size(px(40.))
+                                                .flex_none()
+                                                .rounded_full()
+                                                .bg(color("--control-primary-background-default"))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(16.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(color("--white"))
+                                                .child(bot_initial),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(2.))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(15.))
+                                                        .font_weight(FontWeight(600.))
+                                                        .text_color(color("--text-strong"))
+                                                        .child(cmd_title),
+                                                )
+                                                .children(cmd_desc.map(|desc| {
+                                                    div()
+                                                        .text_size(px(13.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(desc)
+                                                })),
+                                        ),
                                 ),
                         )
+                        .children(save_error.map(|err| {
+                            div()
+                                .px(px(20.))
+                                .py(px(10.))
+                                .bg(color("--input-background-error-default"))
+                                .border_b_1()
+                                .border_color(color("--input-border-error-default"))
+                                .text_size(px(13.))
+                                .text_color(color("--text-feedback-critical"))
+                                .child(err)
+                        }))
                         .child(
                             div()
                                 .id("cmd-perms-body")
@@ -1385,6 +1486,71 @@ impl Root {
                                 .children(migration_banner)
                                 .child(roles_section)
                                 .child(channels_section),
+                        )
+                        // Module 326993 Footer: Cancel (`ETE/oC`) + Save (`R3BPH+`, disabled when `!has_changes`)
+                        .child(
+                            div()
+                                .px(px(20.))
+                                .py(px(14.))
+                                .border_t_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-base-lower"))
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .id("cmd-perms-cancel")
+                                        .h(px(36.))
+                                        .px(px(16.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--border-muted"))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .child(dc_intl::t("ETE/oC"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.close_command_permissions(cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("cmd-perms-save")
+                                        .h(px(36.))
+                                        .px(px(18.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-primary-background-default"))
+                                        .when(can_save, |d| {
+                                            d.cursor_pointer().hover(|s| {
+                                                s.bg(color("--control-primary-background-hover"))
+                                            })
+                                        })
+                                        .when(!can_save, |d| d.opacity(0.5))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(dc_intl::t("R3BPH+"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if !can_save {
+                                                return;
+                                            }
+                                            this.save_command_permissions(cx);
+                                            this.close_command_permissions(cx);
+                                        })),
+                                ),
                         )
                         .children(picker_overlay)
                         .children(lockout_overlay),

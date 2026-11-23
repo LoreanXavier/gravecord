@@ -690,13 +690,44 @@ impl Root {
             )
             .child(sep())
             // Group 6: Make a Copy, Export, Import, MCP, History
-            .child(row(
-                "conjure-copy-proj",
-                dc_intl::t("276ll6").to_owned(),
-                false,
-                None,
-                false,
-            ))
+            .child(
+                row(
+                    "conjure-copy-proj",
+                    dc_intl::t("276ll6").to_owned(),
+                    false,
+                    None,
+                    false,
+                )
+                .on_click(cx.listener({
+                    let pid = state.project_id.clone();
+                    let pname = state.project_name.clone();
+                    move |this, _, _, cx| {
+                        let guilds: Vec<(String, String)> = this
+                            .stores
+                            .guilds
+                            .iter()
+                            .map(|g| (g.id.to_string(), g.name.clone()))
+                            .collect();
+                        let selected = guilds.first().map(|(id, _)| id.clone());
+                        this.conjure_actions = None;
+                        this.conjure_aux_modal = Some(Box::new(
+                            super::conjure_workspace::ConjureAuxModal::RemixOrCopy {
+                                project_id: pid.clone(),
+                                project_name: pname.clone(),
+                                mode: super::conjure_workspace::ConjureCopyMode::Remix,
+                                prompt: String::new(),
+                                copy_name: super::conjure_workspace::conjure_default_copy_name(
+                                    &pname,
+                                ),
+                                guilds,
+                                selected_guild_id: selected,
+                                submitting: false,
+                            },
+                        ));
+                        cx.notify();
+                    }
+                })),
+            )
             .child(row(
                 "conjure-export",
                 dc_intl::t("WsEEP7").to_owned(),
