@@ -670,9 +670,9 @@ impl Root {
                                             .id("payment-picker-list")
                                             .occlude()
                                             .absolute()
-                                            .left_0()
-                                            .right_0()
-                                            .top(px(48.))
+                                            .left(px(-1.))
+                                            .right(px(-1.))
+                                            .top(px(47.))
                                             // `maxOptionsVisible` 5 (module 691885): five 36px rows, 2px gaps, 4px padding.
                                             .max_h(px(196.))
                                             .overflow_y_scroll()
