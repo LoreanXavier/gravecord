@@ -1021,6 +1021,8 @@ impl Root {
                     .children(pin_sections)
                     .child(
                         div()
+                            .id("dm-header")
+                            .group("dm-header")
                             .flex_none()
                             .mt(px(12.))
                             .h(px(24.))

@@ -481,9 +481,21 @@ impl Root {
     /// The Direct Messages header's More button (`j` of module 830507): its menu (`clean-up-inactive-gdms`, "Direct
     /// Messages options") with "Clean up Group DMs...".
     pub(super) fn dm_header_more(&self, cx: &mut Context<Self>) -> AnyElement {
+        // `.moreButton_Bce46W`: hidden (`@media (hover:hover)`) until the header is hovered or its menu is open
+        // (`aria-expanded`).
+        let expanded = self
+            .context
+            .open
+            .as_ref()
+            .is_some_and(|open| open.target == super::context_menu::Target::DmListMore);
         div()
             .id("dm-more")
             .relative()
+            .when(!expanded, |button| {
+                button
+                    .opacity(0.)
+                    .group_hover("dm-header", |style| style.opacity(1.))
+            })
             .child(self.anchor_probe("dm-more"))
             .size(px(24.))
             .p(px(4.))
