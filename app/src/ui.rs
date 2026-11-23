@@ -12800,6 +12800,25 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // Escape in the message search field (module 586944): an empty query takes the focus off the field,
+                // which closes its filters popout; a typed one is cleared and the field keeps the focus.
+                if keys.key == "escape"
+                    && !this.any_layer_open()
+                    && let Some(field) = this.search.as_ref().map(|search| search.field.clone())
+                    && gpui::Focusable::focus_handle(field.read(cx), cx).is_focused(window)
+                {
+                    if field.read(cx).text().is_empty() {
+                        window.focus(&this.focus, cx);
+                    } else {
+                        field.update(cx, |field, cx| {
+                            field.set_text("");
+                            cx.notify();
+                        });
+                    }
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape"
                     && this.picker.is_none()
                     && this.profile.is_none()
