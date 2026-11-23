@@ -736,6 +736,19 @@ impl Root {
     }
 }
 
+impl Root {
+    pub(super) fn close_poll_duration_select(&mut self) -> bool {
+        if let Some(m) = self.poll.as_mut()
+            && m.duration_open
+        {
+            m.duration_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

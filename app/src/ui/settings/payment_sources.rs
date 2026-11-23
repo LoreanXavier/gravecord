@@ -1996,6 +1996,19 @@ pub(in crate::ui) fn picker_trial_notice(
     Some((msg, false))
 }
 
+impl Root {
+    pub(crate) fn close_payment_picker_select(&mut self) -> bool {
+        if let Some(m) = self.payment_source_picker.as_mut()
+            && m.dropdown_open
+        {
+            m.dropdown_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

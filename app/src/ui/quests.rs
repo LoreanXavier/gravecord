@@ -3924,6 +3924,16 @@ fn claimed_logo(quest: &dc_state::quests::ClaimedQuest) -> Option<String> {
         .map(|asset| quest_asset(&quest.id, asset))
 }
 
+impl Root {
+    pub(super) fn close_quests_select(&mut self) -> bool {
+        let open = self.quests.open_platform_selector.is_some()
+            || self.quests.open_platform_menu.is_some();
+        self.quests.open_platform_selector = None;
+        self.quests.open_platform_menu = None;
+        open
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

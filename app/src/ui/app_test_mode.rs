@@ -606,6 +606,19 @@ impl Root {
     }
 }
 
+impl Root {
+    pub(super) fn close_app_test_mode_origin_select(&mut self) -> bool {
+        if let Some(m) = self.app_test_mode_modal.as_mut()
+            && m.origin_dropdown_open
+        {
+            m.origin_dropdown_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

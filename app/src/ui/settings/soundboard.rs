@@ -423,6 +423,17 @@ fn sound_button() -> impl IntoElement {
         )
 }
 
+impl Root {
+    pub(crate) fn close_entrance_sounds_server_select(&mut self) -> bool {
+        if matches!(self.setting_choices.get(OPEN), Some(Choice::On(true))) {
+            self.setting_choices.insert(OPEN, Choice::On(false));
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

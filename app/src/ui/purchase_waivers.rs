@@ -736,6 +736,19 @@ cx.notify();
     }
 }
 
+impl Root {
+    pub(super) fn close_waivers_dir_select(&mut self) -> bool {
+        if let Some(m) = self.purchase_waivers_modal.as_mut()
+            && m.picker_open
+        {
+            m.picker_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -1819,6 +1819,19 @@ impl Root {
     }
 }
 
+impl Root {
+    pub(super) fn close_emoji_studio_guild_select(&mut self) -> bool {
+        if let Some(m) = self.emoji_studio.as_mut()
+            && m.guild_menu_open
+        {
+            m.guild_menu_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

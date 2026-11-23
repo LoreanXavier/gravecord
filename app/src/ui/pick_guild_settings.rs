@@ -639,6 +639,19 @@ impl Root {
     }
 }
 
+impl Root {
+    pub(super) fn close_pick_guild_select(&mut self) -> bool {
+        if let Some(m) = self.pick_guild_settings_modal.as_mut()
+            && m.dropdown_open
+        {
+            m.dropdown_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

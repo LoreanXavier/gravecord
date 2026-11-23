@@ -1733,6 +1733,19 @@ impl Root {
     }
 }
 
+impl Root {
+    pub(super) fn close_monetization_team_select(&mut self) -> bool {
+        if let Some(m) = self.monetization_team_onboarding_modal.as_mut()
+            && m.dropdown_open
+        {
+            m.dropdown_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

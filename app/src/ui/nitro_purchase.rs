@@ -5759,6 +5759,19 @@ impl Root {
     }
 }
 
+impl Root {
+    pub(super) fn close_gift_card_eu_country_select(&mut self) -> bool {
+        if let Some(m) = self.nitro.purchase.as_mut()
+            && m.extra.gift_eu_dropdown_open
+        {
+            m.extra.gift_eu_dropdown_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_GIFT_MESSAGE, characters_left, gifts_away, pulse_wave, savings_percent};

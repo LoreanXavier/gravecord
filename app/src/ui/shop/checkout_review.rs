@@ -1724,6 +1724,32 @@ pub(crate) fn payment_modal_lock_badge() -> AnyElement {
         .into_any_element()
 }
 
+impl Root {
+    pub(crate) fn close_checkout_method_select(&mut self) -> bool {
+        if let Some(m) = self.shop_checkout_review_modal.as_mut()
+            && m.picker_open
+        {
+            m.picker_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Root {
+    pub(crate) fn close_checkout_currency_select(&mut self) -> bool {
+        if let Some(m) = self.shop_checkout_review_modal.as_mut()
+            && m.currency_picker_open
+        {
+            m.currency_picker_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

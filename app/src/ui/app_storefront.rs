@@ -2314,6 +2314,19 @@ col.child(gpui::deferred(div()
     }
 }
 
+impl Root {
+    pub(super) fn close_app_guild_sub_select(&mut self) -> bool {
+        if let Some(m) = self.guild_sub_selection_modal.as_mut()
+            && m.dropdown_open
+        {
+            m.dropdown_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

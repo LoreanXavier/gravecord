@@ -12296,6 +12296,11 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && !event.is_held && this.close_floating_select() {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.image_crop_key(keys, window, cx) {
                     cx.stop_propagation();
                     return;
@@ -14728,6 +14733,30 @@ impl Root {
             .with_priority(3)
             .into_any_element(),
         )
+    }
+}
+
+impl Root {
+    /// Closes the open floating select list, if any, so Escape dismisses only the list and not its modal.
+    fn close_floating_select(&mut self) -> bool {
+        self.close_gift_friend_select()
+            || self.close_payment_picker_select()
+            || self.close_pick_guild_select()
+            || self.close_monetization_team_select()
+            || self.close_app_guild_sub_select()
+            || self.close_waivers_dir_select()
+            || self.close_guild_theme_select()
+            || self.close_quest_split_method_select()
+            || self.close_app_test_mode_origin_select()
+            || self.close_checkout_method_select()
+            || self.close_checkout_currency_select()
+            || self.close_gift_card_eu_country_select()
+            || self.close_emoji_studio_guild_select()
+            || self.close_entrance_sounds_server_select()
+            || self.close_hub_category_select()
+            || self.close_poll_duration_select()
+            || self.close_server_prune_role_select()
+            || self.close_quests_select()
     }
 }
 

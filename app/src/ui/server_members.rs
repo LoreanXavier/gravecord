@@ -2617,6 +2617,21 @@ fn join_method(entry: &Value) -> String {
     }
 }
 
+impl Root {
+    pub(super) fn close_server_prune_role_select(&mut self) -> bool {
+        if let Some(prune) = self
+            .members_state_mut()
+            .and_then(|state| state.prune.as_mut())
+            && prune.roles_open
+        {
+            prune.roles_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

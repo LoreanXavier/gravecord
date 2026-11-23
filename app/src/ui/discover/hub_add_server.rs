@@ -1242,6 +1242,19 @@ impl Root {
     }
 }
 
+impl Root {
+    pub(crate) fn close_hub_category_select(&mut self) -> bool {
+        if let Some(m) = self.hub_add_server_modal.as_mut()
+            && m.category_dropdown_open
+        {
+            m.category_dropdown_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

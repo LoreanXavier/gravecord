@@ -619,6 +619,19 @@ impl Root {
     }
 }
 
+impl Root {
+    pub(super) fn close_gift_friend_select(&mut self) -> bool {
+        if let Some(m) = self.gift_ready_modal.as_mut()
+            && m.picker_open
+        {
+            m.picker_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

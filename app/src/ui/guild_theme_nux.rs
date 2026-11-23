@@ -1232,3 +1232,16 @@ impl Root {
         }
     }
 }
+
+impl Root {
+    pub(super) fn close_guild_theme_select(&mut self) -> bool {
+        if let Some(m) = self.guild_theme_nux_modal.as_mut()
+            && m.dropdown_open
+        {
+            m.dropdown_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}

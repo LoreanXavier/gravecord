@@ -1038,6 +1038,19 @@ impl Root {
     }
 }
 
+impl Root {
+    pub(super) fn close_quest_split_method_select(&mut self) -> bool {
+        if let Some(m) = self.quests.split_modal.as_mut()
+            && m.method_dropdown_open
+        {
+            m.method_dropdown_open = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
