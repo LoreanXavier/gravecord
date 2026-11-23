@@ -900,8 +900,13 @@ impl Root {
                 .into_any_element()
         });
 
+        // The panel and its nested command list are placed in window coordinates: their holder sits at the
+        // window's origin, and the layer stacks over the menu as the other submenus do (`submenu_frame`).
         deferred(
             div()
+                .absolute()
+                .top_0()
+                .left_0()
                 .child(
                     div()
                         .id("submenu")
@@ -931,7 +936,7 @@ impl Root {
                 )
                 .children(nested),
         )
-        .with_priority(2)
+        .with_priority(4)
         .into_any_element()
     }
 }
