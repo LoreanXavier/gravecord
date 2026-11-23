@@ -594,7 +594,7 @@ const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[
         "chat_spoilers_show_spoilers/open",
         &["On click", "Always", "On servers I moderate"],
     ),
-    // Module 158935 `vV`: `W.range(1, 11)` minutes, "{minutes} minute(s)" (string `iXLF9W`).
+    // Module 158935 `vV`: `W.range(1, 11)` (lodash: 1 to 10) minutes, "{minutes} minute(s)" (string `iXLF9W`).
     (
         "mobile_notification_delay",
         "mobile_notification_delay/open",
@@ -609,7 +609,6 @@ const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[
             "8 minutes",
             "9 minutes",
             "10 minutes",
-            "11 minutes",
         ],
     ),
     // `ex`: `roleStyle` username, dot, hidden.

@@ -33,8 +33,9 @@ pub(in crate::ui) const EMAIL_CATEGORIES: [&str; 5] = [
 /// `NOTIFICATIONS_SET_TTS_TYPE` values, in the radio's order (module 158935 `vw`).
 pub(in crate::ui) const TTS_TYPES: [&str; 3] = ["ALL_CHANNELS", "SELECTED_CHANNEL", "NEVER"];
 
-/// The seconds `mobile_notification_delay` offers: one to eleven minutes (module 158935 `vV`).
-pub(in crate::ui) const DELAYS: [u64; 11] = [60, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660];
+/// The seconds `mobile_notification_delay` offers: one to ten minutes (module 158935 `vV`: lodash
+/// `range(1, 11)` stops before 11).
+pub(in crate::ui) const DELAYS: [u64; 10] = [60, 120, 180, 240, 300, 360, 420, 480, 540, 600];
 
 #[derive(Default)]
 pub(in crate::ui) struct State {
@@ -466,7 +467,7 @@ mod tests {
     #[test]
     fn the_delay_options_are_one_to_eleven_minutes() {
         assert_eq!(DELAYS.first(), Some(&60));
-        assert_eq!(DELAYS.last(), Some(&660));
-        assert_eq!(DELAYS.len(), 11);
+        assert_eq!(DELAYS.last(), Some(&600));
+        assert_eq!(DELAYS.len(), 10);
     }
 }
