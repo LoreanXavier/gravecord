@@ -861,19 +861,33 @@ impl Root {
             )
             .child(div().flex_1())
             // `toolbar_ybUK7Z` (8px in) holding `inviteToolbar_zrUwGA` (8px out): New Group DM, a 32px button.
+            // Module 596339 gives it the "New Group DM" tooltip (`HfOgA/`), below as module 753190 places it; the
+            // icon brightens under the pointer as the other header tools.
             .child(
                 div().pl(px(8.)).pr(px(8.)).child(
-                    div()
-                        .id("new-group-dm")
-                        .size(px(32.))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_group_dm_picker(window, cx);
-                        }))
-                        .child(icon("new_group", 20., "--text-muted")),
+                    self.with_tip(
+                        "new-group-dm",
+                        Tip::text(dc_intl::t("HfOgA/"), Side::Bottom),
+                        div()
+                            .id("new-group-dm")
+                            .group("new-group-dm")
+                            .size(px(32.))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.tip = None;
+                                this.open_group_dm_picker(window, cx);
+                            }))
+                            .child(
+                                icon("new_group", 20., "--text-muted")
+                                    .group_hover("new-group-dm", |style| {
+                                        style.text_color(color("--interactive-text-default"))
+                                    }),
+                            ),
+                        cx,
+                    ),
                 ),
             )
     }
