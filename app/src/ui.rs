@@ -6646,7 +6646,7 @@ impl Root {
                                                 *name,
                                                 "settings_small" | "voice_action_3"
                                             );
-                                            div()
+                                            let button = div()
                                                 .id(SharedString::from(format!(
                                                     "channel-action-{target}-{name}"
                                                 )))
@@ -6671,8 +6671,29 @@ impl Root {
                                                         },
                                                     ))
                                                 })
-                                                .child(icon(name, 16., action_tint))
-                                                .into_any_element()
+                                                .child(icon(name, 16., action_tint));
+                                            // Module 616740 wraps each action in its tooltip: Open Chat, Invite to
+                                            // Voice / Invite to Channel, Edit Channel.
+                                            let tip = match *name {
+                                                "voice_action_1" => Some("ZXxLQg"),
+                                                "voice_action_2" => Some("EE+P0H"),
+                                                "invite_small" => Some("0jeAXt"),
+                                                "settings_small" | "voice_action_3" => {
+                                                    Some("3gUsJb")
+                                                }
+                                                _ => None,
+                                            };
+                                            match tip {
+                                                Some(key) => self
+                                                    .with_tip(
+                                                        format!("channel-action-{target}-{name}"),
+                                                        Tip::text(dc_intl::t(key), Side::Top),
+                                                        button,
+                                                        cx,
+                                                    )
+                                                    .into_any_element(),
+                                                None => button.into_any_element(),
+                                            }
                                         }),
                                 ),
                         ),
