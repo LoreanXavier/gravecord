@@ -7294,7 +7294,9 @@ impl Root {
                     .top(px(6.))
                     .h(px(42.))
                     .rounded(px(4.))
-                    .hover(|style| style.bg(color("--background-mod-normal"))),
+                    .hover(|style| style.bg(color("--background-mod-normal")))
+                    // Module 993382: the avatar wrapper's hover (`this.state.hovered`) forces the status line's roll.
+                    .child(motion::hover_probe(motion::key("panel-who-roll"))),
             )
             .child({
                 let in_call = self.call.is_some();
@@ -7399,59 +7401,96 @@ impl Root {
                                 name_styles::Display::StaticOnHover,
                             )),
                     )
-                    .child(
+                    .child({
+                        // `renderStatus` of module 993382: every status line is a `hoverRoll_Dq3ch1` whose hover text is
+                        // the username (`userTag`), forced while the avatar wrapper is hovered. The resting line leaves
+                        // up (opacity 0, translate 0 -107%) as the username comes up from below, `all .22s ease`.
+                        let roll = motion::value(
+                            motion::key("panel-who-roll-value"),
+                            if motion::hovered(motion::key("panel-who-roll")) {
+                                1.
+                            } else {
+                                0.
+                            },
+                            motion::css(220., motion::Ease::Ease),
+                        );
                         div()
+                            .relative()
                             .min_w_0()
                             .overflow_hidden()
-                            .whitespace_nowrap()
                             .mt(px(2.))
-                            .text_size(px(12.))
-                            .line_height(px(13.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--interactive-text-default"))
-                            // `activityStatus`: in voice, this replaces the status line.
-                            // Out of voice it is the account's activity or custom status, or else its status.
-                            .when(!in_voice, |this| {
-                                match self.presence_line_with(
-                                    &user,
-                                    None,
-                                    true,
-                                    13.,
-                                    "--interactive-text-default",
-                                ) {
-                                    Some(line) => this.child(line),
-                                    None => this.child(status_label(&self.stores.status)),
-                                }
-                            })
-                            .when(in_voice, |this| {
-                                let sharing = self.own_stream().is_some();
-                                this.flex()
-                                    .items_center()
-                                    .gap(px(4.))
-                                    .child(icon(
-                                        if sharing {
-                                            "voice_status_sharing"
-                                        } else if dm_call {
-                                            "status_in_call"
-                                        } else if stage_call {
-                                            "stage_channel"
-                                        } else {
-                                            "voice_status_in_voice"
-                                        },
-                                        12.,
-                                        "--text-feedback-positive",
-                                    ))
-                                    .child(dc_intl::tr(if sharing {
-                                        "Sharing their screen"
-                                    } else if dm_call {
-                                        "In a call"
-                                    } else if stage_call {
-                                        "In a stage"
-                                    } else {
-                                        "In voice"
-                                    }))
-                            }),
-                    ),
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .w_full()
+                                    .top(px(13. * 1.07 * (1. - roll)))
+                                    .opacity(roll)
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(px(12.))
+                                    .line_height(px(13.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--interactive-text-default"))
+                                    .child(user.username.clone()),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .top(px(-13. * 1.07 * roll))
+                                    .opacity(1. - roll)
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(px(12.))
+                                    .line_height(px(13.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--interactive-text-default"))
+                                    // `activityStatus`: in voice, this replaces the status line.
+                                    // Out of voice it is the account's activity or custom status, or else its status.
+                                    .when(!in_voice, |this| {
+                                        match self.presence_line_with(
+                                            &user,
+                                            None,
+                                            true,
+                                            13.,
+                                            "--interactive-text-default",
+                                        ) {
+                                            Some(line) => this.child(line),
+                                            None => this.child(status_label(&self.stores.status)),
+                                        }
+                                    })
+                                    .when(in_voice, |this| {
+                                        let sharing = self.own_stream().is_some();
+                                        this.flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .child(icon(
+                                                if sharing {
+                                                    "voice_status_sharing"
+                                                } else if dm_call {
+                                                    "status_in_call"
+                                                } else if stage_call {
+                                                    "stage_channel"
+                                                } else {
+                                                    "voice_status_in_voice"
+                                                },
+                                                12.,
+                                                "--text-feedback-positive",
+                                            ))
+                                            .child(dc_intl::tr(if sharing {
+                                                "Sharing their screen"
+                                            } else if dm_call {
+                                                "In a call"
+                                            } else if stage_call {
+                                                "In a stage"
+                                            } else {
+                                                "In voice"
+                                            }))
+                                    }),
+                            )
+                    }),
             )
             .children(game_toggle)
             .child(
