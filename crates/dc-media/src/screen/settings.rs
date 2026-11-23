@@ -122,9 +122,23 @@ pub fn offered_resolutions(source_height: u32) -> Vec<Resolution> {
         .collect()
 }
 
-/// The capture size for a choice from a source of `source_width` x `source_height`. The aspect ratio is the source's;
-/// the height is the preset's (or the source's own, fitted into 4K), the width is rounded to even. `None` when the
-/// source is unknown or smaller than the preset: nothing is upscaled.
+/// The largest picture a preset sends: `setGoLiveSource` in module 31595 gives the encoder a box of the preset's
+/// height and `t <= 480 ? t / 3 * 4 : t / 9 * 16` wide (640x480, 1280x720, 1920x1080, 2560x1440) as the stream's
+/// `maxResolution`; the source's own size has no box.
+pub fn preset_box(resolution: Resolution) -> Option<(u32, u32)> {
+    let height = resolution.height();
+    match height {
+        0 => None,
+        ..=480 => Some((height / 3 * 4, height)),
+        _ => Some((height / 9 * 16, height)),
+    }
+}
+
+/// The capture size for a choice from a source of `source_width` x `source_height`: the source scaled down, keeping
+/// its aspect ratio, until it fits the preset's [`preset_box`] (or 4K for the source's own size), both sides rounded
+/// to even. A source wider than 16:9 is limited by the box's width, so a 3440x1440 window at 1080p sends 1920x804, as
+/// the official encoder does, not 2580x1080. `None` when the source is unknown or shorter than the preset: nothing is
+/// upscaled.
 pub fn output_size(
     resolution: Resolution,
     source_width: u32,
@@ -133,16 +147,19 @@ pub fn output_size(
     if source_width < 2 || source_height < 2 {
         return None;
     }
-    let (width, height) = match resolution {
-        Resolution::Source => (source_width, source_height),
-        preset if preset.height() <= source_height => {
-            let height = preset.height();
-            let width = (u64::from(source_width) * u64::from(height)
-                + u64::from(source_height) / 2)
-                / u64::from(source_height);
-            (u32::try_from(width).ok()?, height)
+    let (width, height) = match preset_box(resolution) {
+        None => (source_width, source_height),
+        Some(_) if resolution.height() > source_height => return None,
+        Some((box_width, box_height)) => {
+            let (sw, sh) = (u64::from(source_width), u64::from(source_height));
+            let (bw, bh) = (u64::from(box_width), u64::from(box_height));
+            // Scale by the tighter side: width over the box's width or height over its height.
+            if sw * bh > bw * sh {
+                (box_width, u32::try_from((sh * bw + sw / 2) / sw).ok()?)
+            } else {
+                (u32::try_from((sw * bh + sh / 2) / sh).ok()?, box_height)
+            }
         }
-        _ => return None,
     };
     fit_into_limit(width, height)
 }
@@ -328,19 +345,35 @@ mod tests {
     }
 
     #[test]
+    fn presets_box_the_picture_as_the_official_encoder_options_do() {
+        assert_eq!(preset_box(Resolution::P480), Some((640, 480)));
+        assert_eq!(preset_box(Resolution::P720), Some((1280, 720)));
+        assert_eq!(preset_box(Resolution::P1080), Some((1920, 1080)));
+        assert_eq!(preset_box(Resolution::P1440), Some((2560, 1440)));
+        assert_eq!(preset_box(Resolution::Source), None);
+    }
+
+    #[test]
     fn output_sizes_keep_the_source_aspect_and_never_upscale() {
         assert_eq!(
             output_size(Resolution::P1080, 2560, 1440),
             Some((1920, 1080))
         );
         assert_eq!(output_size(Resolution::P720, 1920, 1080), Some((1280, 720)));
-        // Ultrawide: the height is the preset's, the width follows, rounded to even.
+        // Ultrawide: the box's width limits it, the height follows, rounded to even.
         assert_eq!(
             output_size(Resolution::P1080, 3440, 1440),
-            Some((2580, 1080))
+            Some((1920, 804))
         );
-        // A 4:3 window.
+        // A 4:3 window fills the 4:3 box of 480p; a 16:9 display fits inside it.
         assert_eq!(output_size(Resolution::P480, 800, 600), Some((640, 480)));
+        assert_eq!(output_size(Resolution::P480, 1920, 1080), Some((640, 360)));
+        // Taller than 16:9: the preset's height limits it.
+        assert_eq!(output_size(Resolution::P720, 1920, 1200), Some((1152, 720)));
+        assert_eq!(
+            output_size(Resolution::P1440, 7000, 1500),
+            Some((2560, 548))
+        );
         assert_eq!(output_size(Resolution::P1080, 1280, 720), None);
         assert_eq!(
             output_size(Resolution::Source, 1281, 721),
