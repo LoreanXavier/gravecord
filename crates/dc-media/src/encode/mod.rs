@@ -253,13 +253,10 @@ impl Encoder {
                 }
                 self.live_refused = true;
             }
-            // Reopen a native encoder that refuses a live change at the new rate; release the scarce session first.
+            // Reopen a native encoder that refuses a live change, at the caller's target (a paced rate it refused may
+            // be beyond what it opens at; pacing is off from now on); release the scarce session first.
             self.hardware = None;
-            let config = Config {
-                bitrate,
-                ..self.config
-            };
-            self.bitrate = bitrate;
+            let config = self.current_config();
             match mf::Encoder::new(config) {
                 Ok(hardware) => self.hardware = Some(hardware),
                 Err(_) => self.fall_back()?,

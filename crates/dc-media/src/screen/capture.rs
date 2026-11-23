@@ -528,8 +528,13 @@ unsafe fn map_staging(
 
 /// Where a shared window's client area sits in its capture right now.
 fn window_crop(window: HWND, content: (u32, u32)) -> Option<Crop> {
-    let (frame, origin, size) = super::enumerate::client_geometry(window)?;
-    client_crop(frame, origin, size, content)
+    let geometry = super::enumerate::client_geometry(window)?;
+    client_crop(
+        geometry.frame,
+        geometry.client_origin,
+        geometry.client_size,
+        content,
+    )
 }
 
 /// Copies the frame's texture (a window's client area only) to the staging texture, releases the WGC frame, and
@@ -765,7 +770,6 @@ mod tests {
         assert_eq!(drops.get(), 4);
     }
 
-    #[test]
     /// The crop assumes a window's capture covers its extended frame bounds: the capture item's size must equal them.
     #[test]
     #[ignore = "reads the geometry of the windows on this desktop"]
@@ -776,7 +780,11 @@ mod tests {
                 continue;
             };
             let window = HWND(handle as usize as _);
-            let Some((frame, origin, client)) = super::super::enumerate::client_geometry(window)
+            let Some(super::super::enumerate::Geometry {
+                frame,
+                client_origin: origin,
+                client_size: client,
+            }) = super::super::enumerate::client_geometry(window)
             else {
                 continue;
             };

@@ -129,7 +129,7 @@ pub fn preset_box(resolution: Resolution) -> Option<(u32, u32)> {
     let height = resolution.height();
     match height {
         0 => None,
-        ..=480 => Some((height / 3 * 4, height)),
+        1..=480 => Some((height / 3 * 4, height)),
         _ => Some((height / 9 * 16, height)),
     }
 }

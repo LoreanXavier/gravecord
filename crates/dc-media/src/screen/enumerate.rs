@@ -327,7 +327,11 @@ pub(super) fn window_dimensions(hwnd: u64) -> Option<(u32, u32)> {
 /// The client area a share of `window` sends (see [`super::capture::client_crop`]), or its whole frame when it has
 /// no client area (minimized).
 fn shared_size(window: HWND) -> Option<(u32, u32)> {
-    let (frame, origin, size) = client_geometry(window)?;
+    let Geometry {
+        frame,
+        client_origin: origin,
+        client_size: size,
+    } = client_geometry(window)?;
     let frame_size = (
         (frame.2 - frame.0).max(0) as u32,
         (frame.3 - frame.1).max(0) as u32,
@@ -338,11 +342,17 @@ fn shared_size(window: HWND) -> Option<(u32, u32)> {
     }
 }
 
+/// Where a window and its client area are on screen.
+pub(super) struct Geometry {
+    /// Left, top, right and bottom of what a capture of the window covers.
+    pub frame: (i32, i32, i32, i32),
+    pub client_origin: (i32, i32),
+    pub client_size: (u32, u32),
+}
+
 /// A window's capture rectangle on screen (its extended frame bounds, which Windows Graphics Capture covers; the
 /// window rectangle when DWM has none), its client area's origin on screen and the client area's size.
-pub(super) fn client_geometry(
-    window: HWND,
-) -> Option<((i32, i32, i32, i32), (i32, i32), (u32, u32))> {
+pub(super) fn client_geometry(window: HWND) -> Option<Geometry> {
     // SAFETY: read-only window geometry queries into initialized locals; closed handles return Err.
     unsafe {
         let mut bounds = RECT::default();
@@ -368,11 +378,11 @@ pub(super) fn client_geometry(
         } else {
             (0, 0)
         };
-        Some((
-            (bounds.left, bounds.top, bounds.right, bounds.bottom),
-            (origin.x, origin.y),
-            size,
-        ))
+        Some(Geometry {
+            frame: (bounds.left, bounds.top, bounds.right, bounds.bottom),
+            client_origin: (origin.x, origin.y),
+            client_size: size,
+        })
     }
 }
 
