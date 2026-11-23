@@ -1801,7 +1801,8 @@ impl Root {
                     .pt(px(12.))
                     .pb(px(12.))
                     .pl(px(24.))
-                    .pr(px(8.))
+                    // `bodyList_dvN-MP`: 8px end padding beside the `auto` scroller's stable 16px gutter.
+                    .pr(px(24.))
                     .flex()
                     .flex_col()
                     .children(rows),

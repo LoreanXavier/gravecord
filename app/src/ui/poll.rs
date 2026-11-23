@@ -1356,7 +1356,9 @@ impl Root {
             div()
                 .id("poll-voters-list")
                 .flex_1()
-                .px(px(24.))
+                // `voters_S9aZ6q`: 24px padding, plus the `auto` scroller's stable 16px gutter at the end.
+                .pl(px(24.))
+                .pr(px(40.))
                 .pt(px(12.))
                 .overflow_y_scroll()
                 .children(users.iter().map(|user| self.poll_voter_row(user, cx)))

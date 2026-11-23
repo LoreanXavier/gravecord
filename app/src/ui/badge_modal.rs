@@ -904,7 +904,8 @@ impl Root {
                     .min_h(px(0.))
                     .overflow_y_scroll()
                     .pt(px(4.))
-                    .pr(px(16.))
+                    // `directoryContent_zoUCAE`: 16px end padding beside the `thin` scroller's stable 8px gutter.
+                    .pr(px(24.))
                     .pb(px(24.))
                     .pl(px(24.))
                     .mt(px(-4.))

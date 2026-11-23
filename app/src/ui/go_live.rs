@@ -1489,7 +1489,8 @@ impl Root {
                     .flex_1()
                     .min_h(px(0.))
                     .when(!is_game, |this| {
-                        this.overflow_y_scroll().px(px(24.)).py(px(8.))
+                        // `content_oszuaw`: 24px padding, plus the `auto` scroller's stable 16px gutter at the end.
+                        this.overflow_y_scroll().pl(px(24.)).pr(px(40.)).py(px(8.))
                     })
                     .when(choose_channel, |this| this.px(px(16.)).pt(px(16.)))
                     .child(body),

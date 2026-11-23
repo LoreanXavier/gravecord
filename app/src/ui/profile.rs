@@ -490,7 +490,8 @@ impl Root {
         let body = div()
             .pl(px(16.))
             .pt(px(4.))
-            .pr(px(8.))
+            // `body_NOlkhE`: 8px end padding beside the `thin` scroller's stable 8px gutter.
+            .pr(px(16.))
             .pb(px(8.))
             .flex()
             .flex_col()

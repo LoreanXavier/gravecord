@@ -780,7 +780,8 @@ impl Root {
         let body = div()
             .flex_none()
             .pl(px(24.))
-            .pr(px(16.))
+            // `content__KoJTP`: 16px end padding beside the `thin` scroller's stable 8px gutter.
+            .pr(px(24.))
             .pt(px(32.))
             .flex()
             .flex_col()

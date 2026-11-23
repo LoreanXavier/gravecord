@@ -250,7 +250,8 @@ impl Root {
                     .id("reactors")
                     .flex_1()
                     .pt(px(12.))
-                    .pr(px(24.))
+                    // `reactors_quI2qP`: 24px end padding beside the `auto` scroller's stable 16px gutter.
+                    .pr(px(40.))
                     .overflow_y_scroll()
                     .children(rows),
             )

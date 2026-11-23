@@ -923,7 +923,9 @@ impl Root {
                         .min_h(px(0.))
                         .overflow_y_scroll()
                         .track_scroll(&search.scroll)
-                        .px(px(16.))
+                        // `scroller_QHVbp3`: 16px padding, plus the `thin` scroller's stable 8px gutter at the end.
+                        .pl(px(16.))
+                        .pr(px(24.))
                         .pt(px(16.))
                         // `w && !s.isSearching`: the 400-page warning over the results.
                         .when(page_warning, |this| this.child(self.search_page_warning()))

@@ -608,7 +608,8 @@ impl Root {
                     .flex_1()
                     .min_h(px(344.))
                     .pl(px(24.))
-                    .pr(px(16.))
+                    // `content__KoJTP contentScrollbarGutter`: 16px end padding beside the `thin` 8px gutter.
+                    .pr(px(24.))
                     .pt(px(8.))
                     .pb(px(16.))
                     .flex()
