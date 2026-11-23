@@ -18,7 +18,7 @@ use dc_tokens::emoji_data::{CATEGORIES, EMOJIS};
 use gpui::{
     AnyElement, Bounds, Context, Entity, Focusable, FontWeight, IntoElement, ListAlignment,
     ListOffset, ListState, MouseDownEvent, Pixels, Point, SharedString, Subscription, Window,
-    deferred, div, img, list, prelude::*, px, svg,
+    canvas, deferred, div, fill, img, list, point, prelude::*, px, size, svg,
 };
 use std::collections::HashSet;
 
@@ -2023,6 +2023,7 @@ impl Root {
             .flex_1()
             .min_h(px(0.))
             .child(rows)
+            .child(self.picker_scrollbar())
             .children(sticky.map(|section| {
                 div()
                     .absolute()
@@ -2373,6 +2374,51 @@ impl Root {
             .with_priority(1)
             .into_any_element(),
         )
+    }
+
+    /// The thin scroll bar over the emoji list's right edge (`thin_tqapBM`, as the sticker list draws it): a 4px
+    /// thumb 2px from the edge, at least 36px tall, inset 2px from the top and bottom.
+    fn picker_scrollbar(&self) -> impl IntoElement {
+        // The list measures only the rows it has drawn, so the whole height comes from the rows themselves.
+        let row_height = |row: &Row| match row {
+            Row::Heading(_) => HEADING,
+            Row::Cells { last, .. } => CELL + if *last { SECTION_GAP } else { 0. },
+        };
+        let (total, offset) = self
+            .picker
+            .as_ref()
+            .map(|picker| {
+                let top = picker.list.logical_scroll_top();
+                let before: f32 = picker.rows[..top.item_ix.min(picker.rows.len())]
+                    .iter()
+                    .map(row_height)
+                    .sum();
+                let total: f32 = picker.rows.iter().map(row_height).sum();
+                (total, before + f32::from(top.offset_in_item))
+            })
+            .unwrap_or_default();
+        canvas(
+            |_, _, _| {},
+            move |bounds: Bounds<Pixels>, _, window, _| {
+                let view = f32::from(bounds.size.height);
+                let max = total - view;
+                if max <= 1. {
+                    return;
+                }
+                let track = view - 4.;
+                let thumb = (track * view / total).max(36.);
+                let top = 2. + (offset / max).clamp(0., 1.) * (track - thumb);
+                let area = Bounds::new(
+                    point(bounds.right() - px(6.), bounds.top() + px(top)),
+                    size(px(4.), px(thumb)),
+                );
+                window.paint_quad(fill(area, color("--scrollbar-thin-thumb")).corner_radii(px(2.)));
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
     }
 
     fn picker_rows(&self, cx: &mut Context<Self>) -> AnyElement {
