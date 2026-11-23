@@ -277,7 +277,10 @@ pub const PROTO_PREFS: &[ProtoPref] = &[
     // enable_friend_anniversary_notifications 14, enable_profile_updates_notifications 16,
     // enable_upcoming_server_event_notifications 22, notify_friends_on_profile_update 24,
     // notify_friends_on_come_online 25, notify_server_members_on_go_live 26.
-    pref("go_live_notifications", &[7, 2], 1),
+    // Notifications > "People I know start streaming in small servers" (`GO_LIVE_NOTIFICATIONS` of module 158935)
+    // reads `voiceAndVideo.streamNotificationsEnabled` (module 253932 `ec`, on unless set): voice_and_video 5,
+    // stream_notifications_enabled 7. notify_friends_on_go_live (7.2) is not this switch.
+    pref("go_live_notifications", &[5, 7], 1),
     pref("friend_online_notifications", &[7, 12], 1),
     pref("friend_anniversary_notifications", &[7, 14], 1),
     pref("profile_updates_notifications", &[7, 16], 1),
@@ -2042,6 +2045,15 @@ mod tests {
         assert_eq!(theme(&STANDARD.encode(&updated)), Some(3));
         let (_, back) = set_pref(&updated, spoilers, 2);
         assert_eq!(pref_value(&STANDARD.encode(&back), spoilers), Some(2));
+    }
+
+    #[test]
+    fn go_live_notifications_is_the_voice_and_video_stream_switch() {
+        let go_live = PROTO_PREFS
+            .iter()
+            .find(|pref| pref.key == "go_live_notifications")
+            .expect("go live");
+        assert_eq!((go_live.path, go_live.field), (&[5u64, 7][..], 1));
     }
 
     #[test]
