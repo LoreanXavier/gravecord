@@ -139,55 +139,49 @@ struct Locked<T>(T);
 // devices created without the single-threaded flag are free-threaded.
 unsafe impl<T> Send for Locked<T> {}
 
+/// The part of a captured texture a share sends, in texture pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PendingRead<T> {
-    slot: usize,
-    meta: T,
+pub(crate) struct Crop {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
-/// Pure 2-slot ping-pong tracker: frame 0 reads immediately so single-shot consumers (thumbnails) don't stall, while
-/// steady-state frames write into slot `next` and map the previously flushed slot (`next ^ 1`) one frame later.
-#[derive(Debug)]
-struct StagingRing<T> {
-    next: usize,
-    primed: bool,
-    pending: Option<PendingRead<T>>,
-}
-
-impl<T> Default for StagingRing<T> {
-    fn default() -> Self {
-        Self {
-            next: 0,
-            primed: false,
-            pending: None,
-        }
-    }
-}
-
-impl<T> StagingRing<T> {
-    fn acquire_slot(&mut self) -> usize {
-        let slot = self.next & 1;
-        self.next = self.next.wrapping_add(1);
-        slot
-    }
-
-    fn complete_copy(&mut self, slot: usize, meta: T) -> Option<(usize, T)> {
-        let previous = self.pending.take();
-        if !self.primed {
-            self.primed = true;
-            return Some((slot, meta));
-        }
-        self.pending = Some(PendingRead { slot, meta });
-        previous.map(|prev| (prev.slot, prev.meta))
-    }
+/// A window's client area inside its capture, from screen rectangles: the capture covers the window's extended frame
+/// bounds (`frame`, left/top/right/bottom), the client area starts at `client_origin` on screen and is `client_size`
+/// big. The part of the client area inside the `content` WGC delivered, cut to even sides, so a share at the source's
+/// size encodes the client area pixel for pixel (a borderless window's client area can reach a pixel past its frame).
+/// `None` when there is no usable client area (a minimized window): the whole frame.
+pub(crate) fn client_crop(
+    frame: (i32, i32, i32, i32),
+    client_origin: (i32, i32),
+    client_size: (u32, u32),
+    content: (u32, u32),
+) -> Option<Crop> {
+    let left = i64::from(client_origin.0) - i64::from(frame.0);
+    let top = i64::from(client_origin.1) - i64::from(frame.1);
+    let right = (left + i64::from(client_size.0)).min(i64::from(content.0));
+    let bottom = (top + i64::from(client_size.1)).min(i64::from(content.1));
+    let (x, y) = (left.max(0), top.max(0));
+    let width = u32::try_from(right - x).ok()? & !1;
+    let height = u32::try_from(bottom - y).ok()? & !1;
+    let (x, y) = (u32::try_from(x).ok()?, u32::try_from(y).ok()?);
+    (width >= 2 && height >= 2).then_some(Crop {
+        x,
+        y,
+        width,
+        height,
+    })
 }
 
 struct Reader {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     d3d: IDirect3DDevice,
-    staging: [Option<(ID3D11Texture2D, u32, u32)>; 2],
-    ring: StagingRing<(u32, u32, Instant)>,
+    staging: Option<(ID3D11Texture2D, u32, u32)>,
+    /// A shared window, cropped to its client area; `None` for a display.
+    window: Option<HWND>,
     last_size: SizeInt32,
     buffers: Arc<BufferPool>,
 }
@@ -270,8 +264,11 @@ impl Capture {
                 device,
                 context,
                 d3d,
-                staging: [None, None],
-                ring: StagingRing::default(),
+                staging: None,
+                window: match source {
+                    SourceId::Window(handle) => Some(HWND(handle as usize as _)),
+                    SourceId::Display(_) => None,
+                },
                 last_size: size,
                 buffers: BufferPool::new(),
             },
@@ -396,19 +393,17 @@ fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
     }
 }
 
-/// Maps an already-copied staging slot and reads BGRA rows into a pooled host buffer.
+/// Maps the staging texture and reads its BGRA rows into a pooled host buffer.
 ///
 /// # Safety
-/// The caller must guarantee `slot < 2` and that `CopyResource` + `Flush` on `reader.staging[slot]` already ran
-/// sequentially under the reader lock.
+/// The caller must guarantee that `CopySubresourceRegion` into `reader.staging` already ran under the reader lock.
 unsafe fn map_staging(
     reader: &Reader,
-    slot: usize,
     width: u32,
     height: u32,
     at: Instant,
 ) -> windows::core::Result<Frame> {
-    let Some((staging, _, _)) = reader.staging[slot].as_ref() else {
+    let Some((staging, _, _)) = reader.staging.as_ref() else {
         return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
             0x8000_4005_u32 as i32,
         )));
@@ -452,8 +447,16 @@ unsafe fn map_staging(
     }
 }
 
-/// Copies the frame's texture to a ping-pong staging texture, flushes and releases the WGC frame immediately, and
-/// reads back the previously flushed staging slot (or frame 0 immediately when unprimed).
+/// Where a shared window's client area sits in its capture right now.
+fn window_crop(window: HWND, content: (u32, u32)) -> Option<Crop> {
+    let (frame, origin, size) = super::enumerate::client_geometry(window)?;
+    client_crop(frame, origin, size, content)
+}
+
+/// Copies the frame's texture (a window's client area only) to the staging texture, releases the WGC frame, and
+/// reads that same picture back. Each delivered frame is the one that just arrived, stamped with its own arrival: an
+/// earlier ping-pong ring handed over the previous picture, so a still source never delivered its last one and the
+/// first frame after a pause went out with the stale timestamp of the frame before it.
 fn read_frame(
     reader: &mut Reader,
     pool: &Direct3D11CaptureFramePool,
@@ -473,24 +476,33 @@ fn read_frame(
         content.Width != reader.last_size.Width || content.Height != reader.last_size.Height;
     let surface = raw_frame.Surface()?;
     let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
-    // SAFETY: the texture is the frame's own; the 2-slot staging ring, CopyResource, Flush, Map and Unmap execute
-    // sequentially under the reader lock, and the WGC frame closes before any pool.Recreate or Map.
+    // SAFETY: the texture is the frame's own; CopySubresourceRegion, Map and Unmap execute sequentially under the
+    // reader lock, and the WGC frame closes before any pool.Recreate or Map.
     unsafe {
         let texture: ID3D11Texture2D = access.GetInterface()?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc);
-        let (width, height) = (
+        let visible = (
             (content.Width as u32).min(desc.Width),
             (content.Height as u32).min(desc.Height),
         );
-        let slot_index = reader.ring.acquire_slot();
-        if reader.staging[slot_index]
+        let crop = reader
+            .window
+            .and_then(|window| window_crop(window, visible))
+            .unwrap_or(Crop {
+                x: 0,
+                y: 0,
+                width: visible.0,
+                height: visible.1,
+            });
+        if reader
+            .staging
             .as_ref()
-            .is_none_or(|(_, w, h)| *w != desc.Width || *h != desc.Height)
+            .is_none_or(|(_, w, h)| *w != crop.width || *h != crop.height)
         {
             let staging_desc = D3D11_TEXTURE2D_DESC {
-                Width: desc.Width,
-                Height: desc.Height,
+                Width: crop.width,
+                Height: crop.height,
                 MipLevels: 1,
                 ArraySize: 1,
                 Format: desc.Format,
@@ -507,17 +519,25 @@ fn read_frame(
             reader
                 .device
                 .CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
-            reader.staging[slot_index] = staging.map(|tex| (tex, desc.Width, desc.Height));
+            reader.staging = staging.map(|tex| (tex, crop.width, crop.height));
         }
-        let Some((staging, _, _)) = reader.staging[slot_index].as_ref() else {
+        let Some((staging, _, _)) = reader.staging.as_ref() else {
             return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
                 0x8000_4005_u32 as i32,
             )));
         };
-        reader.context.CopyResource(staging, &texture);
-        // Kick the GPU DMA copy now so mapping `previous` in the alternate slot sees completed work.
-        reader.context.Flush();
-        // Release the WGC frame pool slot before pool.Recreate and any CPU Map so swapchains are never held.
+        let region = D3D11_BOX {
+            left: crop.x,
+            top: crop.y,
+            front: 0,
+            right: crop.x + crop.width,
+            bottom: crop.y + crop.height,
+            back: 1,
+        };
+        reader
+            .context
+            .CopySubresourceRegion(staging, 0, 0, 0, 0, &texture, 0, Some(&region));
+        // Release the WGC frame pool slot before pool.Recreate and the CPU Map so swapchains are never held.
         drop(texture);
         drop(access);
         drop(surface);
@@ -532,13 +552,7 @@ fn read_frame(
                 content,
             )?;
         }
-
-        let Some((read_slot, (read_w, read_h, read_at))) =
-            reader.ring.complete_copy(slot_index, (width, height, at))
-        else {
-            return Ok(None);
-        };
-        map_staging(reader, read_slot, read_w, read_h, read_at).map(Some)
+        map_staging(reader, crop.width, crop.height, at).map(Some)
     }
 }
 
@@ -673,23 +687,104 @@ mod tests {
     }
 
     #[test]
-    fn staging_ring_primes_first_frame_then_alternates_ping_pong_slots() {
-        let mut ring = StagingRing::default();
+    /// The crop assumes a window's capture covers its extended frame bounds: the capture item's size must equal them.
+    #[test]
+    #[ignore = "reads the geometry of the windows on this desktop"]
+    fn window_captures_cover_the_extended_frame_bounds() {
+        let mut checked = 0;
+        for source in super::super::sources().unwrap() {
+            let SourceId::Window(handle) = source.id else {
+                continue;
+            };
+            let window = HWND(handle as usize as _);
+            let Some((frame, origin, client)) = super::super::enumerate::client_geometry(window)
+            else {
+                continue;
+            };
+            let Ok(item) = create_item(source.id) else {
+                continue;
+            };
+            let size = item.Size().unwrap();
+            println!(
+                "{:?}: item {}x{}, frame {:?} = {}x{}, client at {:?} {:?}, shared {}x{}",
+                source.name,
+                size.Width,
+                size.Height,
+                frame,
+                frame.2 - frame.0,
+                frame.3 - frame.1,
+                origin,
+                client,
+                source.width,
+                source.height
+            );
+            assert_eq!(
+                (size.Width, size.Height),
+                (frame.2 - frame.0, frame.3 - frame.1)
+            );
+            checked += 1;
+        }
+        println!("{checked} windows checked");
+    }
 
-        let s0 = ring.acquire_slot();
-        assert_eq!(s0, 0);
-        assert_eq!(ring.complete_copy(s0, 100), Some((0, 100)));
+    #[test]
+    fn window_shares_crop_to_the_client_area_on_even_sides() {
+        // A 1000x700 frame at (100, 50); the client area starts 8 px in and 31 px down and is 984x661.
+        let crop = client_crop((100, 50, 1100, 750), (108, 81), (984, 661), (1000, 700)).unwrap();
+        assert_eq!(
+            crop,
+            Crop {
+                x: 8,
+                y: 31,
+                width: 984,
+                height: 660
+            }
+        );
+        // A client area larger than the delivered content is clamped to it.
+        let crop = client_crop((0, 0, 800, 600), (0, 30), (800, 600), (800, 600)).unwrap();
+        assert_eq!((crop.width, crop.height), (800, 570));
+        // A client area with no size (minimized) or outside the frame keeps the whole frame.
+        // A borderless client area reaching past the frame keeps the part inside it.
+        let crop = client_crop((0, 0, 800, 600), (-1, -1), (802, 602), (800, 600)).unwrap();
+        assert_eq!((crop.x, crop.y, crop.width, crop.height), (0, 0, 800, 600));
+        assert_eq!(
+            client_crop((0, 0, 800, 600), (0, 0), (0, 0), (800, 600)),
+            None
+        );
+        assert_eq!(
+            client_crop((0, 0, 800, 600), (900, 0), (10, 10), (800, 600)),
+            None
+        );
+    }
 
-        let s1 = ring.acquire_slot();
-        assert_eq!(s1, 1);
-        assert_eq!(ring.complete_copy(s1, 200), None);
-
-        let s2 = ring.acquire_slot();
-        assert_eq!(s2, 0);
-        assert_eq!(ring.complete_copy(s2, 300), Some((1, 200)));
-
-        let s3 = ring.acquire_slot();
-        assert_eq!(s3, 1);
-        assert_eq!(ring.complete_copy(s3, 400), Some((0, 300)));
+    /// The first frames of the primary display: each one handed over is the picture that just arrived, so its
+    /// arrival time is fresh when it is delivered.
+    #[test]
+    #[ignore = "captures the primary display"]
+    fn delivered_frames_are_the_ones_that_just_arrived() {
+        let display = super::super::sources()
+            .unwrap()
+            .into_iter()
+            .find(|source| matches!(source.id, SourceId::Display(_)))
+            .expect("a display");
+        let (send, receive) = std::sync::mpsc::sync_channel::<(Instant, Instant)>(8);
+        let cancel = AtomicBool::new(false);
+        let _capture = Capture::start(
+            display.id,
+            false,
+            60,
+            &cancel,
+            || true,
+            move |frame| {
+                let _ = send.try_send((frame.at, Instant::now()));
+            },
+            || {},
+        )
+        .unwrap();
+        let (at, delivered) = receive
+            .recv_timeout(Duration::from_secs(3))
+            .expect("a first frame");
+        // The first frame comes at once, not when a second one arrives.
+        assert!(delivered.duration_since(at) < Duration::from_millis(100));
     }
 }

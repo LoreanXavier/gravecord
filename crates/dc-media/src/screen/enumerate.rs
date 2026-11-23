@@ -9,7 +9,7 @@ use crate::{Error, Layout, Picture, Result};
 use std::collections::HashMap;
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, RECT, WPARAM},
+        Foundation::{HWND, LPARAM, POINT, RECT, WPARAM},
         Graphics::{
             Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
             Gdi::*,
@@ -152,25 +152,15 @@ fn windows(refresh: &HashMap<u64, u32>) -> Result<Vec<WindowInfo>> {
                 &mut cloaked as *mut _ as *mut _,
                 size_of::<u32>() as u32,
             );
-            let mut bounds = RECT::default();
-            let framed = DwmGetWindowAttribute(
-                hwnd,
-                DWMWA_EXTENDED_FRAME_BOUNDS,
-                &mut bounds as *mut _ as *mut _,
-                size_of::<RECT>() as u32,
-            )
-            .is_ok();
-            if !framed {
-                let _ = GetWindowRect(hwnd, &mut bounds);
-            }
+            let (width, height) = shared_size(hwnd).unwrap_or((0, 0));
             let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             out.push(WindowInfo {
                 hwnd: hwnd.0 as usize as u64,
                 title,
                 class: String::from_utf16_lossy(&class[..class_len]),
                 pid,
-                width: (bounds.right - bounds.left).max(0) as u32,
-                height: (bounds.bottom - bounds.top).max(0) as u32,
+                width,
+                height,
                 visible,
                 minimized: IsIconic(hwnd).as_bool(),
                 cloaked: cloaked != 0,
@@ -312,22 +302,39 @@ fn icon_pixels(icon: HICON) -> Option<Picture> {
     }
 }
 
-/// Logical screen/capture size of a window handle, preferring its client rect when positive.
+/// Size of what a share of this window sends, the same crop the capture takes.
 pub(super) fn window_dimensions(hwnd: u64) -> Option<(u32, u32)> {
     let window = HWND(hwnd as usize as _);
-    // SAFETY: read-only window geometry query; closed or invalid handles return false/Err.
+    // SAFETY: read-only window state queries; closed or invalid handles return false.
     unsafe {
         if !IsWindow(Some(window)).as_bool() || !IsWindowVisible(window).as_bool() {
             return None;
         }
-        let mut client = RECT::default();
-        if GetClientRect(window, &mut client).is_ok() {
-            let width = client.right - client.left;
-            let height = client.bottom - client.top;
-            if width >= 2 && height >= 2 {
-                return Some((width as u32, height as u32));
-            }
-        }
+    }
+    shared_size(window)
+}
+
+/// The client area a share of `window` sends (see [`super::capture::client_crop`]), or its whole frame when it has
+/// no client area (minimized).
+fn shared_size(window: HWND) -> Option<(u32, u32)> {
+    let (frame, origin, size) = client_geometry(window)?;
+    let frame_size = (
+        (frame.2 - frame.0).max(0) as u32,
+        (frame.3 - frame.1).max(0) as u32,
+    );
+    match super::capture::client_crop(frame, origin, size, frame_size) {
+        Some(crop) => Some((crop.width, crop.height)),
+        None => (frame_size.0 >= 2 && frame_size.1 >= 2).then_some(frame_size),
+    }
+}
+
+/// A window's capture rectangle on screen (its extended frame bounds, which Windows Graphics Capture covers; the
+/// window rectangle when DWM has none), its client area's origin on screen and the client area's size.
+pub(super) fn client_geometry(
+    window: HWND,
+) -> Option<((i32, i32, i32, i32), (i32, i32), (u32, u32))> {
+    // SAFETY: read-only window geometry queries into initialized locals; closed handles return Err.
+    unsafe {
         let mut bounds = RECT::default();
         let framed = DwmGetWindowAttribute(
             window,
@@ -339,9 +346,23 @@ pub(super) fn window_dimensions(hwnd: u64) -> Option<(u32, u32)> {
         if !framed && GetWindowRect(window, &mut bounds).is_err() {
             return None;
         }
-        let width = bounds.right - bounds.left;
-        let height = bounds.bottom - bounds.top;
-        (width >= 2 && height >= 2).then_some((width as u32, height as u32))
+        let mut client = RECT::default();
+        let mut origin = POINT::default();
+        let size = if GetClientRect(window, &mut client).is_ok()
+            && ClientToScreen(window, &mut origin).as_bool()
+        {
+            (
+                (client.right - client.left).max(0) as u32,
+                (client.bottom - client.top).max(0) as u32,
+            )
+        } else {
+            (0, 0)
+        };
+        Some((
+            (bounds.left, bounds.top, bounds.right, bounds.bottom),
+            (origin.x, origin.y),
+            size,
+        ))
     }
 }
 
