@@ -131,7 +131,10 @@ impl Root {
     ) {
         let mut make_q = |title_key: &'static str, options: &'static [FeedbackOption]| {
             let freeform = cx.new(|cx| {
-                let mut ed = Editor::new(editor_style(), cx);
+                let mut style = editor_style();
+                // `.textArea_uI0xjn` keeps `line-height: normal`: 21px for gg sans at 16px.
+                style.line_height = 21.;
+                let mut ed = Editor::new(style, cx);
                 ed.set_placeholder(dc_intl::t("oV10fv").to_owned());
                 ed
             });
@@ -355,9 +358,12 @@ impl Root {
                                     ),
                             )
                             .child(
+                                // Module 103557 (`rows` 3, `maxLength` 1024, no override): `.textArea_uI0xjn`
+                                // (`padding: var(--space-12) 10px`) in `.wrapper_UcGqzv`'s 1px border.
                                 div()
-                                    .min_h(px(72.))
-                                    .p(px(10.))
+                                    .min_h(px(3. * 21. + 24. + 2.))
+                                    .px(px(10.))
+                                    .py(px(12.))
                                     .rounded(px(8.))
                                     .border_1()
                                     .border_color(color("--input-border-default"))

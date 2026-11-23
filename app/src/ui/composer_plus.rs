@@ -174,7 +174,10 @@ impl Root {
             return;
         }
         let question = cx.new(|cx| {
-            let mut editor = Editor::new(super::editor_style(), cx);
+            let mut style = super::editor_style();
+            // `.textArea_uI0xjn` keeps `line-height: normal`: 21px for gg sans at 16px.
+            style.line_height = 21.;
+            let mut editor = Editor::new(style, cx);
             editor.set_placeholder_message("What question do you want to ask?");
             editor
         });
@@ -485,19 +488,26 @@ impl Root {
                 .text_color(color("--text-strong"))
                 .child(text)
         };
+        // Module 50518's question box (module 103557, `autosize`, `rows` 1, `maxLength` 300 with the counter): the
+        // wrapper is 48px (frame create-poll: a 22px content box, `Math.ceil(scrollHeight + 1)` of module 643135),
+        // `.textArea_uI0xjn` pads 12px 10px and `style.paddingRight` is `7.23 * 9 + 10` = 75.07px for the counter.
+        // `.wrapper_UcGqzv`: a 1px `--input-border-default` border, and on focus a 2px inset outline in
+        // `--input-border-active` (drawn here as a 2px border with the padding one pixel smaller).
         let field = |editor: Entity<Editor>, focused: bool| {
+            let inset = if focused { 1. } else { 0. };
             div()
-                .min_h(px(47.))
-                .px(px(12.))
-                .py(px(13.))
-                .flex()
-                .items_center()
+                .min_h(px(48.))
+                .pt(px(12. - inset))
+                .pb(px(12. - inset))
+                .pl(px(10. - inset))
+                .pr(px(75.07 - inset))
                 .rounded(px(8.))
-                .border_1()
+                .when(focused, |d| d.border_2())
+                .when(!focused, |d| d.border_1())
                 .border_color(if focused {
-                    color("--border-focus")
+                    color("--input-border-active")
                 } else {
-                    color("--border-muted")
+                    color("--input-border-default")
                 })
                 .bg(color("--input-background-default"))
                 .child(editor)

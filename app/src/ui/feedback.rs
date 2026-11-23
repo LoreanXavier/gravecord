@@ -709,7 +709,12 @@ impl Root {
 
     /// Opens the survey at once (the harness, and the manager after its gates).
     pub(super) fn open_feedback(&mut self, kind: Kind, cx: &mut Context<Self>) {
-        let text = cx.new(|cx| Editor::new(super::editor_style(), cx));
+        let text = cx.new(|cx| {
+            let mut style = super::editor_style();
+            // `.textArea_uI0xjn` keeps `line-height: normal`: 21px for gg sans at 16px.
+            style.line_height = 21.;
+            Editor::new(style, cx)
+        });
         let tree = categories(kind, &mut rand::rng());
         let single = tree.len() == 1;
         let app_name = self.feedback.app_name.take().unwrap_or_default();
@@ -898,7 +903,11 @@ impl Root {
                         problem: Some(0),
                     },
                     dont_show: false,
-                    text: cx.new(|cx| Editor::new(super::editor_style(), cx)),
+                    text: cx.new(|cx| {
+                        let mut style = super::editor_style();
+                        style.line_height = 21.;
+                        Editor::new(style, cx)
+                    }),
                     hovered_face: None,
                 });
                 self.feedback_roll = Some(0.0);
@@ -1141,11 +1150,12 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                // GAP: module 103557's text area is drawn as the design system's text box.
+                // Module 103557's text area (`rows` 3, `maxLength` 1024, no counter): `.textArea_uI0xjn`
+                // (`padding: var(--space-12) 10px`) in `.wrapper_UcGqzv`'s 1px border, 3 * 21 + 24 + 2.
                 .child(
                     div()
                         .w_full()
-                        .min_h(px(44.))
+                        .min_h(px(3. * 21. + 24. + 2.))
                         .px(px(10.))
                         .py(px(12.))
                         .rounded(px(8.))
@@ -1153,7 +1163,7 @@ impl Root {
                         .border_color(color("--input-border-default"))
                         .bg(color("--input-background-default"))
                         .text_size(px(16.))
-                        .line_height(px(20.))
+                        .line_height(px(21.))
                         .child(form.text.clone()),
                 )
                 // `hideHelpDeskLink` of the block, ignore & summary surveys (modules 307750, 976627, 780061).

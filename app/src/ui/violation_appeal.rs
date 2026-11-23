@@ -247,7 +247,10 @@ impl Root {
             .unwrap_or_default();
         let placeholder = dc_intl::t("bQrZIN").to_owned();
         let editor = cx.new(|cx| {
-            let mut ed = crate::editor::Editor::new(editor_style(), cx);
+            let mut style = editor_style();
+            // `.textArea_uI0xjn` keeps `line-height: normal`: 21px for gg sans at 16px.
+            style.line_height = 21.;
+            let mut ed = crate::editor::Editor::new(style, cx);
             ed.set_placeholder(placeholder);
             if !initial.is_empty() {
                 ed.set_text(&initial);
@@ -665,9 +668,13 @@ impl Root {
                         .flex_col()
                         .gap(px(6.))
                         .children(editor.clone().map(|ed| {
+                            // Module 894683's text area (module 103557, `rows` 4, `maxLength` 1024, no override):
+                            // `.textArea_uI0xjn` (`padding: var(--space-12) 10px`) in `.wrapper_UcGqzv`'s 1px
+                            // border, 4 * 21 + 24 + 2.
                             div()
-                                .min_h(px(88.))
-                                .p(px(10.))
+                                .min_h(px(4. * 21. + 24. + 2.))
+                                .px(px(10.))
+                                .py(px(12.))
                                 .rounded(px(8.))
                                 .border_1()
                                 .border_color(color("--border-subtle"))

@@ -187,7 +187,12 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Entity<Editor> {
         cx.new(|cx| {
-            let mut editor = Editor::new(super::editor_style(), cx);
+            let mut style = super::editor_style();
+            if text_area {
+                // `.textArea_uI0xjn` keeps `line-height: normal`: a 21px pitch (module 989433, `rows` 10).
+                style.line_height = 21.;
+            }
+            let mut editor = Editor::new(style, cx);
             editor.set_placeholder(placeholder.to_owned());
             editor.set_reports_all_edits(true);
             if text_area {
@@ -630,6 +635,9 @@ impl Root {
             .bg(gpui::rgba(0x97979f1f))
     }
 
+    /// A text area (`.textArea_uI0xjn`: `padding: var(--space-12) 10px` inside the 1px border). `right` is
+    /// the `paddingRight` the component sets: 10, or `7.23 * (2 * digits + 3) + 10` with its character
+    /// count (89.53 for the 4-digit About limit).
     fn landing_field(
         &self,
         editor: Option<Entity<Editor>>,

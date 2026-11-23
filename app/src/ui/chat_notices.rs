@@ -1099,7 +1099,10 @@ impl Root {
     /// `placeholder` "Tell us what happened", `autoFocus` once it shows).
     pub(super) fn open_lockdown_feedback(&mut self, cx: &mut Context<Self>) {
         let input = cx.new(|cx| {
-            let mut input = crate::editor::Editor::new(super::editor_style(), cx);
+            let mut style = super::editor_style();
+            // `.textArea_uI0xjn` keeps `line-height: normal`: 21px for gg sans at 16px.
+            style.line_height = 21.;
+            let mut input = crate::editor::Editor::new(style, cx);
             input.set_keeps_text(true);
             input.set_placeholder(dc_intl::t("PAM+JR").to_owned());
             input
@@ -1572,15 +1575,17 @@ impl Root {
                                 div()
                                     .id(SharedString::from(format!("{prefix}-other")))
                                     .w_full()
+                                    // `.textArea_uI0xjn` (`padding: var(--space-12) 10px`) in `.wrapper_UcGqzv`'s 1px
+                                    // border; `rows` 3 of module 103557: 3 * 21 + 24 + 2.
                                     .px(px(10.))
                                     .py(px(12.))
-                                    .min_h(px(3. * 20. + 24.))
+                                    .min_h(px(3. * 21. + 24. + 2.))
                                     .rounded(px(RADIUS_SM))
                                     .border_1()
                                     .border_color(super::color("--input-border-default"))
                                     .bg(super::color("--input-background-default"))
                                     .text_size(px(16.))
-                                    .line_height(px(20.))
+                                    .line_height(px(21.))
                                     .child(input),
                             )
                         }))

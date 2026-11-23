@@ -114,7 +114,10 @@ impl Root {
             editor
         });
         let feedback = cx.new(|cx| {
-            let mut editor = Editor::new(super::editor_style(), cx);
+            let mut style = super::editor_style();
+            // `.textArea_uI0xjn` keeps `line-height: normal`: 21px for gg sans at 16px.
+            style.line_height = 21.;
+            let mut editor = Editor::new(style, cx);
             editor.set_placeholder("Describe issues".to_owned());
             editor.set_enter_inserts_newline(true);
             editor.set_keeps_text(true);
@@ -565,7 +568,7 @@ impl Root {
                         .child(muted(
                             "Please describe any issues you're seeing, or how we can improve game information or game activity.",
                         ))
-                        // `wrapper_UcGqzv` around `textArea_uI0xjn` (4 rows: 84px inside 12 by 10).
+                        // `wrapper_UcGqzv` around `textArea_uI0xjn` (`rows` 4 of module 103557, no override: 4 * 21 + 24 + 2 = 110).
                         .child(
                             div()
                                 .h(px(110.))

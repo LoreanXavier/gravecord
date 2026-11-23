@@ -248,6 +248,12 @@ impl Root {
             existing.as_ref().map_or("", |t| t.prompt.as_str()),
             cx,
         );
+        prompt.update(cx, |editor, _| {
+            let mut style = super::editor_style();
+            // `.textArea_uI0xjn` keeps `line-height: normal`: 21px for gg sans at 16px.
+            style.line_height = 21.;
+            editor.set_style(style);
+        });
         let events = vec![
             cx.subscribe(&name, |_, editor, _: &EditorEvent, cx| {
                 // `maxLength: 50`.
@@ -303,7 +309,15 @@ impl Root {
         cx.notify();
     }
 
-    fn transform_field(label: &'static str, editor: Entity<Editor>, height: f32) -> AnyElement {
+    /// `text_area` is the Prompt box of module 183036: module 103557 with `rows` 3 and no override, so
+    /// `.textArea_uI0xjn` (`padding: var(--space-12) 10px`) in `.wrapper_UcGqzv`'s 1px border, 3 * 21 + 24 + 2 tall.
+    /// The Name box is a text input and keeps its own 40px box.
+    fn transform_field(label: &'static str, editor: Entity<Editor>, text_area: bool) -> AnyElement {
+        let (height, pad_x, pad_y, line) = if text_area {
+            (3. * 21. + 24. + 2., 10., 12., 21.)
+        } else {
+            (40., 12., 10., 20.)
+        };
         div()
             .flex()
             .flex_col()
@@ -319,14 +333,14 @@ impl Root {
             .child(
                 div()
                     .h(px(height))
-                    .px(px(12.))
-                    .py(px(10.))
+                    .px(px(pad_x))
+                    .py(px(pad_y))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(color("--input-border-default"))
                     .bg(color("--input-background-default"))
                     .text_size(px(16.))
-                    .line_height(px(20.))
+                    .line_height(px(line))
                     .child(editor),
             )
             .into_any_element()
@@ -355,8 +369,8 @@ impl Root {
                         .flex()
                         .flex_col()
                         .gap(px(16.))
-                        .child(Self::transform_field("Name", open.name.clone(), 40.))
-                        .child(Self::transform_field("Prompt", open.prompt.clone(), 80.))
+                        .child(Self::transform_field("Name", open.name.clone(), false))
+                        .child(Self::transform_field("Prompt", open.prompt.clone(), true))
                         .into_any_element(),
                 ),
                 buttons: vec![

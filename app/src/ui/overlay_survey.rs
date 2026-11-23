@@ -82,7 +82,10 @@ impl Root {
             return;
         }
         let comment = cx.new(|cx| {
-            let mut editor = Editor::new(editor_style(), cx);
+            let mut style = editor_style();
+            // `.textArea_uI0xjn` keeps `line-height: normal`: 21px for gg sans at 16px.
+            style.line_height = 21.;
+            let mut editor = Editor::new(style, cx);
             editor.set_placeholder(dc_intl::t("gU+bVJ").to_owned());
             editor
         });
@@ -233,13 +236,15 @@ impl Root {
                 div()
                     .pt(px(16.))
                     .child(div().pb(px(8.)).child(label("LYnrhc", "--text-muted")))
-                    // GAP: the text area of module 103557 is drawn as the design system's text box.
+                    // Module 103557 (`autosize`, `rows` 3, `maxLength` 1000, no counter): `.textArea_uI0xjn`
+                    // (`padding: var(--space-12) 10px`) in `.wrapper_UcGqzv`'s 1px border. Autosize adds one pixel
+                    // to the rows (`Math.ceil(scrollHeight + 1)` of module 643135): 3 * 21 + 1 + 24 + 2.
                     .child(
                         div()
                             .w_full()
-                            .min_h(px(44.))
-                            .px(px(12.))
-                            .py(px(11.))
+                            .min_h(px(3. * 21. + 1. + 24. + 2.))
+                            .px(px(10.))
+                            .py(px(12.))
                             .rounded(px(8.))
                             .border_1()
                             .border_color(color("--border-subtle"))

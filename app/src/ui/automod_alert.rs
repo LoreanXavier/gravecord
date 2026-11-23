@@ -565,7 +565,10 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         let input = cx.new(|cx| {
-            let mut input = crate::editor::Editor::new(super::editor_style(), cx);
+            // `.textArea_uI0xjn` keeps `line-height: normal`: 21px for gg sans at 16px.
+            let mut style = super::editor_style();
+            style.line_height = 21.;
+            let mut input = crate::editor::Editor::new(style, cx);
             input.set_keeps_text(true);
             input.set_placeholder(dc_intl::t("PAM+JR").to_owned());
             input

@@ -412,39 +412,46 @@ impl Root {
     }
 
     fn open_sticker_dialog(&mut self, cx: &mut Context<Self>) {
-        let make = |placeholder: &str, limit: usize, cx: &mut Context<Self>| {
-            let editor = cx.new(|cx| {
-                let mut editor = Editor::new(super::editor_style(), cx);
-                editor.set_placeholder(placeholder.to_owned());
-                editor
-            });
-            let events = cx.subscribe(&editor, move |this, editor, event: &EditorEvent, cx| {
-                match event {
-                    EditorEvent::Cancel => {
-                        if let Some(open) = this.server_settings.as_mut() {
-                            open.sticker_dialog = None;
+        let make =
+            |placeholder: &str, limit: usize, line_height: Option<f32>, cx: &mut Context<Self>| {
+                let editor = cx.new(|cx| {
+                    let mut style = super::editor_style();
+                    if let Some(line_height) = line_height {
+                        style.line_height = line_height;
+                    }
+                    let mut editor = Editor::new(style, cx);
+                    editor.set_placeholder(placeholder.to_owned());
+                    editor
+                });
+                let events = cx.subscribe(&editor, move |this, editor, event: &EditorEvent, cx| {
+                    match event {
+                        EditorEvent::Cancel => {
+                            if let Some(open) = this.server_settings.as_mut() {
+                                open.sticker_dialog = None;
+                            }
+                        }
+                        EditorEvent::Submit(text) => {
+                            let text = text.clone();
+                            editor.update(cx, |editor, _| editor.set_text(&text));
+                        }
+                        EditorEvent::Edited => {
+                            let text = editor.read(cx).text().to_owned();
+                            if text.chars().count() > limit {
+                                let cut: String = text.chars().take(limit).collect();
+                                editor.update(cx, |editor, _| editor.set_text(&cut));
+                            }
                         }
                     }
-                    EditorEvent::Submit(text) => {
-                        let text = text.clone();
-                        editor.update(cx, |editor, _| editor.set_text(&text));
-                    }
-                    EditorEvent::Edited => {
-                        let text = editor.read(cx).text().to_owned();
-                        if text.chars().count() > limit {
-                            let cut: String = text.chars().take(limit).collect();
-                            editor.update(cx, |editor, _| editor.set_text(&cut));
-                        }
-                    }
-                }
-                cx.notify();
-            });
-            (editor, events)
-        };
-        let (name, name_events) = make("ex: cat hug", 30, cx);
+                    cx.notify();
+                });
+                (editor, events)
+            };
+        let (name, name_events) = make("ex: cat hug", 30, None, cx);
         let (description, description_events) = make(
             "See our Help Center for tips on writing sticker descriptions.",
             100,
+            // `.textArea_uI0xjn` keeps `line-height: normal`: a 21px pitch.
+            Some(21.),
             cx,
         );
         if let Some(open) = self.server_settings.as_mut() {
@@ -965,9 +972,11 @@ impl Root {
                                 focus_field("sticker-description", dialog.description.clone())
                                     .child(
                                         div()
+                                            // `.textArea_uI0xjn` (module 445002, `rows` 3): `padding: var(--space-12) 10px`
+                                            // inside the 1px wrapper border: 3 * 21 + 24 + 2.
                                             .h(px(89.))
                                             .pt(px(12.))
-                                            .px(px(12.))
+                                            .px(px(10.))
                                             .rounded(px(8.))
                                             .border_1()
                                             .border_color(color("--input-border-default"))

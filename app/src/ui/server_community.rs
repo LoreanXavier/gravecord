@@ -1576,7 +1576,10 @@ impl Root {
             disabling: false,
         };
         let editor = cx.new(|cx| {
-            let mut editor = Editor::new(super::editor_style(), cx);
+            // `.textArea_uI0xjn` keeps `line-height: normal`: a 21px pitch (module 989433, `rows` 3).
+            let mut style = super::editor_style();
+            style.line_height = 21.;
+            let mut editor = Editor::new(style, cx);
             editor.set_placeholder("Tell the world a bit about this server.".to_owned());
             editor.set_text(&values.description);
             editor
@@ -2012,9 +2015,11 @@ impl Root {
                     .child(
                         div()
                             .id("overview-description")
+                            // `.textArea_uI0xjn`: `padding: var(--space-12) 10px` inside the 1px
+                            // wrapper border; `rows` 3 gives 3 * 21 + 24 + 2.
                             .h(px(89.))
                             .pt(px(12.))
-                            .px(px(12.))
+                            .px(px(10.))
                             .rounded(px(8.))
                             .border_1()
                             .border_color(color("--input-border-default"))

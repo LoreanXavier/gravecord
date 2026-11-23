@@ -109,7 +109,8 @@ impl Root {
         let initial = initial_reason.clone().unwrap_or_default();
         let editor = cx.new(|cx| {
             let mut style = editor_style();
-            style.line_height = 20.;
+            // `.textArea_uI0xjn` keeps `line-height: normal`: a 21px pitch.
+            style.line_height = 21.;
             let mut ed = Editor::new(style, cx);
             ed.set_keeps_text(true);
             ed.set_reports_all_edits(true);
@@ -275,9 +276,12 @@ impl Root {
                             .unwrap_or(0)
                     });
                 let remaining = REJECT_REASON_MAX.saturating_sub(char_count);
+                // `.textArea_uI0xjn` (module 867276, `rows` 3): `padding: var(--space-12) 10px` inside the
+                // 1px wrapper border: 3 * 21 + 24 + 2.
                 let input_box = div()
-                    .min_h(px(84.))
-                    .p(px(10.))
+                    .min_h(px(89.))
+                    .py(px(12.))
+                    .px(px(10.))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(color("--input-border-default"))

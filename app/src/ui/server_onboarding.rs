@@ -7812,8 +7812,10 @@ impl Root {
             .relative()
             .h(px(height))
             .w_full()
+            // `.textArea_uI0xjn`: `padding: var(--space-12) 10px` inside the 1px wrapper border (focus
+            // is an inset outline, so the padding stays); `rows` 3 gives 3 * 21 + 24 + 2 = 89.
             .py(px(12.))
-            .px(px(11.))
+            .px(px(10.))
             .rounded(px(8.))
             .border_1()
             .border_color(color(if focused {

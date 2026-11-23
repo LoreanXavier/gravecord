@@ -220,9 +220,11 @@ impl Root {
                                 div()
                                     .id("discovery-description")
                                     .mt(px(16.))
+                                    // `.textArea_uI0xjn` (module 989433, `rows` 3, `maxLength` 300):
+                                    // `padding: var(--space-12) 10px` inside the 1px wrapper border.
                                     .h(px(89.))
                                     .pt(px(12.))
-                                    .px(px(12.))
+                                    .px(px(10.))
                                     .rounded(px(8.))
                                     .border_1()
                                     .border_color(color("--input-border-default"))

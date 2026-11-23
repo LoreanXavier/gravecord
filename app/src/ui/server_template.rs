@@ -58,19 +58,25 @@ impl Root {
         if open.template.is_some() {
             return;
         }
-        let field = |placeholder: &str, cx: &mut Context<Self>| {
+        let field = |placeholder: &str, text_area: bool, cx: &mut Context<Self>| {
             let placeholder = placeholder.to_owned();
             cx.new(|cx| {
-                let mut editor = Editor::new(super::editor_style(), cx);
+                let mut style = super::editor_style();
+                if text_area {
+                    // `.textArea_uI0xjn` keeps `line-height: normal`: a 21px pitch (module 989433, `rows` 3).
+                    style.line_height = 21.;
+                }
+                let mut editor = Editor::new(style, cx);
                 editor.set_placeholder(placeholder);
                 editor
             })
         };
         let title = field(
             "Who is this server for? E.g. School Club, Artists' Community",
+            false,
             cx,
         );
-        let description = field("What can people do in this server?", cx);
+        let description = field("What can people do in this server?", true, cx);
         let notify = |this: &mut Root, event: &EditorEvent, cx: &mut Context<Root>| {
             if matches!(event, EditorEvent::Cancel) {
                 this.server_settings = None;
@@ -303,7 +309,9 @@ impl Root {
                 .border_1()
                 .border_color(color("--input-border-default"))
                 .bg(color("--input-background-default"))
-                .px(px(12.))
+                // A text area is `.textArea_uI0xjn`: `padding: var(--space-12) 10px` inside the 1px
+                // border, so 3 rows of 21px make 3 * 21 + 24 + 2 = 89.
+                .px(px(if height > 40. { 10. } else { 12. }))
                 .when(height <= 40., |this| this.flex().items_center())
                 .when(height > 40., |this| this.pt(px(12.)))
                 .child(div().w_full().child(field))

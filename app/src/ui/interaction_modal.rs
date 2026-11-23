@@ -161,7 +161,13 @@ impl Root {
         let mut events = Vec::new();
         let mut make = |input: &model::TextInput| -> Entity<Editor> {
             let editor = cx.new(|cx| {
-                let mut editor = Editor::new(super::editor_style(), cx);
+                let mut style = super::editor_style();
+                if input.paragraph {
+                    // The PARAGRAPH style of module 232430 is module 103557: `.textArea_uI0xjn` keeps
+                    // `line-height: normal`, 21px for gg sans at 16px.
+                    style.line_height = 21.;
+                }
+                let mut editor = Editor::new(style, cx);
                 editor.set_single_line(!input.paragraph);
                 editor.set_enter_inserts_newline(input.paragraph);
                 editor.set_reports_all_edits(true);
@@ -675,12 +681,15 @@ impl Root {
                 editor, paragraph, ..
             } => {
                 let paragraph = *paragraph;
+                // PARAGRAPH is module 103557 (`autosize`, `rows` 3, no counter): `.textArea_uI0xjn`
+                // (`padding: var(--space-12) 10px`) in `.wrapper_UcGqzv`'s 1px border; autosize adds one pixel
+                // (module 643135): 3 * 21 + 1 + 24 + 2. The SMALL style is a text input and keeps its 40px box.
                 div()
                     .w_full()
-                    .when(paragraph, |this| this.min_h(px(108.)))
+                    .when(paragraph, |this| this.min_h(px(3. * 21. + 1. + 24. + 2.)))
                     .when(!paragraph, |this| this.h(px(40.)))
-                    .px(px(12.))
-                    .py(px(10.))
+                    .px(px(if paragraph { 10. } else { 12. }))
+                    .py(px(if paragraph { 12. } else { 10. }))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(color(if error.is_some() {

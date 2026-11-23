@@ -931,7 +931,10 @@ impl Root {
         let bits = Bits::from_body(body);
         let members = body["approximate_member_count"].as_u64().unwrap_or(0);
         let editor = cx.new(|cx| {
-            let mut editor = Editor::new(super::editor_style(), cx);
+            // `.textArea_uI0xjn` keeps `line-height: normal`: 21px for gg sans at 16px.
+            let mut style = super::editor_style();
+            style.line_height = 21.;
+            let mut editor = Editor::new(style, cx);
             editor.set_placeholder("Tell the world a bit about this server.".to_owned());
             editor.set_text(bits.description.as_deref().unwrap_or_default());
             editor

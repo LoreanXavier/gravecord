@@ -393,7 +393,10 @@ impl Root {
         let plain = |cx: &mut Context<Self>| cx.new(|cx| Editor::new(super::editor_style(), cx));
         let name = plain(cx);
         let description = cx.new(|cx| {
-            let mut editor = Editor::new(super::editor_style(), cx);
+            // `.textArea_uI0xjn` keeps `line-height: normal`: a 21px pitch (module 989433, `rows` 3).
+            let mut style = super::editor_style();
+            style.line_height = 21.;
+            let mut editor = Editor::new(style, cx);
             editor.set_placeholder("Tell the world a bit about this server.".to_owned());
             editor
         });
@@ -666,9 +669,11 @@ impl Root {
                 .border_1()
                 .border_color(color("--input-border-default"))
                 .bg(color("--input-background-default"))
-                .px(px(12.))
+                // A text area is `.textArea_uI0xjn`: `padding: var(--space-12) 10px` inside the 1px
+                // border, so 3 rows of 21px make 3 * 21 + 24 + 2 = 89.
+                .px(px(if height > 40. { 10. } else { 12. }))
                 .when(height <= 40., |this| this.flex().items_center())
-                .when(height > 40., |this| this.pt(px(10.)))
+                .when(height > 40., |this| this.pt(px(12.)))
                 .child(div().w_full().child(editor))
         };
         let label = |text: &'static str| {

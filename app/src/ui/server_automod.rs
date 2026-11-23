@@ -2010,7 +2010,7 @@ impl Root {
                     Field::Message,
                     "Enter your custom message",
                     &text,
-                    field_style(16., 20.),
+                    field_style(16., 21.),
                     cx,
                 );
                 let handle = editor.read(cx).focus_handle(cx);
@@ -4663,8 +4663,10 @@ impl Root {
                     "Your custom message will be shown when AutoMod blocks a member's message. This is a chance to help members understand your server's guidelines!",
                     div()
                         .id("automod-message-field")
-                        .min_h(px(88.))
-                        .pt(px(12.))
+                        // `.textArea_uI0xjn` (module 148210, `rows` 3 by default): `padding: var(--space-12) 10px`
+                        // inside the 1px wrapper border, 21px line pitch: 3 * 21 + 24 + 2.
+                        .min_h(px(89.))
+                        .py(px(12.))
                         .px(px(10.))
                         .rounded(px(8.))
                         .border_1()
