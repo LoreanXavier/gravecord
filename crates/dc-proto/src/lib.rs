@@ -1,5 +1,6 @@
 //! Wire formats and identity of the pinned client (`design/snapshot/BUILD`).
 
+pub mod backoff;
 pub mod etf;
 pub mod frecency;
 pub mod identity;

@@ -162,13 +162,28 @@ fn codecs() -> Value {
 }
 
 /// Op 1 with our discovered external address and the Opus and H264 codecs.
-pub(crate) fn select_protocol(address: IpAddr, port: u16, mode: Mode) -> String {
+/// `selectProtocol` of module 921747 for UDP: `{protocol, data: {address, port, mode}, ...transport info, codecs,
+/// rtc_connection_id, experiments}`. `experiments` is what `_chooseExperiments` adds; every entry there opts into
+/// server behaviour behind a flag of the official media engine or an experiment this client has no reading of
+/// (`connection_log`, `fixed_keyframe_interval`, `voice_quality_scoring`, ...), so the list is empty (BLOCKED.md).
+pub(crate) fn select_protocol(
+    address: IpAddr,
+    port: u16,
+    mode: Mode,
+    rtc_connection_id: &str,
+) -> String {
+    let address = address.to_string();
     op(
         VoiceOp::SelectProtocol,
         json!({
             "protocol": "udp",
-            "data": {"address": address.to_string(), "port": port, "mode": mode.as_str()},
+            "data": {"address": address, "port": port, "mode": mode.as_str()},
+            "address": address,
+            "port": port,
+            "mode": mode.as_str(),
             "codecs": codecs(),
+            "rtc_connection_id": rtc_connection_id,
+            "experiments": [],
         }),
     )
 }
@@ -236,6 +251,29 @@ pub(crate) fn speaking_flags(flags: u8, ssrc: u32) -> String {
         VoiceOp::Speaking,
         json!({"speaking": flags, "delay": 0, "ssrc": ssrc}),
     )
+}
+
+/// Op 32, `noRoute`: the media path found no route to the server.
+pub(crate) fn no_route() -> String {
+    op(VoiceOp::NoRoute, json!({}))
+}
+
+/// Op 33, `sfu-update` (servers of version 10): the media server to send to. `Ok(None)` is `primary: null`.
+pub(crate) fn sfu_update(data: &Value) -> Result<Option<(IpAddr, u16)>, &'static str> {
+    let primary = &data["primary"];
+    if primary.is_null() {
+        return Ok(None);
+    }
+    let ip = primary["ip"]
+        .as_str()
+        .and_then(|ip| ip.parse::<IpAddr>().ok())
+        .ok_or("Invalid SFU update address")?;
+    let port = primary["port"]
+        .as_u64()
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port != 0)
+        .ok_or("Invalid SFU update port")?;
+    Ok(Some((ip, port)))
 }
 
 /// Op 16, sent after READY to servers of version 6 and up.
@@ -323,15 +361,23 @@ pub(crate) struct Hello {
     pub interval_ms: u64,
     pub version: u64,
 }
+/// `handleHello` of module 921747 on the desktop client (`isPlatformEmbedded`): the server's interval times the
+/// modifier (1, `setHeartbeatIntervalModifier` is never called), uncapped; servers of version 3 and older get a
+/// quarter of it. The 5 s cap (`eX`) is the web client's only. A missing `v` is 3 (`e.v ?? 3`).
 pub(crate) fn hello(data: &Value) -> Result<Hello, &'static str> {
     let interval = data["heartbeat_interval"]
         .as_f64()
         .filter(|v| v.is_finite() && (100.0..=120_000.0).contains(v))
         .ok_or("Invalid voice heartbeat interval")?;
+    let version = data["v"].as_u64().unwrap_or(3);
+    let interval = if version <= 3 {
+        interval * 0.25
+    } else {
+        interval
+    };
     Ok(Hello {
-        // Serein caps the interval at 5 s so a stalled socket is noticed quickly.
-        interval_ms: (interval as u64).min(5000),
-        version: data["v"].as_u64().unwrap_or(0),
+        interval_ms: interval as u64,
+        version,
     })
 }
 
@@ -384,16 +430,49 @@ pub(crate) fn ready(data: &Value) -> Result<Ready, &'static str> {
     })
 }
 
-/// Op 4: the transport key, checked against the mode we selected and DAVE version 1.
+/// Where a DAVE protocol version arrived (`er` of module 921747): op 4 (`init`), op 24 (`epoch`) or op 21
+/// (`transition`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DaveAt {
+    Init,
+    Epoch,
+    Transition,
+}
+impl DaveAt {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Init => "init",
+            Self::Epoch => "epoch",
+            Self::Transition => "transition",
+        }
+    }
+}
+
+/// `ea` of module 921747: a protocol version is an integer from 0 to 65535; anything else is an invalid DAVE
+/// message (`disconnectForInvalidDaveMessage`, close 4805).
+pub(crate) fn dave_version(value: &Value) -> Option<u16> {
+    value.as_u64().and_then(|v| u16::try_from(v).ok())
+}
+
+/// `_ensureDaveProtocolVersionAllowed` of module 921747: every version above 0 is taken; version 0 (no end-to-end
+/// encryption) only as the first version of a Stage channel (`"init" === i && !0 === a`, `a` the latched
+/// `GUILD_STAGE_VOICE` check). Any other 0 is a refused downgrade: the socket closes with 4804.
+pub(crate) fn dave_version_allowed(at: DaveAt, version: Option<u16>, stage: bool) -> bool {
+    match version {
+        None => false,
+        Some(0) => at == DaveAt::Init && stage,
+        Some(_) => true,
+    }
+}
+
+/// Op 4: the transport key, checked against the mode we selected. Its `dave_protocol_version` is read apart, with
+/// [`dave_version`] and [`dave_version_allowed`].
 pub(crate) fn session_description(
     data: &mut Value,
     selected: Mode,
 ) -> Result<zeroize::Zeroizing<[u8; 32]>, &'static str> {
     if data["mode"].as_str() != Some(selected.as_str()) {
         return Err("Discord negotiated another voice encryption mode");
-    }
-    if data["dave_protocol_version"].as_u64() != Some(DAVE_PROTOCOL_VERSION) {
-        return Err("Required DAVE version 1 encryption was not negotiated");
     }
     let values = data["secret_key"].take();
     let values = values.as_array().ok_or("Missing voice transport key")?;
@@ -416,12 +495,14 @@ pub(crate) fn keyframe_interval(data: &Value) -> Option<u64> {
     data["keyframe_interval"].as_u64().filter(|ms| *ms > 0)
 }
 
-/// Op 11: `user_ids`, bounded to the 64-participant limit.
-pub(crate) fn client_connect(data: &Value) -> Result<Vec<u64>, &'static str> {
+/// Op 11: `user_ids`, bounded to the 64-participant limit of an end-to-end encrypted call. A Stage channel at DAVE
+/// protocol version 0 has no MLS group and no such limit (the official `client-connect` handler has none); the
+/// message size bound still holds.
+pub(crate) fn client_connect(data: &Value, unencrypted: bool) -> Result<Vec<u64>, &'static str> {
     let ids = data["user_ids"]
         .as_array()
         .ok_or("Missing voice participants")?;
-    if ids.len() > crate::dave::MAX_PARTICIPANTS {
+    if !unencrypted && ids.len() > crate::dave::MAX_PARTICIPANTS {
         return Err("Voice channel exceeds the 64 participant limit");
     }
     ids.iter().map(parse_id).collect()
@@ -595,6 +676,7 @@ mod tests {
             "203.0.113.9".parse().unwrap(),
             50_000,
             Mode::Aes256GcmRtpSize,
+            "6c1f0f0e-3b7a-4c55-9a10-2f2b3c4d5e6f",
         ));
         assert_eq!(select["op"], 1);
         assert_eq!(select["d"]["protocol"], "udp");
@@ -602,6 +684,14 @@ mod tests {
             select["d"]["data"],
             json!({"address": "203.0.113.9", "port": 50000, "mode": "aead_aes256_gcm_rtpsize"})
         );
+        assert_eq!(select["d"]["address"], "203.0.113.9");
+        assert_eq!(select["d"]["port"], 50000);
+        assert_eq!(select["d"]["mode"], "aead_aes256_gcm_rtpsize");
+        assert_eq!(
+            select["d"]["rtc_connection_id"],
+            "6c1f0f0e-3b7a-4c55-9a10-2f2b3c4d5e6f"
+        );
+        assert_eq!(select["d"]["experiments"], json!([]));
         assert_eq!(select["d"]["codecs"][0]["payload_type"], 120);
         assert_eq!(
             select["d"]["codecs"][1],
@@ -611,6 +701,7 @@ mod tests {
         let update = parsed(&session_update());
         assert_eq!(update["op"], 14);
         assert_eq!(update["d"]["codecs"], select["d"]["codecs"]);
+        // `delay` is `getPacketDelay` of module 754712: 0 on the desktop client (`isPlatformEmbedded`).
         assert_eq!(
             parsed(&speaking(true, 9)),
             json!({"op": 5, "d": {"speaking": 1, "delay": 0, "ssrc": 9}})
@@ -625,6 +716,13 @@ mod tests {
         );
         assert_eq!(parsed(&invalid_commit_welcome(4))["op"], 31);
         assert_eq!(parsed(&backend_version()), json!({"op": 16, "d": {}}));
+        assert_eq!(parsed(&no_route()), json!({"op": 32, "d": {}}));
+        assert_eq!(sfu_update(&json!({"primary": null})), Ok(None));
+        assert_eq!(
+            sfu_update(&json!({"primary": {"ip": "203.0.113.4", "port": 50002, "modes": []}})),
+            Ok(Some(("203.0.113.4".parse().unwrap(), 50002)))
+        );
+        assert!(sfu_update(&json!({"primary": {"ip": "nowhere", "port": 1}})).is_err());
     }
 
     #[test]
@@ -634,7 +732,13 @@ mod tests {
         assert_eq!(text.op, Some(VoiceOp::Hello));
         assert_eq!(text.seq, Some(3));
         let hello = hello(&text.d).unwrap();
-        assert_eq!((hello.interval_ms, hello.version), (5000, 8));
+        assert_eq!(
+            (hello.interval_ms, hello.version),
+            (13750, 8),
+            "the desktop client does not cap the interval"
+        );
+        let old = super::hello(&json!({"heartbeat_interval": 41250})).unwrap();
+        assert_eq!((old.interval_ms, old.version), (10312, 3));
         assert!(super::hello(&json!({"heartbeat_interval": 10})).is_err());
         assert!(super::hello(&json!({"heartbeat_interval": "x"})).is_err());
         let unknown = parse_text(r#"{"op":99,"d":null}"#).unwrap();
@@ -687,10 +791,6 @@ mod tests {
                 Mode::XChaCha20Poly1305RtpSize,
             ),
             (
-                json!({"mode": "aead_aes256_gcm_rtpsize", "secret_key": key, "dave_protocol_version": 0}),
-                Mode::Aes256GcmRtpSize,
-            ),
-            (
                 json!({"mode": "aead_aes256_gcm_rtpsize", "secret_key": [1, 2], "dave_protocol_version": 1}),
                 Mode::Aes256GcmRtpSize,
             ),
@@ -701,6 +801,34 @@ mod tests {
         ] {
             assert!(session_description(&mut bad, mode).is_err());
         }
+    }
+
+    #[test]
+    fn dave_version_zero_is_only_a_stage_channels_first_version() {
+        use DaveAt::*;
+        assert_eq!(dave_version(&json!(0)), Some(0));
+        assert_eq!(dave_version(&json!(65535)), Some(65535));
+        for bad in [json!(65536), json!(-1), json!(1.5), json!("1"), Value::Null] {
+            assert_eq!(dave_version(&bad), None, "{bad}");
+        }
+        assert!(
+            dave_version_allowed(Init, Some(0), true),
+            "Stage starts unencrypted"
+        );
+        assert!(
+            !dave_version_allowed(Init, Some(0), false),
+            "a voice channel never does"
+        );
+        for at in [Epoch, Transition] {
+            assert!(
+                !dave_version_allowed(at, Some(0), true),
+                "a downgrade is refused even on Stage"
+            );
+            assert!(dave_version_allowed(at, Some(1), false));
+        }
+        assert!(dave_version_allowed(Init, Some(1), false));
+        assert!(!dave_version_allowed(Init, None, true));
+        assert_eq!(Transition.as_str(), "transition");
     }
 
     #[test]
@@ -789,16 +917,21 @@ mod tests {
     #[test]
     fn participants_and_acknowledgements() {
         assert_eq!(
-            client_connect(&json!({"user_ids": ["5", "6"]})).unwrap(),
+            client_connect(&json!({"user_ids": ["5", "6"]}), false).unwrap(),
             [5, 6]
         );
-        assert!(client_connect(&json!({"user_ids": ["0"]})).is_err());
+        assert!(client_connect(&json!({"user_ids": ["0"]}), false).is_err());
         assert!(
-            client_connect(&json!({"user_ids": [5]})).is_err(),
+            client_connect(&json!({"user_ids": [5]}), false).is_err(),
             "snowflakes are strings"
         );
         let many: Vec<String> = (1..=65).map(|i| i.to_string()).collect();
-        assert!(client_connect(&json!({ "user_ids": many })).is_err());
+        assert!(client_connect(&json!({ "user_ids": many }), false).is_err());
+        assert_eq!(
+            client_connect(&json!({ "user_ids": many }), true).map(|ids| ids.len()),
+            Ok(65),
+            "a Stage channel at version 0 has no MLS group to bound"
+        );
         assert_eq!(id(&json!({"user_id": "77"}), "user_id"), Ok(77));
         assert_eq!(
             transition(&json!({"transition_id": 70000})),

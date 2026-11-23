@@ -17,6 +17,10 @@ pub enum Update {
         reply: crate::spotify::Reply,
     },
     GatewayConnected(bool),
+    /// The network came or went, or the machine woke (`system_events`).
+    System(dc_gateway::SystemEvent),
+    /// The gateway forgot its session (`CONNECTION_CLOSED` of the official client): the voice connection ends.
+    GatewayReset,
     /// The local RPC server: a game connected, set or cleared its activity, or left (`dc-rpc`).
     Rpc(dc_rpc::Event),
     /// One pass of the game scan (`games`).
@@ -148,6 +152,8 @@ pub const EDIT_KEY: &str = "message-edit:";
 
 pub enum Request {
     Spotify(crate::spotify::Command),
+    /// A system event for the gateway socket (expedited heartbeat or backoff reset).
+    System(dc_gateway::SystemEvent),
     /// Op 3 `PRESENCE_UPDATE` with the account's status and activities (`presenceUpdate` in module 868). Refused in
     /// a harness run (`games::presence_refused`).
     Presence {
@@ -915,6 +921,7 @@ impl Request {
     pub(crate) fn variant(&self) -> &'static str {
         match self {
             Request::Spotify(_) => "Spotify",
+            Request::System(_) => "System",
             Request::Presence { .. } => "Presence",
             Request::VoiceState { .. } => "VoiceState",
             Request::StreamOp { .. } => "StreamOp",
@@ -1002,6 +1009,7 @@ impl Request {
                     Inert::Deny
                 }
             }
+            Request::System(_) => Inert::Allow,
             Request::Spotify(_)
             | Request::Presence { .. }
             | Request::VoiceState { .. }
@@ -1891,6 +1899,17 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
         identity,
         state: IdentifyState::default(),
     });
+    // Network and power events, for as long as this login (`system_events`).
+    let (system_send, mut system_events) = mpsc::unbounded_channel();
+    let _system_watch = crate::system_events::start(system_send);
+    let system_updates = updates.clone();
+    tokio::spawn(async move {
+        while let Some(event) = system_events.recv().await {
+            if system_updates.send(Update::System(event)).is_err() {
+                break;
+            }
+        }
+    });
 
     if let Ok(mut slot) = EXIT_GATEWAY.lock() {
         *slot = Some(commands.clone());
@@ -1932,6 +1951,9 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     let _ = forward.send(Update::GatewayConnected(false));
                 }
                 Event::Connected => crate::start_trace::mark("gw_hello"),
+                Event::Reset => {
+                    let _ = forward.send(Update::GatewayReset);
+                }
                 Event::Closed { .. } => {
                     let _ = forward.send(Update::GatewayConnected(false));
                 }
@@ -2916,6 +2938,9 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     op: Op::VoiceStateUpdate,
                     data,
                 });
+            }
+            Request::System(event) => {
+                let _ = commands.send(Command::System(event));
             }
             Request::Presence {
                 status,

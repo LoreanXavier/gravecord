@@ -19,10 +19,10 @@ use crate::{
         DISCOVERY_RETRY, DISCOVERY_TIMEOUT, HELLO_TIMEOUT, MAX_RESUMES, NEGOTIATION, OpenedSocket,
         PEER_GRACE, RENEGOTIATION, RESUME_WINDOW, Socket, UDP_KEEPALIVE, UdpFailures,
         close_code_is_resumable, log_ws_close, log_ws_stage_err, log_ws_stage_ok, open_with_stages,
-        rebind_udp, sanitized_ws_error, send_or_resume, text, text_or_resume, transient_receive,
-        ws_resume_backoff,
+        rebind_udp, refuse, sanitized_ws_error, send_or_resume, text, text_or_resume,
+        transient_receive, ws_resume_backoff,
     },
-    signal::{self, CLOSE_DISCONNECTED, Context, Limits},
+    signal::{self, CLOSE_DISCONNECTED, Context, DaveAt, Limits},
     streams::{Role, StreamJoin},
     video::{
         RemoteFrame, VideoHub, VideoSource,
@@ -35,7 +35,7 @@ use dc_media::{
     screen::{self, AudioChunk},
     synthetic::{self, Synthetic},
 };
-use dc_proto::voice_op::VoiceOp;
+use dc_proto::voice_op::{VoiceOp, close};
 use futures_util::StreamExt;
 use opus2::{Application, Bitrate, Channels, Encoder};
 use std::{
@@ -500,6 +500,7 @@ pub(crate) async fn run(
     let _live = crate::sim::Live::stream();
     let url = signal::endpoint_url(&join.endpoint)?;
     let own = join.user_id;
+    let stage = join.stage;
     let owner = join.key.owner();
     let stream_key_str = join.key.to_string();
     let playout = hub.playout();
@@ -571,7 +572,8 @@ pub(crate) async fn run(
     let mut hello_deadline = Instant::now() + HELLO_TIMEOUT;
     let mut awaiting_ack = None;
     let mut heartbeat_nonce = 0u64;
-    let mut missed_acks = 0u8;
+    // One `RTCConnection` per stream connection: its `rtc_connection_id` for op 1.
+    let rtc_connection_id = crate::rtc_connection_id();
     let mut reconnect: Option<&'static str> = None;
     let mut deadline = Some(Instant::now() + NEGOTIATION);
     let mut resuming = false;
@@ -671,10 +673,7 @@ pub(crate) async fn run(
             if let Some(task) = ws_resume_task.take() {
                 task.abort();
             }
-            if transport.is_none()
-                || resume_attempts >= MAX_RESUMES
-                || last_healthy_at.elapsed() > RESUME_WINDOW
-            {
+            if transport.is_none() || resume_attempts >= MAX_RESUMES {
                 return Err(reason);
             }
             let delay = ws_resume_backoff(resume_attempts);
@@ -689,7 +688,6 @@ pub(crate) async fn run(
             deadline = Some(Instant::now() + RENEGOTIATION + delay);
             heartbeat_ms = None;
             awaiting_ack = None;
-            missed_acks = 0;
         }
         pacer_clock.set(
             sender
@@ -722,8 +720,12 @@ pub(crate) async fn run(
                 ws_resume_task = None;
                 match resumed {
                     Ok(Ok(mut reopened)) => {
-                        if udp_failures.has_recent_failures()
-                            && let Some(peer) = udp_peer
+                        if last_healthy_at.elapsed() > RESUME_WINDOW {
+                            let mut gone = Some(reopened.ws);
+                            return Ok(refuse(&mut gone, close::UNRESUMABLE, "resume window").await);
+                        }
+                        // `_handleResuming` runs `fastUdpReconnect` on every resume.
+                        if let Some(peer) = udp_peer
                             && let Some(fresh_udp) = rebind_udp(peer).await
                         {
                             debug!("stream fast UDP reconnect refreshed local socket");
@@ -731,6 +733,7 @@ pub(crate) async fn run(
                             udp_failures.reset();
                         }
                         if text(&mut reopened.ws, signal::resume(&ids(), seq_ack)).await.is_ok() {
+                            last_healthy_at = Instant::now();
                             diag_host = reopened.host;
                             diag_port = reopened.port;
                             tls_version = reopened.tls_version;
@@ -770,7 +773,7 @@ pub(crate) async fn run(
                 if let Some(capture) = &capture {
                     capture.hold(frames.len() >= HOLD_AT);
                 }
-                let secure = announced && dave.ready && dave.session.is_ready() && !dave.transitioning() && transport.is_some() && !discovering && !controls.borrow().paused;
+                let secure = announced && dave.media_secure() && transport.is_some() && !discovering && !controls.borrow().paused;
                 if !secure {
                     let was_awaiting = awaiting_keyframe;
                     awaiting_keyframe = true;
@@ -869,12 +872,10 @@ pub(crate) async fn run(
                     next_udp_ping = now + UDP_KEEPALIVE;
                 }
                 if ws.is_some() && let Some(interval) = heartbeat_ms && now >= heartbeat_at {
+                    // One unacknowledged heartbeat by the next tick is a dead socket (`handleHeartbeatTimeout`).
                     if awaiting_ack.is_some() {
-                        missed_acks += 1;
-                        if missed_acks >= 2 {
-                            reconnect = Some("Stream voice heartbeat was not acknowledged");
-                            continue;
-                        }
+                        reconnect = Some("Stream voice heartbeat was not acknowledged");
+                        continue;
                     }
                     heartbeat_nonce = heartbeat_nonce.wrapping_add(1);
                     heartbeat_sent = Instant::now();
@@ -886,7 +887,7 @@ pub(crate) async fn run(
                     dave.enter_sole_member_waiting()?;
                 }
                 // Media (UDP + DAVE) stays live while the control WebSocket resumes in the background (`921747.js`).
-                let enabled = dave.ready && transport.is_some() && !discovering;
+                let enabled = dave.media_ready() && transport.is_some() && !discovering;
                 let waiting = dave.waiting && transport.is_some() && !discovering;
                 if waiting && !waiting_announced {
                     deadline = None;
@@ -1002,7 +1003,7 @@ pub(crate) async fn run(
                         }
                         let encoder = audio_encoder.as_mut().ok_or("Stream audio encoder missing")?;
                         let length = encoder.encode_float(&stereo, &mut encoded).map_err(|_| "Stream audio encoding failed")?;
-                        let data = dave.session.encrypt_opus(&encoded[..length]).map_err(|_| "DAVE stream audio encryption failed")?.into_owned();
+                        let data = dave.encrypt(davey::MediaType::AUDIO, davey::Codec::OPUS, &encoded[..length]).map_err(|_| "DAVE stream audio encryption failed")?.into_owned();
                         let header = rtp::header(audio_sequence, audio_timestamp, ssrc);
                         if let Some(crypto) = transport.as_mut() {
                             let wire = crypto.seal_soundshare(&header, &data, now)?;
@@ -1149,8 +1150,8 @@ pub(crate) async fn run(
                     tally_at = now + Duration::from_secs(5);
                 }
                 if now >= stats_at {
-                    let sf_version = if dave.ready {
-                        signal::DAVE_PROTOCOL_VERSION as u32
+                    let sf_version = if dave.ready || dave.unencrypted() {
+                        u32::from(dave.protocol())
                     } else {
                         0
                     };
@@ -1352,7 +1353,7 @@ pub(crate) async fn run(
                     routing_time_ms = Some(elapsed_ms);
                     log_ws_stage_ok("stream", "udp_discovery", &diag_host, diag_port, elapsed_ms, None);
                     let mode = mode.ok_or("Missing voice encryption mode")?;
-                    text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::select_protocol(address, port, mode)).await?;
+                    text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::select_protocol(address, port, mode, &rtc_connection_id)).await?;
                     discovering = false;
                     continue;
                 }
@@ -1380,8 +1381,7 @@ pub(crate) async fn run(
                         && let Some(crypto) = transport.as_mut()
                         && let Some(feedback) = rtp::feedback(&compound, video_ssrc)
                         && announced
-                        && dave.ready
-                        && !dave.transitioning()
+                        && dave.media_secure()
                     {
                         if let Some(cum) = feedback.cumulative_lost {
                             video_packets_lost = video_packets_lost.max(cum);
@@ -1407,7 +1407,7 @@ pub(crate) async fn run(
                 tally[1] += 1;
                 let arrived = Instant::now();
                 receivers.observe_transport(rtp.ssrc, rtp.transport_sequence, arrived);
-                if !dave.ready {
+                if !dave.media_ready() {
                     continue;
                 }
                 match rtp.payload_type {
@@ -1417,7 +1417,7 @@ pub(crate) async fn run(
                             if stream_audio_ssrc == Some(rtp.ssrc) && dave.contains(owner) {
                                 stream_audio_packets += 1;
                                 stream_audio_bytes += rtp.payload.len() as u64;
-                                match dave.session.decrypt(owner, davey::MediaType::AUDIO, &rtp.payload) {
+                                match dave.decrypt(owner, davey::MediaType::AUDIO, &rtp.payload) {
                                     Ok(opus) => p.push_stream_packet(owner, rtp.ssrc, rtp.sequence, rtp.timestamp, &opus),
                                     Err(_) => decryption_failures += 1,
                                 }
@@ -1427,7 +1427,7 @@ pub(crate) async fn run(
                             if !dave.contains(user) {
                                 continue;
                             }
-                            let Ok(opus) = dave.session.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else {
+                            let Ok(opus) = dave.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else {
                                 decryption_failures += 1;
                                 continue;
                             };
@@ -1533,12 +1533,9 @@ pub(crate) async fn run(
                                 );
                             }
                             Some(VoiceOp::HeartbeatAck) => {
-                                if signal::acknowledges(awaiting_ack, missed_acks, data["t"].as_u64()) {
-                                    if missed_acks == 0 {
-                                        ping_ms = Some(heartbeat_sent.elapsed().as_millis() as u64);
-                                    }
+                                if signal::acknowledges(awaiting_ack, 0, data["t"].as_u64()) {
+                                    ping_ms = Some(heartbeat_sent.elapsed().as_millis() as u64);
                                     awaiting_ack = None;
-                                    missed_acks = 0;
                                     last_healthy_at = Instant::now();
                                     if !resuming {
                                         resume_attempts = 0;
@@ -1594,6 +1591,13 @@ pub(crate) async fn run(
                                     debug!(interval, "stream keyframe interval");
                                 }
                                 media_session_id = data["media_session_id"].as_str().map(str::to_owned);
+                                let dave_version = signal::dave_version(&data["dave_protocol_version"]);
+                                if dave_version.is_none() {
+                                    return Ok(refuse(&mut ws, close::DAVE_INVALID_MESSAGE, "op 4 dave_protocol_version").await);
+                                }
+                                if !signal::dave_version_allowed(DaveAt::Init, dave_version, stage) {
+                                    return Ok(refuse(&mut ws, close::DAVE_DOWNGRADE_REFUSED, DaveAt::Init.as_str()).await);
+                                }
                                 let key = signal::session_description(data, mode)?;
                                 transport = Some(Transport::new(mode, &key));
                                 secured_at = Some(Instant::now());
@@ -1607,7 +1611,12 @@ pub(crate) async fn run(
                                     tls_version,
                                 );
                                 text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::speaking_flags(0, ssrc)).await?;
-                                send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(dave.key_package()?.into())).await?;
+                                if dave_version == Some(0) {
+                                    debug!("stream at DAVE protocol version 0: media is not end-to-end encrypted");
+                                    dave.start_unencrypted();
+                                } else {
+                                    send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(dave.key_package()?.into())).await?;
+                                }
                                 if !sending && hub.has_sink() {
                                     text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::media_sink_wants(100)).await?;
                                     sink_wants_at = Instant::now() + SINK_WANTS_INTERVAL;
@@ -1662,7 +1671,7 @@ pub(crate) async fn run(
                                 }
                             }
                             Some(VoiceOp::ClientConnect) => {
-                                let ids = signal::client_connect(data)?;
+                                let ids = signal::client_connect(data, dave.unencrypted())?;
                                 for user in &ids {
                                     if *user != own {
                                         clients.insert(*user);
@@ -1712,8 +1721,12 @@ pub(crate) async fn run(
                                 }
                             }
                             Some(VoiceOp::DavePrepareTransition) => {
-                                if signal::number(data, "protocol_version")? != signal::DAVE_PROTOCOL_VERSION {
-                                    return Err("Discord requested a stream encryption downgrade");
+                                let version = signal::dave_version(&data["protocol_version"]);
+                                if version.is_none() || signal::dave_version(&data["transition_id"]).is_none() {
+                                    return Ok(refuse(&mut ws, close::DAVE_INVALID_MESSAGE, "op 21").await);
+                                }
+                                if !signal::dave_version_allowed(DaveAt::Transition, version, stage) {
+                                    return Ok(refuse(&mut ws, close::DAVE_DOWNGRADE_REFUSED, DaveAt::Transition.as_str()).await);
                                 }
                                 let id = signal::transition(data)?;
                                 dave.prepare_protocol(id);
@@ -1745,8 +1758,12 @@ pub(crate) async fn run(
                                 }
                             }
                             Some(VoiceOp::DavePrepareEpoch) => {
-                                if signal::number(data, "protocol_version")? != signal::DAVE_PROTOCOL_VERSION {
-                                    return Err("Unsupported DAVE protocol version");
+                                let version = signal::dave_version(&data["protocol_version"]);
+                                if version.is_none() || data["epoch"].as_u64().is_none() {
+                                    return Ok(refuse(&mut ws, close::DAVE_INVALID_MESSAGE, "op 24").await);
+                                }
+                                if !signal::dave_version_allowed(DaveAt::Epoch, version, stage) {
+                                    return Ok(refuse(&mut ws, close::DAVE_DOWNGRADE_REFUSED, DaveAt::Epoch.as_str()).await);
                                 }
                                 if signal::number(data, "epoch")? == 1 {
                                     dave.reinitialize()?;
@@ -1771,7 +1788,9 @@ pub(crate) async fn run(
                         }
                     }
                     Message::Binary(bytes) => {
-                        let frame = signal::parse_binary(&bytes)?;
+                        let Ok(frame) = signal::parse_binary(&bytes) else {
+                            return Ok(refuse(&mut ws, close::DAVE_INVALID_MESSAGE, "binary frame shorter than its header").await);
+                        };
                         debug!(op = frame.op, "stream binary op received");
                         seq_ack = i64::from(frame.seq);
                         match frame.op {
@@ -1829,7 +1848,7 @@ pub(crate) async fn run(
                                     mixer.clear();
                                 }
                             }
-                            _ => return Err("Unsupported DAVE opcode; stream stopped"),
+                            op => debug!(op, "stream binary op ignored"),
                         }
                     }
                     Message::Ping(data) => send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Pong(data)).await?,

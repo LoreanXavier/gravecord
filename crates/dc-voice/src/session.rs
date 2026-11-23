@@ -9,7 +9,7 @@
 //! and app-facing events in place of Serein's `Status`.
 use crate::prefs;
 use crate::{
-    DisconnectReason, Event, Frame,
+    DisconnectReason, Event, Frame, RtcState,
     activity::{self, LOCAL_THRESHOLD_DB},
     audio::Audio,
     capture::CapturePacer,
@@ -21,7 +21,7 @@ use crate::{
         OutboundStats, OutboundVideoStats, RtcStatsSnapshot, RtcStatsStore, TransportStats,
     },
     rtp::{self, MAX_PACKET, Mode, Transport},
-    signal::{self, CLOSE_DISCONNECTED, Context, Ids, MAX_SIGNAL},
+    signal::{self, CLOSE_DISCONNECTED, Context, DaveAt, Ids, MAX_SIGNAL},
     video::{
         RemoteFrame, VideoHub, VideoSource,
         receive::{self, Decoders, Receivers},
@@ -84,6 +84,48 @@ pub(crate) const DISCOVERY_RETRY: Duration = Duration::from_millis(400);
 pub(crate) const MAX_RESUMES: u8 = 4;
 /// `RTCControlSocket` (`921747.js` `e$ = 1 minute`): maximum elapsed time since last healthy ACK for resume.
 pub(crate) const RESUME_WINDOW: Duration = Duration::from_secs(60);
+/// `reconnectInterval = 6e4` of module 31595, the transport option the official client hands its media engine (and
+/// never changes): with no datagram received for this long, the UDP socket is rebound (`fastUdpReconnect`).
+pub(crate) const UDP_RECONNECT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// What the heartbeat timer does at a wake (`startHeartbeater` and `expeditedHeartbeat` of module 921747).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Beat {
+    /// Nothing is due.
+    Wait,
+    /// An interval passed while an expedited heartbeat is pending: the regular tick neither sends nor times out.
+    Skip,
+    /// An interval passed with the last heartbeat acknowledged: send the next.
+    Send,
+    /// The last heartbeat was not acknowledged by the next tick, or by the expedited deadline: the socket is dead
+    /// (`handleHeartbeatTimeout`, then a resume after the backoff).
+    TimedOut,
+}
+
+pub(crate) fn beat(
+    now: Instant,
+    next_tick: Instant,
+    awaiting_ack: bool,
+    expedited: Option<Instant>,
+) -> Beat {
+    if let Some(deadline) = expedited {
+        if now >= deadline && awaiting_ack {
+            return Beat::TimedOut;
+        }
+        return if now >= next_tick {
+            Beat::Skip
+        } else {
+            Beat::Wait
+        };
+    }
+    if now < next_tick {
+        Beat::Wait
+    } else if awaiting_ack {
+        Beat::TimedOut
+    } else {
+        Beat::Send
+    }
+}
 
 /// `RTCControlSocket` (`921747.js` `backoff = new Backoff(1000, 5000)`): jittered exponential delay
 /// for control WebSocket resume retries (1s -> 2s -> 4s -> 5s).
@@ -93,8 +135,11 @@ pub(crate) fn ws_resume_backoff(attempt: u8) -> Duration {
     Duration::from_millis(((base_ms as f64) * jitter).round().clamp(500.0, 5000.0) as u64)
 }
 
-/// `RTCControlSocket.handleClose` (`921747.js`): close codes that allow resuming the existing media
-/// session in-place instead of tearing down UDP/DAVE. `4004`/`4006`/`4011`/`4014`/`4015` cannot resume.
+/// Close codes that allow resuming the existing media session in place instead of tearing down UDP and DAVE.
+/// `RTCControlSocket.handleClose` (`921747.js`) stops resuming on `4004`, `4006`, `4011` and `4015` only. `4014`
+/// is not in the bundle at all (the official client treats it as any other code and tries a resume); it is Discord's
+/// documented "disconnected" (kicked, moved, channel deleted), and this client stops on it as Serein does, so the
+/// app can tell a move from a kick. `4800` to `4805` are the client's own codes and never come from the server.
 pub(crate) fn close_code_is_resumable(code: u16) -> bool {
     !matches!(
         code,
@@ -127,6 +172,9 @@ pub(crate) struct Credentials {
     pub server_id: u64,
     pub channel_id: u64,
     pub user_id: u64,
+    pub stage: bool,
+    pub rtc_connection_id: String,
+    pub report_no_route: bool,
 }
 impl Credentials {
     fn ids(&self) -> Ids<'_> {
@@ -148,6 +196,9 @@ pub(crate) struct ControlState {
     pub disconnect: bool,
     /// Bumped when the camera wish or the video sink changed, so the loop looks at `Shared` again.
     pub video_request: u32,
+    /// Bumped with each [`crate::SystemEvent`]; `system` is the latest.
+    pub system_seq: u32,
+    pub system: Option<crate::SystemEvent>,
 }
 
 /// What the app hands the call besides the copyable control state.
@@ -228,6 +279,41 @@ pub(crate) async fn text_or_resume(
     value: String,
 ) -> Result<(), &'static str> {
     send_or_resume(ws, reconnect, has_transport, Message::Text(value.into())).await
+}
+
+/// `disconnectForRefusedDaveDowngrade` (4804) and `disconnectForInvalidDaveMessage` (4805) of module 921747: the
+/// control socket closes with the code and the connection ends with it.
+pub(crate) async fn refuse(ws: &mut Option<Socket>, code: u16, at: &str) -> DisconnectReason {
+    if code == close::DAVE_DOWNGRADE_REFUSED {
+        warn!("refusing DAVE protocol downgrade to version 0 at {at}, disconnecting");
+    } else {
+        warn!("invalid DAVE message: {at}, disconnecting");
+    }
+    if let Some(mut sock) = ws.take() {
+        let frame = tokio_tungstenite::tungstenite::protocol::CloseFrame {
+            code: CloseCode::from(code),
+            reason: "".into(),
+        };
+        let _ = timeout(Duration::from_secs(1), sock.close(Some(frame))).await;
+    }
+    DisconnectReason::Closed(code)
+}
+
+/// NO_ROUTE (`ConnectionStateChange` of module 921747): the state, op 32 on the first attempt of a reconnect cycle
+/// (`0 === this._backoff.fails && this._handleNoRoute()`), and the end of this connection, which the app's backoff
+/// reconnects (`_scheduleReconnect`).
+pub(crate) async fn no_route(
+    ws: &mut Option<Socket>,
+    events: &mpsc::UnboundedSender<Event>,
+    report: bool,
+    at: &str,
+) -> &'static str {
+    warn!("voice media found no route ({at})");
+    emit(events, Event::State(RtcState::NoRoute));
+    if report && let Some(sock) = ws.as_mut() {
+        let _ = text(sock, signal::no_route()).await;
+    }
+    "Discord voice found no route to the server; reconnecting"
 }
 
 pub(crate) struct OpenedSocket {
@@ -533,10 +619,6 @@ impl UdpFailures {
         Ok(())
     }
 
-    pub(crate) fn has_recent_failures(&self) -> bool {
-        self.consecutive > 0
-    }
-
     pub(crate) fn reset(&mut self) {
         self.since = None;
         self.consecutive = 0;
@@ -659,6 +741,8 @@ pub(crate) async fn run(
     if controls.borrow_and_update().disconnect {
         return Ok(DisconnectReason::Requested);
     }
+    let mut system_seen = controls.borrow().system_seq;
+    emit(&events, Event::State(RtcState::Connecting));
     let playout = Arc::clone(&shared.playout);
     let _guard = SessionGuard {
         playout: Arc::clone(&playout),
@@ -679,6 +763,7 @@ pub(crate) async fn run(
         signal::identify(&credentials.ids(), Context::Call),
     )
     .await?;
+    emit(&events, Event::State(RtcState::Authenticating));
 
     let mut dave = Dave::new(own, credentials.channel_id)?;
     let mut mode: Option<Mode> = None;
@@ -725,7 +810,9 @@ pub(crate) async fn run(
     let mut awaiting_ack = None;
     let mut heartbeat_nonce = 0u64;
     let mut heartbeat_sent = Instant::now();
-    let mut missed_acks = 0u8;
+    // `expeditedHeartbeatTimeout`: the deadline of a heartbeat sent at once for a system event.
+    let mut expedited: Option<Instant> = None;
+    let mut last_inbound_at = Instant::now();
     // Set when the socket died or went silent; schedules a non-blocking in-place resume (`921747.js`).
     let mut reconnect: Option<&'static str> = None;
     let mut ws_resume_task: Option<tokio::task::JoinHandle<Result<OpenedSocket, &'static str>>> =
@@ -810,10 +897,9 @@ pub(crate) async fn run(
             if let Some(task) = ws_resume_task.take() {
                 task.abort();
             }
-            if transport.is_none()
-                || resume_attempts >= MAX_RESUMES
-                || last_healthy_at.elapsed() > RESUME_WINDOW
-            {
+            // `handleClose`: past `backoff.fails > 3` the socket gives up; the resume window is checked once the new
+            // socket opens (`doResumeOrClose`).
+            if transport.is_none() || resume_attempts >= MAX_RESUMES {
                 return Err(reason);
             }
             let delay = ws_resume_backoff(resume_attempts);
@@ -828,7 +914,7 @@ pub(crate) async fn run(
             deadline = Some(Instant::now() + RENEGOTIATION + delay);
             heartbeat_ms = None;
             awaiting_ack = None;
-            missed_acks = 0;
+            expedited = None;
         }
         pacer_clock.set(
             video_sender
@@ -853,6 +939,33 @@ pub(crate) async fn run(
                     video_request_seen = request;
                     camera_wish = shared.camera.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 }
+                let (seq, system) = {
+                    let control = controls.borrow();
+                    (control.system_seq, control.system)
+                };
+                if seq != system_seen && let Some(system) = system {
+                    system_seen = seq;
+                    let now = Instant::now();
+                    match system.expedite() {
+                        Some((ms, _)) if ws.is_some() && heartbeat_ms.is_some() => {
+                            debug!(?system, "performing an expedited voice heartbeat");
+                            heartbeat_nonce = heartbeat_nonce.wrapping_add(1);
+                            heartbeat_sent = now;
+                            text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::heartbeat(heartbeat_nonce, seq_ack, server_version)).await?;
+                            awaiting_ack = Some(heartbeat_nonce);
+                            expedited = Some(now + Duration::from_millis(u64::from(ms)));
+                        }
+                        // `resetBackoff`: with the socket gone after a failure, retry at once.
+                        Some((_, true)) | None => {
+                            if ws.is_none() && resume_attempts > 0 && ws_resume_task.is_none() {
+                                debug!(?system, "voice connection backoff reset");
+                                resume_attempts = 0;
+                                ws_resume_at = Some(now);
+                            }
+                        }
+                        Some((_, false)) => {}
+                    }
+                }
             },
             resumed = async {
                 match ws_resume_task.as_mut() {
@@ -863,8 +976,13 @@ pub(crate) async fn run(
                 ws_resume_task = None;
                 match resumed {
                     Ok(Ok(mut reopened)) => {
-                        if udp_failures.has_recent_failures()
-                            && let Some(peer) = udp_peer
+                        // `doResumeOrClose`: a session silent for longer than the window is not resumed (4801).
+                        if last_healthy_at.elapsed() > RESUME_WINDOW {
+                            let mut gone = Some(reopened.ws);
+                            return Ok(refuse(&mut gone, close::UNRESUMABLE, "resume window").await);
+                        }
+                        // `_handleResuming` runs `fastUdpReconnect` on every resume.
+                        if let Some(peer) = udp_peer
                             && let Some(fresh_udp) = rebind_udp(peer).await
                         {
                             debug!("voice fast UDP reconnect refreshed local socket");
@@ -874,6 +992,8 @@ pub(crate) async fn run(
                             udp_failures.reset();
                         }
                         if text(&mut reopened.ws, signal::resume(&credentials.ids(), seq_ack)).await.is_ok() {
+                            // `doResume` renews `lastHeartbeatAckTime`: each attempt gets the whole window.
+                            last_healthy_at = Instant::now();
                             diag_host = reopened.host;
                             diag_port = reopened.port;
                             tls_version = reopened.tls_version;
@@ -973,7 +1093,7 @@ pub(crate) async fn run(
                             discovery_started.elapsed().as_millis() as u64,
                             "timed_out",
                         );
-                        return Err("Discord voice UDP discovery timed out; check the network firewall");
+                        return Err(no_route(&mut ws, &events, credentials.report_no_route, "discovery").await);
                     }
                     if now >= discovery_retry_at && let Some(socket) = &udp {
                         udp_failures.send_best_effort(socket, &rtp::discovery_request(ssrc));
@@ -985,27 +1105,41 @@ pub(crate) async fn run(
                     udp_failures.send_best_effort(socket, &rtp::keepalive(udp_ping_sequence));
                     next_udp_ping = now + UDP_KEEPALIVE;
                 }
-                if ws.is_some() && let Some(interval) = heartbeat_ms && now >= heartbeat_at {
-                    // A delayed wake can find the acknowledgement still unread; only a second
-                    // silent interval marks the socket as zombied, and Discord expects a resume.
-                    if awaiting_ack.is_some() {
-                        missed_acks += 1;
-                        if missed_acks >= 2 {
+                if transport.is_some() && !discovering && udp.is_some() && now.duration_since(last_inbound_at) >= UDP_RECONNECT_INTERVAL {
+                    last_inbound_at = now;
+                    if let Some(peer) = udp_peer
+                        && let Some(fresh_udp) = rebind_udp(peer).await
+                    {
+                        debug!("no voice datagram for the reconnect interval; UDP socket rebound");
+                        qos_flow = None;
+                        qos_wanted = None;
+                        udp = Some(fresh_udp);
+                        udp_failures.reset();
+                    }
+                }
+                if ws.is_some() && let Some(interval) = heartbeat_ms {
+                    match beat(now, heartbeat_at, awaiting_ack.is_some(), expedited) {
+                        Beat::Wait => {}
+                        Beat::Skip => heartbeat_at = now + Duration::from_millis(interval),
+                        Beat::TimedOut => {
+                            expedited = None;
                             reconnect = Some("Discord voice heartbeat was not acknowledged; rejoin the call");
                             continue;
                         }
+                        Beat::Send => {
+                            heartbeat_nonce = heartbeat_nonce.wrapping_add(1);
+                            heartbeat_sent = Instant::now();
+                            text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::heartbeat(heartbeat_nonce, seq_ack, server_version)).await?;
+                            awaiting_ack = Some(heartbeat_nonce);
+                            heartbeat_at = now + Duration::from_millis(interval);
+                        }
                     }
-                    heartbeat_nonce = heartbeat_nonce.wrapping_add(1);
-                    heartbeat_sent = Instant::now();
-                    text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::heartbeat(heartbeat_nonce, seq_ack, server_version)).await?;
-                    awaiting_ack = Some(heartbeat_nonce);
-                    heartbeat_at = now + Duration::from_millis(interval);
                 }
                 if secured_at.is_some_and(|at| now >= at + PEER_GRACE) && !discovering && !resuming && dave.should_wait_for_peer() {
                     dave.enter_sole_member_waiting()?;
                 }
                 // Media (UDP + DAVE) stays live while the control WebSocket resumes in the background (`921747.js`).
-                let enabled = dave.ready && transport.is_some() && !discovering;
+                let enabled = dave.media_ready() && transport.is_some() && !discovering;
                 let waiting = dave.waiting && transport.is_some() && !discovering;
                 if (!enabled && ready_announced) || (!waiting && waiting_announced) {
                     ready_announced = false;
@@ -1024,6 +1158,7 @@ pub(crate) async fn run(
                 }
                 if (enabled || waiting) && !connected {
                     connected = true;
+                    emit(&events, Event::State(RtcState::RtcConnected));
                     emit(&events, Event::Connected);
                     presence = Some(Presence::begin());
                 }
@@ -1122,8 +1257,7 @@ pub(crate) async fn run(
                         soft_clip.apply(&mut stereo);
                         let length = encoder.encode_float(&stereo, &mut encoded).map_err(|_| "Opus encoding failed")?;
                         let encrypted = dave
-                            .session
-                            .encrypt_opus(&encoded[..length])
+                            .encrypt(davey::MediaType::AUDIO, davey::Codec::OPUS, &encoded[..length])
                             .map_err(|_| "DAVE audio encryption failed")?
                             .into_owned();
                         local_audio_encrypt_ok += 1;
@@ -1194,7 +1328,7 @@ pub(crate) async fn run(
                     (None, None) => {}
                 }
                 // Video never gates audio: every step here fails alone.
-                secure = enabled && dave.session.is_ready() && !dave.transitioning();
+                secure = enabled && dave.media_secure();
                 if !secure {
                     if let Some(sender) = video_sender.as_mut() {
                         sender.clear();
@@ -1427,8 +1561,8 @@ pub(crate) async fn run(
                     let cam_h = camera_dims.1.load(Ordering::Relaxed);
                     let video_snap = video_sender.as_ref().map(VideoSender::stats_snapshot);
                     let video_sources = receivers.video_sources_snapshot();
-                    let sf_version = if dave.ready {
-                        signal::DAVE_PROTOCOL_VERSION as u32
+                    let sf_version = if dave.ready || dave.unencrypted() {
+                        u32::from(dave.protocol())
                     } else {
                         0
                     };
@@ -1619,6 +1753,7 @@ pub(crate) async fn run(
                 if length > MAX_PACKET {
                     continue;
                 }
+                last_inbound_at = Instant::now();
                 if discovering {
                     let Ok((address, port)) = rtp::discovery_response(&packet[..length], ssrc) else {
                         continue;
@@ -1627,7 +1762,8 @@ pub(crate) async fn run(
                     routing_time_ms = Some(elapsed_ms);
                     log_ws_stage_ok("call", "udp_discovery", &diag_host, diag_port, elapsed_ms, None);
                     let mode = mode.ok_or("Missing voice encryption mode")?;
-                    text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::select_protocol(address, port, mode)).await?;
+                    text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::select_protocol(address, port, mode, &credentials.rtc_connection_id)).await?;
+                    emit(&events, Event::ProtocolSelected);
                     discovering = false;
                     continue;
                 }
@@ -1651,8 +1787,7 @@ pub(crate) async fn run(
                             && let Some(crypto) = transport.as_mut()
                             && let Some(feedback) = rtp::feedback(&compound, sender.video_ssrc())
                             && video_announced
-                            && dave.ready
-                            && !dave.transitioning()
+                            && dave.media_secure()
                         {
                             if !feedback.transport.is_empty() && crypto.sent.reports == 0 {
                                 debug!("transport-wide feedback received; send-side estimation runs");
@@ -1676,7 +1811,7 @@ pub(crate) async fn run(
                 receivers.observe_transport(rtp.ssrc, rtp.transport_sequence, arrived);
                 if rtp.payload_type != rtp::OPUS_PAYLOAD_TYPE {
                     // Video and its retransmissions; ignored while nobody wants pictures.
-                    if dave.ready && hub.has_sink() {
+                    if dave.media_ready() && hub.has_sink() {
                         video_tally[0] += 1;
                         let now = arrived;
                         receivers.push(rtp, now);
@@ -1703,10 +1838,10 @@ pub(crate) async fn run(
                 tally[1] += 1;
                 let Some(user) = playout.user_for_ssrc(rtp.ssrc) else { continue };
                 tally[2] += 1;
-                if !dave.ready || !dave.contains(user) || controls.borrow().self_deaf {
+                if !dave.media_ready() || !dave.contains(user) || controls.borrow().self_deaf {
                     continue;
                 }
-                let Ok(opus) = dave.session.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else {
+                let Ok(opus) = dave.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else {
                     decryption_failures += 1;
                     continue;
                 };
@@ -1792,14 +1927,14 @@ pub(crate) async fn run(
                                 );
                             }
                             Some(VoiceOp::HeartbeatAck) => {
-                                if signal::acknowledges(awaiting_ack, missed_acks, data["t"].as_u64()) {
-                                    if missed_acks == 0 {
-                                        let ms = heartbeat_sent.elapsed().as_secs_f64() * 1000.;
-                                        ping_ms = Some(ms.round() as u64);
-                                        emit(&events, Event::Ping { ms });
+                                if signal::acknowledges(awaiting_ack, 0, data["t"].as_u64()) {
+                                    let ms = heartbeat_sent.elapsed().as_secs_f64() * 1000.;
+                                    ping_ms = Some(ms.round() as u64);
+                                    emit(&events, Event::Ping { ms });
+                                    if expedited.take().is_some() {
+                                        debug!("expedited voice heartbeat succeeded");
                                     }
                                     awaiting_ack = None;
-                                    missed_acks = 0;
                                     last_healthy_at = Instant::now();
                                     // A healthy resumed socket renews the consecutive resume budget.
                                     if !resuming {
@@ -1830,6 +1965,7 @@ pub(crate) async fn run(
                                 if server_version >= 6 {
                                     text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::backend_version()).await?;
                                 }
+                                emit(&events, Event::State(RtcState::RtcConnecting));
                                 let peer = SocketAddr::new(ready.ip, ready.port);
                                 let socket = UdpSocket::bind(if ready.ip.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })
                                     .await
@@ -1856,6 +1992,14 @@ pub(crate) async fn run(
                                     debug!(interval, "voice keyframe interval");
                                 }
                                 media_session_id = data["media_session_id"].as_str().map(str::to_owned);
+                                // `ea(dave_protocol_version)`, then `_ensureDaveProtocolVersionAllowed("init")`.
+                                let dave_version = signal::dave_version(&data["dave_protocol_version"]);
+                                if dave_version.is_none() {
+                                    return Ok(refuse(&mut ws, close::DAVE_INVALID_MESSAGE, "op 4 dave_protocol_version").await);
+                                }
+                                if !signal::dave_version_allowed(DaveAt::Init, dave_version, credentials.stage) {
+                                    return Ok(refuse(&mut ws, close::DAVE_DOWNGRADE_REFUSED, DaveAt::Init.as_str()).await);
+                                }
                                 let key = signal::session_description(data, mode)?;
                                 transport = Some(Transport::new(mode, &key));
                                 secured_at = Some(Instant::now());
@@ -1870,7 +2014,13 @@ pub(crate) async fn run(
                                 );
                                 // Register the audio SSRC without sending media.
                                 text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::speaking(false, ssrc)).await?;
-                                send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(dave.key_package()?.into())).await?;
+                                if dave_version == Some(0) {
+                                    // A Stage channel without end-to-end encryption: no key package, media passes through.
+                                    debug!("DAVE protocol version 0: media is not end-to-end encrypted");
+                                    dave.start_unencrypted();
+                                } else {
+                                    send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(dave.key_package()?.into())).await?;
+                                }
                                 // Ask for pictures from the start when someone is listening for them.
                                 if hub.has_sink() && server_version >= 5 {
                                     text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::media_sink_wants(100)).await?;
@@ -1904,7 +2054,7 @@ pub(crate) async fn run(
                                 }
                             }
                             Some(VoiceOp::ClientConnect) => {
-                                let ids = signal::client_connect(data)?;
+                                let ids = signal::client_connect(data, dave.unencrypted())?;
                                 for user in &ids {
                                     if *user != own && clients.insert(*user) {
                                         emit(&events, Event::ClientConnected { user_id: *user });
@@ -1945,8 +2095,12 @@ pub(crate) async fn run(
                                 }
                             }
                             Some(VoiceOp::DavePrepareTransition) => {
-                                if signal::number(data, "protocol_version")? != signal::DAVE_PROTOCOL_VERSION {
-                                    return Err("Discord requested a voice encryption downgrade; call stopped");
+                                let version = signal::dave_version(&data["protocol_version"]);
+                                if version.is_none() || signal::dave_version(&data["transition_id"]).is_none() {
+                                    return Ok(refuse(&mut ws, close::DAVE_INVALID_MESSAGE, "op 21").await);
+                                }
+                                if !signal::dave_version_allowed(DaveAt::Transition, version, credentials.stage) {
+                                    return Ok(refuse(&mut ws, close::DAVE_DOWNGRADE_REFUSED, DaveAt::Transition.as_str()).await);
                                 }
                                 capture_reset = true;
                                 let id = signal::transition(data)?;
@@ -1983,8 +2137,12 @@ pub(crate) async fn run(
                                 }
                             }
                             Some(VoiceOp::DavePrepareEpoch) => {
-                                if signal::number(data, "protocol_version")? != signal::DAVE_PROTOCOL_VERSION {
-                                    return Err("Unsupported DAVE protocol version; call stopped");
+                                let version = signal::dave_version(&data["protocol_version"]);
+                                if version.is_none() || data["epoch"].as_u64().is_none() {
+                                    return Ok(refuse(&mut ws, close::DAVE_INVALID_MESSAGE, "op 24").await);
+                                }
+                                if !signal::dave_version_allowed(DaveAt::Epoch, version, credentials.stage) {
+                                    return Ok(refuse(&mut ws, close::DAVE_DOWNGRADE_REFUSED, DaveAt::Epoch.as_str()).await);
                                 }
                                 if signal::number(data, "epoch")? == 1 {
                                     capture_reset = true;
@@ -2027,12 +2185,34 @@ pub(crate) async fn run(
                                     }
                                 }
                             }
-                            // Session updates, sink wants, versions, flags, platform, SFU updates.
+                            // `sfu-update` (`_handleSfuUpdate`): the media server to send to.
+                            Some(VoiceOp::SfuUpdate) => match signal::sfu_update(data) {
+                                Ok(None) => debug!("SFU endpoint cleared; media keeps its current server"),
+                                Ok(Some((ip, port))) if rtp::public_ip(ip) && udp.is_some() => {
+                                    let peer = SocketAddr::new(ip, port);
+                                    if udp_peer != Some(peer) {
+                                        // `setUdpEndpoint`; a failed retarget is NO_ROUTE.
+                                        let Some(fresh_udp) = rebind_udp(peer).await else {
+                                            return Err(no_route(&mut ws, &events, credentials.report_no_route, "sfu retarget").await);
+                                        };
+                                        debug!("voice media retargeted to another SFU endpoint");
+                                        qos_flow = None;
+                                        qos_wanted = None;
+                                        udp = Some(fresh_udp);
+                                        udp_peer = Some(peer);
+                                        udp_failures.reset();
+                                    }
+                                }
+                                _ => debug!("SFU update ignored"),
+                            },
+                            // Session updates, sink wants, versions, flags, platform: logged (`Unhandled op`).
                             _ => debug!(op = message.raw_op, "voice signaling op ignored"),
                         }
                     }
                     Message::Binary(bytes) => {
-                        let frame = signal::parse_binary(&bytes)?;
+                        let Ok(frame) = signal::parse_binary(&bytes) else {
+                            return Ok(refuse(&mut ws, close::DAVE_INVALID_MESSAGE, "binary frame shorter than its header").await);
+                        };
                         debug!(op = frame.op, "voice binary op received");
                         seq_ack = i64::from(frame.seq);
                         match frame.op {
@@ -2084,7 +2264,8 @@ pub(crate) async fn run(
                                     deadline = Some(Instant::now() + RENEGOTIATION);
                                 }
                             }
-                            _ => return Err("Unsupported DAVE opcode; call stopped"),
+                            // `Unhandled op`: logged, never fatal.
+                            op => debug!(op, "voice binary op ignored"),
                         }
                     }
                     Message::Ping(data) => send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Pong(data)).await?,
@@ -2121,6 +2302,27 @@ mod tests {
         assert!(!transient_receive(&Error::from(
             ErrorKind::PermissionDenied
         )));
+    }
+
+    #[test]
+    fn heartbeat_times_out_after_one_missed_ack_or_at_an_expedited_deadline() {
+        let start = Instant::now();
+        let tick = start + Duration::from_secs(13);
+        assert_eq!(beat(start, tick, false, None), Beat::Wait);
+        assert_eq!(beat(tick, tick, false, None), Beat::Send);
+        assert_eq!(
+            beat(tick, tick, true, None),
+            Beat::TimedOut,
+            "one unacknowledged heartbeat by the next tick"
+        );
+        let deadline = start + Duration::from_secs(5);
+        assert_eq!(beat(start, tick, true, Some(deadline)), Beat::Wait);
+        assert_eq!(beat(deadline, tick, true, Some(deadline)), Beat::TimedOut);
+        assert_eq!(
+            beat(tick, tick, true, Some(tick + Duration::from_secs(10))),
+            Beat::Skip,
+            "a pending expedited heartbeat has its own deadline"
+        );
     }
 
     #[test]
@@ -2211,6 +2413,9 @@ mod tests {
             server_id: 987654321012345,
             channel_id: 876543210987654,
             user_id: 765432109876543,
+            stage: false,
+            rtc_connection_id: crate::rtc_connection_id(),
+            report_no_route: true,
         };
         tracing::debug!(?join, "join struct debug");
 

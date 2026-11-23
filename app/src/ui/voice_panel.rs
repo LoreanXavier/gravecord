@@ -19,6 +19,10 @@ use ping_graph::Sample;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TROUBLESHOOTING: &str = "https://support.discord.com/hc/en-us/articles/360045138471";
+/// `getArticleURL(VOICE_CONNECTION_ERRORS)` (article `115001310031`, module 652215).
+const CONNECTION_ERRORS: &str = "https://support.discord.com/hc/en-us/articles/115001310031";
+/// `qF7.STATUS` of module 818348.
+const STATUS_PAGE: &str = "https://discordstatus.com";
 const NOISE_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/360040843952";
 const ENCRYPTION_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/25968222946071";
 const DEEP_FILTER_NET: &str = "https://github.com/Rikorose/DeepFilterNet";
@@ -194,6 +198,95 @@ fn split_link_message(key: &str, values: &dc_intl::Args<'_>) -> (String, String,
     (before, link, after)
 }
 
+/// `getStatus` of module 917592: the panel's status line for a state, as a string key and the colour of its class
+/// (`rtcConnectionStatusConnected` positive, `...Connecting` warning, `...Error` critical, module 587669's CSS).
+pub(crate) fn rtc_status(state: dc_voice::RtcState, video: bool) -> (&'static str, &'static str) {
+    use dc_voice::RtcState::*;
+    const CONNECTING: &str = "--text-feedback-warning";
+    const CONNECTED: &str = "--text-feedback-positive";
+    const ERROR: &str = "--text-feedback-critical";
+    match state {
+        Connecting => ("MzW9sN", CONNECTING),
+        Authenticating => ("GxXwE2", CONNECTING),
+        AwaitingEndpoint => ("uQle7a", CONNECTING),
+        RtcConnected => (if video { "HtVOdd" } else { "daXg45" }, CONNECTED),
+        RtcConnecting => ("Gp51dl", CONNECTING),
+        IceChecking => ("rdCyA/", CONNECTING),
+        DtlsConnecting => ("UvB3gV", CONNECTING),
+        NoRoute => ("mGhOIi", ERROR),
+        RtcDisconnected => ("M7LDmE", ERROR),
+        Disconnected => ("NLKQbx", ERROR),
+    }
+}
+
+/// The connection popout's text for a state that is not `RTC_CONNECTED` (`w` of module 926641), with the link it
+/// carries, if any; `None` when connected, where the numbers show instead.
+pub(crate) fn rtc_explanation(
+    state: dc_voice::RtcState,
+) -> Option<(&'static str, Option<&'static str>)> {
+    use dc_voice::RtcState::*;
+    Some(match state {
+        AwaitingEndpoint => ("Eu2vUR", Some(STATUS_PAGE)),
+        Connecting => ("y+E8aD", None),
+        Authenticating => ("5lGIZH", None),
+        Disconnected | RtcDisconnected => ("fOX25I", None),
+        RtcConnecting => ("b5Ubd5", None),
+        IceChecking | DtlsConnecting => ("SyoYUb", Some(CONNECTION_ERRORS)),
+        NoRoute => ("2tgQnk", Some(CONNECTION_ERRORS)),
+        RtcConnected => return None,
+    })
+}
+
+#[cfg(test)]
+mod rtc_state_tests {
+    use super::{rtc_explanation, rtc_status};
+    use dc_voice::RtcState::*;
+
+    #[test]
+    fn each_state_has_its_title_colour_and_explanation_from_modules_917592_and_926641() {
+        assert_eq!(
+            rtc_status(RtcConnected, false),
+            ("daXg45", "--text-feedback-positive")
+        );
+        assert_eq!(rtc_status(RtcConnected, true).0, "HtVOdd");
+        assert_eq!(
+            rtc_status(AwaitingEndpoint, false),
+            ("uQle7a", "--text-feedback-warning")
+        );
+        assert_eq!(
+            rtc_status(NoRoute, false),
+            ("mGhOIi", "--text-feedback-critical")
+        );
+        assert_eq!(rtc_status(Disconnected, false).0, "NLKQbx");
+        for state in [
+            Disconnected,
+            AwaitingEndpoint,
+            Authenticating,
+            Connecting,
+            RtcDisconnected,
+            RtcConnecting,
+            NoRoute,
+            IceChecking,
+            DtlsConnecting,
+        ] {
+            assert!(rtc_explanation(state).is_some(), "{state:?}");
+        }
+        assert_eq!(rtc_explanation(RtcConnected), None);
+        assert_eq!(
+            rtc_explanation(NoRoute),
+            Some((
+                "2tgQnk",
+                Some("https://support.discord.com/hc/en-us/articles/115001310031")
+            ))
+        );
+        assert_eq!(
+            rtc_explanation(AwaitingEndpoint),
+            Some(("Eu2vUR", Some("https://discordstatus.com")))
+        );
+        assert_eq!(rtc_explanation(RtcDisconnected), Some(("fOX25I", None)));
+    }
+}
+
 /// The troubleshooting line under the numbers (`3pFz1P`, or `vggaMt` while no loss is known), split around its link.
 fn advice(loss_known: bool) -> (String, String, String) {
     if loss_known {
@@ -365,6 +458,13 @@ impl Root {
     ) -> AnyElement {
         let call = self.call.as_ref();
         let connected = call.is_some_and(|call| call.connected);
+        let rtc_state = call.map_or(dc_voice::RtcState::Disconnected, |call| {
+            if call.connected {
+                dc_voice::RtcState::RtcConnected
+            } else {
+                call.rtc_state
+            }
+        });
         let stats = call.map(|call| call.stats.clone()).unwrap_or_default();
         let others = call.is_some_and(|call| {
             call.has_others(self.stores.current_user.as_ref().map(|user| user.id))
@@ -486,6 +586,31 @@ impl Root {
                         ))
                 };
                 let (before, link, after) = advice(stats.loss.is_some());
+                // Any state but `RTC_CONNECTED`: one `body-sm/normal` `text-muted` paragraph in place of the numbers.
+                let explanation = rtc_explanation(rtc_state).map(|(key, url)| {
+                    let paragraph = div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-muted"));
+                    match url {
+                        Some(url) => {
+                            let (before, link, after) =
+                                split_link_message(key, &[("url", url.into())]);
+                            paragraph
+                                .child(self.text_with_link(
+                                    "voice-panel-state",
+                                    &before,
+                                    &link,
+                                    &after,
+                                    cx,
+                                    move |_, cx| cx.open_url(url),
+                                ))
+                                .into_any_element()
+                        }
+                        None => paragraph.child(dc_intl::t(key)).into_any_element(),
+                    }
+                });
+                let numbers = explanation.is_none();
                 let uploading = self.panel.uploading;
                 let done = self.panel.upload_done_at.is_some();
                 // `graphContainer_BlzJTq` and the host name (`body-sm/semibold`, `text-default`).
@@ -551,38 +676,41 @@ impl Root {
                     .flex_col()
                     .gap(px(8.))
                     .children(graph)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(stat(
-                                "X58/lN",
-                                "averagePing",
-                                format!("{:.0}", stats.average()),
-                            ))
-                            .children(
-                                stats
-                                    .last()
-                                    .map(|last| stat("6iv2TF", "lastPing", format!("{last:.0}"))),
-                            )
-                            .children(stats.loss.map(|loss| {
-                                stat("VIBJM+", "outboundLossRate", format!("{loss:.1}"))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .text_color(color("--text-muted"))
-                            .child(self.text_with_link(
-                                "voice-panel-guide",
-                                &before,
-                                &link,
-                                &after,
-                                cx,
-                                |_, cx| cx.open_url(TROUBLESHOOTING),
-                            )),
-                    )
+                    .children(explanation)
+                    .when(numbers, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(stat(
+                                    "X58/lN",
+                                    "averagePing",
+                                    format!("{:.0}", stats.average()),
+                                ))
+                                .children(
+                                    stats.last().map(|last| {
+                                        stat("6iv2TF", "lastPing", format!("{last:.0}"))
+                                    }),
+                                )
+                                .children(stats.loss.map(|loss| {
+                                    stat("VIBJM+", "outboundLossRate", format!("{loss:.1}"))
+                                })),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-muted"))
+                                .child(self.text_with_link(
+                                    "voice-panel-guide",
+                                    &before,
+                                    &link,
+                                    &after,
+                                    cx,
+                                    |_, cx| cx.open_url(TROUBLESHOOTING),
+                                )),
+                        )
+                    })
                     .child(separator())
                     .child(
                         div()

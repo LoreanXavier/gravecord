@@ -1520,9 +1520,14 @@ impl Root {
         };
         let key = dispatch.key();
         let ended_by_server = matches!(dispatch, Dispatch::Delete { .. });
+        let stage = self
+            .call
+            .as_ref()
+            .is_some_and(|call| self.is_stage_voice_channel(call.guild, call.channel));
         if let Some(live) = self.video.streams.get_mut(&key) {
             let step = live.tracker.dispatch(&dispatch, Instant::now());
-            if let Some(join) = step.join {
+            if let Some(mut join) = step.join {
+                join.stage = stage;
                 let hub = match &self.call {
                     Some(call) => call.controls.hub(),
                     None => return,
@@ -1669,12 +1674,13 @@ impl Root {
         &mut self,
         key: StreamKey,
         generation: u64,
-        join: streams::StreamJoin,
+        mut join: streams::StreamJoin,
         cx: &mut Context<Self>,
     ) {
         let Some(call) = self.call.as_ref() else {
             return;
         };
+        join.stage = self.is_stage_voice_channel(call.guild, call.channel);
         let Some(live) = self
             .video
             .streams

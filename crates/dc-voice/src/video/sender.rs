@@ -431,7 +431,6 @@ impl VideoSender {
     ) -> Result<bool, &'static str> {
         let normalized = sps::normalize(&frame.data)?;
         let encrypted = dave
-            .session
             .encrypt(davey::MediaType::VIDEO, davey::Codec::H264, &normalized)
             .map_err(|_| "DAVE H264 encryption failed")?;
         self.queue(&encrypted, frame.timestamp, frame.keyframe, now)

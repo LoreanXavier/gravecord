@@ -46,6 +46,10 @@ pub(crate) struct Dave {
     epochs: u16,
     identity: Identity,
     pending_commit: Option<Vec<u8>>,
+    /// The protocol version media runs at: 0 is a Stage channel without end-to-end encryption, where media passes
+    /// through untouched (`prepareSecureFramesTransition(0, 0)` then `executeSecureFramesTransition(0)` in
+    /// `_handleSecureFramesInit` of module 921747), until a transition to version 1 executes.
+    protocol: u16,
 }
 impl Dave {
     pub fn new(own: u64, channel: u64) -> Result<Self, &'static str> {
@@ -65,7 +69,58 @@ impl Dave {
             epochs: 0,
             identity,
             pending_commit: None,
+            protocol: 1,
         })
+    }
+    /// Op 4 named version 0 for a Stage channel: media passes through until an upgrade executes.
+    pub fn start_unencrypted(&mut self) {
+        self.protocol = 0;
+        self.ready = true;
+        self.waiting = false;
+    }
+    /// Media runs without end-to-end encryption (protocol version 0).
+    pub fn unencrypted(&self) -> bool {
+        self.protocol == 0
+    }
+    /// The protocol version media runs at, as `secure_frames_protocol_version` reports it.
+    pub fn protocol(&self) -> u16 {
+        self.protocol
+    }
+    /// Media may flow: the MLS group is ready, or the call runs at version 0.
+    pub fn media_ready(&self) -> bool {
+        self.ready || self.unencrypted()
+    }
+    /// Pictures may flow: as [`Self::media_ready`], and no MLS transition is half done.
+    pub fn media_secure(&self) -> bool {
+        self.unencrypted() || (self.ready && self.session.is_ready() && !self.transitioning())
+    }
+    /// End-to-end encryption of one frame; untouched at version 0.
+    pub fn encrypt<'a>(
+        &mut self,
+        media: davey::MediaType,
+        codec: davey::Codec,
+        packet: &'a [u8],
+    ) -> Result<std::borrow::Cow<'a, [u8]>, &'static str> {
+        if self.unencrypted() {
+            return Ok(std::borrow::Cow::Borrowed(packet));
+        }
+        self.session
+            .encrypt(media, codec, packet)
+            .map_err(|_| "DAVE encryption failed")
+    }
+    /// End-to-end decryption of one frame; untouched at version 0.
+    pub fn decrypt(
+        &mut self,
+        user: u64,
+        media: davey::MediaType,
+        packet: &[u8],
+    ) -> Result<Vec<u8>, &'static str> {
+        if self.unencrypted() {
+            return Ok(packet.to_vec());
+        }
+        self.session
+            .decrypt(user, media, packet)
+            .map_err(|_| "DAVE decryption failed")
     }
     pub fn contains(&self, user: u64) -> bool {
         self.participants.contains(&user)
@@ -78,6 +133,7 @@ impl Dave {
     pub fn should_wait_for_peer(&self) -> bool {
         !self.ready
             && !self.waiting
+            && !self.unencrypted()
             && !self.transitioning()
             && self.alone()
             && self.session.group().is_some()
@@ -88,13 +144,13 @@ impl Dave {
             .is_some_and(|ids| ids.contains(&user))
     }
     pub fn connect(&mut self, users: &[u64]) -> Result<bool, &'static str> {
-        if users.len() > MAX_PARTICIPANTS || users.contains(&0) {
+        if (users.len() > MAX_PARTICIPANTS && !self.unencrypted()) || users.contains(&0) {
             return Err("Voice participants do not match this call");
         }
         let mut next = self.participants.clone();
         for user in users {
             if !next.contains(user) {
-                if next.len() == MAX_PARTICIPANTS {
+                if next.len() == MAX_PARTICIPANTS && !self.unencrypted() {
                     return Err("Voice channel exceeds the 64 participant limit");
                 }
                 next.push(*user);
@@ -372,6 +428,8 @@ impl Dave {
         self.validate_group()?;
         self.pending = None;
         self.ready = true;
+        // The upgrade of a Stage channel that started at version 0 (only version 1 is ever prepared here).
+        self.protocol = 1;
         Ok(())
     }
 }
@@ -403,6 +461,29 @@ mod tests {
             dave.disconnect(1).is_err(),
             "removing ourselves ends the call"
         );
+    }
+
+    #[test]
+    fn version_zero_passes_media_through_until_an_upgrade() {
+        let mut dave = Dave::new(1, 3).unwrap();
+        assert!(!dave.media_ready() && !dave.media_secure());
+        assert!(
+            dave.encrypt(davey::MediaType::AUDIO, davey::Codec::OPUS, &[1, 2, 3])
+                .is_err()
+        );
+        dave.start_unencrypted();
+        assert!(dave.media_ready() && dave.media_secure() && dave.protocol() == 0);
+        let sent = dave
+            .encrypt(davey::MediaType::AUDIO, davey::Codec::OPUS, &[1, 2, 3])
+            .unwrap();
+        assert_eq!(&*sent, &[1, 2, 3]);
+        assert_eq!(
+            dave.decrypt(2, davey::MediaType::VIDEO, &[9, 8]).unwrap(),
+            vec![9, 8]
+        );
+        // Preparing the upgrade's first epoch keeps media flowing at version 0.
+        dave.reinitialize().unwrap();
+        assert!(dave.media_ready() && dave.unencrypted());
     }
 
     #[test]

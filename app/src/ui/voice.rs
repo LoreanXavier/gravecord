@@ -39,9 +39,16 @@ pub(crate) struct Call {
     pub dave_version: u16,
     /// The flags each participant's client announced (`RTC_CONNECTION_FLAGS`).
     pub flags: std::collections::HashMap<u64, u64>,
-    /// `RTCConnection` (`921747.js` `_backoff = tK() = new Backoff(1000, 10000)`): infinite
-    /// exponential backoff so transient outages reconnect instead of kicking the user out of voice.
-    retry: dc_gateway::backoff::Backoff,
+    /// `RTCConnection`'s reconnect (`dc_voice::reconnect`): 1 to 10 s, without end, on the same endpoint and token.
+    retry: dc_voice::reconnect::Reconnect,
+    /// `RTCConnection.state` (module 921747), for the panel.
+    pub rtc_state: dc_voice::RtcState,
+    /// `rtc_connection_id` of op 1, renewed when the endpoint or token changes.
+    rtc_connection_id: String,
+    /// The endpoint and token the last connection used.
+    rtc_server: Option<(String, String)>,
+    /// The last `RTC_CONNECTED` or `RTC_CONNECTION_PING` (`y` of module 495867), for the 5 minute rejoin cutoff.
+    rtc_activity: Option<std::time::Instant>,
     /// True once the call has reached `Event::Connected` at least once (avoids replaying the initial
     /// join chime on silent RTC reconnects, matching `495867.js`).
     ever_connected: bool,
@@ -140,53 +147,30 @@ fn source_letter(name: &str) -> String {
         .unwrap_or_else(|| "?".to_owned())
 }
 
-/// Whether an unexpected voice disconnect should automatically reconnect with backoff instead of
-/// kicking the user out of the channel (`921747.js` `RTCConnection._handleDisconnect`).
-fn voice_disconnect_is_recoverable(reason: &dc_voice::DisconnectReason) -> bool {
-    match reason {
-        dc_voice::DisconnectReason::Failed(_) => true,
-        dc_voice::DisconnectReason::Closed(code) => {
-            *code != dc_proto::voice_op::close::AUTHENTICATION_FAILED
-        }
-        dc_voice::DisconnectReason::Kicked | dc_voice::DisconnectReason::Requested => false,
-    }
-}
-
-/// Close codes where the cached voice server/session cannot be reused and op 4 (`VOICE_STATE_UPDATE`)
-/// must be re-sent to obtain a fresh endpoint/token (`921747.js` `handleClose`).
-fn voice_disconnect_needs_fresh_server(reason: &dc_voice::DisconnectReason) -> bool {
-    matches!(
-        reason,
-        dc_voice::DisconnectReason::Closed(
-            dc_proto::voice_op::close::INVALID_SESSION
-                | dc_proto::voice_op::close::SERVER_NOT_FOUND
-                | dc_proto::voice_op::close::SERVER_CRASH
-        )
-    )
-}
-
-/// What a call does after a recoverable disconnect backoff fires (`921747.js` `RTCConnection._handleDisconnect`).
-/// Never kicks the user out on bad internet: keeps retrying with `1s..10s` backoff until connected or user leaves.
+/// What a call does once the reconnect backoff ran out (`reconnect` of `RTCConnection`, module 921747): connect
+/// again on the endpoint and token it has, never by asking for a new voice server. Without one (the server said
+/// `endpoint: null`) the call waits in `AWAITING_ENDPOINT` for the next `VOICE_SERVER_UPDATE`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfterFailedWait {
     /// The call reconnected, ended, or moved to another connection meanwhile.
     Nothing,
-    /// Restart using the stored voice server if `!tell`, else request a fresh voice state/server via op 4.
-    Restart { tell: bool },
+    /// Connect again on the stored server.
+    Restart,
 }
 
-fn after_failed_wait(
-    call: Option<(bool, bool, u64)>,
-    generation: u64,
-    server: bool,
-    force_tell: bool,
-) -> AfterFailedWait {
+fn after_failed_wait(call: Option<(bool, bool, u64)>, generation: u64) -> AfterFailedWait {
     match call {
-        Some((true, false, now)) if now == generation => AfterFailedWait::Restart {
-            tell: force_tell || !server,
-        },
+        Some((true, false, now)) if now == generation => AfterFailedWait::Restart,
         _ => AfterFailedWait::Nothing,
     }
+}
+
+/// `D` of module 495867: a new gateway session finds the call's media connection idle for 5 minutes or more
+/// (`(0,s.tB)()-y>=3e5`), and the call is left (`didReconnectTimeOut` then `disconnect`).
+pub(super) const REJOIN_CUTOFF: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn rejoin_timed_out(activity: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    activity.is_some_and(|at| now.saturating_duration_since(at) >= REJOIN_CUTOFF)
 }
 
 /// The connection the wait after a move started over ([`MOVE_SERVER_WAIT`]); 0 for none.
@@ -318,10 +302,11 @@ impl Root {
             dave_version: 0,
             tracker: Default::default(),
             generation: 0,
-            retry: dc_gateway::backoff::Backoff::new(
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_secs(10),
-            ),
+            retry: dc_voice::reconnect::Reconnect::new(),
+            rtc_state: dc_voice::RtcState::AwaitingEndpoint,
+            rtc_connection_id: dc_voice::rtc_connection_id(),
+            rtc_server: None,
+            rtc_activity: None,
             ever_connected: false,
             ever_multi: false,
             used_background: false,
@@ -338,6 +323,9 @@ impl Root {
         };
         info!("voice: connection starts over");
         let retry = call.retry;
+        let rtc_connection_id = call.rtc_connection_id.clone();
+        let rtc_server = call.rtc_server.clone();
+        let rtc_activity = call.rtc_activity;
         let ever_connected = call.ever_connected;
         let ever_multi = call.ever_multi;
         let used_background = call.used_background;
@@ -348,6 +336,9 @@ impl Root {
         self.open_call_with(call.guild, call.channel, controls);
         if let Some(restarted) = self.call.as_mut() {
             restarted.retry = retry;
+            restarted.rtc_connection_id = rtc_connection_id;
+            restarted.rtc_server = rtc_server;
+            restarted.rtc_activity = rtc_activity;
             restarted.ever_connected = ever_connected;
             restarted.ever_multi = ever_multi;
             restarted.used_background = used_background;
@@ -379,6 +370,12 @@ impl Root {
             // direct message is asked for again, whichever channel is open.
             "READY" => {
                 let (guild, channel) = (call.guild, call.channel);
+                if rejoin_timed_out(call.rtc_activity, std::time::Instant::now()) {
+                    info!("voice: the call was idle past the rejoin cutoff; leaving");
+                    self.end_voice(true, cx);
+                    self.sync_dm_call_idle_timer(cx);
+                    return;
+                }
                 self.restart_call(true, cx);
                 if guild == 0 {
                     let private = self
@@ -398,6 +395,14 @@ impl Root {
                     }) =>
             {
                 self.restart_call(false, cx);
+            }
+            // `endpoint: null` (`connect(null, ...)`): the socket goes and the call waits for the next server.
+            "VOICE_SERVER_UPDATE" if call.started && self.stores.voice_server.is_none() => {
+                info!("voice: the voice server is gone; awaiting an endpoint");
+                self.restart_call(false, cx);
+                if let Some(call) = self.call.as_mut() {
+                    call.rtc_state = dc_voice::RtcState::AwaitingEndpoint;
+                }
             }
             "CALL_DELETE" if call.guild == 0 => {
                 // `dc-state` already deleted the DM call record and channel voice states for the deleted channel.
@@ -643,6 +648,10 @@ impl Root {
         let Some(me) = self.stores.current_user.as_ref().map(|user| user.id) else {
             return;
         };
+        let stage = self
+            .call
+            .as_ref()
+            .is_some_and(|call| self.is_stage_voice_channel(call.guild, call.channel));
         let Some(call) = self.call.as_mut() else {
             return;
         };
@@ -653,6 +662,7 @@ impl Root {
             server.guild_id == call.guild
                 && (call.guild != 0 || server.channel_id == Some(call.channel))
         }) else {
+            call.rtc_state = dc_voice::RtcState::AwaitingEndpoint;
             return;
         };
         // Another device of this account may be in the same channel: only this client's own state names its session.
@@ -667,6 +677,13 @@ impl Root {
             return;
         };
         call.started = true;
+        // `connect(endpoint, token)`: another endpoint or token after a first one is another RTC connection.
+        let used = (server.endpoint.clone(), server.token.clone());
+        if call.rtc_server.as_ref().is_some_and(|last| *last != used) {
+            call.rtc_connection_id = dc_voice::rtc_connection_id();
+        }
+        call.rtc_server = Some(used);
+        call.rtc_state = dc_voice::RtcState::Connecting;
         call.generation = VOICE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let generation = call.generation;
         let join = dc_voice::Join {
@@ -681,6 +698,9 @@ impl Root {
             },
             channel_id: call.channel,
             user_id: me,
+            stage,
+            rtc_connection_id: call.rtc_connection_id.clone(),
+            report_no_route: call.retry.report_no_route(),
         };
         let _ = self.requests.send(Request::VoiceConnect {
             join,
@@ -721,7 +741,8 @@ impl Root {
                     call.connected_at
                         .get_or_insert_with(std::time::Instant::now);
                     call.dave_version = u16::from(!is_stage);
-                    call.retry.succeed();
+                    call.retry.secured();
+                    call.rtc_activity = Some(std::time::Instant::now());
                 }
                 // `RTC_CONNECTION_STATE` runs PermissionVADStore's check (`vad_permission.rs`).
                 self.sync_vad_permission();
@@ -761,8 +782,19 @@ impl Root {
             dc_voice::Event::Ping { ms } => {
                 if let Some(call) = self.call.as_mut() {
                     call.stats.ping(ms);
+                    call.rtc_activity = Some(std::time::Instant::now());
                 }
                 super::voice_panel::rtc_debug::ingest_call_rtc_stats(self, cx);
+            }
+            dc_voice::Event::State(state) => {
+                if let Some(call) = self.call.as_mut() {
+                    call.rtc_state = state;
+                }
+            }
+            dc_voice::Event::ProtocolSelected => {
+                if let Some(call) = self.call.as_mut() {
+                    call.retry.routed();
+                }
             }
             dc_voice::Event::OutboundLoss { percent } => {
                 if let Some(call) = self.call.as_mut() {
@@ -807,6 +839,7 @@ impl Root {
                 if let Some(call) = self.call.as_mut() {
                     call.connected = false;
                     call.rtc_users.clear();
+                    call.rtc_state = dc_voice::RtcState::Disconnected;
                 }
                 // Close code 4014: the service removed this session from the channel, and nothing rejoins it.
                 // A move to another channel closes with the same code, and then our voice state is in that channel.
@@ -826,7 +859,17 @@ impl Root {
                 let retried = MOVE_RETRY.load(std::sync::atomic::Ordering::Relaxed) == generation;
                 let moved_reconnecting =
                     reason == dc_voice::DisconnectReason::Kicked && still_in && !retried;
-                let recoverable = voice_disconnect_is_recoverable(&reason);
+                let retry = if moved_reconnecting {
+                    None
+                } else {
+                    self.call.as_mut().and_then(|call| {
+                        match call.retry.after(&reason, &mut rand::rng()) {
+                            dc_voice::reconnect::Next::Retry(delay) => Some(delay),
+                            dc_voice::reconnect::Next::Stop => None,
+                        }
+                    })
+                };
+                let recoverable = retry.is_some();
                 let will_reconnect = moved_reconnecting || recoverable;
                 // Only play the disconnect sound when the call actually ends (`495867.js`), never on
                 // transient reconnects (`willReconnect: true`).
@@ -876,55 +919,21 @@ impl Root {
                         });
                     })
                     .detach();
-                } else if recoverable {
-                    // Module `921747.js` (`RTCConnection._handleDisconnect`) + `495867.js`:
-                    // ping the voice server (`OP 5 VOICE_SERVER_PING`) and retry indefinitely with
-                    // `1s..10s` jittered backoff instead of kicking the user out of voice.
+                } else if let Some(delay) = retry {
+                    // `_handleDisconnect` (module 921747): DISCONNECTED with `willReconnect`, which pings the voice
+                    // server through the gateway (op 5, module 225123), then `reconnect` after the backoff.
                     let _ = self.requests.send(Request::StreamOp {
                         op: dc_proto::op::Op::VoiceServerPing,
                         data: serde_json::Value::Null,
                     });
-                    let Some((delay, fails)) = self.call.as_mut().map(|call| {
-                        let delay = call.retry.fail(&mut rand::rng());
-                        (delay, call.retry.fails())
-                    }) else {
-                        return;
-                    };
-                    let force_tell = voice_disconnect_needs_fresh_server(&reason) || fails >= 2;
+                    let fails = self.call.as_ref().map_or(0, |call| call.retry.fails());
                     info!(
                         ?reason,
                         fails,
                         delay_ms = delay.as_millis() as u64,
-                        force_tell,
                         "voice connection lost; scheduling reconnect"
                     );
-                    cx.spawn(async move |this, cx| {
-                        cx.background_executor().timer(delay).await;
-                        let _ = this.update(cx, |root, cx| {
-                            let call = root
-                                .call
-                                .as_ref()
-                                .map(|call| (call.started, call.connected, call.generation));
-                            let server = root.call.as_ref().is_some_and(|call| {
-                                root.stores.voice_server.as_ref().is_some_and(|server| {
-                                    server.guild_id == call.guild
-                                        && (call.guild != 0
-                                            || server.channel_id == Some(call.channel))
-                                })
-                            });
-                            match after_failed_wait(call, generation, server, force_tell) {
-                                AfterFailedWait::Restart { tell } => {
-                                    root.restart_call(tell, cx);
-                                    root.maybe_connect_voice();
-                                }
-                                AfterFailedWait::Nothing => {}
-                            }
-                        });
-                    })
-                    .detach();
-                } else if matches!(reason, dc_voice::DisconnectReason::Closed(_)) {
-                    // Unrecoverable close code (e.g. 4004 auth failure): end cleanly.
-                    self.end_voice(true, cx);
+                    self.schedule_voice_retry(generation, delay, cx);
                 }
             }
             other => {
@@ -934,6 +943,80 @@ impl Root {
         if sync_idle {
             self.sync_dm_call_idle_timer(cx);
         }
+        cx.notify();
+    }
+
+    /// The reconnect of connection `generation` after `delay`: on the stored endpoint and token, unless the call
+    /// reconnected, ended or was replaced meanwhile. A system event can run it sooner ([`Self::voice_system_event`]).
+    fn schedule_voice_retry(
+        &mut self,
+        generation: u64,
+        delay: std::time::Duration,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |root, cx| root.retry_voice_now(generation, cx));
+        })
+        .detach();
+    }
+
+    fn retry_voice_now(&mut self, generation: u64, cx: &mut Context<Self>) {
+        let call = self
+            .call
+            .as_ref()
+            .map(|call| (call.started, call.connected, call.generation));
+        if after_failed_wait(call, generation) == AfterFailedWait::Restart {
+            self.restart_call(false, cx);
+            self.maybe_connect_voice();
+        }
+    }
+
+    /// A system event (`system_events`, or the window becoming active): the gateway hears it, and so does the call
+    /// (`expeditedHeartbeat` or `resetBackoff` of its RTC connection). A reconnect that waits on its backoff runs
+    /// now when the event resets the backoff.
+    pub(super) fn system_event(&mut self, event: dc_gateway::SystemEvent, cx: &mut Context<Self>) {
+        let _ = self.requests.send(Request::System(event));
+        self.voice_system_event(event, cx);
+    }
+
+    fn voice_system_event(&mut self, event: dc_gateway::SystemEvent, cx: &mut Context<Self>) {
+        let voice = match event {
+            dc_gateway::SystemEvent::NetworkOnline => dc_voice::SystemEvent::NetworkOnline,
+            dc_gateway::SystemEvent::NetworkOffline => dc_voice::SystemEvent::NetworkOffline,
+            dc_gateway::SystemEvent::PowerResumed => dc_voice::SystemEvent::PowerResumed,
+            dc_gateway::SystemEvent::AppActive => dc_voice::SystemEvent::AppActive,
+        };
+        let Some(call) = self.call.as_mut() else {
+            return;
+        };
+        // A connection runs from its start until its `Disconnected` (then it waits on the reconnect backoff).
+        if call.started && call.rtc_state != dc_voice::RtcState::Disconnected {
+            call.controls.system_event(voice);
+            return;
+        }
+        // Between connections: `resetBackoff` cuts the wait short.
+        let resets = voice.expedite().is_none_or(|(_, reset)| reset);
+        if resets && call.retry.reset() {
+            info!(?voice, "voice reconnect backoff reset; reconnecting now");
+            let generation = call.generation;
+            self.retry_voice_now(generation, cx);
+        }
+    }
+
+    /// `CONNECTION_CLOSED` (the gateway's `_reset`): module 495867 destroys the RTC connection and forgets the voice
+    /// server. The channel stays selected; the next READY sends the voice state again, within the rejoin cutoff.
+    pub(super) fn voice_gateway_reset(&mut self, cx: &mut Context<Self>) {
+        let Some(call) = self.call.as_mut() else {
+            return;
+        };
+        info!("voice: gateway session reset; the voice connection ends");
+        call.controls.disconnect();
+        call.started = false;
+        call.connected = false;
+        call.rtc_state = dc_voice::RtcState::Disconnected;
+        self.stores.voice_server = None;
+        self.speaking.clear();
         cx.notify();
     }
 
@@ -1112,18 +1195,14 @@ impl Root {
             })
         });
         let own_stream = self.own_stream();
-        let (status, status_color) = if call.connected {
-            (
-                dc_intl::tr(if camera_on {
-                    "Video Connected"
-                } else {
-                    "Voice Connected"
-                }),
-                "--text-feedback-positive",
-            )
+        // `getStatus(state, video)` of module 917592.
+        let state = if call.connected {
+            dc_voice::RtcState::RtcConnected
         } else {
-            (dc_intl::tr("Connecting"), "--text-feedback-warning")
+            call.rtc_state
         };
+        let (status_key, status_color) = super::voice_panel::rtc_status(state, camera_on);
+        let status = dc_intl::t(status_key);
         let quality = call.stats.quality(call.connected);
         let last_ping = call.stats.last();
         let (guild_id, channel_id) = (call.guild, call.channel);
@@ -1909,74 +1988,36 @@ fn source_color(name: &str) -> u32 {
 #[cfg(test)]
 mod session_tests {
     use super::{
-        AfterFailedWait, AfterMoveWait, after_failed_wait, after_move_wait, taken_elsewhere,
-        voice_disconnect_is_recoverable, voice_disconnect_needs_fresh_server,
+        AfterFailedWait, AfterMoveWait, REJOIN_CUTOFF, after_failed_wait, after_move_wait,
+        rejoin_timed_out, taken_elsewhere,
     };
+    use std::time::{Duration, Instant};
 
     #[test]
-    fn unexpected_failed_disconnect_keeps_retrying_without_kicking_user() {
+    fn unexpected_failed_disconnect_keeps_retrying_on_the_stored_server() {
         assert_eq!(
-            after_failed_wait(Some((true, false, 7)), 7, true, false),
-            AfterFailedWait::Restart { tell: false }
-        );
-        assert_eq!(
-            after_failed_wait(Some((true, false, 7)), 7, false, false),
-            AfterFailedWait::Restart { tell: true }
-        );
-        assert_eq!(
-            after_failed_wait(Some((true, false, 7)), 7, true, true),
-            AfterFailedWait::Restart { tell: true }
+            after_failed_wait(Some((true, false, 7)), 7),
+            AfterFailedWait::Restart
         );
         // Reconnected, replaced, or already ended: do nothing.
         assert_eq!(
-            after_failed_wait(Some((true, true, 7)), 7, true, false),
+            after_failed_wait(Some((true, true, 7)), 7),
             AfterFailedWait::Nothing
         );
         assert_eq!(
-            after_failed_wait(Some((true, false, 8)), 7, true, false),
+            after_failed_wait(Some((true, false, 8)), 7),
             AfterFailedWait::Nothing
         );
-        assert_eq!(
-            after_failed_wait(None, 7, true, false),
-            AfterFailedWait::Nothing
-        );
+        assert_eq!(after_failed_wait(None, 7), AfterFailedWait::Nothing);
     }
 
     #[test]
-    fn voice_disconnect_recovery_matches_official_close_codes() {
-        use dc_proto::voice_op::close;
-        use dc_voice::DisconnectReason;
-        assert!(voice_disconnect_is_recoverable(&DisconnectReason::Failed(
-            "Voice resume failed"
-        )));
-        assert!(voice_disconnect_is_recoverable(&DisconnectReason::Closed(
-            close::INVALID_SESSION
-        )));
-        assert!(voice_disconnect_is_recoverable(&DisconnectReason::Closed(
-            close::SERVER_CRASH
-        )));
-        assert!(voice_disconnect_is_recoverable(&DisconnectReason::Closed(
-            1006
-        )));
-        assert!(!voice_disconnect_is_recoverable(&DisconnectReason::Closed(
-            close::AUTHENTICATION_FAILED
-        )));
-        assert!(!voice_disconnect_is_recoverable(&DisconnectReason::Kicked));
-        assert!(!voice_disconnect_is_recoverable(
-            &DisconnectReason::Requested
-        ));
-        assert!(voice_disconnect_needs_fresh_server(
-            &DisconnectReason::Closed(close::INVALID_SESSION)
-        ));
-        assert!(voice_disconnect_needs_fresh_server(
-            &DisconnectReason::Closed(close::SERVER_NOT_FOUND)
-        ));
-        assert!(voice_disconnect_needs_fresh_server(
-            &DisconnectReason::Closed(close::SERVER_CRASH)
-        ));
-        assert!(!voice_disconnect_needs_fresh_server(
-            &DisconnectReason::Failed("timeout")
-        ));
+    fn a_new_gateway_session_leaves_a_call_idle_for_five_minutes() {
+        let now = Instant::now() + Duration::from_secs(600);
+        assert_eq!(REJOIN_CUTOFF, Duration::from_millis(300_000));
+        assert!(!rejoin_timed_out(None, now), "never connected: rejoin");
+        assert!(!rejoin_timed_out(Some(now - Duration::from_secs(299)), now));
+        assert!(rejoin_timed_out(Some(now - Duration::from_secs(300)), now));
     }
 
     #[test]

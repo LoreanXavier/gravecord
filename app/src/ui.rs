@@ -2077,6 +2077,8 @@ impl Root {
 
     fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
+            Update::System(event) => self.system_event(event, cx),
+            Update::GatewayReset => self.voice_gateway_reset(cx),
             Update::GatewayConnected(connected) => {
                 if connected {
                     // Pictures that gave up while the connection was down go out again at their next draw.
@@ -14193,6 +14195,10 @@ pub fn bind_focus(root: &gpui::Entity<Root>, window: &mut Window, cx: &mut App) 
         this.tray_runtime.attach(window);
         cx.observe_window_activation(window, |this, window, cx| {
             this.notification_focus_changed(window.is_window_active(), cx);
+            // `APP_STATE_UPDATE` to active: the gateway and the call reset their backoff.
+            if window.is_window_active() {
+                this.system_event(dc_gateway::SystemEvent::AppActive, cx);
+            }
             this.schedule_inventory(cx);
             if !window.is_window_active() {
                 this.release_push_to_talk_on_blur();

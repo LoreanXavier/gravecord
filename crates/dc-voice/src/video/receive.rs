@@ -505,10 +505,7 @@ pub(crate) fn hand_over(
         if !dave.contains(unit.user) {
             continue;
         }
-        let Ok(plain) = dave
-            .session
-            .decrypt(unit.user, davey::MediaType::VIDEO, &unit.data)
-        else {
+        let Ok(plain) = dave.decrypt(unit.user, davey::MediaType::VIDEO, &unit.data) else {
             receivers.require_keyframe(unit.user);
             continue;
         };

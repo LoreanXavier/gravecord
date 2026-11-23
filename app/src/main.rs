@@ -40,6 +40,7 @@ mod spinner;
 mod spotify;
 mod start_trace;
 mod storage;
+mod system_events;
 mod text_buffer;
 mod tray;
 mod ui;

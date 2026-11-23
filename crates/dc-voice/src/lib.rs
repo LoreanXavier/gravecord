@@ -16,6 +16,9 @@
 //!     server_id: 1,
 //!     channel_id: 2,
 //!     user_id: 3,
+//!     stage: false,
+//!     rtc_connection_id: dc_voice::rtc_connection_id(),
+//!     report_no_route: true,
 //! };
 //! let (task, mut events) = dc_voice::connect(join, &controls);
 //! controls.set_self_mute(true);
@@ -71,17 +74,18 @@ mod neteq;
 pub mod ogg_opus;
 mod playout;
 mod process;
+pub mod reconnect;
 pub mod recorder;
 pub mod rtc_stats;
 mod rtp;
 mod session;
 mod signal;
 pub use signal::set_h264_encode_disabled;
-#[cfg(test)]
-mod speech_lab;
 #[cfg(feature = "sim")]
 pub mod sim;
 pub mod sound;
+#[cfg(test)]
+mod speech_lab;
 mod stream_conn;
 pub mod streams;
 mod transport_cc;
@@ -143,6 +147,84 @@ pub struct Join {
     pub server_id: u64,
     pub channel_id: u64,
     pub user_id: u64,
+    /// The channel is a Stage channel (`GUILD_STAGE_VOICE`): only then may the call start at DAVE protocol version
+    /// 0, without end-to-end encryption (`_ensureDaveProtocolVersionAllowed` of module 921747).
+    pub stage: bool,
+    /// `rtc_connection_id` of op 1: one per `RTCConnection`, kept across its reconnects and renewed when the
+    /// endpoint or token changes (`connect` in module 921747). Make one with [`rtc_connection_id`].
+    pub rtc_connection_id: String,
+    /// Op 32 (`noRoute`) is sent when this connection finds no route: only on the first attempt of a reconnect
+    /// cycle (`0 === this._backoff.fails && this._handleNoRoute()` in module 921747).
+    pub report_no_route: bool,
+}
+
+/// A random version 4 UUID, as module 115560 makes `rtc_connection_id`.
+pub fn rtc_connection_id() -> String {
+    let mut bytes: [u8; 16] = rand::random();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
+/// `S7L` of module 652215: the states of an RTC connection, as the voice panel shows them (module 917592).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RtcState {
+    Disconnected,
+    AwaitingEndpoint,
+    Authenticating,
+    Connecting,
+    RtcDisconnected,
+    RtcConnecting,
+    RtcConnected,
+    NoRoute,
+    IceChecking,
+    DtlsConnecting,
+}
+impl RtcState {
+    /// The official value, equal to the name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disconnected => "DISCONNECTED",
+            Self::AwaitingEndpoint => "AWAITING_ENDPOINT",
+            Self::Authenticating => "AUTHENTICATING",
+            Self::Connecting => "CONNECTING",
+            Self::RtcDisconnected => "RTC_DISCONNECTED",
+            Self::RtcConnecting => "RTC_CONNECTING",
+            Self::RtcConnected => "RTC_CONNECTED",
+            Self::NoRoute => "NO_ROUTE",
+            Self::IceChecking => "ICE_CHECKING",
+            Self::DtlsConnecting => "DTLS_CONNECTING",
+        }
+    }
+}
+
+/// What the operating system reports that the connection reacts to (module 921747 `_handleNetworkOnline`,
+/// `_handleNetworkOffline`, `_handlePowerResume`; module 495867 `APP_STATE_UPDATE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemEvent {
+    NetworkOnline,
+    NetworkOffline,
+    PowerResumed,
+    AppActive,
+}
+impl SystemEvent {
+    /// `expeditedHeartbeat(timeout, reason, reset)`: a heartbeat now, unacknowledged after `timeout` ms the socket
+    /// is dead; with no socket, `reset` resets the backoff and reconnects at once. `None`: `resetBackoff` only.
+    pub fn expedite(self) -> Option<(u32, bool)> {
+        match self {
+            Self::NetworkOnline | Self::PowerResumed => Some((5000, true)),
+            Self::NetworkOffline => Some((15000, false)),
+            Self::AppActive => None,
+        }
+    }
 }
 impl fmt::Debug for Join {
     /// Secrets and ids never reach logs.
@@ -185,14 +267,20 @@ impl Controls {
     }
     /// Local Mic Test loopback on the call's own audio worker without opening a duplicate preview stream.
     pub fn set_loopback(&self, loopback: bool) {
-        self.state.send_if_modified(|state| {
-            std::mem::replace(&mut state.loopback, loopback) != loopback
-        });
+        self.state
+            .send_if_modified(|state| std::mem::replace(&mut state.loopback, loopback) != loopback);
     }
     /// Close the voice connection. Leaving the channel itself is a main gateway voice state.
     pub fn disconnect(&self) {
         self.state
             .send_if_modified(|state| !std::mem::replace(&mut state.disconnect, true));
+    }
+    /// Tells the running connection what the system reported ([`SystemEvent`]).
+    pub fn system_event(&self, event: SystemEvent) {
+        self.state.send_modify(|state| {
+            state.system_seq = state.system_seq.wrapping_add(1);
+            state.system = Some(event);
+        });
     }
     /// Starts a fresh control watch for a moved/rejoined session while keeping the shared media state (camera,
     /// `user_mix`, and `VideoHub`).
@@ -367,6 +455,12 @@ pub enum Event {
     CameraFailed {
         reason: String,
     },
+    /// The connection's state changed (`setState` call sites of module 921747): `Connecting` as the socket opens,
+    /// `Authenticating` once identified, `RtcConnecting` at READY, `RtcConnected` with [`Event::Connected`], `NoRoute`
+    /// when the media path failed. The app adds `AwaitingEndpoint` and `Disconnected`.
+    State(RtcState),
+    /// IP discovery answered and op 1 went out: the media path works (`_backoff.succeed()` of module 921747).
+    ProtocolSelected,
     /// Always the last event, unless the task was aborted.
     Disconnected {
         reason: DisconnectReason,
@@ -421,6 +515,9 @@ pub fn connect(
         server_id: join.server_id,
         channel_id: join.channel_id,
         user_id: join.user_id,
+        stage: join.stage,
+        rtc_connection_id: join.rtc_connection_id,
+        report_no_route: join.report_no_route,
     };
     let session_events = events.clone();
     let task = tokio::spawn(async move {
@@ -466,6 +563,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rtc_connection_ids_are_version_4_uuids_and_system_events_follow_the_bundle() {
+        let id = rtc_connection_id();
+        assert_eq!(id.len(), 36);
+        assert_eq!(&id[14..15], "4");
+        assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+        assert_ne!(id, rtc_connection_id());
+        assert_eq!(SystemEvent::NetworkOnline.expedite(), Some((5000, true)));
+        assert_eq!(SystemEvent::NetworkOffline.expedite(), Some((15000, false)));
+        assert_eq!(SystemEvent::PowerResumed.expedite(), Some((5000, true)));
+        assert_eq!(SystemEvent::AppActive.expedite(), None);
+        assert_eq!(RtcState::NoRoute.as_str(), "NO_ROUTE");
+    }
+
+    #[test]
     fn controls_coalesce_and_debug_hides_secrets() {
         let controls = Controls::new();
         let mut state = controls.state.subscribe();
@@ -487,6 +598,9 @@ mod tests {
             server_id: 1,
             channel_id: 2,
             user_id: 987_654_321,
+            stage: false,
+            rtc_connection_id: rtc_connection_id(),
+            report_no_route: true,
         };
         let shown = format!("{join:?}");
         assert!(!shown.contains("secret") && !shown.contains("987654321"));
@@ -502,6 +616,9 @@ mod tests {
             server_id: 1,
             channel_id: 2,
             user_id: 3,
+            stage: false,
+            rtc_connection_id: rtc_connection_id(),
+            report_no_route: true,
         };
         let (task, mut events) = connect(join, &controls);
         task.await.unwrap();

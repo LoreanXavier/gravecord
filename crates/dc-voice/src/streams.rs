@@ -248,6 +248,9 @@ pub struct StreamJoin {
     pub server_id: u64,
     pub channel_id: u64,
     pub user_id: u64,
+    /// The stream is in a Stage channel, which may run at DAVE protocol version 0 (see [`crate::Join::stage`]). The
+    /// tracker does not know channel types: the app sets it.
+    pub stage: bool,
 }
 
 impl fmt::Debug for StreamJoin {
@@ -332,6 +335,7 @@ impl Rendezvous {
             server_id,
             channel_id,
             user_id: self.user_id,
+            stage: false,
         })
     }
 

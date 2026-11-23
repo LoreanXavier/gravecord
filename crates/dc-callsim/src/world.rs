@@ -1090,6 +1090,9 @@ impl Inner {
             server_id,
             channel_id: channel,
             user_id: user,
+            stage: server.dave_version() == 0,
+            rtc_connection_id: dc_voice::rtc_connection_id(),
+            report_no_route: true,
         };
         let weak: Weak<Self> = Arc::downgrade(this);
         let name = name.to_owned();
@@ -1235,6 +1238,7 @@ impl Inner {
             server_id: rtc,
             channel_id: rtc - 1,
             user_id: user,
+            stage: this.stream_server.dave_version() == 0,
         };
         let controls = dc_voice::StreamControls::new();
         controls.set_previews(false);
@@ -1345,6 +1349,7 @@ impl Inner {
             server_id: rtc,
             channel_id: rtc - 1,
             user_id: user,
+            stage: this.stream_server.dave_version() == 0,
         };
         let controls = dc_voice::StreamControls::new();
         if let Some(peer) = this.lock().peers.get_mut(name)

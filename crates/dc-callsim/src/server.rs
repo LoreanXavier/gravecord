@@ -148,6 +148,21 @@ struct Conn {
     next_remb: Instant,
     report: ConnReport,
     since: Instant,
+    /// The close code this server sent the socket (`VoiceServer::close`).
+    closing: Option<u16>,
+    /// The socket ended without a leave: the session waits [`RESUME_GRACE`] for an op 7, numbered so a later
+    /// detachment is not swept by an earlier timer.
+    detached: Option<u64>,
+}
+
+/// How long a session whose socket dropped can still be resumed. The simulator's own choice, long enough for the
+/// client's first resume attempts (1 s, then 2 s of `new Backoff(1e3, 5e3)`), short enough that a socket that ends
+/// without its close frame after a leave is gone within seconds.
+pub const RESUME_GRACE: Duration = Duration::from_secs(5);
+
+/// Close codes after which the client cannot resume (`handleClose` of module 921747), plus 4014.
+fn resumable(code: u16) -> bool {
+    !matches!(code, 4004 | 4006 | 4011 | 4014 | 4015 | 4016)
 }
 
 impl Conn {
@@ -178,6 +193,13 @@ struct State {
     next_ssrc: u32,
     feedback: Feedback,
     keyframe_interval_ms: Option<u64>,
+    /// `dave_protocol_version` of op 4: 1, or 0 for a Stage channel without end-to-end encryption (no MLS group).
+    dave_version: u16,
+    /// HELLO's `heartbeat_interval`, ms.
+    heartbeat_interval_ms: f64,
+    /// Heartbeats go unanswered (a socket that went silent).
+    acks_muted: bool,
+    next_detach: u64,
     shapes: HashMap<String, (Shape, Shape)>,
     log: Vec<String>,
     started: Instant,
@@ -277,6 +299,10 @@ impl VoiceServer {
                 next_ssrc: 0x0001_0000 + (rand::random::<u32>() % 0x0100_0000),
                 feedback: Feedback::default(),
                 keyframe_interval_ms: None,
+                dave_version: 1,
+                heartbeat_interval_ms: 13750.0,
+                acks_muted: false,
+                next_detach: 1,
                 shapes: HashMap::new(),
                 log: Vec::new(),
                 started: Instant::now(),
@@ -390,6 +416,35 @@ impl VoiceServer {
         self.shared.lock().feedback
     }
 
+    /// The DAVE protocol version op 4 names from now on: 0 makes the server a Stage channel's, without MLS.
+    pub fn set_dave_version(&self, version: u16) {
+        self.shared.lock().dave_version = version;
+    }
+
+    pub fn dave_version(&self) -> u16 {
+        self.shared.lock().dave_version
+    }
+
+    /// HELLO's heartbeat interval for connections from now on.
+    pub fn set_heartbeat_interval(&self, ms: f64) {
+        self.shared.lock().heartbeat_interval_ms = ms;
+    }
+
+    /// Stops (or resumes) answering heartbeats: the control socket looks dead to the client.
+    pub fn set_acks_muted(&self, muted: bool) {
+        self.shared.lock().acks_muted = muted;
+    }
+
+    /// Resumes (op 7 answered with op 9) seen so far.
+    pub fn resumes(&self) -> usize {
+        self.shared
+            .lock()
+            .log
+            .iter()
+            .filter(|line| line.contains(" resumed"))
+            .count()
+    }
+
     pub fn set_keyframe_interval(&self, ms: Option<u64>) {
         self.shared.lock().keyframe_interval_ms = ms;
     }
@@ -423,7 +478,8 @@ impl VoiceServer {
             .map(|(id, _)| *id)
             .collect();
         for id in &ids {
-            if let Some(conn) = state.conns.get(id) {
+            if let Some(conn) = state.conns.get_mut(id) {
+                conn.closing = Some(code);
                 let _ = conn.ws.send(Message::Close(Some(CloseFrame {
                     code: CloseCode::from(code),
                     reason: "".into(),
@@ -522,12 +578,14 @@ async fn connection(
         let _ = sink.close().await;
     });
     // HELLO first, as the voice gateway does (version 8: binary frames carry a sequence number).
+    let interval = shared.lock().heartbeat_interval_ms;
     let _ = out.send(Message::Text(
-        json!({"op": 8, "d": {"v": 8, "heartbeat_interval": 13750.0}})
+        json!({"op": 8, "d": {"v": 8, "heartbeat_interval": interval}})
             .to_string()
             .into(),
     ));
     let mut id: Option<u64> = None;
+    let mut left = false;
     while let Some(Ok(message)) = stream.next().await {
         match message {
             Message::Text(text) => {
@@ -539,6 +597,7 @@ async fn connection(
                         code: CloseCode::from(close),
                         reason: "".into(),
                     })));
+                    left = !resumable(close);
                     break;
                 }
             }
@@ -547,12 +606,26 @@ async fn connection(
                     binary_op(&shared, conn, op, payload);
                 }
             }
-            Message::Close(_) => break,
+            Message::Close(frame) => {
+                // The client's own close (a leave), unless it answers a resumable close of this server's.
+                let ours =
+                    id.and_then(|conn| shared.lock().conns.get(&conn).and_then(|c| c.closing));
+                left = match ours {
+                    Some(code) => !resumable(code),
+                    // 4000 is the client dropping a socket it will resume (`cleanupWebSocket(e => e.close(4e3))`).
+                    None => frame.is_none_or(|f| u16::from(f.code) != 4000),
+                };
+                break;
+            }
             _ => {}
         }
     }
     if let Some(conn) = id {
-        gone(&shared, conn);
+        if left {
+            gone(&shared, conn);
+        } else {
+            detach(&shared, conn);
+        }
     }
     drop(out);
     let _ = writer.await;
@@ -630,6 +703,8 @@ fn text_op(
                     ..ConnReport::default()
                 },
                 since: now,
+                closing: None,
+                detached: None,
             };
             let kind = if stream { "screen" } else { "video" };
             let port = state.udp_port;
@@ -670,6 +745,7 @@ fn text_op(
                 return Some(4016);
             };
             let interval = state.keyframe_interval_ms;
+            let dave_version = state.dave_version;
             let room = {
                 let conn = state.conns.get_mut(&conn_id)?;
                 conn.crypto = Some(Crypto::new(mode, &conn.key));
@@ -679,7 +755,7 @@ fn text_op(
                     "audio_codec": "opus",
                     "video_codec": "H264",
                     "media_session_id": format!("{:032x}", rand::random::<u128>()),
-                    "dave_protocol_version": 1,
+                    "dave_protocol_version": dave_version,
                 });
                 if let Some(ms) = interval {
                     description["keyframe_interval"] = json!(ms);
@@ -687,7 +763,9 @@ fn text_op(
                 conn.send(4, description);
                 conn.room
             };
-            let external = state.groups.0.get(&room).map(Group::external_sender);
+            let external = (dave_version > 0)
+                .then(|| state.groups.0.get(&room).map(Group::external_sender))
+                .flatten();
             let others: Vec<u64> = state.rooms.get(&room).cloned().unwrap_or_default();
             let newcomer = {
                 let conn = state.conns.get_mut(&conn_id)?;
@@ -726,6 +804,9 @@ fn text_op(
         }
         // Heartbeat.
         3 => {
+            if state.acks_muted {
+                return None;
+            }
             let nonce = if d.is_object() { d["t"].clone() } else { d };
             let conn = state.conns.get_mut(&(*id)?)?;
             conn.send(6, json!({"t": nonce}));
@@ -748,10 +829,43 @@ fn text_op(
             }
             None
         }
-        // Resume: this server never loses a session it did not close, so a resume finds none.
+        // Resume: a session whose socket dropped within the grace, with its own token, session and room.
         7 => {
-            state.note("resume asked: no session to resume, 4006".to_owned());
-            Some(4006)
+            let token = d["token"].as_str().unwrap_or_default();
+            let ticket = state.tickets.get(token).cloned();
+            let parse = |key: &str| d[key].as_str().and_then(|v| v.parse::<u64>().ok());
+            let found = ticket.filter(|ticket| {
+                parse("server_id") == Some(ticket.server_id)
+                    && parse("channel_id") == Some(ticket.channel_id)
+                    && d["session_id"].as_str() == Some(ticket.session.as_str())
+            });
+            let conn_id = found.and_then(|ticket| {
+                state
+                    .conns
+                    .iter()
+                    .find(|(_, conn)| {
+                        conn.detached.is_some()
+                            && conn.user == ticket.user
+                            && conn.room == (ticket.server_id, ticket.channel_id)
+                            && conn.label == ticket.label
+                    })
+                    .map(|(conn_id, _)| *conn_id)
+            });
+            let Some(conn_id) = conn_id else {
+                state.note("resume asked: no session to resume, 4006".to_owned());
+                return Some(4006);
+            };
+            let label = {
+                let conn = state.conns.get_mut(&conn_id)?;
+                conn.ws = out.clone();
+                conn.detached = None;
+                conn.closing = None;
+                conn.send(9, json!({}));
+                conn.label.clone()
+            };
+            state.note(format!("{label} resumed"));
+            *id = Some(conn_id);
+            None
         }
         // A source on or off.
         12 => {
@@ -853,6 +967,38 @@ fn binary_op(shared: &Shared, conn_id: u64, op: u8, payload: &[u8]) {
 }
 
 /// A connection's socket closed.
+/// The socket of `conn_id` ended without a leave: the session stays for [`RESUME_GRACE`], then goes.
+fn detach(shared: &Arc<Shared>, conn_id: u64) {
+    let ticket = {
+        let mut state = shared.lock();
+        let ticket = state.next_detach;
+        state.next_detach += 1;
+        let Some(conn) = state.conns.get_mut(&conn_id) else {
+            return;
+        };
+        conn.detached = Some(ticket);
+        let label = conn.label.clone();
+        state.note(format!(
+            "{label}: socket dropped; session kept for a resume"
+        ));
+        ticket
+    };
+    let weak = Arc::downgrade(shared);
+    tokio::spawn(async move {
+        tokio::time::sleep(RESUME_GRACE).await;
+        if let Some(shared) = weak.upgrade() {
+            let expired = shared
+                .lock()
+                .conns
+                .get(&conn_id)
+                .is_some_and(|conn| conn.detached == Some(ticket));
+            if expired {
+                gone(&shared, conn_id);
+            }
+        }
+    });
+}
+
 fn gone(shared: &Shared, conn_id: u64) {
     let mut state = shared.lock();
     let Some(conn) = state.conns.remove(&conn_id) else {
@@ -910,6 +1056,28 @@ fn media(shared: &Shared, from: SocketAddr, bytes: &[u8]) {
     }
     if wire::is_keepalive(bytes) {
         return;
+    }
+    // A client that rebound its socket (`fastUdpReconnect`) sends from a new port: the SFU follows the sender of
+    // a known source.
+    if !state.by_addr.contains_key(&from) && bytes.len() >= 12 {
+        let ssrc = if wire::is_rtcp(bytes) {
+            u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]])
+        } else {
+            u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]])
+        };
+        let owner = state
+            .conns
+            .iter()
+            .find(|(_, conn)| conn.owns(ssrc) && conn.addr.is_some())
+            .map(|(id, conn)| (*id, conn.addr));
+        if let Some((owner, Some(old))) = owner {
+            state.by_addr.remove(&old);
+            state.by_addr.insert(from, owner);
+            if let Some(conn) = state.conns.get_mut(&owner) {
+                conn.addr = Some(from);
+            }
+            state.note(format!("source {ssrc} moved to a new address"));
+        }
     }
     let Some(sender_id) = state.by_addr.get(&from).copied() else {
         state.strays += 1;

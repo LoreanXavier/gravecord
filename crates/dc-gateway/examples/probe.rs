@@ -43,6 +43,7 @@ async fn main() -> Result<()> {
                 Event::Closed { code, .. } => println!("closed {code}"),
                 Event::Reconnecting { delay } => println!("reconnecting in {delay:?}"),
                 Event::AuthenticationFailed => bail!("authentication failed"),
+                Event::Reset => println!("session reset"),
             }
         }
         bail!("stream ended, ready: {ready}")

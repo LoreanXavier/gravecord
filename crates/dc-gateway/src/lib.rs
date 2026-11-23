@@ -1,7 +1,8 @@
 //! Gateway connection. Port of `GatewaySocket` in module 868: ETF over zstd-stream, QOS heartbeats, resume, backoff.
 //! The reconnect shape follows Serein's `discord-gateway` (MIT/Apache-2.0); the protocol follows the pinned bundle.
 
-pub mod backoff;
+/// The backoff class of module 158390, shared with the voice connection.
+pub use dc_proto::backoff;
 mod compression;
 
 use backoff::Backoff;
@@ -42,11 +43,68 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 #[derive(Debug)]
 pub enum Event {
-    Dispatch { name: String, data: Value },
+    Dispatch {
+        name: String,
+        data: Value,
+    },
     Connected,
-    Reconnecting { delay: Duration },
-    Closed { code: u16, reason: String },
+    Reconnecting {
+        delay: Duration,
+    },
+    Closed {
+        code: u16,
+        reason: String,
+    },
     AuthenticationFailed,
+    /// `_reset` (module 868): the session is gone (four failed reconnects, or 4004) and the next connection
+    /// identifies. The official client dispatches `CONNECTION_CLOSED` here, which ends the voice connection.
+    Reset,
+}
+
+/// What the operating system reported, as module 225123 hands it to the socket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemEvent {
+    /// `networkStateChange(5e3, "network detected online.")`.
+    NetworkOnline,
+    /// `networkStateChange(15e3, "network detected offline.", !1)`.
+    NetworkOffline,
+    /// `expeditedHeartbeat(5e3, "power monitor resumed")`.
+    PowerResumed,
+    /// `APP_STATE_UPDATE` to active on the desktop client: `resetBackoff("App state is active")`.
+    AppActive,
+}
+
+/// `expeditedHeartbeat(timeout, reason, reset, closeUnestablished)`, or `None` for `resetBackoff(reason, true)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Expedite {
+    pub timeout: Duration,
+    /// Not connected: reset the backoff and reconnect at once.
+    pub reset: bool,
+    /// With `reset`, a socket still connecting is closed and opened again (`resetBackoff`'s second argument).
+    pub close_unestablished: bool,
+}
+
+impl SystemEvent {
+    pub fn expedite(self) -> Option<Expedite> {
+        match self {
+            Self::NetworkOnline => Some(Expedite {
+                timeout: Duration::from_secs(5),
+                reset: true,
+                close_unestablished: false,
+            }),
+            Self::NetworkOffline => Some(Expedite {
+                timeout: Duration::from_secs(15),
+                reset: false,
+                close_unestablished: false,
+            }),
+            Self::PowerResumed => Some(Expedite {
+                timeout: Duration::from_secs(5),
+                reset: true,
+                close_unestablished: true,
+            }),
+            Self::AppActive => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -58,6 +116,8 @@ pub enum Command {
     SetActive(bool),
     /// The account's token was renewed: the next identify or resume uses it.
     SetToken(Token),
+    /// The network came or went, the machine woke, the app became active.
+    System(SystemEvent),
     Shutdown,
 }
 
@@ -86,6 +146,10 @@ struct Session {
     active: bool,
     identified: bool,
     pending_sends: VecDeque<(Op, Value)>,
+    /// `nextReconnectIsImmediate`: set by a backoff reset, the next reconnect does not wait.
+    immediate: bool,
+    /// READY or RESUMED came on this socket (`SESSION_ESTABLISHED`).
+    established: bool,
     /// The last op 4 that put this account in a voice channel or call, until one takes it out. A shutdown sends
     /// the leave itself: a call left open at exit stays open on the service for minutes (a DM call's message then
     /// reads "lasted 2 minutes" for a call that ended at once).
@@ -115,6 +179,8 @@ pub fn spawn(
         active: config.state.active,
         identified: false,
         pending_sends: VecDeque::new(),
+        immediate: false,
+        established: false,
         config,
         events: event_tx,
         commands: command_rx,
@@ -156,15 +222,58 @@ impl Session {
             match next {
                 Next::Stop => return,
                 Next::ReconnectNow => {}
+                Next::Reconnect if std::mem::take(&mut self.immediate) => {
+                    info!("gateway reconnecting immediately after a backoff reset");
+                }
                 Next::Reconnect => {
                     let delay = self.backoff.fail(&mut rand::rng());
                     if self.backoff.fails() > MAX_FAILS_BEFORE_RESET {
-                        self.session_id = None;
-                        self.seq = 0;
+                        self.reset();
                     }
                     self.emit(Event::Reconnecting { delay });
-                    tokio::time::sleep(delay).await;
+                    if self.wait(delay).await == Next::Stop {
+                        return;
+                    }
                 }
+            }
+        }
+    }
+
+    /// `_reset`: forget the session; the app hears it once.
+    fn reset(&mut self) {
+        let had_session = self.session_id.is_some();
+        self.session_id = None;
+        self.seq = 0;
+        if had_session {
+            self.emit(Event::Reset);
+        }
+    }
+
+    /// The backoff wait between connections. Commands still arrive: sends queue for the next session, and a system
+    /// event that resets the backoff ends the wait (`resetBackoff` while `willReconnect()`: `_connect()` at once).
+    async fn wait(&mut self, delay: Duration) -> Next {
+        let until = tokio::time::Instant::now() + delay;
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep_until(until) => return Next::Reconnect,
+                command = self.commands.recv() => match command {
+                    None | Some(Command::Shutdown) => return Next::Stop,
+                    Some(Command::SetActive(active)) => self.active = active,
+                    Some(Command::SetToken(token)) => self.config.token = token,
+                    Some(Command::Send { op, data }) => {
+                        if op == Op::VoiceStateUpdate {
+                            self.voice = (!data["channel_id"].is_null()).then(|| data.clone());
+                        }
+                        enqueue_pending_send(&mut self.pending_sends, op, data);
+                    }
+                    Some(Command::System(event)) => {
+                        if event.expedite().is_none_or(|expedite| expedite.reset) {
+                            info!(?event, "gateway backoff reset; reconnecting now");
+                            self.backoff.succeed();
+                            return Next::ReconnectNow;
+                        }
+                    }
+                },
             }
         }
     }
@@ -269,10 +378,15 @@ impl Session {
             "READY_SUPPLEMENTAL" | "RESUMED" => self.backoff.succeed(),
             _ => {}
         }
+        if matches!(name, "READY" | "RESUMED") {
+            self.established = true;
+        }
     }
 
     async fn drive(&mut self, mut socket: Socket, hello_by: tokio::time::Instant) -> Next {
         self.identified = false;
+        self.established = false;
+        self.immediate = false;
         let mut inflater = match Inflater::new() {
             Ok(inflater) => inflater,
             Err(error) => {
@@ -287,6 +401,11 @@ impl Session {
         let heartbeat = tokio::time::sleep(heartbeat_interval);
         tokio::pin!(heartbeat);
         let mut acked = true;
+        // `expeditedHeartbeatTimeout`.
+        let far = tokio::time::Instant::now() + Duration::from_secs(u64::MAX / 8);
+        let expedited = tokio::time::sleep_until(far);
+        tokio::pin!(expedited);
+        let mut expediting = false;
 
         loop {
             tokio::select! {
@@ -295,8 +414,21 @@ impl Session {
                     self.resume_url = None;
                     return Next::Reconnect;
                 }
+                () = &mut expedited, if expediting => {
+                    expediting = false;
+                    if !acked {
+                        warn!("gateway expedited heartbeat was not acknowledged");
+                        let _ = close(&mut socket, CLOSE_RECONNECT).await;
+                        return Next::Reconnect;
+                    }
+                }
                 () = &mut heartbeat => {
                     if !acked {
+                        // `_doHeartbeatInterval`: a pending expedited heartbeat has its own deadline.
+                        if expediting {
+                            heartbeat.as_mut().reset(tokio::time::Instant::now() + heartbeat_interval);
+                            continue;
+                        }
                         warn!("gateway heartbeat was not acknowledged");
                         let _ = close(&mut socket, CLOSE_RECONNECT).await;
                         return Next::Reconnect;
@@ -317,6 +449,29 @@ impl Session {
                     }
                     Some(Command::SetActive(active)) => self.active = active,
                     Some(Command::SetToken(token)) => self.config.token = token,
+                    Some(Command::System(event)) => match event.expedite() {
+                        Some(expedite) if hello_seen => {
+                            debug!(?event, "gateway expedited heartbeat");
+                            acked = false;
+                            if self.heartbeat(&mut socket).await.is_err() {
+                                return Next::Reconnect;
+                            }
+                            expedited.as_mut().reset(tokio::time::Instant::now() + expedite.timeout);
+                            expediting = true;
+                        }
+                        Some(Expedite { reset: false, .. }) => {}
+                        // `resetBackoff`: the backoff starts over and the next reconnect is immediate; a socket that
+                        // is not yet established is closed now when asked to.
+                        other => {
+                            info!(?event, "gateway backoff reset");
+                            self.backoff.succeed();
+                            self.immediate = true;
+                            if !self.established && other.is_none_or(|e| e.close_unestablished) {
+                                let _ = close(&mut socket, CLOSE_RECONNECT).await;
+                                return Next::ReconnectNow;
+                            }
+                        }
+                    },
                     Some(Command::Send { op, data }) => {
                         if op == Op::VoiceStateUpdate {
                             self.voice = (!data["channel_id"].is_null()).then(|| data.clone());
@@ -388,6 +543,9 @@ impl Session {
                         }
                         Some(Op::HeartbeatAck) => {
                             acked = true;
+                            if std::mem::take(&mut expediting) {
+                                debug!("gateway expedited heartbeat succeeded");
+                            }
                             self.last_ack = Some(Instant::now());
                         }
                         Some(Op::Heartbeat) => {
@@ -444,8 +602,7 @@ impl Session {
         info!("gateway closed: {code}");
         self.emit(Event::Closed { code, reason });
         if code == AUTHENTICATION_FAILED {
-            self.session_id = None;
-            self.seq = 0;
+            self.reset();
             self.emit(Event::AuthenticationFailed);
             return Next::Stop;
         }
@@ -489,6 +646,104 @@ mod tests {
         assert!(leave["channel_id"].is_null());
         assert!(leave["guild_id"].is_null());
         assert_eq!(leave["self_video"], json!(false));
+    }
+
+    #[test]
+    fn system_events_follow_module_225123() {
+        let online = SystemEvent::NetworkOnline.expedite().unwrap();
+        assert_eq!(online.timeout, Duration::from_secs(5));
+        assert!(online.reset && !online.close_unestablished);
+        let offline = SystemEvent::NetworkOffline.expedite().unwrap();
+        assert_eq!(offline.timeout, Duration::from_secs(15));
+        assert!(!offline.reset);
+        let resumed = SystemEvent::PowerResumed.expedite().unwrap();
+        assert_eq!(resumed.timeout, Duration::from_secs(5));
+        assert!(resumed.reset && resumed.close_unestablished);
+        assert_eq!(SystemEvent::AppActive.expedite(), None);
+    }
+
+    #[tokio::test]
+    async fn a_backoff_wait_ends_on_a_reset_and_keeps_sends() {
+        let (events, _rx) = mpsc::unbounded_channel();
+        let (commands_tx, commands) = mpsc::unbounded_channel();
+        let mut session = Session {
+            config: Config {
+                token: Token::new("t"),
+                identity: Identity::new(),
+                state: IdentifyState::default(),
+            },
+            events,
+            commands,
+            backoff: Backoff::new(Duration::from_secs(1), Duration::from_secs(60)),
+            seq: 0,
+            session_id: Some("s".into()),
+            resume_url: None,
+            last_ack: None,
+            active: true,
+            identified: false,
+            pending_sends: VecDeque::new(),
+            immediate: false,
+            established: false,
+            voice: None,
+        };
+        session.backoff.fail(&mut rand::rng());
+        commands_tx
+            .send(Command::Send {
+                op: Op::GuildSubscriptions,
+                data: json!({"n": 1}),
+            })
+            .unwrap();
+        commands_tx
+            .send(Command::System(SystemEvent::NetworkOffline))
+            .unwrap();
+        commands_tx
+            .send(Command::System(SystemEvent::NetworkOnline))
+            .unwrap();
+        let started = Instant::now();
+        assert_eq!(
+            session.wait(Duration::from_secs(30)).await,
+            Next::ReconnectNow
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(session.backoff.fails(), 0);
+        assert_eq!(
+            session.pending_sends.len(),
+            1,
+            "a send during the wait is kept"
+        );
+        commands_tx.send(Command::Shutdown).unwrap();
+        assert_eq!(session.wait(Duration::from_secs(30)).await, Next::Stop);
+    }
+
+    #[test]
+    fn a_reset_forgets_the_session_and_says_so_once() {
+        let (events, mut rx) = mpsc::unbounded_channel();
+        let (_tx, commands) = mpsc::unbounded_channel();
+        let mut session = Session {
+            config: Config {
+                token: Token::new("t"),
+                identity: Identity::new(),
+                state: IdentifyState::default(),
+            },
+            events,
+            commands,
+            backoff: Backoff::new(Duration::from_secs(1), Duration::from_secs(60)),
+            seq: 9,
+            session_id: Some("s".into()),
+            resume_url: None,
+            last_ack: None,
+            active: true,
+            identified: false,
+            pending_sends: VecDeque::new(),
+            immediate: false,
+            established: false,
+            voice: None,
+        };
+        session.reset();
+        session.reset();
+        assert_eq!((session.session_id.clone(), session.seq), (None, 0));
+        assert!(matches!(rx.try_recv(), Ok(Event::Reset)));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
