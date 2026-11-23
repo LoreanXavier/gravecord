@@ -3312,6 +3312,26 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_family_disconnect_link(&arg, cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["family-spending-cap", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_family_spending_cap(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["in-game-auth-check", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_in_game_auth_check(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["conjure-agent-browser", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_conjure_agent_browser(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["how-boosting-works", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_how_boosting_works(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
             ["share-moment", rest @ ..] => {
                 let arg = rest.join(" ");
                 let msg = window

@@ -954,8 +954,12 @@ pub struct Root {
     /// Primary Age Verification Get Started modal (module 929180).
     age_verification_modal: Option<age_verification_modal::AgeVerificationModalState>,
     incode_age_verify: Option<age_verification_modal::IncodeAgeVerificationState>,
-    age_verify_manual_review_pending: bool,
+    age_verify_aux: Option<age_verification_modal::AgeVerifyAuxDialog>,
     favorites_thread_settings: Option<favorites::FavoritesThreadSettingsModal>,
+    favorites_limit_upsell: Option<u32>,
+    in_game_auth_check_modal: bool,
+    conjure_agent_browser: Option<Box<conjure_workspace::ConjureAgentBrowserState>>,
+    how_boosting_works: Option<boost_page::HowBoostingWorksModal>,
     guild_room_selector: Option<guild_space::GuildRoomSelectorModal>,
     game_org_error_modal: Option<game_org_invite::GameOrgErrorModalState>,
     app_channels: app_channel::AppChannelState,
@@ -1637,8 +1641,12 @@ impl Root {
             guild_space: None,
             age_verification_modal: None,
             incode_age_verify: None,
-            age_verify_manual_review_pending: false,
+            age_verify_aux: None,
             favorites_thread_settings: None,
+            favorites_limit_upsell: None,
+            in_game_auth_check_modal: false,
+            conjure_agent_browser: None,
+            how_boosting_works: None,
             guild_room_selector: None,
             game_org_error_modal: None,
             app_channels: app_channel::AppChannelState::default(),
@@ -12425,9 +12433,14 @@ impl Render for Root {
                         || this.family_center.request_connection.is_some()
                         || this.family_center.accept_link.is_some()
                         || this.family_center.disconnect_link.is_some()
+                        || this.family_center.spending_cap.is_some()
                         || this.incode_age_verify.is_some()
-                        || this.age_verify_manual_review_pending
+                        || this.age_verify_aux.is_some()
                         || this.favorites_thread_settings.is_some()
+                        || this.favorites_limit_upsell.is_some()
+                        || this.in_game_auth_check_modal
+                        || this.conjure_agent_browser.is_some()
+                        || this.how_boosting_works.is_some()
                         || this.guild_room_selector.is_some()
                         || this.game_org_error_modal.is_some()
                         || this.app_channels.preview.is_some()
@@ -12483,8 +12496,12 @@ impl Render for Root {
                     this.close_user_activity_preview();
                     this.close_age_verification_modal();
                     this.incode_age_verify = None;
-                    this.age_verify_manual_review_pending = false;
+                    this.age_verify_aux = None;
                     this.favorites_thread_settings = None;
+                    this.favorites_limit_upsell = None;
+                    this.in_game_auth_check_modal = false;
+                    this.conjure_agent_browser = None;
+                    this.how_boosting_works = None;
                     this.guild_room_selector = None;
                     this.game_org_error_modal = None;
                     this.app_channels.preview = None;
@@ -13955,9 +13972,14 @@ impl Render for Root {
             .children(self.frames_announcement_layer(cx))
             .children(self.age_verification_modal_layer(cx))
             .children(self.incode_age_verification_modal(cx))
-            .children(self.age_verify_manual_review_pending_layer(cx))
+            .children(self.age_verify_aux_layer(cx))
             .children(self.favorites_thread_settings_modal_layer(cx))
+            .children(self.favorites_limit_upsell_layer(cx))
             .children(self.family_center_disconnect_link_modal(cx))
+            .children(self.family_center_spending_cap_modal(cx))
+            .children(self.in_game_auth_check_modal_layer(cx))
+            .children(self.conjure_agent_browser_layer(cx))
+            .children(self.how_boosting_works_overlay(cx))
             .children(self.premium_announcement_modal_layer(cx))
             .children(self.guild_space_layer(cx))
             .children(self.guild_room_selector_modal(cx))

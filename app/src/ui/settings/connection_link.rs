@@ -384,6 +384,140 @@ impl Root {
         }
         cx.notify();
     }
+    /// Module 272047 / 359800 (`in-game-auth-check-modal`): opens the Social SDK game-initiated account link modal.
+    #[allow(dead_code)]
+    pub(crate) fn open_in_game_auth_check_modal(&mut self, cx: &mut Context<Self>) {
+        self.in_game_auth_check_modal = true;
+        cx.notify();
+    }
+
+    /// Module 359800: auto-dismisses the in-game auth check modal when link completes & shows `uG6teD` success toast.
+    #[allow(dead_code)]
+    pub(crate) fn complete_in_game_auth_check(&mut self, cx: &mut Context<Self>) {
+        if self.in_game_auth_check_modal {
+            self.in_game_auth_check_modal = false;
+            self.show_success_toast(dc_intl::t("uG6teD").to_owned(), cx);
+            cx.notify();
+        }
+    }
+
+    /// Module 272047: minimal `size="sm"` (400px) Social SDK account link waiting modal (`ULvRFd` / `HJJDr+`, no footer).
+    pub(in crate::ui) fn in_game_auth_check_modal_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        use crate::ui::{color, icon};
+        use gpui::{FontWeight, IntoElement, MouseButton, deferred, div, prelude::*, px, rgba};
+        if !self.in_game_auth_check_modal {
+            return None;
+        }
+        Some(
+            deferred(
+                div()
+                    .id("in-game-auth-check-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.in_game_auth_check_modal = false;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("in-game-auth-check-modal")
+                            .occlude()
+                            .w(px(400.))
+                            .p(px(24.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .shadow_xl()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .text_size(px(20.))
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("ULvRFd")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("in-game-auth-check-close")
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(
+                                                "modal_close",
+                                                16.,
+                                                "--interactive-text-default",
+                                            ))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.in_game_auth_check_modal = false;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(dc_intl::t("HJJDr+")),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_in_game_auth_check(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        match arg.trim() {
+            "close" => {
+                self.in_game_auth_check_modal = false;
+                cx.notify();
+                "in-game-auth-check: closed".to_owned()
+            }
+            "complete" => {
+                self.complete_in_game_auth_check(cx);
+                "in-game-auth-check: completed".to_owned()
+            }
+            _ => {
+                self.open_in_game_auth_check_modal(cx);
+                "in-game-auth-check: opened".to_owned()
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -477,5 +611,12 @@ mod tests {
             )
         );
         assert_eq!(error_body("xbox", Some(UNDER_MINIMUM_AGE)), None);
+    }
+
+    #[test]
+    fn in_game_auth_check_272047_intl() {
+        for key in ["ULvRFd", "HJJDr+", "uG6teD"] {
+            assert!(dc_intl::has_key(key), "missing 272047 key {key}");
+        }
     }
 }

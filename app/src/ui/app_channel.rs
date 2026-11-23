@@ -39,13 +39,42 @@ pub(crate) struct AppChannelChatToast {
     pub preview: String,
 }
 
-/// Module 98492: per-client App Channel state (remembering user-closed channels in `closed_channels`).
+/// Module 98492 + 241606: per-client App Channel state (remembering user-closed channels in
+/// `closed_channels` and Voice Channel App Surface toggle state in `voice_app_visible`).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AppChannelState {
     /// Module-level `Set` `O`: channels whose app frame the user explicitly closed (shows relaunch card).
     pub closed_channels: HashSet<Id>,
+    /// Module 241606 (`VoiceChannelAppStore`): voice channels currently showing the embedded Channel App surface.
+    pub voice_app_visible: HashSet<Id>,
     /// Capture/preview override modal or inline state.
     pub preview: Option<AppChannelPreview>,
+}
+
+/// Module 241606 (`fNq-Kh`): localized tooltip/aria label for the Voice Channel App View toggle button.
+pub(crate) fn voice_channel_app_toggle_label(
+    is_app_visible: bool,
+    returns_to_room: bool,
+) -> &'static str {
+    if is_app_visible && returns_to_room {
+        dc_intl::t("f7g0DK")
+    } else if is_app_visible {
+        dc_intl::t("3jrUBj")
+    } else {
+        dc_intl::t("ZtYyOx")
+    }
+}
+
+/// Module 241606: icon asset name for the Voice Channel App View toggle button (`grid_square` / `apps`).
+pub(crate) fn voice_channel_app_toggle_icon(
+    is_app_visible: bool,
+    _returns_to_room: bool,
+) -> &'static str {
+    if is_app_visible {
+        "grid_square"
+    } else {
+        "apps"
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -473,6 +502,53 @@ impl Root {
         )
     }
 
+    /// Module 241606 (`VOICE_CHANNEL_APP_SURFACE_TOGGLE` / `418241.s`): toggles voice channel app view.
+    #[allow(dead_code)]
+    pub(crate) fn toggle_voice_channel_app_surface(
+        &mut self,
+        channel_id: Id,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.app_channels.voice_app_visible.remove(&channel_id) {
+            self.app_channels.voice_app_visible.insert(channel_id);
+        }
+        cx.notify();
+    }
+
+    /// Module 241606 (`.controlButton_fNq-Kh`, 8px radius, 8px padding): voice channel app view toggle button.
+    #[allow(dead_code)]
+    pub(crate) fn voice_channel_app_toggle_button(
+        &self,
+        channel_id: Id,
+        returns_to_room: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let is_app_visible = self.app_channels.voice_app_visible.contains(&channel_id);
+        let tip = voice_channel_app_toggle_label(is_app_visible, returns_to_room);
+        let ic = voice_channel_app_toggle_icon(is_app_visible, returns_to_room);
+        let btn = div()
+            .id(SharedString::from(format!("vc-app-toggle-{channel_id}")))
+            .aria_label(SharedString::from(tip))
+            .p(px(8.))
+            .rounded(px(8.))
+            .cursor_pointer()
+            .hover(|s| s.bg(color("--background-mod-muted")))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon(ic, 20., "--interactive-icon-default"))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_voice_channel_app_surface(channel_id, cx);
+            }));
+        self.with_tip(
+            format!("vc-app-toggle-tip-{channel_id}"),
+            super::tooltip::Tip::text(tip, super::tooltip::Side::Top),
+            btn,
+            cx,
+        )
+        .into_any_element()
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_app_channel(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         if arg.trim() == "close" {
@@ -545,5 +621,26 @@ mod tests {
             Some((dc_intl::t("VquUff"), Some(dc_intl::t("Sd9D/R"))))
         );
         assert_eq!(app_channel_state_copy(AppChannelFramePhase::Launched), None);
+    }
+
+    #[test]
+    fn voice_channel_app_toggle_241606_labels_and_icons() {
+        for key in ["f7g0DK", "3jrUBj", "ZtYyOx"] {
+            assert!(dc_intl::has_key(key), "missing 241606 key {key}");
+        }
+        assert_eq!(
+            voice_channel_app_toggle_label(true, true),
+            dc_intl::t("f7g0DK")
+        );
+        assert_eq!(
+            voice_channel_app_toggle_label(true, false),
+            dc_intl::t("3jrUBj")
+        );
+        assert_eq!(
+            voice_channel_app_toggle_label(false, false),
+            dc_intl::t("ZtYyOx")
+        );
+        assert_eq!(voice_channel_app_toggle_icon(false, false), "apps");
+        assert_eq!(voice_channel_app_toggle_icon(true, false), "grid_square");
     }
 }

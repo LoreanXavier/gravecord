@@ -94,6 +94,105 @@ impl DisconnectLinkModal {
     }
 }
 
+/// Module 270915 (`Change spending cap`): Family Center teen monthly spending cap modal state.
+#[derive(Clone, Debug)]
+pub(crate) struct SpendingCapModal {
+    pub teen_id: String,
+    pub currency_symbol: String,
+    pub exponent: u32,
+    pub amount_input: String,
+    pub existing_cap_minor: Option<u64>,
+    pub monthly_spend_minor: u64,
+    pub renew_date_label: String,
+    pub submitting: bool,
+}
+
+/// Module 270915 (`361157.cU`): sanitizes currency input to digits (and single decimal with up to `exponent` places).
+pub(crate) fn sanitize_currency_input(raw: &str, exponent: u32) -> String {
+    let mut out = String::new();
+    let mut seen_dot = false;
+    let mut frac_digits = 0u32;
+    for ch in raw.chars() {
+        if ch.is_ascii_digit() {
+            if seen_dot {
+                if frac_digits < exponent {
+                    out.push(ch);
+                    frac_digits += 1;
+                }
+            } else {
+                out.push(ch);
+            }
+        } else if ch == '.' && exponent > 0 && !seen_dot {
+            seen_dot = true;
+            out.push('.');
+        }
+    }
+    out
+}
+
+/// Module 270915: parses sanitized major-unit currency text to minor units (e.g. `"25.50"` w/ exp 2 -> `Some(2550)`).
+pub(crate) fn parse_currency_minor_units(input: &str, exponent: u32) -> Option<u64> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let val: f64 = trimmed.parse().ok()?;
+    if !val.is_finite() || val < 0.0 {
+        return None;
+    }
+    let scale = 10_f64.powi(exponent as i32);
+    Some((val * scale).round() as u64)
+}
+
+/// Formats minor units with currency symbol (e.g. `2550` w/ `"$"`, exp 2 -> `"$25.50"`).
+pub(crate) fn format_minor_currency(symbol: &str, minor: u64, exponent: u32) -> String {
+    if exponent == 0 {
+        return format!("{symbol}{minor}");
+    }
+    let div = 10_u64.pow(exponent);
+    format!(
+        "{symbol}{}.{:0width$}",
+        minor / div,
+        minor % div,
+        width = exponent as usize
+    )
+}
+
+impl SpendingCapModal {
+    pub(crate) fn is_clearing_cap(&self) -> bool {
+        self.amount_input.trim().is_empty() && self.existing_cap_minor.is_some()
+    }
+
+    pub(crate) fn parsed_minor(&self) -> Option<u64> {
+        let clean = sanitize_currency_input(&self.amount_input, self.exponent);
+        parse_currency_minor_units(&clean, self.exponent)
+    }
+
+    pub(crate) fn is_overspending(&self) -> bool {
+        self.monthly_spend_minor > 0
+            && self
+                .parsed_minor()
+                .is_some_and(|cap| cap <= self.monthly_spend_minor)
+    }
+
+    pub(crate) fn can_save(&self) -> bool {
+        !self.submitting && (self.is_clearing_cap() || self.parsed_minor().is_some())
+    }
+}
+
+/// Module 270915 (`Rsh.FAMILY_CENTER_TEEN_SETTINGS`): `PATCH /family-center/{teenId}/settings-proto`.
+pub(crate) fn family_center_spending_cap_request(
+    teen_id: &str,
+    settings_b64: &str,
+) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("family-center:spending-cap:{teen_id}")),
+        method: reqwest::Method::PATCH,
+        route: format!("/family-center/{teen_id}/settings-proto"),
+        body: Some(serde_json::json!({ "settings": settings_b64 })),
+    }
+}
+
 /// Module 41527: `GET /family-center/connection-prerequisites?teen_id={teen_id}&link_code={link_code}`.
 #[allow(dead_code)]
 pub(crate) fn family_center_prereqs_request(teen_id: &str, link_code: &str) -> crate::net::Request {
@@ -171,6 +270,8 @@ pub(super) struct State {
     pub accept_link: Option<AcceptLinkModal>,
     /// Module 179950: Family Center Disconnect Link modal.
     pub disconnect_link: Option<DisconnectLinkModal>,
+    /// Module 270915: Family Center Teen Spending Cap modal.
+    pub spending_cap: Option<SpendingCapModal>,
     /// Cached link code (override or fetched from `GET /family-center/@me/link-code`).
     pub link_code: Option<String>,
     /// Timestamp when the current link code was acquired (for 5-minute `M:SS` countdown).
@@ -664,7 +765,8 @@ impl Root {
         let a = self.family_center.request_connection.take().is_some();
         let b = self.family_center.accept_link.take().is_some();
         let c = self.family_center.disconnect_link.take().is_some();
-        a || b || c
+        let d = self.family_center.spending_cap.take().is_some();
+        a || b || c || d
     }
 
     /// Handles REST responses for `POST /users/@me/linked-users` (module 41527) and
@@ -711,6 +813,19 @@ impl Root {
                     m.ack2 = false;
                 } else {
                     self.family_center.disconnect_link = None;
+                }
+                cx.notify();
+            }
+            return true;
+        }
+        if key.starts_with("family-center:spending-cap:") {
+            if let Some(m) = self.family_center.spending_cap.as_mut() {
+                m.submitting = false;
+                if body["code"].as_u64().is_some() {
+                    self.show_app_toast(dc_intl::t("Wu8BK2"), cx);
+                } else {
+                    self.family_center.spending_cap = None;
+                    self.show_success_toast(dc_intl::t("2WKfG1").to_owned(), cx);
                 }
                 cx.notify();
             }
@@ -1816,6 +1931,349 @@ impl Root {
         )
     }
 
+    /// Module 270915 (`Change spending cap`, CSS `681364` `0zqV5Z`):
+    /// Modal (`size="md"` 480px) to set or disable a connected teen's monthly purchase cap, with
+    /// overspending warning state (`--background-feedback-mod-warning` / `--icon-feedback-warning`).
+    pub(in crate::ui) fn family_center_spending_cap_modal(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.family_center.spending_cap.as_ref()?;
+        let submitting = modal.submitting;
+        let is_clearing = modal.is_clearing_cap();
+        let is_overspending = modal.is_overspending();
+        let can_save = modal.can_save();
+        let teen_id = modal.teen_id.clone();
+        let symbol = modal.currency_symbol.clone();
+        let input_text = modal.amount_input.clone();
+        let renew_line = dc_intl::format(
+            "IWdrfp",
+            &[("date", modal.renew_date_label.as_str().into())],
+        );
+        let monthly_fmt = format_minor_currency(
+            &modal.currency_symbol,
+            modal.monthly_spend_minor,
+            modal.exponent,
+        );
+        let monthly_note = (modal.monthly_spend_minor > 0).then(|| {
+            if is_overspending {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(6.))
+                    .child(icon("warning_triangle", 16., "--icon-feedback-warning"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(color("--icon-feedback-warning"))
+                            .child(dc_intl::format(
+                                "Tk6x4X",
+                                &[
+                                    ("amount", monthly_fmt.as_str().into()),
+                                    ("date", modal.renew_date_label.as_str().into()),
+                                ],
+                            )),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-muted"))
+                    .child(dc_intl::format(
+                        "pfAlRY",
+                        &[("amount", monthly_fmt.as_str().into())],
+                    ))
+                    .into_any_element()
+            }
+        });
+        let primary_label = dc_intl::t(if is_clearing { "JZDGJ8" } else { "R3BPH+" });
+        let primary_bg = if is_clearing {
+            "--control-critical-primary-background-default"
+        } else {
+            "--control-primary-background-default"
+        };
+        let primary_hover = if is_clearing {
+            "--control-critical-primary-background-hover"
+        } else {
+            "--control-primary-background-hover"
+        };
+
+        Some(
+            deferred(
+                div()
+                    .id("family-center-spending-cap-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            if !submitting {
+                                this.family_center.spending_cap = None;
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("family-center-spending-cap-modal")
+                            .occlude()
+                            .w(px(480.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .shadow_xl()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .pt(px(20.))
+                                    .pb(px(12.))
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(20.))
+                                                    .line_height(px(24.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(dc_intl::t("oBkFiL")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .line_height(px(20.))
+                                                    .text_color(color("--text-subtle"))
+                                                    .child(dc_intl::t("IFguF2")),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("fc-cap-close")
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(
+                                                "modal_close",
+                                                16.,
+                                                "--interactive-text-default",
+                                            ))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !submitting {
+                                                    this.family_center.spending_cap = None;
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .pb(px(20.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("gMeekL")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .text_color(color("--text-muted"))
+                                            .child(renew_line),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("fc-cap-input")
+                                            .h(px(40.))
+                                            .px(px(12.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color(if is_overspending {
+                                                "--icon-feedback-warning"
+                                            } else {
+                                                "--input-border-default"
+                                            }))
+                                            .bg(color(if is_overspending {
+                                                "--background-feedback-mod-warning"
+                                            } else {
+                                                "--input-background-default"
+                                            }))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .when(!input_text.is_empty(), |d| {
+                                                d.child(
+                                                    div()
+                                                        .text_size(px(15.))
+                                                        .font_weight(FontWeight(600.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(symbol),
+                                                )
+                                            })
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .text_size(px(15.))
+                                                    .text_color(color(if input_text.is_empty() {
+                                                        "--text-muted"
+                                                    } else {
+                                                        "--text-strong"
+                                                    }))
+                                                    .child(if input_text.is_empty() {
+                                                        dc_intl::t("YEnpaj").to_owned()
+                                                    } else {
+                                                        input_text
+                                                    }),
+                                            ),
+                                    )
+                                    .children(monthly_note),
+                            )
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .py(px(16.))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-base-lower"))
+                                    .rounded_b(px(12.))
+                                    .flex()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .id("fc-cap-cancel")
+                                            .flex_1()
+                                            .h(px(38.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-muted"))
+                                            .bg(color("--control-secondary-background-default"))
+                                            .hover(|s| {
+                                                s.bg(color("--control-secondary-background-hover"))
+                                            })
+                                            .when(!submitting, |d| d.cursor_pointer())
+                                            .when(submitting, |d| d.opacity(0.5))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--control-secondary-text-default"))
+                                            .child(dc_intl::t("ETE/oC"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !submitting {
+                                                    this.family_center.spending_cap = None;
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("fc-cap-save")
+                                            .flex_1()
+                                            .h(px(38.))
+                                            .rounded(px(8.))
+                                            .bg(color(primary_bg))
+                                            .when(can_save, |d| {
+                                                d.cursor_pointer()
+                                                    .hover(move |s| s.bg(color(primary_hover)))
+                                            })
+                                            .when(!can_save, |d| d.opacity(0.5))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(primary_label)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(m) =
+                                                    this.family_center.spending_cap.as_mut()
+                                                {
+                                                    if !m.can_save() {
+                                                        return;
+                                                    }
+                                                    m.submitting = true;
+                                                } else {
+                                                    return;
+                                                }
+                                                let _ = this.requests.send(
+                                                    family_center_spending_cap_request(
+                                                        &teen_id, "",
+                                                    ),
+                                                );
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_family_spending_cap(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.family_center.spending_cap = None;
+            cx.notify();
+            return "family spending-cap closed".to_owned();
+        }
+        let amount_input = match arg.trim() {
+            "clear" => String::new(),
+            "normal" => "50.00".to_owned(),
+            _ => "20.00".to_owned(),
+        };
+        self.family_center.spending_cap = Some(SpendingCapModal {
+            teen_id: "99887766".to_owned(),
+            currency_symbol: "$".to_owned(),
+            exponent: 2,
+            amount_input,
+            existing_cap_minor: Some(3000),
+            monthly_spend_minor: 2500,
+            renew_date_label: "12/1/26".to_owned(),
+            submitting: false,
+        });
+        cx.notify();
+        format!("family spending-cap opened ({})", arg.trim())
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_family_disconnect_link(
         &mut self,
@@ -2005,6 +2463,37 @@ mod tests {
                 if route == "/users/@me/linked-users"
                     && b["linked_user_id"] == "55"
                     && b["link_status"] == 3
+        ));
+    }
+
+    #[test]
+    fn family_center_spending_cap_270915_sanitizer_warning_and_request() {
+        for key in [
+            "oBkFiL", "IFguF2", "gMeekL", "IWdrfp", "YEnpaj", "Tk6x4X", "pfAlRY", "JZDGJ8",
+            "2WKfG1", "Wu8BK2", "ETE/oC", "R3BPH+",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 270915 key {key}");
+        }
+        assert_eq!(sanitize_currency_input("$12.345abc", 2), "12.34");
+        assert_eq!(sanitize_currency_input("12.34", 0), "1234");
+        assert_eq!(parse_currency_minor_units("25.50", 2), Some(2550));
+        assert_eq!(format_minor_currency("$", 2550, 2), "$25.50");
+        let m = SpendingCapModal {
+            teen_id: "99".into(),
+            currency_symbol: "$".into(),
+            exponent: 2,
+            amount_input: "20.00".into(),
+            existing_cap_minor: Some(3000),
+            monthly_spend_minor: 2500,
+            renew_date_label: "12/1/26".into(),
+            submitting: false,
+        };
+        assert!(m.is_overspending());
+        assert!(!m.is_clearing_cap());
+        assert!(m.can_save());
+        assert!(matches!(
+            family_center_spending_cap_request("99", "e30="),
+            crate::net::Request::Rest { route, .. } if route == "/family-center/99/settings-proto"
         ));
     }
 }

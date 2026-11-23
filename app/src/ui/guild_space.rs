@@ -73,6 +73,82 @@ pub(crate) fn update_guild_room_request(
     }
 }
 
+/// Module 232571 (`996752.F(roomWidth)`): avatar diameter (px) for a Guild Room of this width.
+pub(crate) fn room_avatar_size(room_width: f32) -> f32 {
+    if room_width < 200. {
+        16.
+    } else if room_width < 300. {
+        20.
+    } else if room_width < 400. {
+        32.
+    } else if room_width < 500. {
+        40.
+    } else if room_width < 550. {
+        44.
+    } else if room_width < 770. {
+        56.
+    } else {
+        72.
+    }
+}
+
+/// Module 232571 (`.seat_YdUSpd`): empty seat circle diameter `R = 1.2 * max(avatar, 24)`.
+pub(crate) fn room_seat_diameter(room_width: f32) -> f32 {
+    1.2 * room_avatar_size(room_width).max(24.)
+}
+
+/// Module 232571 (`303227.AQ`): `POST /guilds/{guildId}/rooms/{channelId}/update` (`{ user_position, user_seat }`).
+pub(crate) fn update_guild_room_seat_request(
+    guild_id: Id,
+    channel_id: Id,
+    seat: &str,
+    x_pct: f32,
+    y_pct: f32,
+) -> Request {
+    Request::Rest {
+        key: Some(format!("guild-room:seat:{guild_id}:{channel_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/guilds/{guild_id}/rooms/{channel_id}/update"),
+        body: Some(json!({
+            "user_position": { "x": x_pct, "y": y_pct },
+            "user_seat": seat,
+        })),
+    }
+}
+
+/// Module 232571: localized label for an unoccupied Guild Room seat (`96ANUN` or `NYm6Cb` in note-placement mode).
+pub(crate) fn guild_room_empty_seat_label(
+    seat_label: &str,
+    in_channel: bool,
+    placing_note: bool,
+) -> Option<String> {
+    if placing_note {
+        Some(dc_intl::format(
+            "NYm6Cb",
+            &[("seatLabel", seat_label.into())],
+        ))
+    } else if !in_channel {
+        Some(dc_intl::t("96ANUN").to_owned())
+    } else {
+        None
+    }
+}
+
+/// Module 232571: descriptor for rendering an unoccupied Guild Room glowing seat.
+#[allow(dead_code)]
+pub(crate) struct RoomEmptySeatSpec<'a> {
+    pub guild_id: Id,
+    pub channel_id: Id,
+    pub seat_id: String,
+    pub seat_label: &'a str,
+    pub x_pct: f32,
+    pub y_pct: f32,
+    pub room_width: f32,
+    pub room_height: f32,
+    pub in_channel: bool,
+    pub placing_note: bool,
+}
+
 /// Which column of the 2fr/1fr Server Hub grid a widget occupies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum GuildSpaceColumn {
@@ -1484,6 +1560,79 @@ impl Root {
         )
     }
 
+    /// Module 232571 (`.seat_YdUSpd` / `.graphic_YdUSpd`, CSS `781505`):
+    /// Renders a glowing empty seat target in a Guild Room canvas (`Join Voice` `96ANUN` tooltip,
+    /// `NYm6Cb` note-placement aria-label, 2px white hover ring + `--background-mod-subtle` fill).
+    #[allow(dead_code)]
+    pub(crate) fn render_guild_room_empty_seat(
+        &self,
+        spec: RoomEmptySeatSpec<'_>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let RoomEmptySeatSpec {
+            guild_id,
+            channel_id,
+            seat_id,
+            seat_label,
+            x_pct,
+            y_pct,
+            room_width,
+            room_height,
+            in_channel,
+            placing_note,
+        } = spec;
+        let diameter = room_seat_diameter(room_width);
+        let left = (room_width * (x_pct / 100.)) - (diameter / 2.);
+        let top = (room_height * (y_pct / 100.)) - (diameter / 2.);
+        let tip_text = guild_room_empty_seat_label(seat_label, in_channel, placing_note);
+        let seat_for_click = seat_id.clone();
+        let dot = div()
+            .id(SharedString::from(format!(
+                "room-seat-{channel_id}-{seat_id}"
+            )))
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .size(px(diameter))
+            .rounded_full()
+            .cursor_pointer()
+            .bg(rgba(0xffffff33))
+            .border_2()
+            .border_color(rgba(0xffffff00))
+            .hover(|s| {
+                s.bg(color("--background-mod-subtle"))
+                    .border_color(color("--white"))
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if in_channel {
+                    let _ = this.requests.send(update_guild_room_seat_request(
+                        guild_id,
+                        channel_id,
+                        &seat_for_click,
+                        x_pct,
+                        y_pct,
+                    ));
+                } else {
+                    this.join_voice(guild_id, channel_id, cx);
+                }
+                cx.notify();
+            }));
+        if let Some(label) = tip_text {
+            self.with_tip(
+                format!("room-seat-tip-{channel_id}-{seat_id}"),
+                super::tooltip::Tip::body(
+                    super::tooltip::Body::Text(label.into()),
+                    super::tooltip::Side::Top,
+                ),
+                dot,
+                cx,
+            )
+            .into_any_element()
+        } else {
+            dot.into_any_element()
+        }
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_guild_room_selector(
         &mut self,
@@ -1574,5 +1723,34 @@ mod tests {
         assert_eq!(method, reqwest::Method::POST);
         assert_eq!(route, "/guilds/11/rooms/22/update");
         assert_eq!(body.unwrap()["background"], 1);
+    }
+
+    #[test]
+    fn guild_room_empty_seat_232571_geometry_request_and_intl() {
+        for key in ["96ANUN", "NYm6Cb"] {
+            assert!(dc_intl::has_key(key), "missing 232571 key {key}");
+        }
+        assert_eq!(room_avatar_size(180.), 16.);
+        assert_eq!(room_avatar_size(350.), 32.);
+        assert_eq!(room_avatar_size(800.), 72.);
+        assert!((room_seat_diameter(180.) - 28.8).abs() < 0.01);
+        assert!((room_seat_diameter(800.) - 86.4).abs() < 0.01);
+        assert_eq!(
+            guild_room_empty_seat_label("Couch Left", false, false).as_deref(),
+            Some(dc_intl::t("96ANUN"))
+        );
+        assert_eq!(guild_room_empty_seat_label("Couch Left", true, false), None);
+        assert!(
+            guild_room_empty_seat_label("Couch Left", true, true)
+                .unwrap()
+                .contains("Couch Left")
+        );
+        assert!(matches!(
+            update_guild_room_seat_request(11, 22, "couch-1", 42.5, 61.0),
+            Request::Rest { route, body: Some(ref b), .. }
+                if route == "/guilds/11/rooms/22/update"
+                    && b["user_seat"] == "couch-1"
+                    && b["user_position"]["x"] == 42.5
+        ));
     }
 }

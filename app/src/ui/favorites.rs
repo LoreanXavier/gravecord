@@ -21,6 +21,20 @@ use dc_proto::settings::{FAVORITE_CATEGORY, FAVORITE_REFERENCE};
 pub(crate) const AUTO_ADDED_THREADS_CATEGORY: &str = "Auto-Added Threads";
 /// Module 349828 (`Rq`): allowed inactive-thread prune day thresholds (`0` = when archived, `7`, `14`).
 pub(crate) const FAVORITES_PRUNE_DAYS: [u64; 3] = [0, 7, 14];
+/// Module 279697: free Favorites channel cap (`3`) and Nitro cap (`200`).
+pub(crate) const FREE_FAVORITES_LIMIT: u32 = 3;
+pub(crate) const MAX_FAVORITES_LIMIT: u32 = 200;
+/// Module 279697 (`988572.A`): header graphic for "Need more Favorites?" Nitro upsell modal.
+pub(crate) const FAVORITES_UPSELL_GRAPHIC: &str = "https://cdn.discordapp.com/assets/content/88fc1694d1f36c93bf35b9cdc7dda25f1064d8205bfa103d62fd6cbf7fe636f7.png";
+
+/// Module 279697: returns true when a non-Nitro user has reached the free Favorites reference cap.
+pub(crate) fn favorites_free_limit_reached(
+    premium_type: Option<u64>,
+    reference_count: usize,
+    free_limit: u32,
+) -> bool {
+    premium_type.unwrap_or(0) == 0 && reference_count >= free_limit as usize
+}
 
 /// Module 167846: Favorites Thread Settings modal state.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -332,10 +346,233 @@ impl Root {
                 self.open_favorites_settings(cx);
                 "favorites: thread settings opened".to_owned()
             }
-            _ => "usage: favorites on <ids>|off|open|state|settings".to_owned(),
+            ["limit-upsell"] => {
+                self.open_favorites_limit_upsell(FREE_FAVORITES_LIMIT, cx);
+                "favorites: limit upsell opened".to_owned()
+            }
+            _ => "usage: favorites on <ids>|off|open|state|settings|limit-upsell".to_owned(),
         };
         cx.notify();
         note
+    }
+
+    /// Module 279697 (`Need more Favorites?`): opens the Nitro limit upsell expressive modal.
+    pub(super) fn open_favorites_limit_upsell(&mut self, limit: u32, cx: &mut Context<Self>) {
+        self.favorites_limit_upsell = Some(limit);
+        self.want_image(
+            FAVORITES_UPSELL_GRAPHIC.to_owned(),
+            FAVORITES_UPSELL_GRAPHIC.to_owned(),
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// Module 279697 (`772707.k`, `nitro-pink`, BETA badge, `hINqUs` / `D7S0Zo` / `PprSsy` / `pj0XBN`):
+    /// "Need more Favorites?" Nitro limit upsell modal.
+    pub(super) fn favorites_limit_upsell_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let free_limit = self.favorites_limit_upsell?;
+        let subtitle_text = dc_intl::format(
+            "D7S0Zo",
+            &[
+                ("count", dc_intl::Arg::Num(f64::from(free_limit))),
+                (
+                    "maxCount",
+                    dc_intl::Arg::Num(f64::from(MAX_FAVORITES_LIMIT)),
+                ),
+            ],
+        );
+        let art = self.images.get(FAVORITES_UPSELL_GRAPHIC).cloned();
+        let gradient = super::channel_status::header_gradient(
+            color("--expressive-gradient-nitro-pink-start"),
+            color("--expressive-gradient-nitro-pink-end"),
+        );
+        Some(
+            gpui::deferred(
+                div()
+                    .id("favorites-limit-upsell-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.favorites_limit_upsell = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("favorites-limit-upsell-modal")
+                            .occlude()
+                            .relative()
+                            .w(px(480.))
+                            .rounded(px(12.))
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .shadow_xl()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                div()
+                                    .relative()
+                                    .w_full()
+                                    .px(px(32.))
+                                    .pt(px(28.))
+                                    .pb(px(16.))
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .text_center()
+                                    .child(
+                                        img(gradient)
+                                            .absolute()
+                                            .inset_0()
+                                            .size_full()
+                                            .object_fit(gpui::ObjectFit::Fill),
+                                    )
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .px(px(8.))
+                                            .py(px(2.))
+                                            .rounded_full()
+                                            .bg(color("--brand-500"))
+                                            .text_size(px(11.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--white"))
+                                            .child("BETA"),
+                                    )
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .mt(px(4.))
+                                            .w(px(288.))
+                                            .h(px(136.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .children(art.map(|im| {
+                                                img(im)
+                                                    .max_w(px(288.))
+                                                    .max_h(px(136.))
+                                                    .object_fit(gpui::ObjectFit::Contain)
+                                            }))
+                                            .when(
+                                                self.images.get(FAVORITES_UPSELL_GRAPHIC).is_none(),
+                                                |d| d.child(icon("nitro_wheel", 48., "--white")),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .mt(px(8.))
+                                            .text_size(px(24.))
+                                            .line_height(px(30.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("hINqUs")),
+                                    )
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .text_size(px(15.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-subtle"))
+                                            .child(subtitle_text),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(32.))
+                                    .py(px(20.))
+                                    .flex()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .id("fav-upsell-manage")
+                                            .flex_1()
+                                            .h(px(40.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-muted"))
+                                            .bg(color("--control-secondary-background-default"))
+                                            .hover(|s| {
+                                                s.bg(color("--control-secondary-background-hover"))
+                                            })
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--control-secondary-text-default"))
+                                            .child(dc_intl::t("PprSsy"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.favorites_limit_upsell = None;
+                                                this.favorites_view = true;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("fav-upsell-get-nitro")
+                                            .flex_1()
+                                            .h(px(40.))
+                                            .rounded(px(8.))
+                                            .bg(gpui::rgba(0xe84894ff))
+                                            .hover(|s| s.opacity(0.92))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .gap(px(6.))
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(icon("nitro_wheel", 16., "--white"))
+                                            .child(dc_intl::t("pj0XBN"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.favorites_limit_upsell = None;
+                                                this.open_purchase(false, cx);
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("fav-upsell-close")
+                                    .absolute()
+                                    .top(px(10.))
+                                    .right(px(10.))
+                                    .size(px(32.))
+                                    .rounded(px(8.))
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("modal_close", 18., "--white"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.favorites_limit_upsell = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .with_priority(90)
+            .into_any_element(),
+        )
     }
 
     /// Module 167846: opens the Favorites "Thread Settings" modal (`hklnjs`).
@@ -1286,6 +1523,21 @@ impl Root {
             }),
         };
         let mut favorites = self.stores.favorites();
+        let ref_count = favorites
+            .channels
+            .iter()
+            .filter(|(_, c)| c.kind == FAVORITE_REFERENCE)
+            .count();
+        if !favorites.is_favorite(channel)
+            && favorites_free_limit_reached(
+                self.stores.account.premium_type,
+                ref_count,
+                FREE_FAVORITES_LIMIT,
+            )
+        {
+            self.open_favorites_limit_upsell(FREE_FAVORITES_LIMIT, cx);
+            return;
+        }
         if favorites.add_channel(channel, Some(kind)) {
             self.send_favorites(&favorites, "Add to Favorites");
         }
@@ -1932,5 +2184,23 @@ mod tests {
         assert!(fav.channels.iter().any(|(_, c)| {
             c.kind == FAVORITE_CATEGORY && c.nickname == AUTO_ADDED_THREADS_CATEGORY
         }));
+    }
+
+    #[test]
+    fn favorites_limit_upsell_279697_intl_and_cap() {
+        for k in ["hINqUs", "D7S0Zo", "PprSsy", "pj0XBN"] {
+            assert!(dc_intl::has_key(k), "missing 279697 key {k}");
+        }
+        let sub = dc_intl::format(
+            "D7S0Zo",
+            &[
+                ("count", dc_intl::Arg::Num(3.)),
+                ("maxCount", dc_intl::Arg::Num(200.)),
+            ],
+        );
+        assert!(sub.contains('3') && sub.contains("200"), "got {sub}");
+        assert!(!favorites_free_limit_reached(None, 2, 3));
+        assert!(favorites_free_limit_reached(None, 3, 3));
+        assert!(!favorites_free_limit_reached(Some(2), 10, 3));
     }
 }

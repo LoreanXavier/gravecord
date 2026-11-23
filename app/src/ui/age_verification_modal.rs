@@ -191,6 +191,30 @@ pub(crate) fn step3_description_parts() -> (String, String) {
     (raw.to_owned(), dc_intl::t("aA6q/z").to_owned())
 }
 
+/// Auxiliary age-verification dialogs sharing one slot on `Root`:
+/// - Module `174453`: Manual review in progress (`CNm4w6` / `14Fje3` / `NX+WJN`).
+/// - Module `253463`: Remove your assigned age group? reset confirmation (`g7/14g` / `FbTAmI` / `V822Mp` / `ETE/oC`).
+/// - Module `297102`: Update age group retry modal (`JSdbBe` / `JNK1ue` / `El4aXl` / `FYkioq` / `xMfbRz` / `L+FgkZ`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgeVerifyAuxDialog {
+    ManualReviewPending,
+    ResetConfirm { submitting: bool },
+    RetryUpdateAgeGroup,
+}
+
+/// Module 297102 (`700129.A`): header SVG graphic for Update Age Group modal.
+pub(crate) const AGE_VERIFY_RETRY_GRAPHIC: &str = "https://cdn.discordapp.com/assets/content/9d1441338ce9090a7c1e9fab8fe34e58daa2ab7df4ac84fa280c308869d8f27b.svg";
+
+/// Module 253463 (`96358.js`): `POST /users/@me/age-verification/reset`.
+pub(crate) fn reset_age_verification_request() -> Request {
+    Request::Rest {
+        key: Some("age-verification:reset".to_owned()),
+        method: reqwest::Method::POST,
+        route: "/users/@me/age-verification/reset".to_owned(),
+        body: None,
+    }
+}
+
 impl Root {
     #[allow(dead_code)]
     pub(crate) fn open_age_verification_modal(
@@ -967,128 +991,438 @@ impl Root {
     pub(crate) fn open_age_verification_manual_review_pending(&mut self, cx: &mut Context<Self>) {
         self.age_verification_modal = None;
         self.incode_age_verify = None;
-        self.age_verify_manual_review_pending = true;
+        self.age_verify_aux = Some(AgeVerifyAuxDialog::ManualReviewPending);
         cx.notify();
     }
 
-    /// Module 174453: Age Verification Manual Review Pending modal (`size="sm"` 400px, `CNm4w6` / `14Fje3` / `NX+WJN`).
-    pub(super) fn age_verify_manual_review_pending_layer(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if !self.age_verify_manual_review_pending {
-            return None;
-        }
-        Some(
-            deferred(
-                div()
-                    .id("age-verify-manual-review-backdrop")
-                    .occlude()
-                    .absolute()
-                    .inset_0()
-                    .bg(rgba(0x000000b8))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p(px(24.))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.age_verify_manual_review_pending = false;
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        div()
-                            .id("age-verify-manual-review-modal")
-                            .occlude()
-                            .w(px(400.))
-                            .p(px(24.))
-                            .rounded(px(12.))
-                            .border_1()
-                            .border_color(color("--border-subtle"))
-                            .bg(color("--background-surface-high"))
-                            .shadow_xl()
-                            .flex()
-                            .flex_col()
-                            .gap(px(12.))
-                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                                cx.stop_propagation()
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_start()
-                                    .justify_between()
-                                    .gap(px(8.))
-                                    .child(
+    /// Module 253463 (`USER_AGE_VERIFICATION_RESET_CONFIRM`): opens the "Remove your assigned age group?" confirm dialog.
+    #[allow(dead_code)]
+    pub(crate) fn open_age_verification_reset_confirm(&mut self, cx: &mut Context<Self>) {
+        self.age_verification_modal = None;
+        self.incode_age_verify = None;
+        self.age_verify_aux = Some(AgeVerifyAuxDialog::ResetConfirm { submitting: false });
+        cx.notify();
+    }
+
+    /// Module 297102 (`Update age group`): opens the retry selfie/ID verification expressive modal (`blue` gradient).
+    #[allow(dead_code)]
+    pub(crate) fn open_age_verification_retry_modal(&mut self, cx: &mut Context<Self>) {
+        self.age_verification_modal = None;
+        self.incode_age_verify = None;
+        self.age_verify_aux = Some(AgeVerifyAuxDialog::RetryUpdateAgeGroup);
+        self.want_image(
+            AGE_VERIFY_RETRY_GRAPHIC.to_owned(),
+            AGE_VERIFY_RETRY_GRAPHIC.to_owned(),
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// Renders modules `174453`, `253463`, and `297102` auxiliary age-verification dialogs.
+    pub(super) fn age_verify_aux_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let dialog = self.age_verify_aux?;
+        match dialog {
+            AgeVerifyAuxDialog::ManualReviewPending => Some(
+                deferred(
+                    div()
+                        .id("age-verify-manual-review-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b8))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p(px(24.))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.age_verify_aux = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .id("age-verify-manual-review-modal")
+                                .occlude()
+                                .w(px(400.))
+                                .p(px(24.))
+                                .rounded(px(12.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-surface-high"))
+                                .shadow_xl()
+                                .flex()
+                                .flex_col()
+                                .gap(px(12.))
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_start()
+                                        .justify_between()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .text_size(px(20.))
+                                                .line_height(px(24.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::t("CNm4w6")),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("age-verify-manual-review-close")
+                                                .size(px(28.))
+                                                .rounded(px(6.))
+                                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon(
+                                                    "modal_close",
+                                                    16.,
+                                                    "--interactive-text-default",
+                                                ))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.age_verify_aux = None;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(20.))
+                                        .text_color(color("--text-subtle"))
+                                        .child(dc_intl::t("14Fje3")),
+                                )
+                                .child(
+                                    div().pt(px(8.)).w_full().child(
                                         div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .text_size(px(20.))
-                                            .line_height(px(24.))
-                                            .font_weight(FontWeight(700.))
-                                            .text_color(color("--text-strong"))
-                                            .child(dc_intl::t("CNm4w6")),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("age-verify-manual-review-close")
-                                            .size(px(28.))
-                                            .rounded(px(6.))
-                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .id("age-verify-manual-review-ok")
+                                            .w_full()
+                                            .h(px(38.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .hover(|s| {
+                                                s.bg(color("--control-primary-background-hover"))
+                                            })
                                             .cursor_pointer()
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .child(icon(
-                                                "modal_close",
-                                                16.,
-                                                "--interactive-text-default",
-                                            ))
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(dc_intl::t("NX+WJN"))
                                             .on_click(cx.listener(|this, _, _, cx| {
-                                                this.age_verify_manual_review_pending = false;
+                                                this.age_verify_aux = None;
                                                 cx.notify();
                                             })),
                                     ),
-                            )
+                                ),
+                        ),
+                )
+                .with_priority(3)
+                .into_any_element(),
+            ),
+            AgeVerifyAuxDialog::ResetConfirm { submitting } => Some(
+                deferred(
+                    div()
+                        .id("age-verify-reset-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b8))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p(px(24.))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                if !submitting {
+                                    this.age_verify_aux = None;
+                                    cx.notify();
+                                }
+                            }),
+                        )
+                        .child(
+                            div()
+                                .id("age-verify-reset-modal")
+                                .occlude()
+                                .w(px(400.))
+                                .p(px(24.))
+                                .rounded(px(12.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-surface-high"))
+                                .shadow_xl()
+                                .flex()
+                                .flex_col()
+                                .gap(px(12.))
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_start()
+                                        .justify_between()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .text_size(px(20.))
+                                                .line_height(px(24.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::t("g7/14g")),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("age-verify-reset-close")
+                                                .size(px(28.))
+                                                .rounded(px(6.))
+                                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                                .when(!submitting, |d| d.cursor_pointer())
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon(
+                                                    "modal_close",
+                                                    16.,
+                                                    "--interactive-text-default",
+                                                ))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if !submitting {
+                                                        this.age_verify_aux = None;
+                                                        cx.notify();
+                                                    }
+                                                })),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(20.))
+                                        .text_color(color("--text-subtle"))
+                                        .child(dc_intl::t("FbTAmI")),
+                                )
+                                .child(
+                                    div()
+                                        .pt(px(8.))
+                                        .w_full()
+                                        .flex()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .id("age-verify-reset-cancel")
+                                                .flex_1()
+                                                .h(px(38.))
+                                                .rounded(px(8.))
+                                                .border_1()
+                                                .border_color(color("--border-muted"))
+                                                .bg(color("--control-secondary-background-default"))
+                                                .hover(|s| {
+                                                    s.bg(color(
+                                                        "--control-secondary-background-hover",
+                                                    ))
+                                                })
+                                                .when(!submitting, |d| d.cursor_pointer())
+                                                .when(submitting, |d| d.opacity(0.5))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color(
+                                                    "--control-secondary-text-default",
+                                                ))
+                                                .child(dc_intl::t("ETE/oC"))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if !submitting {
+                                                        this.age_verify_aux = None;
+                                                        cx.notify();
+                                                    }
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("age-verify-reset-confirm")
+                                                .flex_1()
+                                                .h(px(38.))
+                                                .rounded(px(8.))
+                                                .bg(color(
+                                                    "--control-critical-primary-background-default",
+                                                ))
+                                                .hover(|s| {
+                                                    s.bg(color(
+                                                        "--control-critical-primary-background-hover",
+                                                    ))
+                                                })
+                                                .when(!submitting, |d| d.cursor_pointer())
+                                                .when(submitting, |d| d.opacity(0.5))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--white"))
+                                                .child(dc_intl::t("V822Mp"))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if submitting {
+                                                        return;
+                                                    }
+                                                    let _ = this.requests.send(
+                                                        reset_age_verification_request(),
+                                                    );
+                                                    this.age_verify_aux = None;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                ),
+                        ),
+                )
+                .with_priority(3)
+                .into_any_element(),
+            ),
+            AgeVerifyAuxDialog::RetryUpdateAgeGroup => {
+                let look = super::graphic_modal::Look {
+                    width: 480.,
+                    gradient: (
+                        "--expressive-gradient-blue-start",
+                        "--expressive-gradient-blue-end",
+                    ),
+                    aspect: 16. / 9.,
+                };
+                let learn_runs = dc_intl::format_runs("L+FgkZ", &[]);
+                let learn_line = div()
+                    .w_full()
+                    .flex()
+                    .flex_wrap()
+                    .justify_center()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(color("--text-muted"))
+                    .children(learn_runs.into_iter().enumerate().map(|(idx, (seg, hook))| {
+                        if hook.is_some() {
+                            div()
+                                .id(("age-verify-retry-learn", idx))
+                                .text_color(color("--text-link"))
+                                .cursor_pointer()
+                                .hover(|s| s.underline())
+                                .child(seg)
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    cx.open_url(AGE_VERIFY_LEARN_MORE_URL);
+                                }))
+                                .into_any_element()
+                        } else {
+                            div().child(seg).into_any_element()
+                        }
+                    }));
+                let body = div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    // Info notice (`El4aXl`, `circle_info`)
+                    .child(
+                        div()
+                            .p(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-muted"))
+                            .bg(color("--background-mod-subtle"))
+                            .flex()
+                            .items_start()
+                            .gap(px(8.))
+                            .child(icon("circle_info", 16., "--text-link"))
                             .child(
                                 div()
-                                    .text_size(px(14.))
-                                    .line_height(px(20.))
-                                    .text_color(color("--text-subtle"))
-                                    .child(dc_intl::t("14Fje3")),
-                            )
-                            .child(
-                                div().pt(px(8.)).w_full().child(
-                                    div()
-                                        .id("age-verify-manual-review-ok")
-                                        .w_full()
-                                        .h(px(38.))
-                                        .rounded(px(8.))
-                                        .bg(color("--control-primary-background-default"))
-                                        .hover(|s| {
-                                            s.bg(color("--control-primary-background-hover"))
-                                        })
-                                        .cursor_pointer()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_size(px(14.))
-                                        .font_weight(FontWeight(600.))
-                                        .text_color(color("--white"))
-                                        .child(dc_intl::t("NX+WJN"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.age_verify_manual_review_pending = false;
-                                            cx.notify();
-                                        })),
-                                ),
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-default"))
+                                    .child(dc_intl::t("El4aXl")),
                             ),
-                    ),
-            )
-            .with_priority(3)
-            .into_any_element(),
-        )
+                    )
+                    // Clickable card (`FYkioq` / `xMfbRz` + `bot_chevron_small_right`)
+                    .child(
+                        div()
+                            .id("age-verify-retry-start-card")
+                            .p(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--background-mod-subtle"))
+                            .hover(|s| s.bg(color("--background-mod-strong")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(16.))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let _ = this.requests.send(initiate_age_verification_request(None));
+                                this.age_verify_aux = None;
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(15.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("FYkioq")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .line_height(px(18.))
+                                            .text_color(color("--text-subtle"))
+                                            .child(dc_intl::t("xMfbRz")),
+                                    ),
+                            )
+                            .child(icon(
+                                "bot_chevron_small_right",
+                                18.,
+                                "--interactive-icon-default",
+                            )),
+                    )
+                    .child(learn_line)
+                    .into_any_element();
+                let spec = super::graphic_modal::Spec {
+                    id: "age-verify-retry-modal",
+                    graphic: Some(super::graphic_modal::Graphic {
+                        url: AGE_VERIFY_RETRY_GRAPHIC,
+                        width: 288.,
+                        height: 162.,
+                    }),
+                    title: dc_intl::t("JSdbBe").into(),
+                    subtitle: Some(div().child(dc_intl::t("JNK1ue")).into_any_element()),
+                    body: Some(body),
+                    buttons: Vec::new(),
+                    close: Box::new(|this, _, cx| {
+                        this.age_verify_aux = None;
+                        cx.notify();
+                    }),
+                };
+                Some(self.graphic_modal_with(spec, look, cx))
+            }
+        }
     }
 
     #[cfg(feature = "capture")]
@@ -1097,13 +1431,21 @@ impl Root {
             "close" => {
                 self.close_age_verification_modal();
                 self.incode_age_verify = None;
-                self.age_verify_manual_review_pending = false;
+                self.age_verify_aux = None;
                 cx.notify();
                 "age verification modal closed".to_owned()
             }
             "manual-review-pending" => {
                 self.open_age_verification_manual_review_pending(cx);
                 "age verification manual review pending opened".to_owned()
+            }
+            "reset-confirm" => {
+                self.open_age_verification_reset_confirm(cx);
+                "age verification reset confirm opened".to_owned()
+            }
+            "retry" => {
+                self.open_age_verification_retry_modal(cx);
+                "age verification retry modal opened".to_owned()
             }
             "stage" => {
                 self.open_age_verification_modal(AgeVerificationEntryPoint::StageChannelPrompt, cx);
@@ -1235,5 +1577,19 @@ mod tests {
             assert!(dc_intl::has_key(key), "missing 174453 intl key {key}");
         }
         assert!(dc_intl::t("14Fje3").contains("48-72"));
+    }
+
+    #[test]
+    fn age_verification_reset_253463_and_retry_297102() {
+        for key in [
+            "g7/14g", "FbTAmI", "V822Mp", "ETE/oC", "JSdbBe", "JNK1ue", "El4aXl", "FYkioq",
+            "xMfbRz", "mFvt9M", "L+FgkZ",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 253463/297102 key {key}");
+        }
+        assert!(matches!(
+            reset_age_verification_request(),
+            Request::Rest { route, .. } if route == "/users/@me/age-verification/reset"
+        ));
     }
 }

@@ -22,6 +22,88 @@ use gpui::{
 };
 use std::sync::Arc;
 
+/// Module 235780 ("How Boosting Works" marketing video modal): official CDN video & poster URLs.
+pub(crate) const BOOST_MARKETING_VIDEO_URL: &str = "https://cdn.discordapp.com/assets/content/f0b9a61f96ee69dc341c22c04fe6458660d9317caae3d381c05cf8348fca5b95.mp4";
+pub(crate) const BOOST_MARKETING_POSTER_URL: &str = "https://cdn.discordapp.com/assets/content/7b8d6c9c9f8bc8092089a2f55081695d40f7f303f053fcc6f944bf4b38403573.png";
+
+/// Module 235780: WebVTT caption URL (`None` for English locales, official CDN path otherwise).
+pub(crate) fn boost_marketing_captions_url(locale: &str) -> Option<String> {
+    if locale.starts_with("en") {
+        None
+    } else {
+        Some(format!(
+            "https://cdn.discordapp.com/assets/boosting/marketing/captions/boosting_marketing_video_captions_{locale}.vtt"
+        ))
+    }
+}
+
+/// One parsed WebVTT cue (`start_ms..=end_ms`, caption text) for module 235780 captions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WebVttCue {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
+
+#[allow(dead_code)]
+fn parse_vtt_ts(raw: &str) -> Option<u64> {
+    let clean = raw.split_whitespace().next()?;
+    let (hms, ms_str) = clean.split_once('.')?;
+    let ms: u64 = ms_str.get(..3).unwrap_or(ms_str).parse().ok()?;
+    let parts: Vec<u64> = hms.split(':').filter_map(|p| p.parse().ok()).collect();
+    match parts.as_slice() {
+        [m, s] => Some((m * 60 + s) * 1000 + ms),
+        [h, m, s] => Some((h * 3600 + m * 60 + s) * 1000 + ms),
+        _ => None,
+    }
+}
+
+/// Parses a WebVTT caption track into cues for module 235780.
+#[allow(dead_code)]
+pub(crate) fn parse_webvtt_cues(vtt: &str) -> Vec<WebVttCue> {
+    let mut cues = Vec::new();
+    let mut lines = vtt.lines().peekable();
+    while let Some(line) = lines.next() {
+        if let Some((start_s, end_s)) = line.split_once("-->")
+            && let (Some(start_ms), Some(end_ms)) = (parse_vtt_ts(start_s), parse_vtt_ts(end_s))
+        {
+            let mut text_lines = Vec::new();
+            while let Some(&next) = lines.peek() {
+                if next.trim().is_empty() {
+                    lines.next();
+                    break;
+                }
+                text_lines.push(lines.next().unwrap_or_default().trim());
+            }
+            if !text_lines.is_empty() {
+                cues.push(WebVttCue {
+                    start_ms,
+                    end_ms,
+                    text: text_lines.join("\n"),
+                });
+            }
+        }
+    }
+    cues
+}
+
+/// Returns the active caption text at `position_ms`, if any.
+pub(crate) fn active_webvtt_cue(cues: &[WebVttCue], position_ms: u64) -> Option<&str> {
+    cues.iter()
+        .find(|c| position_ms >= c.start_ms && position_ms <= c.end_ms)
+        .map(|c| c.text.as_str())
+}
+
+/// Module 235780: "How Boosting Works" XXL modal state (video playback + WebVTT captions toggle).
+#[derive(Clone, Debug)]
+pub(crate) struct HowBoostingWorksModal {
+    pub guild_id: Option<Id>,
+    pub playing: bool,
+    pub captions_enabled: bool,
+    pub position_ms: u64,
+    pub cues: Vec<WebVttCue>,
+}
+
 /// Guild powerup SKU IDs (`512750` / `945942.js`).
 pub(super) const SKU_SERVER_TAG: &str = "1351706802684952639";
 pub(super) const SKU_ROLE_STYLES: &str = "1354906318279807056";
@@ -1101,6 +1183,11 @@ impl Root {
                             .w(px(772.))
                             .h(px(435.1))
                             .flex_none()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let gid = this.guild;
+                                this.open_how_boosting_works(gid, cx);
+                            }))
                             // 32px, plus the .53px the official layout carries down from the heading's 2 x 46.2 and
                             // the thumbnail's 433.1 (layout here rounds each box to whole pixels).
                             .mb(px(32.53))
@@ -4498,6 +4585,353 @@ impl Root {
         )
     }
 
+    /// Module 235780 ("How Boosting Works"): opens the XXL marketing video modal with WebVTT caption support.
+    pub(crate) fn open_how_boosting_works(&mut self, guild_id: Option<Id>, cx: &mut Context<Self>) {
+        self.request_image(
+            "boost:thumbnail".to_owned(),
+            BOOST_MARKETING_POSTER_URL.to_owned(),
+        );
+        self.how_boosting_works = Some(HowBoostingWorksModal {
+            guild_id,
+            playing: true,
+            captions_enabled: boost_marketing_captions_url(dc_intl::locale()).is_some(),
+            position_ms: 1_500,
+            cues: Vec::new(),
+        });
+        cx.notify();
+    }
+
+    /// Module 235780 (`size="xxl"` max 1280px, CSS `401146` `.video_U5duvb`, `0f1VCH` / `gKmQ1G` / `BMx1iy`):
+    /// Renders the "How Boosting Works" marketing video modal with poster, play/pause, WebVTT caption track
+    /// overlay & CC toggle, and "Boost This Server" / "Boost any server" footer CTA.
+    pub(super) fn how_boosting_works_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.how_boosting_works.as_ref()?;
+        let has_guild = modal
+            .guild_id
+            .and_then(|gid| self.stores.guild(gid))
+            .is_some();
+        let guild_id = modal.guild_id;
+        let playing = modal.playing;
+        let captions_on = modal.captions_enabled;
+        let active_caption = captions_on
+            .then(|| active_webvtt_cue(&modal.cues, modal.position_ms))
+            .flatten()
+            .map(str::to_owned);
+        let modal_w = (self.viewport.0 * 0.8).clamp(520., 1280.);
+        let video_h = ((modal_w - 48.) * 9. / 16.).min((self.viewport.1 - 210.).max(220.));
+        let poster = self.images.get("boost:thumbnail").cloned();
+
+        Some(
+            deferred(
+                div()
+                    .id("how-boosting-works-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000c8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.how_boosting_works = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("how-boosting-works-modal")
+                            .aria_label(SharedString::from(dc_intl::t("0f1VCH")))
+                            .occlude()
+                            .w(px(modal_w))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .shadow_xl()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .pt(px(18.))
+                                    .pb(px(12.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        text(20., 24., 700., "--text-strong")
+                                            .child(dc_intl::t("0f1VCH")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("how-boosting-works-close")
+                                            .size(px(30.))
+                                            .rounded(px(6.))
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(
+                                                "modal_close",
+                                                18.,
+                                                "--interactive-text-default",
+                                            ))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.how_boosting_works = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            // `.video_U5duvb`: 16:9 video stage w/ poster, WebVTT caption bar, and controls
+                            .child(
+                                div().px(px(24.)).pb(px(16.)).child(
+                                    div()
+                                        .id("how-boosting-works-player")
+                                        .relative()
+                                        .w_full()
+                                        .h(px(video_h))
+                                        .rounded(px(8.))
+                                        .overflow_hidden()
+                                        .bg(gpui::rgb(0x111214))
+                                        .children(poster.map(|im| {
+                                            img(im)
+                                                .absolute()
+                                                .inset_0()
+                                                .size_full()
+                                                .object_fit(ObjectFit::Cover)
+                                        }))
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .inset_0()
+                                                .bg(rgba(0x00000044))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(
+                                                    div()
+                                                        .id("hbw-play-toggle")
+                                                        .size(px(64.))
+                                                        .rounded_full()
+                                                        .bg(rgba(0x00000099))
+                                                        .hover(|s| s.bg(rgba(0x000000cc)))
+                                                        .cursor_pointer()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .child(
+                                                            gpui::svg()
+                                                                .path("icons/boost_circle_play.svg")
+                                                                .size(px(40.))
+                                                                .text_color(gpui::rgb(0xffffff)),
+                                                        )
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            if let Some(m) =
+                                                                this.how_boosting_works.as_mut()
+                                                            {
+                                                                m.playing = !m.playing;
+                                                            }
+                                                            cx.notify();
+                                                        })),
+                                                ),
+                                        )
+                                        .children(active_caption.map(|caption| {
+                                            div()
+                                                .absolute()
+                                                .left(px(32.))
+                                                .right(px(32.))
+                                                .bottom(px(46.))
+                                                .flex()
+                                                .justify_center()
+                                                .child(
+                                                    div()
+                                                        .px(px(12.))
+                                                        .py(px(6.))
+                                                        .rounded(px(6.))
+                                                        .bg(rgba(0x000000cc))
+                                                        .text_center()
+                                                        .text_size(px(14.))
+                                                        .font_weight(FontWeight(500.))
+                                                        .text_color(color("--white"))
+                                                        .child(caption),
+                                                )
+                                        }))
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left_0()
+                                                .right_0()
+                                                .bottom_0()
+                                                .h(px(36.))
+                                                .px(px(12.))
+                                                .bg(rgba(0x000000b3))
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .text_color(color("--white"))
+                                                        .child(if playing {
+                                                            "Playing · Server Boosting"
+                                                        } else {
+                                                            "Paused · Server Boosting"
+                                                        }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(8.))
+                                                        .child(
+                                                            div()
+                                                                .id("hbw-captions-toggle")
+                                                                .px(px(8.))
+                                                                .py(px(3.))
+                                                                .rounded(px(4.))
+                                                                .bg(if captions_on {
+                                                                    color(
+                                                                        "--control-primary-background-default",
+                                                                    )
+                                                                } else {
+                                                                    rgba(0xffffff22)
+                                                                })
+                                                                .cursor_pointer()
+                                                                .text_size(px(11.))
+                                                                .font_weight(FontWeight(700.))
+                                                                .text_color(color("--white"))
+                                                                .child("CC")
+                                                                .on_click(cx.listener(
+                                                                    |this, _, _, cx| {
+                                                                        if let Some(m) = this
+                                                                            .how_boosting_works
+                                                                            .as_mut()
+                                                                        {
+                                                                            m.captions_enabled =
+                                                                                !m.captions_enabled;
+                                                                        }
+                                                                        cx.notify();
+                                                                    },
+                                                                )),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .id("hbw-open-video-url")
+                                                                .px(px(8.))
+                                                                .py(px(3.))
+                                                                .rounded(px(4.))
+                                                                .bg(rgba(0xffffff22))
+                                                                .cursor_pointer()
+                                                                .text_size(px(11.))
+                                                                .text_color(color("--white"))
+                                                                .child("MP4")
+                                                                .on_click(cx.listener(
+                                                                    |_, _, _, cx| {
+                                                                        cx.open_url(
+                                                                            BOOST_MARKETING_VIDEO_URL,
+                                                                        );
+                                                                    },
+                                                                )),
+                                                        ),
+                                                ),
+                                        ),
+                                ),
+                            )
+                            // Footer (`696208.H`): single right-aligned Boost CTA
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .py(px(14.))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-base-lower"))
+                                    .rounded_b(px(12.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .child(
+                                        div()
+                                            .id("hbw-boost-cta")
+                                            .h(px(38.))
+                                            .px(px(16.))
+                                            .rounded(px(8.))
+                                            .bg(if has_guild {
+                                                gpui::rgba(0xe84894ff)
+                                            } else {
+                                                color("--control-primary-background-default")
+                                            })
+                                            .hover(|s| s.opacity(0.92))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .gap(px(6.))
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .when(has_guild, |d| {
+                                                d.child(icon("boost_gem", 16., "--white"))
+                                            })
+                                            .child(dc_intl::t(if has_guild {
+                                                "gKmQ1G"
+                                            } else {
+                                                "BMx1iy"
+                                            }))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.how_boosting_works = None;
+                                                if let Some(gid) = guild_id
+                                                    && this.stores.guild(gid).is_some()
+                                                {
+                                                    this.boost_this_server(gid, cx);
+                                                } else {
+                                                    this.open_settings_section("Server Boost", cx);
+                                                }
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(98)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_how_boosting_works(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.how_boosting_works = None;
+            cx.notify();
+            return "how-boosting-works: closed".to_owned();
+        }
+        let guild_id = if arg.trim() == "any" {
+            None
+        } else {
+            self.guild
+                .or_else(|| self.stores.guilds.first().map(|g| g.id))
+        };
+        self.open_how_boosting_works(guild_id, cx);
+        if let Some(m) = self.how_boosting_works.as_mut() {
+            m.captions_enabled = true;
+            m.cues = parse_webvtt_cues(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nBoost servers to unlock perks for everyone.\n",
+            );
+        }
+        cx.notify();
+        format!("how-boosting-works: opened ({})", arg.trim())
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_powerup_coachmark(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         if arg.trim() == "close" {
@@ -4703,5 +5137,26 @@ mod tests {
         assert_eq!(lvl3.len(), 2);
         assert!(lvl3[1].1);
         assert_eq!(lvl3[1].0, dc_intl::t("M4XL5n"));
+    }
+
+    #[test]
+    fn how_boosting_works_235780_vtt_and_intl() {
+        for key in ["0f1VCH", "gKmQ1G", "BMx1iy"] {
+            assert!(dc_intl::has_key(key), "missing 235780 key {key}");
+        }
+        assert_eq!(boost_marketing_captions_url("en-US"), None);
+        assert_eq!(boost_marketing_captions_url("en-GB"), None);
+        let tr = boost_marketing_captions_url("tr").expect("non-en captions url");
+        assert!(tr.ends_with("boosting_marketing_video_captions_tr.vtt"));
+        let cues = parse_webvtt_cues(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:04.500\nUnlock custom perks\nfor your server!\n\n00:01:00.000 --> 00:01:03.000\nBoost today\n",
+        );
+        assert_eq!(cues.len(), 2);
+        assert_eq!(
+            active_webvtt_cue(&cues, 2_000),
+            Some("Unlock custom perks\nfor your server!")
+        );
+        assert_eq!(active_webvtt_cue(&cues, 61_000), Some("Boost today"));
+        assert_eq!(active_webvtt_cue(&cues, 10_000), None);
     }
 }

@@ -98,6 +98,61 @@ pub(crate) struct ConjureWorkspaceState {
     pub plan_steps: Vec<String>,
 }
 
+/// Module 273594 (`AgentBrowserControlState`): live control state of a Conjure agent browser session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum AgentControlState {
+    Viewing,
+    Pending,
+    Controlling,
+    Denied,
+}
+
+/// Module 273594: one live or ended agent browser session tab.
+#[derive(Clone, Debug)]
+pub(crate) struct AgentBrowserSession {
+    #[allow(dead_code)]
+    pub id: String,
+    pub label: String,
+    pub ended: bool,
+    pub has_frame: bool,
+    pub last_seq: u32,
+    pub width: u16,
+    pub height: u16,
+}
+
+/// Module 273594 (`648127.i`): session display label (falls back to `gHsgGe` "Agent browser" for `""`/`"default"`).
+#[allow(dead_code)]
+pub(crate) fn agent_browser_session_label(session_id: &str) -> String {
+    let trimmed = session_id.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("default") {
+        cj_copy("gHsgGe", "Agent browser")
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// Module 273594 (`504054`): parses a binary WS agent browser frame (`ver=1, u32 BE seq, u16 BE w, u16 BE h, jpeg`).
+#[allow(dead_code)]
+pub(crate) fn parse_agent_browser_frame(bytes: &[u8]) -> Option<(u32, u16, u16, &[u8])> {
+    if bytes.len() < 10 || bytes[0] != 1 {
+        return None;
+    }
+    let seq = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+    let width = u16::from_be_bytes([bytes[5], bytes[6]]);
+    let height = u16::from_be_bytes([bytes[7], bytes[8]]);
+    Some((seq, width, height, &bytes[9..]))
+}
+
+/// Module 273594: Conjure Agent Live Browser LayerModal state.
+#[derive(Clone, Debug)]
+pub(crate) struct ConjureAgentBrowserState {
+    pub project_id: String,
+    pub sessions: Vec<AgentBrowserSession>,
+    pub active_idx: usize,
+    pub control_state: AgentControlState,
+}
+
 /// Module 164254 (`472119.dv`): `POST /conjure/projects/{id}/ws-ticket`.
 #[allow(dead_code)]
 pub(crate) fn conjure_ws_ticket_request(project_id: &str) -> Request {
@@ -654,6 +709,367 @@ impl Root {
         )
     }
 
+    /// Module 273594 (`AgentBrowserModal`, CSS `135422` `3SsYXF`, LayerModal `521489`):
+    /// Live multi-session agent browser panel (max 1400px, tab bar w/ 8px live/ended dot, Take Control /
+    /// Hand Back / Denied control toggle, stage highlight border when controlling, loading & ended overlays).
+    pub(super) fn conjure_agent_browser_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.conjure_agent_browser.as_ref()?;
+        let active = state
+            .sessions
+            .get(state.active_idx)
+            .or_else(|| state.sessions.first())?;
+        let is_controlling = state.control_state == AgentControlState::Controlling;
+        let is_denied = state.control_state == AgentControlState::Denied;
+        let is_ended = active.ended;
+        let has_frame = active.has_frame;
+        let project_id = state.project_id.clone();
+
+        let tabs = div()
+            .flex_1()
+            .min_w(px(0.))
+            .pt(px(12.))
+            .flex()
+            .items_end()
+            .gap(px(4.))
+            .children(state.sessions.iter().enumerate().map(|(idx, sess)| {
+                let selected = idx == state.active_idx;
+                let dot_color = if sess.ended {
+                    "--icon-muted"
+                } else {
+                    "--status-positive"
+                };
+                let aria = dc_intl::format(
+                    if sess.ended { "OO/He7" } else { "FkosiV" },
+                    &[("title", sess.label.as_str().into())],
+                );
+                div()
+                    .id(SharedString::from(format!("cj-ab-tab-{idx}")))
+                    .aria_label(SharedString::from(aria))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded_t(px(8.))
+                    .border_b_2()
+                    .border_color(if selected {
+                        color("--control-primary-background-default")
+                    } else {
+                        rgba(0x00000000)
+                    })
+                    .bg(if selected {
+                        color("--background-mod-subtle")
+                    } else {
+                        rgba(0x00000000)
+                    })
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .max_w(px(192.))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(ab) = this.conjure_agent_browser.as_mut() {
+                            ab.active_idx = idx;
+                        }
+                        cx.notify();
+                    }))
+                    .child(div().size(px(8.)).rounded_full().bg(color(dot_color)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(if selected { 600. } else { 500. }))
+                            .text_color(color(if selected {
+                                "--text-strong"
+                            } else {
+                                "--text-muted"
+                            }))
+                            .child(sess.label.clone()),
+                    )
+            }));
+
+        let control_btn = (!is_ended).then(|| {
+            let label = if is_controlling {
+                cj_copy("7lQQJ5", "Hand Back")
+            } else {
+                cj_copy("d5Slrv", "Take Control")
+            };
+            div()
+                .id("cj-ab-control-btn")
+                .h(px(32.))
+                .px(px(12.))
+                .rounded(px(6.))
+                .bg(color(if is_controlling {
+                    "--control-primary-background-default"
+                } else {
+                    "--control-secondary-background-default"
+                }))
+                .when(!is_denied, |d| {
+                    d.cursor_pointer().hover(move |s| {
+                        s.bg(color(if is_controlling {
+                            "--control-primary-background-hover"
+                        } else {
+                            "--control-secondary-background-hover"
+                        }))
+                    })
+                })
+                .when(is_denied, |d| d.opacity(0.5))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(13.))
+                .font_weight(FontWeight(600.))
+                .text_color(color(if is_controlling {
+                    "--white"
+                } else {
+                    "--control-secondary-text-default"
+                }))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(ab) = this.conjure_agent_browser.as_mut() {
+                        if ab.control_state == AgentControlState::Denied {
+                            return;
+                        }
+                        ab.control_state = if ab.control_state == AgentControlState::Controlling {
+                            AgentControlState::Viewing
+                        } else {
+                            let _ = this.requests.send(conjure_ws_ticket_request(&project_id));
+                            AgentControlState::Controlling
+                        };
+                    }
+                    cx.notify();
+                }))
+        });
+
+        let stage_overlay: Option<AnyElement> = if is_ended {
+            Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000099))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(cj_copy("ocRH08", "The agent closed this browser.")),
+                    )
+                    .into_any_element(),
+            )
+        } else if !has_frame {
+            Some(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(12.))
+                    .p(px(24.))
+                    .child(icon("circle_info", 28., "--text-muted"))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-muted"))
+                            .child(cj_copy("wuE3Ja", "Connecting to the browser…")),
+                    )
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+
+        let stage_aria = dc_intl::format("rnwqXb", &[("name", active.label.as_str().into())]);
+        let panel_w = (self.viewport.0 - 80.).clamp(640., 1400.);
+        let panel_h = (self.viewport.1 - 80.).clamp(420., 840.);
+
+        Some(
+            deferred(
+                div()
+                    .id("conjure-agent-browser-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000c8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.conjure_agent_browser = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("conjure-agent-browser-modal")
+                            .aria_label(SharedString::from(cj_copy("sGsShB", "Agent browsers")))
+                            .occlude()
+                            .w(px(panel_w))
+                            .h(px(panel_h))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-base-lower"))
+                            .overflow_hidden()
+                            .shadow_xl()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            // `.header_3SsYXF`
+                            .child(
+                                div()
+                                    .pl(px(24.))
+                                    .pr(px(16.))
+                                    .border_b_1()
+                                    .border_color(color("--border-subtle"))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(tabs)
+                                    .children(control_btn)
+                                    .child(
+                                        div()
+                                            .id("cj-ab-close")
+                                            .aria_label(SharedString::from(dc_intl::t("cpT0Cq")))
+                                            .size(px(32.))
+                                            .rounded(px(6.))
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(
+                                                "modal_close",
+                                                18.,
+                                                "--interactive-text-default",
+                                            ))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.conjure_agent_browser = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            // `.session_3SsYXF` + `.stage_3SsYXF`
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h(px(0.))
+                                    .pt(px(16.))
+                                    .px(px(24.))
+                                    .pb(px(24.))
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .id("cj-ab-stage")
+                                            .aria_label(SharedString::from(stage_aria))
+                                            .relative()
+                                            .flex_1()
+                                            .min_h(px(0.))
+                                            .rounded(px(8.))
+                                            .overflow_hidden()
+                                            .bg(color("--background-base-lowest"))
+                                            .border_2()
+                                            .border_color(color(if is_controlling {
+                                                "--control-primary-background-default"
+                                            } else {
+                                                "--border-subtle"
+                                            }))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .when(has_frame && !is_ended, |d| {
+                                                d.child(
+                                                    div()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .items_center()
+                                                        .gap(px(6.))
+                                                        .child(icon(
+                                                            "bot_game_controller",
+                                                            36.,
+                                                            "--brand-500",
+                                                        ))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(14.))
+                                                                .font_weight(FontWeight(600.))
+                                                                .text_color(color("--text-strong"))
+                                                                .child(format!(
+                                                                    "{} ({}×{} · seq #{})",
+                                                                    active.label,
+                                                                    active.width,
+                                                                    active.height,
+                                                                    active.last_seq
+                                                                )),
+                                                        ),
+                                                )
+                                            })
+                                            .children(stage_overlay),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_conjure_agent_browser(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.conjure_agent_browser = None;
+            cx.notify();
+            return "conjure-agent-browser: closed".to_owned();
+        }
+        let control_state = match arg.trim() {
+            "control" => AgentControlState::Controlling,
+            "denied" => AgentControlState::Denied,
+            _ => AgentControlState::Viewing,
+        };
+        self.conjure_agent_browser = Some(Box::new(ConjureAgentBrowserState {
+            project_id: "proj-273594".to_owned(),
+            sessions: vec![
+                AgentBrowserSession {
+                    id: "default".to_owned(),
+                    label: agent_browser_session_label("default"),
+                    ended: arg.trim() == "ended",
+                    has_frame: arg.trim() != "loading",
+                    last_seq: 42,
+                    width: 1280,
+                    height: 720,
+                },
+                AgentBrowserSession {
+                    id: "oauth-check".to_owned(),
+                    label: agent_browser_session_label("oauth-check"),
+                    ended: true,
+                    has_frame: true,
+                    last_seq: 19,
+                    width: 1280,
+                    height: 720,
+                },
+            ],
+            active_idx: 0,
+            control_state,
+        }));
+        cx.notify();
+        format!("conjure-agent-browser: opened ({})", arg.trim())
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_conjure_workspace(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         if arg.trim() == "close" {
@@ -714,5 +1130,27 @@ mod tests {
             conjure_preview_dm_request("p1"),
             Request::Rest { route, .. } if route == "/conjure/projects/p1/preview-dm"
         ));
+    }
+
+    #[test]
+    fn conjure_agent_browser_273594_frame_parser_and_intl() {
+        for key in [
+            "sGsShB", "UjUsph", "gHsgGe", "FkosiV", "OO/He7", "d5Slrv", "7lQQJ5", "Wuww13",
+            "rnwqXb", "wuE3Ja", "ocRH08", "cpT0Cq",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 273594 key {key}");
+        }
+        assert_eq!(agent_browser_session_label("default"), dc_intl::t("gHsgGe"));
+        assert_eq!(agent_browser_session_label(""), dc_intl::t("gHsgGe"));
+        assert_eq!(agent_browser_session_label("auth-tab"), "auth-tab");
+        // Version 1, seq=7, width=1280, height=720, payload=[0xff, 0xd8]
+        let mut buf = vec![1u8];
+        buf.extend_from_slice(&7u32.to_be_bytes());
+        buf.extend_from_slice(&1280u16.to_be_bytes());
+        buf.extend_from_slice(&720u16.to_be_bytes());
+        buf.extend_from_slice(&[0xff, 0xd8]);
+        let (seq, w, h, jpg) = parse_agent_browser_frame(&buf).expect("valid frame");
+        assert_eq!((seq, w, h, jpg), (7, 1280, 720, &[0xff, 0xd8][..]));
+        assert!(parse_agent_browser_frame(&[2, 0, 0, 0, 1, 0, 1, 0, 1, 0]).is_none());
     }
 }

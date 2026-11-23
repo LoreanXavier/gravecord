@@ -80,6 +80,8 @@ pub(crate) enum Source {
     NsfwServerInviteEmbed,
     FamilyCenter,
     DeepLinkPrompt,
+    /// Module 284778 (`NewUserAgeGate`): unclaimed / new-account birthday prompt (`QpSKow` / `EcJBEI` / `i4jeWR`).
+    ClaimAgeGate,
 }
 
 /// What the server said of the account's `nsfw_allowed`.
@@ -1174,11 +1176,13 @@ impl Root {
                     layers.push(modal::render_small(spec, cx));
                 }
                 (_, entry) => {
+                    let is_new_user = open.source == Source::ClaimAgeGate;
                     let title = match open.source {
                         Source::NsfwServer
                         | Source::NsfwServerInvite
                         | Source::NsfwServerInviteEmbed => dc_intl::t("vAymlG"),
                         Source::FamilyCenter => dc_intl::t("M7mt7m"),
+                        Source::ClaimAgeGate => dc_intl::t("QpSKow"),
                         Source::NsfwChannel | Source::DeepLinkPrompt => dc_intl::t("F8otRo"),
                     };
                     let subtitle = match open.source {
@@ -1188,11 +1192,14 @@ impl Root {
                         Source::DeepLinkPrompt => {
                             Self::birthday_link_text("age-gate-subtitle", "iyhg2s", cx)
                         }
+                        Source::ClaimAgeGate => {
+                            Self::birthday_link_text("age-gate-subtitle", "EcJBEI", cx)
+                        }
                         _ => Self::birthday_link_text("age-gate-subtitle", "n3QjDE", cx),
                     };
                     let body = self.birthday_input(
                         Owner::Modal,
-                        false,
+                        is_new_user,
                         open.error.as_deref(),
                         Some(window),
                         cx,
@@ -1206,17 +1213,15 @@ impl Root {
                     };
                     let mut submit_btn = modal::button(
                         "age-gate-submit",
-                        dc_intl::t("uBFuok"),
+                        dc_intl::t(if is_new_user { "i4jeWR" } else { "uBFuok" }),
                         tone,
                         |this, _, cx| this.birthday_modal_submit(cx),
                     );
                     submit_btn.focus = Some(open.submit_focus.clone());
-                    let spec = modal::Spec {
-                        id: "age-gate",
-                        title: title.into(),
-                        subtitle: Some(subtitle),
-                        body: Some(body),
-                        buttons: vec![
+                    let buttons = if is_new_user {
+                        vec![submit_btn]
+                    } else {
+                        vec![
                             modal::button(
                                 "age-gate-back",
                                 dc_intl::t("1MrpWO"),
@@ -1224,7 +1229,18 @@ impl Root {
                                 |this, _, cx| this.birthday_close(cx),
                             ),
                             submit_btn,
-                        ],
+                        ]
+                    };
+                    let spec = modal::Spec {
+                        id: if is_new_user {
+                            "new-user-age-gate"
+                        } else {
+                            "age-gate"
+                        },
+                        title: title.into(),
+                        subtitle: Some(subtitle),
+                        body: Some(body),
+                        buttons,
                         close: Box::new(|this, _, cx| this.birthday_close(cx)),
                     };
                     layers.push(modal::render(spec, cx));
@@ -1374,7 +1390,8 @@ impl Root {
                     "invite-embed" => Source::NsfwServerInviteEmbed,
                     "family-center" => Source::FamilyCenter,
                     "deep-link" => Source::DeepLinkPrompt,
-                    _ => return "usage: birthday open channel|server|invite|invite-embed|family-center|deep-link".to_owned(),
+                    "new-user" | "claim" => Source::ClaimAgeGate,
+                    _ => return "usage: birthday open channel|server|invite|invite-embed|family-center|deep-link|new-user".to_owned(),
                 };
                 self.birthday.staged = true;
                 self.open_birthday_modal(source, cx);
@@ -1459,6 +1476,22 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_user_age_gate_284778_intl_and_errors() {
+        for key in ["QpSKow", "EcJBEI", "rhBeKe", "i4jeWR", "TGg/2k", "udnqh6"] {
+            assert!(dc_intl::has_key(key), "missing 284778 key {key}");
+        }
+        assert_eq!(
+            failure(&json!({"date_of_birth": ["too young"]})),
+            Failure::Underage
+        );
+        assert_eq!(failure(&json!({"username": ["bad"]})), Failure::Username);
+        assert_eq!(
+            failure(&json!({"message": "try again"})),
+            Failure::Message("try again".to_owned())
+        );
+    }
 
     #[test]
     fn the_underage_dialog_reads_the_servers_message_like_module_784578() {
