@@ -317,11 +317,31 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap(px(2.))
+                .id("pick-guild-list")
+                // `maxOptionsVisible` 5 (select of module 890497): five 38px rows, 2px gaps, 4px padding.
+                .max_h(px(206.))
+                .overflow_y_scroll()
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    let on_trigger = this
+                        .tip_anchors
+                        .borrow()
+                        .get("pick-guild-dropdown")
+                        .is_some_and(|field| field.contains(&event.position));
+                    if !on_trigger
+                        && let Some(m) = this.pick_guild_settings_modal.as_mut()
+                        && m.dropdown_open
+                    {
+                        m.dropdown_open = false;
+                        cx.notify();
+                    }
+                }))
                 .children(guilds.iter().enumerate().map(|(idx, (gid, name))| {
                     let gid = *gid;
                     let is_sel = selected == Some(gid);
                     div()
                         .id(format!("pick-guild-opt-{idx}"))
+                        .flex_none()
                         .cursor_pointer()
                         .px(px(10.))
                         .py(px(8.))
@@ -385,6 +405,7 @@ impl Root {
                             .child(
                                 div()
                                     .id("pick-guild-dropdown")
+                                    .relative()
                                     .flex_1()
                                     .min_w_0()
                                     .h(px(40.))
@@ -417,7 +438,8 @@ impl Root {
                                             .truncate()
                                             .child(selected_label),
                                     )
-                                    .child(icon("shop_select_chevron", 16., "--icon-subtle")),
+                                    .child(icon("shop_select_chevron", 16., "--icon-subtle"))
+                                    .child(self.anchor_probe("pick-guild-dropdown")),
                             )
                             .child(
                                 div()

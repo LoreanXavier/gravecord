@@ -3644,6 +3644,14 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap(px(6.))
+                .when(dropdown_open, |col| {
+                    col.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        if let Some(p) = this.nitro.purchase.as_mut() {
+                            p.extra.gift_eu_dropdown_open = false;
+                        }
+                        cx.notify();
+                    }))
+                })
                 .child(
                     div()
                         .text_size(px(12.))
@@ -3685,6 +3693,7 @@ impl Root {
                             .id("gift-card-eu-country-list")
                             .max_h(px(160.))
                             .overflow_y_scroll()
+                            .on_click(|_, _, cx| cx.stop_propagation())
                             .p(px(4.))
                             .rounded(px(8.))
                             .border_1()
@@ -3696,6 +3705,7 @@ impl Root {
                             .children(EURO_CURRENCY_COUNTRIES.iter().map(|&cc| {
                                 div()
                                     .id(gpui::SharedString::from(format!("gift-eu-{cc}")))
+                                    .flex_none()
                                     .h(px(30.))
                                     .px(px(8.))
                                     .rounded(px(4.))

@@ -853,6 +853,7 @@ impl Root {
                                     .child(
                                         div()
                                             .id("hub-cat-select")
+                                            .relative()
                                             .h(px(40.))
                                             .px(px(12.))
                                             .rounded(px(8.))
@@ -878,6 +879,7 @@ impl Root {
                                                 16.,
                                                 "--interactive-icon-default",
                                             ))
+                                            .child(self.anchor_probe("hub-cat-select"))
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 if let Some(m) = this.hub_add_server_modal.as_mut()
                                                 {
@@ -890,6 +892,7 @@ impl Root {
                                     .when(dropdown_open, |col| {
                                         col.child(
                                             div()
+                                                .id("hub-cat-list")
                                                 .mt(px(4.))
                                                 .p(px(4.))
                                                 .rounded(px(8.))
@@ -899,6 +902,29 @@ impl Root {
                                                 .flex()
                                                 .flex_col()
                                                 .gap(px(2.))
+                                                // `maxOptionsVisible: 4` (module 668822): four 34px rows, 2px gaps, 4px padding.
+                                                .max_h(px(150.))
+                                                .overflow_y_scroll()
+                                                .on_click(|_, _, cx| cx.stop_propagation())
+                                                .on_mouse_down_out(cx.listener(
+                                                    |this, event: &gpui::MouseDownEvent, _, cx| {
+                                                        let on_trigger = this
+                                                            .tip_anchors
+                                                            .borrow()
+                                                            .get("hub-cat-select")
+                                                            .is_some_and(|field| {
+                                                                field.contains(&event.position)
+                                                            });
+                                                        if !on_trigger
+                                                            && let Some(m) =
+                                                                this.hub_add_server_modal.as_mut()
+                                                            && m.category_dropdown_open
+                                                        {
+                                                            m.category_dropdown_open = false;
+                                                            cx.notify();
+                                                        }
+                                                    },
+                                                ))
                                                 .children(HUB_CATEGORIES.iter().map(|cat| {
                                                     let cid = cat.id;
                                                     let selected = modal.category_id == Some(cid);
@@ -907,6 +933,7 @@ impl Root {
                                                             "hub-cat-opt-{cid}"
                                                         )))
                                                         .h(px(34.))
+                                                        .flex_none()
                                                         .px(px(10.))
                                                         .rounded(px(6.))
                                                         .when(selected, |d| {

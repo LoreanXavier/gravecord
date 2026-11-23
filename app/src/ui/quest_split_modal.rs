@@ -473,6 +473,14 @@ impl Root {
                         .flex()
                         .flex_col()
                         .gap(px(4.))
+                        .when(state.method_dropdown_open, |el| {
+                            el.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                if let Some(m) = this.quests.split_modal.as_mut() {
+                                    m.method_dropdown_open = false;
+                                    cx.notify();
+                                }
+                            }))
+                        })
                         .child(
                             div()
                                 .text_size(px(12.))
@@ -520,6 +528,8 @@ impl Root {
                         .when(state.method_dropdown_open, |dd| {
                             dd.child(
                                 div()
+                                    .id("quest-split-method-list")
+                                    .on_click(|_, _, cx| cx.stop_propagation())
                                     .p(px(4.))
                                     .rounded(px(8.))
                                     .bg(color("--background-base-lower"))
@@ -536,6 +546,7 @@ impl Root {
                                                     ConnectMethod::InGame => "quest-split-opt-ingame",
                                                     ConnectMethod::Web => "quest-split-opt-web",
                                                 })
+                                                .flex_none()
                                                 .px(px(8.))
                                                 .py(px(6.))
                                                 .rounded(px(6.))

@@ -1166,6 +1166,7 @@ impl Root {
                             "quest-platform-select-{}",
                             quest.id
                         )))
+                        .relative()
                         .w_full()
                         .h(px(36.))
                         .px(px(10.))
@@ -1192,6 +1193,7 @@ impl Root {
                             }
                             cx.notify();
                         }))
+                        .child(self.anchor_probe(format!("quest-platform-select-{}", quest.id)))
                         .child(
                             div()
                                 .flex_1()
@@ -1235,6 +1237,8 @@ impl Root {
                         )),
                 )
                 .when(selector_open, |wrap| {
+                    let qid_out = quest.id.clone();
+                    let key_out = SharedString::from(format!("quest-platform-select-{}", quest.id));
                     wrap.child(
                         deferred(
                             div()
@@ -1243,6 +1247,23 @@ impl Root {
                                     quest.id
                                 )))
                                 .occlude()
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                                .on_mouse_down_out(cx.listener(
+                                    move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                        let on_trigger = this
+                                            .tip_anchors
+                                            .borrow()
+                                            .get(&key_out)
+                                            .is_some_and(|b| b.contains(&event.position));
+                                        if !on_trigger
+                                            && this.quests.open_platform_selector.as_deref()
+                                                == Some(qid_out.as_str())
+                                        {
+                                            this.quests.open_platform_selector = None;
+                                            cx.notify();
+                                        }
+                                    },
+                                ))
                                 .absolute()
                                 .left_0()
                                 .right_0()
@@ -1512,6 +1533,7 @@ impl Root {
             .child(
                 div()
                     .id(SharedString::from(format!("quest-cta-{}", quest.id)))
+                    .relative()
                     .w_full()
                     .h(px(36.))
                     .px(px(12.))
@@ -1539,6 +1561,7 @@ impl Root {
                     .items_center()
                     .justify_center()
                     .gap(px(6.))
+                    .child(self.anchor_probe(format!("quest-cta-{}", quest.id)))
                     .child(
                         text(
                             14.,
@@ -1585,11 +1608,30 @@ impl Root {
                 let aria = platform_menu_aria_label();
                 let qid_opt = quest.id.clone();
                 let link_opt = quest.config.cta_link.clone();
+                let qid_out = quest.id.clone();
+                let key_out = SharedString::from(format!("quest-cta-{}", quest.id));
                 wrap.child(
                     deferred(
                         div()
                             .id(SharedString::from(format!("quest-play-menu-{}", quest.id)))
                             .occlude()
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .on_mouse_down_out(cx.listener(
+                                move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    let on_trigger = this
+                                        .tip_anchors
+                                        .borrow()
+                                        .get(&key_out)
+                                        .is_some_and(|b| b.contains(&event.position));
+                                    if !on_trigger
+                                        && this.quests.open_platform_menu.as_deref()
+                                            == Some(qid_out.as_str())
+                                    {
+                                        this.quests.open_platform_menu = None;
+                                        cx.notify();
+                                    }
+                                },
+                            ))
                             .absolute()
                             .left_0()
                             .right_0()

@@ -221,6 +221,7 @@ impl Root {
                         let is_selected = idx == chosen_index;
                         div()
                             .id(("entrance-sounds-server-row", idx))
+                            .flex_none()
                             .h(px(44.))
                             .px(px(12.))
                             .flex()
@@ -281,6 +282,12 @@ impl Root {
         div()
             .flex()
             .flex_col()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                if matches!(this.setting_choices.get(OPEN), Some(Choice::On(true))) {
+                    this.setting_choices.insert(OPEN, Choice::On(false));
+                    cx.notify();
+                }
+            }))
             .child(trigger)
             .children(dropdown)
             .into_any_element()

@@ -1562,6 +1562,7 @@ impl Root {
                     .mt(px(4.))
                     .max_h(px(180.))
                     .overflow_y_scroll()
+                    .on_click(|_, _, cx| cx.stop_propagation())
                     .p(px(4.))
                     .rounded(px(8.))
                     .bg(color("--background-surface-highest"))
@@ -1577,6 +1578,7 @@ impl Root {
                     list = list.child(
                         div()
                             .id(SharedString::from(format!("emoji-studio-guild-{gid}")))
+                            .flex_none()
                             .px(px(8.))
                             .py(px(6.))
                             .rounded(px(6.))
@@ -1623,6 +1625,14 @@ impl Root {
             div()
                 .flex()
                 .flex_col()
+                .when(studio.guild_menu_open, |d| {
+                    d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        if let Some(studio) = this.emoji_studio.as_mut() {
+                            studio.guild_menu_open = false;
+                        }
+                        cx.notify();
+                    }))
+                })
                 .child(field_label(dc_intl::t("9uKafS"), true))
                 .child(
                     div()

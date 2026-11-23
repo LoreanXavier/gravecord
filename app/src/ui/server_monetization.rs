@@ -1121,6 +1121,7 @@ impl Root {
                                                 .child(
                                                     div()
                                                         .id("monetization-team-select")
+                                                        .relative()
                                                         .cursor_pointer()
                                                         .h(px(40.))
                                                         .px(px(12.))
@@ -1149,6 +1150,9 @@ impl Root {
                                                             16.,
                                                             "--icon-subtle",
                                                         ))
+                                                        .child(self.anchor_probe(
+                                                            "monetization-team-select",
+                                                        ))
                                                         .on_click(cx.listener(|this, _, _, cx| {
                                                             if let Some(m) = this
                                                                 .monetization_team_onboarding_modal
@@ -1162,6 +1166,7 @@ impl Root {
                                                 .when(modal.dropdown_open, |sel| {
                                                     sel.child(
                                                         div()
+                                                            .id("monetization-team-list")
                                                             .rounded(px(8.))
                                                             .border_1()
                                                             .border_color(color("--border-subtle"))
@@ -1170,6 +1175,33 @@ impl Root {
                                                             .flex()
                                                             .flex_col()
                                                             .gap(px(2.))
+                                                            // `maxOptionsVisible` 5 (module 691885): five 38px rows, 2px gaps, 4px padding.
+                                                            .max_h(px(206.))
+                                                            .overflow_y_scroll()
+                                                            .on_click(|_, _, cx| cx.stop_propagation())
+                                                            .on_mouse_down_out(cx.listener(
+                                                                |this,
+                                                                 event: &gpui::MouseDownEvent,
+                                                                 _,
+                                                                 cx| {
+                                                                    let on_trigger = this
+                                                                        .tip_anchors
+                                                                        .borrow()
+                                                                        .get("monetization-team-select")
+                                                                        .is_some_and(|field| {
+                                                                            field.contains(&event.position)
+                                                                        });
+                                                                    if !on_trigger
+                                                                        && let Some(m) = this
+                                                                            .monetization_team_onboarding_modal
+                                                                            .as_mut()
+                                                                        && m.dropdown_open
+                                                                    {
+                                                                        m.dropdown_open = false;
+                                                                        cx.notify();
+                                                                    }
+                                                                },
+                                                            ))
                                                             .children(modal.teams.iter().enumerate().map(
                                                                 |(idx, team)| {
                                                                     let tid = team.id.clone();
@@ -1182,6 +1214,7 @@ impl Root {
                                                                             "monetization-team-opt",
                                                                             idx,
                                                                         ))
+                                                                        .flex_none()
                                                                         .cursor_pointer()
                                                                         .px(px(10.))
                                                                         .py(px(8.))

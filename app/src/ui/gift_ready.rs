@@ -198,7 +198,6 @@ impl Root {
                     .filter(|u| !u.bot)
                     .map(|u| u.username.clone())
             })
-            .take(8)
             .collect();
 
         let private_link_box = div()
@@ -294,6 +293,7 @@ impl Root {
                     .child(
                         div()
                             .id("gift-recipient-select")
+                            .relative()
                             .flex_1()
                             .min_w(px(0.))
                             .h(px(38.))
@@ -333,7 +333,8 @@ impl Root {
                                     },
                                 ),
                             )
-                            .child(icon("automod_chevron_down", 14., "--text-muted")),
+                            .child(icon("automod_chevron_down", 14., "--text-muted"))
+                            .child(self.anchor_probe("gift-recipient-select")),
                     )
                     .child(
                         div()
@@ -367,6 +368,7 @@ impl Root {
             .when(modal.picker_open && !friends.is_empty(), |col| {
                 col.child(
                     div()
+                        .id("gift-friend-list")
                         .w_full()
                         .p(px(4.))
                         .rounded(px(8.))
@@ -376,11 +378,32 @@ impl Root {
                         .flex()
                         .flex_col()
                         .gap(px(2.))
+                        // `maxOptionsVisible` 5 (select of module 890497): five 30px rows, 2px gaps, 4px padding.
+                        .max_h(px(166.))
+                        .overflow_y_scroll()
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .on_mouse_down_out(cx.listener(
+                            |this, event: &gpui::MouseDownEvent, _, cx| {
+                                let on_trigger = this
+                                    .tip_anchors
+                                    .borrow()
+                                    .get("gift-recipient-select")
+                                    .is_some_and(|field| field.contains(&event.position));
+                                if !on_trigger
+                                    && let Some(m) = this.gift_ready_modal.as_mut()
+                                    && m.picker_open
+                                {
+                                    m.picker_open = false;
+                                    cx.notify();
+                                }
+                            },
+                        ))
                         .children(friends.into_iter().map(|name| {
                             let picked = modal.selected_recipients.contains(&name);
                             let n_click = name.clone();
                             div()
                                 .id(SharedString::from(format!("gift-friend-{name}")))
+                                .flex_none()
                                 .px(px(8.))
                                 .py(px(6.))
                                 .rounded(px(4.))

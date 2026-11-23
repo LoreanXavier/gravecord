@@ -313,6 +313,14 @@ impl Root {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                if let Some(m) = this.purchase_waivers_modal.as_mut()
+                                    && m.picker_open
+                                {
+                                    m.picker_open = false;
+                                    cx.notify();
+                                }
+                            }))
                             .child(
                                 div()
                                     .text_size(px(12.))
@@ -366,6 +374,10 @@ impl Root {
                             .when(modal.picker_open, |col| {
                                 col.child(
                                     div()
+                                        .id("waivers-dir-list")
+                                        // `maxOptionsVisible` 5 (module 691885): five 34px rows, 2px gaps, 4px padding.
+                                        .max_h(px(186.))
+                                        .overflow_y_scroll()
                                         .rounded(px(8.))
                                         .border_1()
                                         .border_color(color("--border-subtle"))
@@ -374,6 +386,7 @@ impl Root {
                                         .flex()
                                         .flex_col()
                                         .gap(px(2.))
+                                        .on_click(|_, _, cx| cx.stop_propagation())
                                         .children(modal.directories.iter().enumerate().map(
                                             |(i, d)| {
                                                 let active = i == modal.selected_dir_idx;
@@ -393,6 +406,7 @@ impl Root {
                                                     .id(SharedString::from(format!(
                                                         "waiver-dir-{i}"
                                                     )))
+                                                    .flex_none()
                                                     .px(px(10.))
                                                     .py(px(6.))
                                                     .rounded(px(6.))
@@ -432,6 +446,7 @@ impl Root {
                                         ))
                                         .child(
                                             div()
+                                                .flex_none()
                                                 .px(px(10.))
                                                 .py(px(6.))
                                                 .text_size(px(13.))

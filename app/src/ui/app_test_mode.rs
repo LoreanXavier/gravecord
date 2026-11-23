@@ -289,6 +289,14 @@ impl Root {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
+                            .when(modal.origin_dropdown_open && !origin_disabled, |el| {
+                                el.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    if let Some(m) = this.app_test_mode_modal.as_mut() {
+                                        m.origin_dropdown_open = false;
+                                        cx.notify();
+                                    }
+                                }))
+                            })
                             .when(origin_disabled, |el| el.opacity(0.5))
                             .child(
                                 div()
@@ -329,6 +337,8 @@ impl Root {
                             .when(modal.origin_dropdown_open && !origin_disabled, |el| {
                                 el.child(
                                     div()
+                                        .id("app-test-mode-origin-list")
+                                        .on_click(|_, _, cx| cx.stop_propagation())
                                         .rounded(px(8.))
                                         .bg(color("--background-base-lower"))
                                         .border_1()
@@ -340,6 +350,7 @@ impl Root {
                                         .child(
                                             div()
                                                 .id("app-test-mode-origin-localhost")
+                                                .flex_none()
                                                 .px(px(10.))
                                                 .py(px(8.))
                                                 .rounded(px(6.))
@@ -363,6 +374,7 @@ impl Root {
                                         .child(
                                             div()
                                                 .id("app-test-mode-origin-proxy")
+                                                .flex_none()
                                                 .px(px(10.))
                                                 .py(px(8.))
                                                 .rounded(px(6.))

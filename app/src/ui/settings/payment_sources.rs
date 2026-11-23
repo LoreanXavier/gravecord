@@ -633,113 +633,153 @@ impl Root {
                     .when(!picker.sources.is_empty(), |col| {
                         col.child(
                             div()
-                                .id("payment-picker-select")
-                                .h(px(44.))
-                                .px(px(12.))
-                                .rounded(px(8.))
-                                .border_1()
-                                .border_color(color("--input-border-default"))
-                                .bg(color("--input-background-default"))
-                                .cursor_pointer()
                                 .flex()
-                                .items_center()
-                                .justify_between()
+                                .flex_col()
+                                .gap(px(12.))
+                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    if let Some(p) = this.payment_source_picker.as_mut()
+                                        && p.dropdown_open
+                                    {
+                                        p.dropdown_open = false;
+                                        cx.notify();
+                                    }
+                                }))
                                 .child(
                                     div()
-                                        .text_size(px(14.))
-                                        .font_weight(FontWeight(500.))
-                                        .text_color(color("--text-strong"))
-                                        .child(selected_label),
+                                        .id("payment-picker-select")
+                                        .h(px(44.))
+                                        .px(px(12.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--input-border-default"))
+                                        .bg(color("--input-background-default"))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-strong"))
+                                                .child(selected_label),
+                                        )
+                                        .child(crate::ui::icon(
+                                            "chevron_down",
+                                            16.,
+                                            "--interactive-icon-default",
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(p) = this.payment_source_picker.as_mut() {
+                                                p.dropdown_open = !p.dropdown_open;
+                                            }
+                                            cx.notify();
+                                        })),
                                 )
-                                .child(crate::ui::icon(
-                                    "chevron_down",
-                                    16.,
-                                    "--interactive-icon-default",
-                                ))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(p) = this.payment_source_picker.as_mut() {
-                                        p.dropdown_open = !p.dropdown_open;
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                        .when(dropdown_open, |col| {
-                            col.child(
-                                div()
-                                    .p(px(4.))
-                                    .rounded(px(8.))
-                                    .border_1()
-                                    .border_color(color("--border-subtle"))
-                                    .bg(color("--background-base-lower"))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .children(picker.sources.iter().enumerate().map(|(i, src)| {
-                                        let is_sel = selected_src.is_some_and(|s| s.id == src.id);
-                                        let label = picker_option_label(src, hide_pii);
-                                        let id_str = src.id.clone();
+                                .when(dropdown_open, |col| {
+                                    col.child(
                                         div()
-                                            .id(gpui::SharedString::from(format!(
-                                                "payment-picker-opt-{i}"
-                                            )))
-                                            .h(px(36.))
-                                            .px(px(10.))
-                                            .rounded(px(6.))
-                                            .when(is_sel, |d| {
-                                                d.bg(color("--background-mod-strong"))
-                                            })
-                                            .hover(|s| s.bg(color("--background-mod-subtle")))
-                                            .cursor_pointer()
+                                            .id("payment-picker-list")
+                                            // `maxOptionsVisible` 5 (module 691885): five 36px rows, 2px gaps, 4px padding.
+                                            .max_h(px(196.))
+                                            .overflow_y_scroll()
+                                            .p(px(4.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-subtle"))
+                                            .bg(color("--background-base-lower"))
                                             .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .text_size(px(14.))
-                                            .text_color(color("--text-strong"))
-                                            .child(label)
-                                            .when(is_sel, |d| {
-                                                d.child(crate::ui::icon(
+                                            .flex_col()
+                                            .gap(px(2.))
+                                            .on_click(|_, _, cx| cx.stop_propagation())
+                                            .children(picker.sources.iter().enumerate().map(
+                                                |(i, src)| {
+                                                    let is_sel = selected_src
+                                                        .is_some_and(|s| s.id == src.id);
+                                                    let label = picker_option_label(src, hide_pii);
+                                                    let id_str = src.id.clone();
+                                                    div()
+                                                        .id(gpui::SharedString::from(format!(
+                                                            "payment-picker-opt-{i}"
+                                                        )))
+                                                        .flex_none()
+                                                        .h(px(36.))
+                                                        .px(px(10.))
+                                                        .rounded(px(6.))
+                                                        .when(is_sel, |d| {
+                                                            d.bg(color("--background-mod-strong"))
+                                                        })
+                                                        .hover(|s| {
+                                                            s.bg(color("--background-mod-subtle"))
+                                                        })
+                                                        .cursor_pointer()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .text_size(px(14.))
+                                                        .text_color(color("--text-strong"))
+                                                        .child(label)
+                                                        .when(is_sel, |d| {
+                                                            d.child(crate::ui::icon(
                                                     "select_check",
                                                     14.,
                                                     "--control-primary-background-default",
                                                 ))
-                                            })
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(p) = this.payment_source_picker.as_mut()
-                                                {
-                                                    p.selected_id = Some(id_str.clone());
-                                                    p.dropdown_open = false;
-                                                }
-                                                cx.notify();
-                                            }))
-                                    }))
-                                    .child(div().my(px(4.)).h(px(1.)).bg(color("--border-subtle")))
-                                    .child(
-                                        div()
-                                            .id(NEW_PAYMENT_SOURCE_ID)
-                                            .h(px(36.))
-                                            .px(px(10.))
-                                            .rounded(px(6.))
-                                            .hover(|s| s.bg(color("--background-mod-subtle")))
-                                            .cursor_pointer()
-                                            .flex()
-                                            .items_center()
-                                            .text_size(px(14.))
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--text-link"))
-                                            .child(dc_intl::t("eQ2bLp"))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.payment_source_picker = None;
-                                                let _ =
-                                                    this.requests.send(
-                                                        payment_source_creation_context_request(),
-                                                    );
-                                                this.add_payment_method_modal =
-                                                    Some(Box::new(AddPaymentMethodState::new()));
-                                                cx.notify();
-                                            })),
-                                    ),
-                            )
-                        })
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                if let Some(p) = this
+                                                                    .payment_source_picker
+                                                                    .as_mut()
+                                                                {
+                                                                    p.selected_id =
+                                                                        Some(id_str.clone());
+                                                                    p.dropdown_open = false;
+                                                                }
+                                                                cx.notify();
+                                                            },
+                                                        ))
+                                                },
+                                            ))
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .my(px(4.))
+                                                    .h(px(1.))
+                                                    .bg(color("--border-subtle")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id(NEW_PAYMENT_SOURCE_ID)
+                                                    .flex_none()
+                                                    .h(px(36.))
+                                                    .px(px(10.))
+                                                    .rounded(px(6.))
+                                                    .hover(|s| {
+                                                        s.bg(color("--background-mod-subtle"))
+                                                    })
+                                                    .cursor_pointer()
+                                                    .flex()
+                                                    .items_center()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(500.))
+                                                    .text_color(color("--text-link"))
+                                                    .child(dc_intl::t("eQ2bLp"))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.payment_source_picker = None;
+                                                        let _ = this.requests.send(
+                                                            payment_source_creation_context_request(
+                                                            ),
+                                                        );
+                                                        this.add_payment_method_modal = Some(
+                                                            Box::new(AddPaymentMethodState::new()),
+                                                        );
+                                                        cx.notify();
+                                                    })),
+                                            ),
+                                    )
+                                }),
+                        )
                     })
                     .when_some(notice, |col, (text, is_error)| {
                         col.child(

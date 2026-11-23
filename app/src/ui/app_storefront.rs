@@ -1980,6 +1980,7 @@ impl Root {
                                             .child(
                                                 div()
                                                     .id("app-guild-sub-select-trigger")
+                                                    .relative()
                                                     .cursor_pointer()
                                                     .min_h(px(44.))
                                                     .px(px(12.))
@@ -2055,6 +2056,9 @@ impl Root {
                                                         16.,
                                                         "--icon-subtle",
                                                     ))
+                                                    .child(self.anchor_probe(
+                                                        "app-guild-sub-select-trigger",
+                                                    ))
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         if let Some(m) = this
                                                             .guild_sub_selection_modal
@@ -2068,6 +2072,7 @@ impl Root {
                                             .when(modal.dropdown_open, |col| {
                                                 col.child(
                                                     div()
+                                                        .id("app-guild-sub-list")
                                                         .rounded(px(8.))
                                                         .border_1()
                                                         .border_color(color("--border-subtle"))
@@ -2076,12 +2081,40 @@ impl Root {
                                                         .flex()
                                                         .flex_col()
                                                         .gap(px(2.))
+                                                        // `maxVisibleItems` 7 (module 444550): seven 38px rows, 2px gaps, 4px padding.
+                                                        .max_h(px(286.))
+                                                        .overflow_y_scroll()
+                                                        .on_click(|_, _, cx| cx.stop_propagation())
+                                                        .on_mouse_down_out(cx.listener(
+                                                            |this,
+                                                             event: &gpui::MouseDownEvent,
+                                                             _,
+                                                             cx| {
+                                                                let on_trigger = this
+                                                                    .tip_anchors
+                                                                    .borrow()
+                                                                    .get("app-guild-sub-select-trigger")
+                                                                    .is_some_and(|field| {
+                                                                        field.contains(&event.position)
+                                                                    });
+                                                                if !on_trigger
+                                                                    && let Some(m) = this
+                                                                        .guild_sub_selection_modal
+                                                                        .as_mut()
+                                                                    && m.dropdown_open
+                                                                {
+                                                                    m.dropdown_open = false;
+                                                                    cx.notify();
+                                                                }
+                                                            },
+                                                        ))
                                                         .children(modal.guilds.iter().map(|g| {
                                                             let gid = g.id;
                                                             let active =
                                                                 modal.selected_guild_id == Some(gid);
                                                             div()
                                                                 .id(("app-guild-sub-opt", gid))
+                                                                .flex_none()
                                                                 .cursor_pointer()
                                                                 .px(px(10.))
                                                                 .py(px(8.))

@@ -984,6 +984,15 @@ impl Root {
                                     .flex()
                                     .flex_col()
                                     .gap(px(6.))
+                                    .when(modal.picker_open, |col| {
+                                        col.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                            if let Some(m) = this.shop_checkout_review_modal.as_mut()
+                                            {
+                                                m.picker_open = false;
+                                            }
+                                            cx.notify();
+                                        }))
+                                    })
                                     .child(
                                         div()
                                             .id("checkout-review-method")
@@ -1024,6 +1033,7 @@ impl Root {
                                                 .id("checkout-method-list")
                                                 .max_h(px(160.))
                                                 .overflow_y_scroll()
+                                                .on_click(|_, _, cx| cx.stop_propagation())
                                                 .p(px(4.))
                                                 .rounded(px(8.))
                                                 .border_1()
@@ -1039,6 +1049,7 @@ impl Root {
                                                             .id(SharedString::from(format!(
                                                                 "checkout-method-opt-{i}"
                                                             )))
+                                                            .flex_none()
                                                             .h(px(32.))
                                                             .px(px(10.))
                                                             .rounded(px(6.))
@@ -1105,6 +1116,16 @@ impl Root {
                                         .flex()
                                         .flex_col()
                                         .gap(px(6.))
+                                        .when(modal.currency_picker_open, |col| {
+                                            col.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                                if let Some(m) =
+                                                    this.shop_checkout_review_modal.as_mut()
+                                                {
+                                                    m.currency_picker_open = false;
+                                                }
+                                                cx.notify();
+                                            }))
+                                        })
                                         .child(
                                             div()
                                                 .text_size(px(12.))
@@ -1152,6 +1173,7 @@ impl Root {
                                                     .id("checkout-currency-list")
                                                     .max_h(px(150.))
                                                     .overflow_y_scroll()
+                                                    .on_click(|_, _, cx| cx.stop_propagation())
                                                     .p(px(4.))
                                                     .rounded(px(8.))
                                                     .border_1()
@@ -1174,6 +1196,7 @@ impl Root {
                                                                     .id(SharedString::from(format!(
                                                                         "checkout-currency-opt-{i}"
                                                                     )))
+                                                                    .flex_none()
                                                                     .h(px(32.))
                                                                     .px(px(10.))
                                                                     .rounded(px(6.))

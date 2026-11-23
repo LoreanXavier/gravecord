@@ -239,6 +239,7 @@ impl Root {
                             let selected = opt == choice;
                             div()
                                 .id(format!("guild-theme-opt-{idx}"))
+                                .flex_none()
                                 .cursor_pointer()
                                 .px(px(10.))
                                 .py(px(8.))
@@ -378,42 +379,57 @@ impl Root {
                                     .gap(px(12.))
                                     .child(
                                         div()
-                                            .id("guild-theme-select")
-                                            .aria_label(dc_intl::t("Q7mm4g"))
-                                            .cursor_pointer()
-                                            .h(px(40.))
-                                            .px(px(12.))
-                                            .rounded(px(8.))
-                                            .border_1()
-                                            .border_color(color("--border-subtle"))
-                                            .bg(color("--background-base-lowest"))
                                             .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .gap(px(8.))
-                                            .on_click(cx.listener(|this, _, _, cx| {
+                                            .flex_col()
+                                            .gap(px(12.))
+                                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                                 if let Some(m) = this.guild_theme_nux_modal.as_mut()
+                                                    && m.dropdown_open
                                                 {
-                                                    m.dropdown_open = !m.dropdown_open;
+                                                    m.dropdown_open = false;
+                                                    cx.notify();
                                                 }
-                                                cx.notify();
                                             }))
                                             .child(
                                                 div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .text_size(px(14.))
-                                                    .text_color(color("--text-strong"))
-                                                    .truncate()
-                                                    .child(choice.label()),
+                                                    .id("guild-theme-select")
+                                                    .aria_label(dc_intl::t("Q7mm4g"))
+                                                    .cursor_pointer()
+                                                    .h(px(40.))
+                                                    .px(px(12.))
+                                                    .rounded(px(8.))
+                                                    .border_1()
+                                                    .border_color(color("--border-subtle"))
+                                                    .bg(color("--background-base-lowest"))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .gap(px(8.))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        if let Some(m) =
+                                                            this.guild_theme_nux_modal.as_mut()
+                                                        {
+                                                            m.dropdown_open = !m.dropdown_open;
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .text_size(px(14.))
+                                                            .text_color(color("--text-strong"))
+                                                            .truncate()
+                                                            .child(choice.label()),
+                                                    )
+                                                    .child(icon(
+                                                        "shop_select_chevron",
+                                                        16.,
+                                                        "--icon-subtle",
+                                                    )),
                                             )
-                                            .child(icon(
-                                                "shop_select_chevron",
-                                                16.,
-                                                "--icon-subtle",
-                                            )),
+                                            .children(dropdown_menu),
                                     )
-                                    .children(dropdown_menu)
                                     .when(is_personal, |col| {
                                         col.child(
                                             div()
