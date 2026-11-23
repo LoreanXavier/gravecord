@@ -28,13 +28,11 @@ pub struct Game {
     pub application_id: Option<String>,
 }
 
-/// The encoder's target rate for a quality: the share ladder's top rate for the size and frame rate (module 731854
-/// constants through `max_bitrate`), scaled by the page's percent between the floor of the ladder and that top.
-pub fn target_bitrate(resolution: Resolution, fps: u32, percent: u32) -> u32 {
-    let top = screen::max_bitrate(resolution, fps);
-    let percent = percent.clamp(1, 100);
-    let bottom = screen::BITRATE_MIN.min(top);
-    bottom + (top - bottom) * (percent - 1) / 99
+/// The encoder's target rate for the page's bitrate percent, in bits per second: `en` of module 31595, which
+/// `setClipsSource` hands the clips recorder as `bitrateKbps`: `round(6000 * clamp(percent, 10, 100) / 100)` kb/s, the
+/// same at every size and frame rate (4.5 Mb/s at the default 75 %).
+pub fn target_bitrate(percent: u32) -> u32 {
+    (6_000 * percent.clamp(10, 100) + 50) / 100 * 1_000
 }
 
 /// The box `setClipsQualitySettings(width, height, ...)` gets for a page resolution (module 516130
@@ -96,14 +94,27 @@ pub fn settings_for(
         width: out_width,
         height: out_height,
         fps,
-        bitrate: target_bitrate(resolution, fps, percent),
+        bitrate: target_bitrate(percent),
         cursor: false,
         audio: false,
     })
 }
 
-/// How long a newly detected game settles before window capture starts so splash screens clear.
-pub const NEW_GAME_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long after a game is first detected its window capture starts: `handleClipsInitOnGamesChange` of module
+/// 516130 fires the clips init `setTimeout(..., 3e4)` after a `RUNNING_GAMES_CHANGE` that added the visible game, and
+/// at once for a game that was already running.
+pub const NEW_GAME_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long ago the visible game was first detected, for [`Situation::game_age`]: from its `first_seen` time in the
+/// running list, or from `now` when the list has no time for it.
+pub fn game_age(
+    first_seen: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> std::time::Duration {
+    first_seen.map_or(std::time::Duration::ZERO, |seen| {
+        now.saturating_duration_since(seen)
+    })
+}
 
 /// The capture that runs: its game, the quality it started with and why it ended, if it did.
 pub type Running<'a> = (&'a Game, (u32, u32, u32), Option<String>);
@@ -317,17 +328,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_target_rate_runs_from_the_floor_to_the_ladders_top() {
-        // 1080p60 is at the top rate of 9 Mb/s.
-        assert_eq!(target_bitrate(Resolution::P1080, 60, 100), 9_000_000);
-        assert_eq!(target_bitrate(Resolution::P1080, 60, 1), 500_000);
-        let recommended = target_bitrate(Resolution::P1080, 60, 75);
-        assert!(recommended > 6_000_000 && recommended < 7_000_000);
-        // 720p30 tops out at 3.5 Mb/s.
-        assert_eq!(target_bitrate(Resolution::P720, 30, 100), 3_500_000);
-        // A percent outside the page's range is held to it.
-        assert_eq!(target_bitrate(Resolution::P720, 30, 500), 3_500_000);
-        assert_eq!(target_bitrate(Resolution::P720, 30, 0), 500_000);
+    fn the_target_rate_is_the_official_share_of_six_megabits() {
+        // Module 31595 `en`: 6000 kb/s times the percent, held to 10..=100.
+        assert_eq!(target_bitrate(100), 6_000_000);
+        assert_eq!(target_bitrate(75), 4_500_000);
+        assert_eq!(target_bitrate(50), 3_000_000);
+        assert_eq!(target_bitrate(25), 1_500_000);
+        assert_eq!(target_bitrate(10), 600_000);
+        assert_eq!(target_bitrate(0), 600_000);
+        assert_eq!(target_bitrate(500), 6_000_000);
+        // Math.round of the kb/s: 33 % is 1980 kb/s.
+        assert_eq!(target_bitrate(33), 1_980_000);
     }
 
     #[test]
@@ -366,9 +377,12 @@ mod tests {
         assert!(big.validate().is_ok());
         let low = settings_for(7, 2560, 1440, 720, 30, 75).unwrap();
         assert_eq!((low.width, low.height, low.fps), (1280, 720, 30));
-        assert!(low.bitrate < big.bitrate);
+        // The rate follows the slider only, as official.
+        assert_eq!(low.bitrate, big.bitrate);
+        assert_eq!(big.bitrate, 4_500_000);
         let quiet = settings_for(7, 2560, 1440, 720, 30, 10).unwrap();
         assert!(quiet.bitrate < low.bitrate, "the slider lowers the rate");
+        assert!(quiet.validate().is_ok());
     }
 
     #[test]
@@ -414,13 +428,21 @@ mod tests {
     }
 
     #[test]
-    fn a_new_game_waits_short_delay() {
+    fn a_new_game_waits_thirty_seconds_from_its_detection() {
         let g = game(1);
         let mut s = base(&g);
-        s.game_age = std::time::Duration::from_secs(2);
+        s.game_age = std::time::Duration::from_secs(29);
         assert!(!plan(&s).start);
-        s.game_age = std::time::Duration::from_secs(3);
+        s.game_age = std::time::Duration::from_secs(30);
         assert!(plan(&s).start);
+        // The age counts from the first detection, not from becoming the visible game.
+        let now = std::time::Instant::now();
+        let seen = now - std::time::Duration::from_secs(45);
+        assert_eq!(
+            game_age(Some(seen), now),
+            std::time::Duration::from_secs(45)
+        );
+        assert_eq!(game_age(None, now), std::time::Duration::ZERO);
     }
 
     #[test]

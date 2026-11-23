@@ -267,6 +267,23 @@ impl Root {
         self.persist_detect_store();
         // The clip path records the visible game's window (module 489496: `getVisibleGame()?.windowHandle`).
         #[cfg(windows)]
+        {
+            // When each running game was first seen: a newly added game's clips wait from then (module 516130).
+            let now = std::time::Instant::now();
+            let running: Vec<u32> = self
+                .detect
+                .store
+                .running_games()
+                .iter()
+                .filter_map(|game| game.pid)
+                .collect();
+            let detected = &mut self.clips.engine.detected;
+            detected.retain(|pid, _| running.contains(pid));
+            for pid in running {
+                detected.entry(pid).or_insert(now);
+            }
+        }
+        #[cfg(windows)]
         if !self.clips.engine.test_game {
             let resolve = |game: &Game| {
                 let pid = game.pid?;

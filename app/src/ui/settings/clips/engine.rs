@@ -89,6 +89,9 @@ pub(in crate::ui) struct Engine {
     pub game_since: Option<std::time::Instant>,
     #[cfg(windows)]
     pub game_delay: Duration,
+    /// When each running game's process was first detected (`RUNNING_GAMES_CHANGE` `added`), by pid.
+    #[cfg(windows)]
+    pub detected: std::collections::HashMap<u32, std::time::Instant>,
 }
 
 impl Engine {
@@ -224,19 +227,21 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         if self.clips.engine.game != game {
-            // A game that is new to the list waits before its window is captured (module 516130); a test game does not.
+            // A game newly added to the running list waits 30 s from its detection before its window is captured; one
+            // that was already running starts at once (module 516130). A test game does not wait.
             let new_process = self.clips.engine.game.as_ref().map(|game| game.pid)
                 != game.as_ref().map(|game| game.pid);
             if new_process {
-                self.clips.engine.game_since = Some(std::time::Instant::now());
+                let now = std::time::Instant::now();
+                self.clips.engine.game_since = Some(
+                    game.as_ref()
+                        .and_then(|game| self.clips.engine.detected.get(&game.pid).copied())
+                        .unwrap_or(now),
+                );
                 self.clips.engine.game_delay = if self.clips.engine.test_game {
                     Duration::ZERO
                 } else {
-                    let age = game
-                        .as_ref()
-                        .and_then(|game| dc_detect::process_age(game.pid))
-                        .unwrap_or(Duration::ZERO);
-                    crate::clips_capture::NEW_GAME_DELAY.saturating_sub(age)
+                    crate::clips_capture::NEW_GAME_DELAY
                 };
             }
             self.clips.engine.note(match &game {
@@ -319,9 +324,7 @@ impl Root {
             own_stream,
             location_set,
             game: game.as_ref(),
-            game_age: engine
-                .game_since
-                .map_or(Duration::ZERO, |since| since.elapsed()),
+            game_age: crate::clips_capture::game_age(engine.game_since, std::time::Instant::now()),
             delay: engine.game_delay,
             quality: wanted_quality,
             running: engine
