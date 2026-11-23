@@ -4,7 +4,7 @@
 //! rate changes folded into the encode loop. Transport, encryption and the epoch handshakes are not part of this crate.
 
 use super::audio::{AudioCapture, AudioChunk};
-use super::capture::{Capture, Frame};
+use super::capture::{Capture, Frame, stale_step};
 use super::{LocalSink, Settings, thumbnail_from};
 use crate::convert::{Chroma, PixelOrder, Raw, SourceMeta, downscale_rgba, to_yuv420_vec};
 use crate::encode::{Backend, Config, Content, Encoder, Profile};
@@ -348,7 +348,7 @@ fn run(
         closed.stop.store(true, Ordering::Release);
     };
     // Dropped when this function returns, which removes the handlers before the channel goes away.
-    let _capture = Capture::start(
+    let capture = Capture::start(
         settings.source,
         settings.cursor,
         settings.fps,
@@ -377,6 +377,9 @@ fn run(
     let mut keyframe_wait: Option<Instant> = None;
     let mut stats = ShareStats::new();
     let mut last_at: Option<Duration> = None;
+    // The last fresh frame and the stale-source steps taken since.
+    let mut last_fresh = Instant::now();
+    let mut stale_taken = 0u32;
 
     while !state.stop.load(Ordering::Acquire) {
         let timeout = if keyframe_wait.is_some() {
@@ -396,12 +399,22 @@ fn run(
                 // Allow the capture thread to read back the next cadence-admitted frame in parallel with YUV/encode.
                 state.pending.store(false, Ordering::Release);
                 keyframe_wait = None;
+                last_fresh = Instant::now();
+                stale_taken = 0;
                 last_frame = Some(frame);
                 last_frame.as_mut()
             }
             None => {
                 if let Some(enc) = encoder.as_mut() {
                     drain_pending_outputs(state, enc, &mut video, &mut last_encoded, &mut stats)?;
+                }
+                // Held frames are skipped on purpose; only a source that stopped delivering is stale.
+                if state.held.load(Ordering::Acquire) {
+                    last_fresh = Instant::now();
+                } else if let Some(step) = stale_step(last_fresh.elapsed(), stale_taken) {
+                    tracing::debug!(?step, "screen share source is stale");
+                    capture.refresh(step);
+                    stale_taken += 1;
                 }
                 // A still desktop: repeat the last picture for a keyframe request or to keep the stream alive.
                 let wanted = state.keyframe.load(Ordering::Acquire);

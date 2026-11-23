@@ -186,8 +186,39 @@ struct Reader {
     buffers: Arc<BufferPool>,
 }
 
+/// The official `graphicsCaptureStaleFrameTimeoutMs` (`eJ` = 5 s in module 754712, passed to `setGoLiveSource`): how
+/// long a Windows Graphics Capture source may deliver nothing before the capturer acts on it.
+pub(crate) const GRAPHICS_CAPTURE_STALE: Duration = Duration::from_secs(5);
+
+/// What a share does about a source that stopped delivering frames. The native capturer logs both, in this order of
+/// words: "stale frame, asking for repaint" and "stale frame, resetting".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stale {
+    /// Ask the shared window to paint again, so the compositor hands over a new frame.
+    Repaint,
+    /// Recreate the frame pool, as after a resize.
+    Reset,
+}
+
+/// The step due after `since_fresh` without a new frame when `taken` steps have already been taken since the last
+/// fresh one: a repaint after one timeout, then a reset after each further one.
+pub(crate) fn stale_step(since_fresh: Duration, taken: u32) -> Option<Stale> {
+    if since_fresh < GRAPHICS_CAPTURE_STALE.saturating_mul(taken.saturating_add(1)) {
+        return None;
+    }
+    Some(if taken == 0 {
+        Stale::Repaint
+    } else {
+        Stale::Reset
+    })
+}
+
+type SharedReader = Arc<Mutex<Locked<(Reader, Box<dyn FnMut(Frame) + Send>)>>>;
+
 pub(crate) struct Capture {
     pool: Direct3D11CaptureFramePool,
+    reader: SharedReader,
+    window: Option<u64>,
     session: GraphicsCaptureSession,
     item: GraphicsCaptureItem,
     arrived: i64,
@@ -259,7 +290,7 @@ impl Capture {
         });
         // Hide the yellow border where the system allows it; older builds keep the default.
         let _ = session.SetIsBorderRequired(false);
-        let reader = Arc::new(Mutex::new(Locked((
+        let reader: SharedReader = Arc::new(Mutex::new(Locked((
             Reader {
                 device,
                 context,
@@ -319,12 +350,60 @@ impl Capture {
         session.StartCapture().map_err(|e| refusal(&e))?;
         Ok(Self {
             pool,
+            reader,
+            window: match source {
+                SourceId::Window(handle) => Some(handle),
+                SourceId::Display(_) => None,
+            },
             session,
             item,
             arrived,
             closed,
             _unthrottled: crate::throttle::Guard::acquire(),
         })
+    }
+}
+
+impl Capture {
+    /// Acts on a stale source (see [`stale_step`]).
+    pub(crate) fn refresh(&self, step: Stale) {
+        match step {
+            Stale::Repaint => {
+                // A display has nothing to repaint: a still desktop is simply still.
+                let Some(handle) = self.window else { return };
+                // SAFETY: a stale handle makes the call fail; nothing is read back.
+                unsafe {
+                    let _ = windows::Win32::Graphics::Gdi::RedrawWindow(
+                        Some(HWND(handle as usize as _)),
+                        None,
+                        None,
+                        windows::Win32::Graphics::Gdi::RDW_INVALIDATE
+                            | windows::Win32::Graphics::Gdi::RDW_FRAME
+                            | windows::Win32::Graphics::Gdi::RDW_ALLCHILDREN,
+                    );
+                }
+            }
+            Stale::Reset => {
+                let Ok(size) = self.item.Size() else { return };
+                if size.Width <= 0 || size.Height <= 0 {
+                    return;
+                }
+                let mut guard = self.reader.lock().unwrap_or_else(|e| e.into_inner());
+                let Locked((reader, _)) = &mut *guard;
+                if self
+                    .pool
+                    .Recreate(
+                        &reader.d3d,
+                        DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                        POOL_BUFFERS,
+                        size,
+                    )
+                    .is_ok()
+                {
+                    reader.last_size = size;
+                }
+            }
+        }
     }
 }
 
@@ -725,6 +804,19 @@ mod tests {
             checked += 1;
         }
         println!("{checked} windows checked");
+    }
+
+    #[test]
+    fn a_stale_source_is_repainted_after_five_seconds_then_reset_every_five() {
+        let s = Duration::from_secs;
+        assert_eq!(GRAPHICS_CAPTURE_STALE, s(5));
+        assert_eq!(stale_step(Duration::from_millis(4_999), 0), None);
+        assert_eq!(stale_step(s(5), 0), Some(Stale::Repaint));
+        // Once repainted, nothing until a second timeout has passed, then a reset per timeout.
+        assert_eq!(stale_step(s(7), 1), None);
+        assert_eq!(stale_step(s(10), 1), Some(Stale::Reset));
+        assert_eq!(stale_step(s(12), 2), None);
+        assert_eq!(stale_step(s(15), 2), Some(Stale::Reset));
     }
 
     #[test]
