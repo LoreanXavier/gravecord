@@ -6959,7 +6959,10 @@ impl Root {
                                     ),
                             )
                             .child(div().flex_1())
-                            .child(
+                            // Module 182179 wraps the button in the "Invite to Server" tooltip (`Sd8Ixw`, bottom).
+                            .child(self.with_tip(
+                                "guild-header-invite",
+                                Tip::text(dc_intl::t("Sd8Ixw"), Side::Bottom),
                                 div()
                                     .id("guild-header-invite")
                                     .flex_none()
@@ -6971,9 +6974,13 @@ impl Root {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .on_click(cx.listener(|this, _, _, cx| this.header_invite(cx)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.tip = None;
+                                        this.header_invite(cx)
+                                    }))
                                     .child(icon("invite", 20., "--text-strong")),
-                            ),
+                                cx,
+                            )),
                     ),
             )
             .children(self.channel_notice(cx))
