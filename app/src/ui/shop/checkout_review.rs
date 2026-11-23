@@ -91,6 +91,119 @@ pub(crate) enum OrderCreateState {
     Error,
 }
 
+/// Module 328056 (`26279.Re`): Order v2 status enum used during signing & polling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum OrderStatus {
+    Unspecified = 0,
+    Draft = 1,
+    Signed = 2,
+    Discarded = 3,
+    SigningInProgress = 4,
+    SigningFailed = 5,
+}
+
+/// Module 328056 (`K`): polling backoff schedule (ms) for `GET /billing/orders/{id}` while signing.
+#[allow(dead_code)]
+pub(crate) const ORDER_SIGN_POLL_BACKOFF_MS: [u64; 5] = [1_000, 2_000, 4_000, 8_000, 10_000];
+
+/// Module 328056 (`158317`): polling backoff schedule (ms) for `GET /billing/orders/{id}/entitlements`.
+#[allow(dead_code)]
+pub(crate) const ORDER_ENTITLEMENTS_POLL_BACKOFF_MS: [u64; 6] =
+    [250, 500, 1_000, 1_500, 2_500, 4_250];
+
+/// Module 328056 (`khEaRI`): returns `"Unable to confirm payment method"` when a settled order is not `Signed`.
+#[allow(dead_code)]
+pub(crate) fn order_confirm_error_message(status: OrderStatus) -> Option<&'static str> {
+    if status == OrderStatus::Signed {
+        None
+    } else {
+        Some(dc_intl::t("khEaRI"))
+    }
+}
+
+/// Module 328056 (`e9` / `te`): Back button is hidden for open invoices or non-gift one-time purchases.
+#[allow(dead_code)]
+pub(crate) fn should_show_checkout_back_button(
+    has_back_step: bool,
+    has_open_invoice: bool,
+    is_one_time: bool,
+    is_gift: bool,
+) -> bool {
+    let suppress = has_open_invoice || (is_one_time && !is_gift);
+    has_back_step && !suppress
+}
+
+/// Module 328056 (`184684.signOrder`): `POST /billing/orders/{order_id}/sign`.
+#[allow(dead_code)]
+pub(crate) fn sign_order_request(
+    order_id: &str,
+    expected_revision: Option<u64>,
+    purchase_token: Option<&str>,
+) -> crate::net::Request {
+    let mut body = serde_json::Map::new();
+    if let Some(rev) = expected_revision {
+        body.insert("expected_revision".to_owned(), serde_json::json!(rev));
+    }
+    if let Some(tok) = purchase_token {
+        body.insert("purchase_token".to_owned(), serde_json::json!(tok));
+    }
+    crate::net::Request::Rest {
+        key: Some(format!("billing:order-sign:{order_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/billing/orders/{order_id}/sign"),
+        body: Some(serde_json::Value::Object(body)),
+    }
+}
+
+/// Module 328056: `GET /billing/orders/{order_id}` poll request.
+#[allow(dead_code)]
+pub(crate) fn get_order_request(order_id: &str) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("billing:order-get:{order_id}")),
+        method: reqwest::Method::GET,
+        route: format!("/billing/orders/{order_id}"),
+        body: None,
+    }
+}
+
+/// Module 328056: `GET /billing/orders/{order_id}/entitlements` settlement poll request.
+#[allow(dead_code)]
+pub(crate) fn get_order_entitlements_request(order_id: &str) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("billing:order-entitlements:{order_id}")),
+        method: reqwest::Method::GET,
+        route: format!("/billing/orders/{order_id}/entitlements"),
+        body: None,
+    }
+}
+
+/// Module 328056 (`830382`): legacy `POST /store/skus/{sku_id}/purchase` for one-time & gift SKUs.
+#[allow(dead_code)]
+pub(crate) fn purchase_sku_request(
+    sku_id: &str,
+    is_gift: bool,
+    payment_source_id: Option<&str>,
+    expected_amount: i64,
+    currency: &str,
+) -> crate::net::Request {
+    let mut body = serde_json::json!({
+        "gift": is_gift,
+        "expected_amount": expected_amount,
+        "expected_currency": currency,
+        "quantity": 1,
+    });
+    if let Some(ps) = payment_source_id {
+        body["payment_source_id"] = serde_json::json!(ps);
+    }
+    crate::net::Request::Rest {
+        key: Some(format!("billing:sku-purchase:{sku_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/store/skus/{sku_id}/purchase"),
+        body: Some(body),
+    }
+}
+
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) struct ShopCheckoutReviewModal {
@@ -1458,7 +1571,14 @@ impl Root {
     ) -> String {
         let fiat_mode = matches!(
             arg,
-            "express" | "gift" | "free" | "currency" | "locked" | "pix" | "auth-wait"
+            "express"
+                | "gift"
+                | "free"
+                | "currency"
+                | "locked"
+                | "pix"
+                | "auth-wait"
+                | "sign-error"
         );
         self.shop_checkout_review_modal = Some(ShopCheckoutReviewModal {
             product_name: "Starlight Avatar Frame".to_owned(),
@@ -1483,6 +1603,7 @@ impl Root {
                     | "pix"
                     | "order-error"
                     | "auth-wait"
+                    | "sign-error"
             ),
             is_gift: arg == "gift",
             total_cents: if arg == "free" { Some(0) } else { Some(599) },
@@ -1511,10 +1632,14 @@ impl Root {
             locked_subscription_method: (arg == "locked").then_some(CheckoutMethod::Card),
             country: (arg == "pix").then(|| "BR".to_owned()),
             gift_card_checked: false,
-            awaiting_auth: arg == "auth-wait",
+            awaiting_auth: matches!(arg, "auth-wait" | "sign-error"),
             auth_redirect_url: (arg == "auth-wait")
                 .then(|| "https://checkout.stripe.com/3ds-verify".to_owned()),
-            auth_error: None,
+            auth_error: (arg == "sign-error").then(|| {
+                order_confirm_error_message(OrderStatus::SigningFailed)
+                    .unwrap()
+                    .to_owned()
+            }),
         });
         cx.notify();
         format!("shop-checkout-review: {arg}")
@@ -1644,5 +1769,47 @@ mod tests {
         // 891197 & 999784
         assert_eq!(dc_intl::t("eALkIR"), "Waiting for authentication...");
         assert_eq!(dc_intl::t("Kv6Z4I"), "Secure");
+    }
+
+    #[test]
+    fn checkout_order_signing_328056_routes_and_error_copy() {
+        assert_eq!(ORDER_SIGN_POLL_BACKOFF_MS, [1000, 2000, 4000, 8000, 10000]);
+        assert_eq!(
+            ORDER_ENTITLEMENTS_POLL_BACKOFF_MS,
+            [250, 500, 1000, 1500, 2500, 4250]
+        );
+        assert_eq!(order_confirm_error_message(OrderStatus::Signed), None);
+        assert_eq!(
+            order_confirm_error_message(OrderStatus::SigningFailed),
+            Some(dc_intl::t("khEaRI"))
+        );
+        assert!(should_show_checkout_back_button(true, false, false, false));
+        assert!(should_show_checkout_back_button(true, false, true, true));
+        assert!(!should_show_checkout_back_button(true, false, true, false));
+        assert!(!should_show_checkout_back_button(true, true, false, false));
+        assert!(matches!(
+            sign_order_request("ord-1", Some(2), Some("tok")),
+            crate::net::Request::Rest { method, route, body: Some(ref b), .. }
+                if method == reqwest::Method::POST
+                    && route == "/billing/orders/ord-1/sign"
+                    && b["expected_revision"] == 2
+        ));
+        assert!(matches!(
+            get_order_request("ord-1"),
+            crate::net::Request::Rest { method, route, .. }
+                if method == reqwest::Method::GET && route == "/billing/orders/ord-1"
+        ));
+        assert!(matches!(
+            get_order_entitlements_request("ord-1"),
+            crate::net::Request::Rest { method, route, .. }
+                if method == reqwest::Method::GET && route == "/billing/orders/ord-1/entitlements"
+        ));
+        assert!(matches!(
+            purchase_sku_request("sku-7", true, Some("ps-1"), 599, "usd"),
+            crate::net::Request::Rest { method, route, body: Some(ref b), .. }
+                if method == reqwest::Method::POST
+                    && route == "/store/skus/sku-7/purchase"
+                    && b["gift"] == true
+        ));
     }
 }

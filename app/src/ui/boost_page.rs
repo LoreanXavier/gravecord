@@ -102,6 +102,58 @@ pub(crate) struct HowBoostingWorksModal {
     pub captions_enabled: bool,
     pub position_ms: u64,
     pub cues: Vec<WebVttCue>,
+    /// Module 338548: true when user is a non-owner Nitro Squad member who cannot buy Boosts.
+    pub boost_purchasing_unavailable: bool,
+}
+
+/// Module 338548 (`5xN/C1` + `aFBQ3d`): tooltip text for Boost Purchasing Currently Unavailable pill.
+pub(crate) fn boost_unavailable_tooltip_text() -> String {
+    dc_intl::format(
+        "5xN/C1",
+        &[("premiumGroupProductName", dc_intl::t("aFBQ3d").into())],
+    )
+}
+
+/// Module 338548 (`.guildBoostUnavailableNotice_Jru8ph`, CSS `285644`): pill-shaped notice banner
+/// shown when a Nitro Squad member cannot purchase Server Boosts.
+pub(crate) fn render_boost_unavailable_pill(
+    root: &Root,
+    always_white: bool,
+    is_light_theme: bool,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    let tip = boost_unavailable_tooltip_text();
+    let border_col = if !always_white && is_light_theme {
+        rgba(0x000000ff)
+    } else {
+        color("--white")
+    };
+    let pill = div()
+        .id("boost-purchasing-unavailable-pill")
+        .px(px(16.))
+        .py(px(8.))
+        .rounded(px(9999.))
+        .bg(rgba(0xffffff1a))
+        .border_2()
+        .border_color(border_col)
+        .text_size(px(14.))
+        .font_weight(FontWeight(600.))
+        .text_color(if always_white {
+            color("--white")
+        } else {
+            color("--text-strong")
+        })
+        .child(dc_intl::t("5nrJDO").to_uppercase());
+    root.with_tip(
+        "boost-unavailable-338548",
+        super::tooltip::Tip::body(
+            super::tooltip::Body::Text(tip.into()),
+            super::tooltip::Side::Top,
+        ),
+        pill,
+        cx,
+    )
+    .into_any_element()
 }
 
 /// Guild powerup SKU IDs (`512750` / `945942.js`).
@@ -4597,6 +4649,7 @@ impl Root {
             captions_enabled: boost_marketing_captions_url(dc_intl::locale()).is_some(),
             position_ms: 1_500,
             cues: Vec::new(),
+            boost_purchasing_unavailable: false,
         });
         cx.notify();
     }
@@ -4844,7 +4897,7 @@ impl Root {
                                         ),
                                 ),
                             )
-                            // Footer (`696208.H`): single right-aligned Boost CTA
+                            // Footer (`696208.H`): Boost CTA or module 338548 Unavailable pill
                             .child(
                                 div()
                                     .px(px(24.))
@@ -4856,7 +4909,9 @@ impl Root {
                                     .flex()
                                     .items_center()
                                     .justify_end()
-                                    .child(
+                                    .child(if modal.boost_purchasing_unavailable {
+                                        render_boost_unavailable_pill(self, true, false, cx)
+                                    } else {
                                         div()
                                             .id("hbw-boost-cta")
                                             .h(px(38.))
@@ -4894,8 +4949,9 @@ impl Root {
                                                     this.open_settings_section("Server Boost", cx);
                                                 }
                                                 cx.notify();
-                                            })),
-                                    ),
+                                            }))
+                                            .into_any_element()
+                                    }),
                             ),
                     ),
             )
@@ -4924,6 +4980,7 @@ impl Root {
         self.open_how_boosting_works(guild_id, cx);
         if let Some(m) = self.how_boosting_works.as_mut() {
             m.captions_enabled = true;
+            m.boost_purchasing_unavailable = arg.trim() == "unavailable";
             m.cues = parse_webvtt_cues(
                 "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nBoost servers to unlock perks for everyone.\n",
             );
@@ -5158,5 +5215,14 @@ mod tests {
         );
         assert_eq!(active_webvtt_cue(&cues, 61_000), Some("Boost today"));
         assert_eq!(active_webvtt_cue(&cues, 10_000), None);
+    }
+
+    #[test]
+    fn boost_unavailable_338548_tooltip_and_intl() {
+        for key in ["5nrJDO", "5xN/C1", "aFBQ3d"] {
+            assert!(dc_intl::has_key(key), "missing 338548 key {key}");
+        }
+        let tip = boost_unavailable_tooltip_text();
+        assert!(tip.contains(dc_intl::t("aFBQ3d")));
     }
 }

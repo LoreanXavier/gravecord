@@ -8,6 +8,7 @@
 
 use super::modal::{self, Tone};
 use super::{Root, color, icon};
+use crate::net::Request;
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, SharedString, deferred, div, prelude::*, px, rgba,
 };
@@ -92,6 +93,217 @@ impl DisconnectLinkModal {
     pub(crate) fn can_disconnect(&self) -> bool {
         self.ack1 && self.ack2 && !self.submitting
     }
+}
+
+/// Module 362890 (`219893`): hour/minute pair for teen restricted downtime schedule rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DowntimeTime {
+    pub hours: u8,
+    pub minutes: u8,
+}
+
+impl DowntimeTime {
+    pub(crate) fn total_minutes(self) -> u16 {
+        u16::from(self.hours) * 60 + u16::from(self.minutes)
+    }
+
+    pub(crate) fn format_12h(self) -> String {
+        let suffix = if self.hours >= 12 { "PM" } else { "AM" };
+        let h12 = match self.hours % 12 {
+            0 => 12,
+            h => h,
+        };
+        format!("{h12}:{:02} {suffix}", self.minutes)
+    }
+
+    /// Module 362890: auto-computed end time `(start + 540) % 1440` (+9 hours).
+    pub(crate) fn plus_nine_hours(self) -> Self {
+        let m = (self.total_minutes() + 540) % 1440;
+        Self {
+            hours: (m / 60) as u8,
+            minutes: (m % 60) as u8,
+        }
+    }
+}
+
+/// Module 362890 (`T`): parses typed `H:MM` or `H:M` (1-digit minute × 10) with AM/PM candidates.
+#[allow(dead_code)]
+pub(crate) fn parse_typed_downtime_time(raw: &str) -> Vec<DowntimeTime> {
+    let trimmed = raw.trim();
+    let Some((h_s, m_s)) = trimmed.split_once(':') else {
+        return Vec::new();
+    };
+    if h_s.is_empty() || h_s.len() > 2 || m_s.is_empty() || m_s.len() > 2 {
+        return Vec::new();
+    }
+    let (Ok(h), Ok(m_raw)) = (h_s.parse::<u8>(), m_s.parse::<u8>()) else {
+        return Vec::new();
+    };
+    let m = if m_s.len() == 1 { m_raw * 10 } else { m_raw };
+    if h >= 24 || m >= 60 {
+        return Vec::new();
+    }
+    let mut out = vec![DowntimeTime {
+        hours: h,
+        minutes: m,
+    }];
+    if h == 12 {
+        out.push(DowntimeTime {
+            hours: 0,
+            minutes: m,
+        });
+    } else if (1..12).contains(&h) {
+        out.push(DowntimeTime {
+            hours: h + 12,
+            minutes: m,
+        });
+    }
+    out
+}
+
+/// Module 362890 (`219893.a3`): formats whole-hour (`hFDcmZ`) or half-hour (`wcrXLM`) duration.
+pub(crate) fn downtime_duration_label(start: DowntimeTime, end: DowntimeTime) -> String {
+    let s = start.total_minutes();
+    let e = end.total_minutes();
+    let dur = if e > s { e - s } else { 1440 - s + e };
+    let hours = dur / 60;
+    if dur % 60 == 30 {
+        dc_intl::format("wcrXLM", &[("hours", f64::from(hours).into())])
+    } else {
+        dc_intl::format("hFDcmZ", &[("hours", f64::from(hours).into())])
+    }
+}
+
+/// Module 362890 (`vX7xid` same-day vs `R87Y2K` overnight): live schedule preview string.
+pub(crate) fn downtime_schedule_preview(start: DowntimeTime, end: DowntimeTime) -> String {
+    let overnight = start.total_minutes() > end.total_minutes();
+    let key = if overnight { "R87Y2K" } else { "vX7xid" };
+    let s = start.format_12h();
+    let e = end.format_12h();
+    dc_intl::format(
+        key,
+        &[
+            ("startTime", s.as_str().into()),
+            ("endTime", e.as_str().into()),
+        ],
+    )
+}
+
+/// Official day numbers (`76573.ob`: Sun=7, Mon=1..Sat=6) in UI Sun..Sat order.
+pub(crate) const DOWNTIME_DAYS: [(u8, &str, &str); 7] = [
+    (7, "Sun", "Sunday"),
+    (1, "Mon", "Monday"),
+    (2, "Tue", "Tuesday"),
+    (3, "Wed", "Wednesday"),
+    (4, "Thu", "Thursday"),
+    (5, "Fri", "Friday"),
+    (6, "Sat", "Saturday"),
+];
+
+/// Module 362890: existing restricted-schedule rule used for edit mode & overlap detection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DowntimeRule {
+    pub rule_id: String,
+    pub start: DowntimeTime,
+    pub end: DowntimeTime,
+    pub days: Vec<u8>,
+    pub enabled: bool,
+}
+
+/// Module 362890: returns conflicting `"{dayLabel}  {start} – {end}"` lines when selected days
+/// overlap another existing rule (`rule.rule_id != editing_rule_id`).
+pub(crate) fn downtime_overlap_entries(
+    selected_days: &[u8],
+    existing_rules: &[DowntimeRule],
+    editing_rule_id: Option<&str>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for &(day_num, _, full_label) in &DOWNTIME_DAYS {
+        if !selected_days.contains(&day_num) {
+            continue;
+        }
+        for rule in existing_rules {
+            if editing_rule_id == Some(rule.rule_id.as_str()) {
+                continue;
+            }
+            if rule.days.contains(&day_num) {
+                out.push(format!(
+                    "{full_label}  {} – {}",
+                    rule.start.format_12h(),
+                    rule.end.format_12h()
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Module 362890 (`95396`): `POST /family-center/{teen_id}/restricted-schedule/rule`.
+pub(crate) fn create_downtime_rule_request(
+    teen_id: &str,
+    start: DowntimeTime,
+    end: DowntimeTime,
+    days: &[u8],
+    enabled: bool,
+) -> Request {
+    Request::Rest {
+        key: Some(format!("family-center:downtime-create:{teen_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/family-center/{teen_id}/restricted-schedule/rule"),
+        body: Some(serde_json::json!({
+            "label": "",
+            "start_time": { "hours": start.hours, "minutes": start.minutes, "seconds": 0, "nanos": 0 },
+            "end_time": { "hours": end.hours, "minutes": end.minutes, "seconds": 0, "nanos": 0 },
+            "days": days,
+            "enabled": enabled,
+        })),
+    }
+}
+
+/// Module 362890 (`95396`): `PATCH /family-center/{teen_id}/restricted-schedule/rules/{rule_id}`.
+pub(crate) fn update_downtime_rule_request(
+    teen_id: &str,
+    rule_id: &str,
+    start: DowntimeTime,
+    end: DowntimeTime,
+    days: &[u8],
+    enabled: bool,
+) -> Request {
+    Request::Rest {
+        key: Some(format!("family-center:downtime-update:{teen_id}:{rule_id}")),
+        method: reqwest::Method::PATCH,
+        route: format!("/family-center/{teen_id}/restricted-schedule/rules/{rule_id}"),
+        body: Some(serde_json::json!({
+            "label": "",
+            "start_time": { "hours": start.hours, "minutes": start.minutes, "seconds": 0, "nanos": 0 },
+            "end_time": { "hours": end.hours, "minutes": end.minutes, "seconds": 0, "nanos": 0 },
+            "days": days,
+            "enabled": enabled,
+        })),
+    }
+}
+
+/// Module 362890 (`95396`): `DELETE /family-center/{teen_id}/restricted-schedule/rules/{rule_id}`.
+pub(crate) fn delete_downtime_rule_request(teen_id: &str, rule_id: &str) -> Request {
+    Request::Rest {
+        key: Some(format!("family-center:downtime-delete:{teen_id}:{rule_id}")),
+        method: reqwest::Method::DELETE,
+        route: format!("/family-center/{teen_id}/restricted-schedule/rules/{rule_id}"),
+        body: None,
+    }
+}
+
+/// Module 362890 (`FamilyCenterDowntimeScheduleModal`): Create/Edit teen screen downtime modal state.
+#[derive(Clone, Debug)]
+pub(crate) struct DowntimeScheduleModal {
+    pub teen_id: String,
+    pub editing_rule_id: Option<String>,
+    pub enabled: bool,
+    pub start: DowntimeTime,
+    pub end: DowntimeTime,
+    pub selected_days: Vec<u8>,
+    pub existing_rules: Vec<DowntimeRule>,
+    pub submitting: bool,
 }
 
 /// Module 320742 (`FamilyCenterQRCodeModal`): decoy URL shown on blurred QR before reveal (`191627.EC`).
@@ -299,6 +511,8 @@ pub(super) struct State {
     pub spending_cap: Option<SpendingCapModal>,
     /// Module 320742: Family Center Teen QR Code modal (`FamilyCenterQRCodeModal`).
     pub teen_qr_modal: Option<TeenQrCodeModal>,
+    /// Module 362890: Family Center Teen Screen Downtime Schedule Editor modal.
+    pub downtime_schedule: Option<Box<DowntimeScheduleModal>>,
     /// Cached link code (override or fetched from `GET /family-center/@me/link-code`).
     pub link_code: Option<String>,
     /// Timestamp when the current link code was acquired (for 5-minute `M:SS` countdown).
@@ -794,7 +1008,8 @@ impl Root {
         let c = self.family_center.disconnect_link.take().is_some();
         let d = self.family_center.spending_cap.take().is_some();
         let e = self.family_center.teen_qr_modal.take().is_some();
-        a || b || c || d || e
+        let f = self.family_center.downtime_schedule.take().is_some();
+        a || b || c || d || e || f
     }
 
     /// Handles REST responses for `POST /users/@me/linked-users` (module 41527) and
@@ -2549,6 +2764,596 @@ impl Root {
         format!("family teen-qr opened ({})", arg.trim())
     }
 
+    /// Renders module 362890 (`Schedule Screen Downtime`, CSS `39627` `*_lVGlUj`): teen downtime editor.
+    pub(in crate::ui) fn family_center_downtime_modal(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.family_center.downtime_schedule.as_deref()?;
+        let is_edit = modal.editing_rule_id.is_some();
+        let enabled = modal.enabled;
+        let start = modal.start;
+        let end = modal.end;
+        let duration = downtime_duration_label(start, end);
+        let preview = downtime_schedule_preview(start, end);
+        let conflicts = downtime_overlap_entries(
+            &modal.selected_days,
+            &modal.existing_rules,
+            modal.editing_rule_id.as_deref(),
+        );
+        let can_submit = !modal.selected_days.is_empty()
+            && start.total_minutes() != end.total_minutes()
+            && !modal.submitting;
+        let teen_id = modal.teen_id.clone();
+        let edit_id = modal.editing_rule_id.clone();
+        let days_snapshot = modal.selected_days.clone();
+
+        Some(
+            deferred(
+                div()
+                    .id("family-center-downtime-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.family_center.downtime_schedule = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("family-center-downtime-dialog")
+                            .occlude()
+                            .w(px(480.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .child(
+                                div()
+                                    .px(px(20.))
+                                    .pt(px(20.))
+                                    .pb(px(14.))
+                                    .border_b_1()
+                                    .border_color(color("--border-subtle"))
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(18.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(dc_intl::t("w/ISB8")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .line_height(px(18.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(dc_intl::t("AcJ4ke")),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("fc-dt-close")
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(
+                                                "modal_close",
+                                                16.,
+                                                "--interactive-icon-default",
+                                            ))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.family_center.downtime_schedule = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .p(px(20.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(18.))
+                                    // Edit-mode Schedule Enabled switch (`30Owsd`)
+                                    .when(is_edit, |col| {
+                                        col.child(
+                                            div()
+                                                .id("fc-dt-enabled-toggle")
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.))
+                                                        .font_weight(FontWeight(600.))
+                                                        .text_color(color("--text-strong"))
+                                                        .child(dc_intl::t("30Owsd")),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(40.))
+                                                        .h(px(22.))
+                                                        .p(px(2.))
+                                                        .rounded_full()
+                                                        .bg(color(if enabled {
+                                                            "--control-primary-background-default"
+                                                        } else {
+                                                            "--background-mod-strong"
+                                                        }))
+                                                        .flex()
+                                                        .items_center()
+                                                        .when(enabled, |d| d.justify_end())
+                                                        .child(
+                                                            div()
+                                                                .size(px(18.))
+                                                                .rounded_full()
+                                                                .bg(color("--white")),
+                                                        ),
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    if let Some(m) = this
+                                                        .family_center
+                                                        .downtime_schedule
+                                                        .as_deref_mut()
+                                                    {
+                                                        m.enabled = !m.enabled;
+                                                    }
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .h(px(1.))
+                                                .w_full()
+                                                .bg(color("--border-subtle")),
+                                        )
+                                    })
+                                    // Downtime Hours (`37z4a2` + `n2mCrR` + duration `hFDcmZ`/`wcrXLM`)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .font_weight(FontWeight(600.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(dc_intl::t("37z4a2")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(8.))
+                                                    .child(
+                                                        div()
+                                                            .id("fc-dt-start")
+                                                            .flex_1()
+                                                            .h(px(40.))
+                                                            .px(px(12.))
+                                                            .rounded(px(8.))
+                                                            .border_1()
+                                                            .border_color(color(
+                                                                "--input-border-default",
+                                                            ))
+                                                            .bg(color("--input-background-default"))
+                                                            .cursor_pointer()
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_between()
+                                                            .text_size(px(14.))
+                                                            .font_weight(FontWeight(500.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(start.format_12h())
+                                                            .on_click(cx.listener(
+                                                                |this, _, _, cx| {
+                                                                    if let Some(m) = this
+                                                                        .family_center
+                                                                        .downtime_schedule
+                                                                        .as_deref_mut()
+                                                                    {
+                                                                        let next = (m
+                                                                            .start
+                                                                            .total_minutes()
+                                                                            + 30)
+                                                                            % 1440;
+                                                                        m.start = DowntimeTime {
+                                                                            hours: (next / 60) as u8,
+                                                                            minutes: (next % 60)
+                                                                                as u8,
+                                                                        };
+                                                                        m.end = m
+                                                                            .start
+                                                                            .plus_nine_hours();
+                                                                    }
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(14.))
+                                                            .font_weight(FontWeight(500.))
+                                                            .text_color(color("--text-muted"))
+                                                            .child(dc_intl::t("n2mCrR")),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("fc-dt-end")
+                                                            .flex_1()
+                                                            .h(px(40.))
+                                                            .px(px(12.))
+                                                            .rounded(px(8.))
+                                                            .border_1()
+                                                            .border_color(color(
+                                                                "--input-border-default",
+                                                            ))
+                                                            .bg(color("--input-background-default"))
+                                                            .cursor_pointer()
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_between()
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(14.))
+                                                                    .font_weight(FontWeight(500.))
+                                                                    .text_color(color(
+                                                                        "--text-strong",
+                                                                    ))
+                                                                    .child(end.format_12h()),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(12.))
+                                                                    .text_color(color(
+                                                                        "--text-subtle",
+                                                                    ))
+                                                                    .child(format!("• {duration}")),
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                |this, _, _, cx| {
+                                                                    if let Some(m) = this
+                                                                        .family_center
+                                                                        .downtime_schedule
+                                                                        .as_deref_mut()
+                                                                    {
+                                                                        let next = (m
+                                                                            .end
+                                                                            .total_minutes()
+                                                                            + 30)
+                                                                            % 1440;
+                                                                        m.end = DowntimeTime {
+                                                                            hours: (next / 60) as u8,
+                                                                            minutes: (next % 60)
+                                                                                as u8,
+                                                                        };
+                                                                    }
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(div().h(px(1.)).w_full().bg(color("--border-subtle")))
+                                    // Repeat Days (`HaV0Sg`, `vX7xid`/`R87Y2K`, 7 day buttons, overlap `26A0Df`)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .font_weight(FontWeight(600.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(dc_intl::t("HaV0Sg")),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .line_height(px(18.))
+                                                            .text_color(color("--text-muted"))
+                                                            .child(preview),
+                                                    ),
+                                            )
+                                            .child(
+                                                div().flex().gap(px(6.)).children(
+                                                    DOWNTIME_DAYS.into_iter().map(
+                                                        |(day_num, short, _)| {
+                                                            let sel = modal
+                                                                .selected_days
+                                                                .contains(&day_num);
+                                                            div()
+                                                                .id(SharedString::from(format!(
+                                                                    "fc-dt-day-{day_num}"
+                                                                )))
+                                                                .flex_1()
+                                                                .h(px(40.))
+                                                                .rounded(px(6.))
+                                                                .border_1()
+                                                                .border_color(color(if sel {
+                                                                    "--control-primary-background-default"
+                                                                } else {
+                                                                    "--control-secondary-border-default"
+                                                                }))
+                                                                .bg(if sel {
+                                                                    rgba(0x5865f229)
+                                                                } else {
+                                                                    color("--control-secondary-background-default")
+                                                                })
+                                                                .cursor_pointer()
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .text_size(px(13.))
+                                                                .font_weight(FontWeight(600.))
+                                                                .text_color(color(
+                                                                    "--control-secondary-text-default",
+                                                                ))
+                                                                .child(short)
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        if let Some(m) = this
+                                                                            .family_center
+                                                                            .downtime_schedule
+                                                                            .as_deref_mut()
+                                                                        {
+                                                                            if let Some(pos) = m
+                                                                                .selected_days
+                                                                                .iter()
+                                                                                .position(|&d| {
+                                                                                    d == day_num
+                                                                                })
+                                                                            {
+                                                                                m.selected_days
+                                                                                    .remove(pos);
+                                                                            } else {
+                                                                                m.selected_days
+                                                                                    .push(day_num);
+                                                                            }
+                                                                        }
+                                                                        cx.notify();
+                                                                    },
+                                                                ))
+                                                        },
+                                                    ),
+                                                ),
+                                            )
+                                            .when(!conflicts.is_empty(), |col| {
+                                                col.child(
+                                                    div()
+                                                        .mt(px(6.))
+                                                        .p(px(12.))
+                                                        .rounded(px(8.))
+                                                        .border_1()
+                                                        .border_color(color("--status-warning"))
+                                                        .bg(rgba(0xf0b2321a))
+                                                        .flex()
+                                                        .flex_col()
+                                                        .gap(px(6.))
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .items_start()
+                                                                .gap(px(8.))
+                                                                .child(icon(
+                                                                    "warning_triangle",
+                                                                    16.,
+                                                                    "--status-warning",
+                                                                ))
+                                                                .child(
+                                                                    div()
+                                                                        .flex_1()
+                                                                        .min_w_0()
+                                                                        .text_size(px(12.))
+                                                                        .line_height(px(16.))
+                                                                        .text_color(color(
+                                                                            "--text-default",
+                                                                        ))
+                                                                        .child(dc_intl::t(
+                                                                            "26A0Df",
+                                                                        )),
+                                                                ),
+                                                        )
+                                                        .children(conflicts.into_iter().map(
+                                                            |line| {
+                                                                div()
+                                                                    .pl(px(24.))
+                                                                    .text_size(px(12.))
+                                                                    .font_weight(FontWeight(600.))
+                                                                    .text_color(color(
+                                                                        "--text-strong",
+                                                                    ))
+                                                                    .child(format!("• {line}"))
+                                                            },
+                                                        )),
+                                                )
+                                            }),
+                                    ),
+                            )
+                            // Footer: Create (`ETE/oC`, `pvcruO`) vs Edit (`d8pizZ`, `TDc9mW`)
+                            .child(
+                                div()
+                                    .px(px(20.))
+                                    .py(px(14.))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-base-lower"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .id("fc-dt-secondary")
+                                            .h(px(36.))
+                                            .px(px(16.))
+                                            .rounded(px(8.))
+                                            .bg(if is_edit {
+                                                rgba(0xda373c22)
+                                            } else {
+                                                color("--control-secondary-background-default")
+                                            })
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(if is_edit {
+                                                color("--text-feedback-critical")
+                                            } else {
+                                                color("--control-secondary-text-default")
+                                            })
+                                            .child(dc_intl::t(if is_edit {
+                                                "d8pizZ"
+                                            } else {
+                                                "ETE/oC"
+                                            }))
+                                            .on_click(cx.listener({
+                                                let tid = teen_id.clone();
+                                                let rid = edit_id.clone();
+                                                move |this, _, _, cx| {
+                                                    if let Some(r) = rid.as_deref() {
+                                                        let _ = this.requests.send(
+                                                            delete_downtime_rule_request(&tid, r),
+                                                        );
+                                                    }
+                                                    this.family_center.downtime_schedule = None;
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("fc-dt-submit")
+                                            .h(px(36.))
+                                            .px(px(16.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .when(!can_submit, |d| d.opacity(0.5))
+                                            .when(can_submit, |d| d.cursor_pointer())
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(dc_intl::t(if is_edit {
+                                                "TDc9mW"
+                                            } else {
+                                                "pvcruO"
+                                            }))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !can_submit {
+                                                    return;
+                                                }
+                                                let req = if let Some(rid) = edit_id.as_deref() {
+                                                    update_downtime_rule_request(
+                                                        &teen_id,
+                                                        rid,
+                                                        start,
+                                                        end,
+                                                        &days_snapshot,
+                                                        enabled,
+                                                    )
+                                                } else {
+                                                    create_downtime_rule_request(
+                                                        &teen_id,
+                                                        start,
+                                                        end,
+                                                        &days_snapshot,
+                                                        true,
+                                                    )
+                                                };
+                                                let _ = this.requests.send(req);
+                                                this.family_center.downtime_schedule = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_family_downtime(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.family_center.downtime_schedule = None;
+            cx.notify();
+            return "family downtime closed".to_owned();
+        }
+        let is_edit = arg.trim() == "edit";
+        self.family_center.downtime_schedule = Some(Box::new(DowntimeScheduleModal {
+            teen_id: "998877".to_owned(),
+            editing_rule_id: is_edit.then(|| "rule-1".to_owned()),
+            enabled: true,
+            start: DowntimeTime {
+                hours: 22,
+                minutes: 0,
+            },
+            end: DowntimeTime {
+                hours: 7,
+                minutes: 0,
+            },
+            selected_days: vec![1, 2, 3, 4, 5],
+            existing_rules: vec![DowntimeRule {
+                rule_id: "rule-existing".to_owned(),
+                start: DowntimeTime {
+                    hours: 21,
+                    minutes: 0,
+                },
+                end: DowntimeTime {
+                    hours: 6,
+                    minutes: 30,
+                },
+                days: vec![1, 3],
+                enabled: true,
+            }],
+            submitting: false,
+        }));
+        cx.notify();
+        format!("family downtime opened ({})", arg.trim())
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_family_spending_cap(
         &mut self,
@@ -2818,5 +3623,84 @@ mod tests {
             teen_qr_payload_url(true, 42, Some("SECRET")),
             "https://discord.com/feature/family-center/my-family/42/SECRET"
         );
+    }
+
+    #[test]
+    fn family_center_downtime_362890_parser_overlap_routes_and_intl() {
+        for key in [
+            "w/ISB8", "AcJ4ke", "30Owsd", "37z4a2", "n2mCrR", "HaV0Sg", "vX7xid", "R87Y2K",
+            "26A0Df", "Wu8BK2", "d8pizZ", "TDc9mW", "ETE/oC", "pvcruO", "hFDcmZ", "wcrXLM",
+            "bPjqd1", "4dr9L9", "6lTTJ+",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 362890 key {key}");
+        }
+        let parsed = parse_typed_downtime_time("9:3");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(
+            parsed[0],
+            DowntimeTime {
+                hours: 9,
+                minutes: 30
+            }
+        );
+        assert_eq!(
+            parsed[1],
+            DowntimeTime {
+                hours: 21,
+                minutes: 30
+            }
+        );
+        assert!(parse_typed_downtime_time("25:00").is_empty());
+
+        let start = DowntimeTime {
+            hours: 22,
+            minutes: 0,
+        };
+        let end = start.plus_nine_hours();
+        assert_eq!(
+            end,
+            DowntimeTime {
+                hours: 7,
+                minutes: 0
+            }
+        );
+        assert!(downtime_duration_label(start, end).contains('9'));
+        assert!(downtime_schedule_preview(start, end).contains("next day"));
+
+        let existing = vec![DowntimeRule {
+            rule_id: "r1".into(),
+            start: DowntimeTime {
+                hours: 21,
+                minutes: 0,
+            },
+            end: DowntimeTime {
+                hours: 6,
+                minutes: 30,
+            },
+            days: vec![1, 3],
+            enabled: true,
+        }];
+        let ov = downtime_overlap_entries(&[1, 2, 3], &existing, None);
+        assert_eq!(ov.len(), 2);
+        assert!(downtime_overlap_entries(&[1, 3], &existing, Some("r1")).is_empty());
+
+        assert!(matches!(
+            create_downtime_rule_request("t1", start, end, &[1, 2], true),
+            Request::Rest { method, route, .. }
+                if method == reqwest::Method::POST
+                    && route == "/family-center/t1/restricted-schedule/rule"
+        ));
+        assert!(matches!(
+            update_downtime_rule_request("t1", "r1", start, end, &[1], false),
+            Request::Rest { method, route, .. }
+                if method == reqwest::Method::PATCH
+                    && route == "/family-center/t1/restricted-schedule/rules/r1"
+        ));
+        assert!(matches!(
+            delete_downtime_rule_request("t1", "r1"),
+            Request::Rest { method, route, .. }
+                if method == reqwest::Method::DELETE
+                    && route == "/family-center/t1/restricted-schedule/rules/r1"
+        ));
     }
 }

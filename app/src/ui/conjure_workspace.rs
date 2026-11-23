@@ -153,6 +153,79 @@ pub(crate) struct ConjureAgentBrowserState {
     pub control_state: AgentControlState,
 }
 
+/// Module 354155 (`951178.q7` + `589444`): Conjure app surface tag chips in official order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ConjureSurface {
+    AppChannel = 1,
+    Activity = 8,
+    VoiceChannel = 2,
+    ProfileWidget = 3,
+    Overlay = 7,
+    ApplicationCommands = 6,
+    Bot = 5,
+    AutoMod = 4,
+}
+
+impl ConjureSurface {
+    pub(crate) const ORDERED: [Self; 8] = [
+        Self::AppChannel,
+        Self::Activity,
+        Self::VoiceChannel,
+        Self::ProfileWidget,
+        Self::Overlay,
+        Self::ApplicationCommands,
+        Self::Bot,
+        Self::AutoMod,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::AppChannel => dc_intl::t("bHLrO8"),
+            Self::Activity => dc_intl::t("hp+8nc"),
+            Self::VoiceChannel => dc_intl::t("4V2QWl"),
+            Self::ProfileWidget => dc_intl::t("oJ06Po"),
+            Self::Overlay => dc_intl::t("Qbnej2"),
+            Self::ApplicationCommands => dc_intl::t("pEwndv"),
+            Self::Bot => dc_intl::t("HWOzBW"),
+            Self::AutoMod => dc_intl::t("gsIXM9"),
+        }
+    }
+}
+
+/// Module 354155 (`529424`): access/load state of a shared Conjure project modal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ConjureSharedProjectStatus {
+    Loading,
+    Unavailable,
+    NoAccess,
+    InfoOnly,
+    Ready,
+}
+
+/// Module 354155 (`529424`): `GET /conjure/project-limit`.
+#[allow(dead_code)]
+pub(crate) fn conjure_project_limit_request() -> Request {
+    Request::Rest {
+        key: Some("conjure:project-limit".to_owned()),
+        method: reqwest::Method::GET,
+        route: "/conjure/project-limit".to_owned(),
+        body: None,
+    }
+}
+
+/// Module 354155 (`529424`): `GET /conjure/projects/{project_id}`.
+#[allow(dead_code)]
+pub(crate) fn conjure_project_fetch_request(project_id: &str) -> Request {
+    Request::Rest {
+        key: Some(format!("conjure:project:{project_id}")),
+        method: reqwest::Method::GET,
+        route: format!("/conjure/projects/{project_id}"),
+        body: None,
+    }
+}
+
 /// Module 312405: Conjure Remix vs Install (Copy) modal mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -191,6 +264,17 @@ pub(crate) enum ConjureAuxModal {
         guilds: Vec<(String, String)>,
         selected_guild_id: Option<String>,
         submitting: bool,
+    },
+    /// Module 354155: Conjure Shared Project Preview & Access Gate modal (`ZTNur7`, `mQma36`,
+    /// `2DSRxV`, `cF++B3`, `6/x9LD`, `6RGR3m` Remix, `UsUa/c` Install).
+    SharedProject {
+        status: ConjureSharedProjectStatus,
+        project_id: String,
+        app_name: String,
+        app_description: String,
+        surfaces: Vec<ConjureSurface>,
+        creator_name: Option<String>,
+        can_remix: bool,
     },
 }
 
@@ -1764,6 +1848,442 @@ impl Root {
                     )
                     .into_any_element()
             }
+            ConjureAuxModal::SharedProject {
+                status,
+                project_id,
+                app_name,
+                app_description,
+                surfaces,
+                creator_name,
+                can_remix,
+            } => {
+                let is_gate = !matches!(
+                    status,
+                    ConjureSharedProjectStatus::Ready | ConjureSharedProjectStatus::InfoOnly
+                );
+                if is_gate {
+                    let gate_title =
+                        dc_intl::t(if *status == ConjureSharedProjectStatus::Loading {
+                            "ZTNur7"
+                        } else {
+                            "mQma36"
+                        });
+                    div()
+                        .id("conjure-shared-gate-dialog")
+                        .w(px(440.))
+                        .rounded(px(12.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .p(px(20.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(18.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(gate_title),
+                                )
+                                .child(
+                                    div()
+                                        .id("cj-sp-gate-x")
+                                        .size(px(28.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon(
+                                            "modal_close",
+                                            16.,
+                                            "--interactive-icon-default",
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.conjure_aux_modal = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .px(px(20.))
+                                .py(px(14.))
+                                .border_t_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-base-lower"))
+                                .flex()
+                                .justify_end()
+                                .child(
+                                    div()
+                                        .id("cj-sp-gate-close")
+                                        .h(px(36.))
+                                        .px(px(16.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .child(dc_intl::t("cpT0Cq"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.conjure_aux_modal = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    let is_ready = *status == ConjureSharedProjectStatus::Ready;
+                    let show_remix = is_ready && *can_remix;
+                    let pid_remix = project_id.clone();
+                    let name_remix = app_name.clone();
+                    let pid_copy = project_id.clone();
+                    let name_copy = app_name.clone();
+                    let initial: String = app_name
+                        .chars()
+                        .next()
+                        .unwrap_or('A')
+                        .to_ascii_uppercase()
+                        .to_string();
+
+                    div()
+                        .id("conjure-shared-project-dialog")
+                        .w(px(480.))
+                        .rounded(px(12.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .px(px(20.))
+                                .py(px(16.))
+                                .border_b_1()
+                                .border_color(color("--border-subtle"))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(18.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(app_name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .id("cj-sp-close")
+                                        .size(px(28.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon(
+                                            "modal_close",
+                                            16.,
+                                            "--interactive-icon-default",
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.conjure_aux_modal = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .p(px(20.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(16.))
+                                // Identity row (`c.PJ` / `.identity_p9RQHW`)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_start()
+                                        .gap(px(12.))
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .size(px(48.))
+                                                .rounded(px(8.))
+                                                .border_1()
+                                                .border_color(color("--border-subtle"))
+                                                .bg(color("--brand-500"))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(20.))
+                                                .font_weight(FontWeight(700.))
+                                                .text_color(color("--white"))
+                                                .child(initial),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(4.))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(15.))
+                                                        .font_weight(FontWeight(600.))
+                                                        .text_color(color("--text-strong"))
+                                                        .child(app_name.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.))
+                                                        .line_height(px(18.))
+                                                        .text_color(color("--text-default"))
+                                                        .child(app_description.clone()),
+                                                ),
+                                        ),
+                                )
+                                .child(if is_ready {
+                                    let ordered_surfaces: Vec<ConjureSurface> =
+                                        ConjureSurface::ORDERED
+                                            .into_iter()
+                                            .filter(|s| surfaces.contains(s))
+                                            .collect();
+                                    let creator_line = creator_name.as_deref().map(|cname| {
+                                        let runs = dc_intl::format_runs(
+                                            "6/x9LD",
+                                            &[("name", cname.into())],
+                                        );
+                                        let mut txt = String::new();
+                                        let mut hi = Vec::new();
+                                        for (seg, hook) in runs {
+                                            let st = txt.len();
+                                            txt.push_str(&seg);
+                                            if hook.is_some() && st < txt.len() {
+                                                hi.push((
+                                                    st..txt.len(),
+                                                    gpui::HighlightStyle {
+                                                        font_weight: Some(FontWeight(700.)),
+                                                        color: Some(color("--text-strong").into()),
+                                                        ..gpui::HighlightStyle::default()
+                                                    },
+                                                ));
+                                            }
+                                        }
+                                        (
+                                            cname
+                                                .chars()
+                                                .next()
+                                                .unwrap_or('C')
+                                                .to_ascii_uppercase()
+                                                .to_string(),
+                                            gpui::StyledText::new(txt).with_highlights(hi),
+                                        )
+                                    });
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(12.))
+                                        .child(
+                                            div()
+                                                .id("cj-sp-surfaces")
+                                                .aria_label(SharedString::from(dc_intl::t(
+                                                    "cF++B3",
+                                                )))
+                                                .flex()
+                                                .flex_wrap()
+                                                .gap(px(6.))
+                                                .children(ordered_surfaces.into_iter().map(|s| {
+                                                    div()
+                                                        .px(px(8.))
+                                                        .py(px(4.))
+                                                        .rounded(px(6.))
+                                                        .border_1()
+                                                        .border_color(color("--border-subtle"))
+                                                        .bg(color("--background-mod-subtle"))
+                                                        .text_size(px(12.))
+                                                        .font_weight(FontWeight(500.))
+                                                        .text_color(color("--text-default"))
+                                                        .child(s.label())
+                                                })),
+                                        )
+                                        .children(creator_line.map(|(ch, styled)| {
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.))
+                                                .child(
+                                                    div()
+                                                        .size(px(20.))
+                                                        .rounded_full()
+                                                        .bg(color("--brand-500"))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .text_size(px(10.))
+                                                        .font_weight(FontWeight(700.))
+                                                        .text_color(color("--white"))
+                                                        .child(ch),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.))
+                                                        .text_color(color("--text-default"))
+                                                        .child(styled),
+                                                )
+                                        }))
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .p(px(12.))
+                                        .rounded(px(8.))
+                                        .bg(color("--background-base-lower"))
+                                        .border_1()
+                                        .border_color(color("--border-subtle"))
+                                        .text_size(px(13.))
+                                        .line_height(px(18.))
+                                        .text_color(color("--text-muted"))
+                                        .child(dc_intl::t("2DSRxV"))
+                                        .into_any_element()
+                                }),
+                        )
+                        .child(
+                            div()
+                                .px(px(20.))
+                                .py(px(14.))
+                                .border_t_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-base-lower"))
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap(px(8.))
+                                .child(if show_remix {
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .id("cj-sp-remix")
+                                                .h(px(36.))
+                                                .px(px(16.))
+                                                .rounded(px(8.))
+                                                .bg(color("--control-secondary-background-default"))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color(
+                                                    "--control-secondary-text-default",
+                                                ))
+                                                .child(dc_intl::t("6RGR3m"))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    let guilds: Vec<(String, String)> = this
+                                                        .stores
+                                                        .guilds
+                                                        .iter()
+                                                        .map(|g| (g.id.to_string(), g.name.clone()))
+                                                        .collect();
+                                                    let sel =
+                                                        guilds.first().map(|(id, _)| id.clone());
+                                                    this.conjure_aux_modal = Some(Box::new(
+                                                        ConjureAuxModal::RemixOrCopy {
+                                                            project_id: pid_remix.clone(),
+                                                            project_name: name_remix.clone(),
+                                                            mode: ConjureCopyMode::Remix,
+                                                            prompt: String::new(),
+                                                            copy_name: conjure_default_copy_name(
+                                                                &name_remix,
+                                                            ),
+                                                            guilds,
+                                                            selected_guild_id: sel,
+                                                            submitting: false,
+                                                        },
+                                                    ));
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("cj-sp-install")
+                                                .h(px(36.))
+                                                .px(px(16.))
+                                                .rounded(px(8.))
+                                                .bg(color("--control-primary-background-default"))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--white"))
+                                                .child(dc_intl::t("UsUa/c"))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    let guilds: Vec<(String, String)> = this
+                                                        .stores
+                                                        .guilds
+                                                        .iter()
+                                                        .map(|g| (g.id.to_string(), g.name.clone()))
+                                                        .collect();
+                                                    let sel =
+                                                        guilds.first().map(|(id, _)| id.clone());
+                                                    this.conjure_aux_modal = Some(Box::new(
+                                                        ConjureAuxModal::RemixOrCopy {
+                                                            project_id: pid_copy.clone(),
+                                                            project_name: name_copy.clone(),
+                                                            mode: ConjureCopyMode::Copy,
+                                                            prompt: String::new(),
+                                                            copy_name: name_copy.clone(),
+                                                            guilds,
+                                                            selected_guild_id: sel,
+                                                            submitting: false,
+                                                        },
+                                                    ));
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .id("cj-sp-close-btn")
+                                        .h(px(36.))
+                                        .px(px(16.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .child(dc_intl::t("cpT0Cq"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.conjure_aux_modal = None;
+                                            cx.notify();
+                                        }))
+                                        .into_any_element()
+                                }),
+                        )
+                        .into_any_element()
+                }
+            }
         };
 
         Some(
@@ -1843,6 +2363,30 @@ impl Root {
                     ],
                     selected_guild_id: Some("1001".to_owned()),
                     submitting: false,
+                }));
+                cx.notify();
+                format!("conjure-aux: {}", arg.trim())
+            }
+            "shared-ready" | "shared-info-only" | "shared-no-access" | "shared-loading" => {
+                let status = match arg.trim() {
+                    "shared-info-only" => ConjureSharedProjectStatus::InfoOnly,
+                    "shared-no-access" => ConjureSharedProjectStatus::NoAccess,
+                    "shared-loading" => ConjureSharedProjectStatus::Loading,
+                    _ => ConjureSharedProjectStatus::Ready,
+                };
+                self.conjure_aux_modal = Some(Box::new(ConjureAuxModal::SharedProject {
+                    status,
+                    project_id: "proj-354155".to_owned(),
+                    app_name: "Raid Planner App".to_owned(),
+                    app_description: "Coordinate weekly raid rosters, voice signups, and loot queues right inside Discord.".to_owned(),
+                    surfaces: vec![
+                        ConjureSurface::AppChannel,
+                        ConjureSurface::Activity,
+                        ConjureSurface::VoiceChannel,
+                        ConjureSurface::Bot,
+                    ],
+                    creator_name: Some("Lorean".to_owned()),
+                    can_remix: true,
                 }));
                 cx.notify();
                 format!("conjure-aux: {}", arg.trim())
@@ -2006,6 +2550,30 @@ mod tests {
                 if route == "/conjure/projects"
                     && b["guild_id"] == "99"
                     && b["remix_source_project_id"] == "p1"
+        ));
+    }
+
+    #[test]
+    fn conjure_shared_project_354155_surfaces_routes_and_intl() {
+        for key in [
+            "cpT0Cq", "ZTNur7", "mQma36", "2DSRxV", "6RGR3m", "UsUa/c", "cF++B3", "6/x9LD",
+            "bHLrO8", "hp+8nc", "4V2QWl", "oJ06Po", "Qbnej2", "pEwndv", "HWOzBW", "gsIXM9",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 354155 key {key}");
+        }
+        assert_eq!(ConjureSurface::ORDERED.len(), 8);
+        for s in ConjureSurface::ORDERED {
+            assert!(!s.label().is_empty());
+        }
+        assert!(matches!(
+            conjure_project_limit_request(),
+            Request::Rest { method, route, .. }
+                if method == reqwest::Method::GET && route == "/conjure/project-limit"
+        ));
+        assert!(matches!(
+            conjure_project_fetch_request("proj-1"),
+            Request::Rest { method, route, .. }
+                if method == reqwest::Method::GET && route == "/conjure/projects/proj-1"
         ));
     }
 }

@@ -3347,6 +3347,26 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_family_teen_qr(&arg, cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["family-downtime", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_family_downtime(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["add-payment", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_add_payment_method(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["avatar-stack", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_avatar_stack(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["keyboard-dnd", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_keyboard_dnd(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
             ["how-boosting-works", rest @ ..] => {
                 let arg = rest.join(" ");
                 let msg = root.update(cx, |root, cx| root.script_how_boosting_works(&arg, cx));

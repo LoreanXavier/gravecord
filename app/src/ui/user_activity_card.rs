@@ -11,6 +11,132 @@ use gpui::{
 };
 use std::borrow::Cow;
 
+/// Module 361686 (`516607.SS`): official Discord Stage Channel activity application ID.
+#[allow(dead_code)]
+pub(crate) const STAGE_APPLICATION_ID: &str = "834488117758001152";
+
+/// Module 361686 (`82149.UW`): parsed `"stage:{guildId}:{channelId}:{flagsHex}:{instanceId}"` party.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StageActivityParty {
+    pub guild_id: dc_state::Id,
+    pub channel_id: dc_state::Id,
+    pub flags: u32,
+    pub instance_id: String,
+    pub user_is_speaker: bool,
+    pub guild_is_partnered: bool,
+    pub guild_is_verified: bool,
+}
+
+/// Module 361686 (`82149.UW`): parses `"stage:{guild}:{channel}:{flagsHex}:{instance}"`.
+pub(crate) fn parse_stage_activity_party(party_id: &str) -> Option<StageActivityParty> {
+    let mut parts = party_id.split(':');
+    if parts.next()? != "stage" {
+        return None;
+    }
+    let guild_id: dc_state::Id = parts.next()?.parse().ok()?;
+    let channel_id: dc_state::Id = parts.next()?.parse().ok()?;
+    let flags = u32::from_str_radix(parts.next()?, 16).ok()?;
+    let instance_id = parts.next()?.to_owned();
+    if instance_id.is_empty() {
+        return None;
+    }
+    Some(StageActivityParty {
+        guild_id,
+        channel_id,
+        flags,
+        instance_id,
+        user_is_speaker: (flags & 0x1) != 0,
+        guild_is_partnered: (flags & 0x2) != 0,
+        guild_is_verified: (flags & 0x4) != 0,
+    })
+}
+
+/// Module 361686 (`IS`): returns true iff `application_id == STAGE_APPLICATION_ID`, `party_id`
+/// parses as a Stage party, and the Stage channel is visible to the current user.
+#[allow(dead_code)]
+pub(crate) fn stage_activity_should_show(
+    application_id: Option<&str>,
+    party_id: Option<&str>,
+    channel_visible: bool,
+) -> bool {
+    application_id == Some(STAGE_APPLICATION_ID)
+        && party_id.and_then(parse_stage_activity_party).is_some()
+        && channel_visible
+}
+
+/// Module 361686 (`Ij`): Stage delegate header subtitle (`+AJFJy` `"In a Stage Channel"`).
+pub(crate) fn stage_activity_header_subtitle() -> &'static str {
+    dc_intl::t("+AJFJy")
+}
+
+/// Module 361686 (`E` / `T+DNAA`): `"Join {channel}"` button text for Stage activity card body.
+pub(crate) fn stage_activity_join_label(stage_topic_or_name: &str) -> String {
+    dc_intl::format(
+        "T+DNAA",
+        &[("channel", Arg::Str(Cow::Borrowed(stage_topic_or_name)))],
+    )
+}
+
+/// Module 361686 (`Fm`, CSS `356772` `.section_o3hXTo`): clickable Stage activity delegate card
+/// rendered on user profiles / popouts when presence carries `application_id = 834488117758001152`.
+pub(crate) fn render_stage_activity_delegate(
+    party: &StageActivityParty,
+    topic_or_name: &str,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    let guild_id = party.guild_id;
+    let channel_id = party.channel_id;
+    let join_label = stage_activity_join_label(topic_or_name);
+    div()
+        .id(SharedString::from(format!("stage-delegate-{channel_id}")))
+        .w_full()
+        .p(px(12.))
+        .rounded(px(8.))
+        .bg(color("--background-mod-muted"))
+        .border_1()
+        .border_color(color("--border-subtle"))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(
+            div()
+                .text_size(px(11.))
+                .font_weight(FontWeight(700.))
+                .text_color(color("--text-muted"))
+                .child(stage_activity_header_subtitle().to_uppercase()),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "stage-delegate-join-{channel_id}"
+                )))
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(6.))
+                .bg(color("--background-surface-high"))
+                .hover(|s| s.bg(color("--background-mod-subtle")))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(icon("stage_channel", 16., "--status-positive"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(join_label),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.join_voice(guild_id, channel_id, cx);
+                    cx.notify();
+                })),
+        )
+        .into_any_element()
+}
+
 /// Official `663249.O` (`UserActivity.Types`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -900,7 +1026,23 @@ impl Root {
                             .children(cards.iter().enumerate().map(|(i, card)| {
                                 div()
                                     .id(SharedString::from(format!("user-activity-card-{i}")))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.))
                                     .child(render_user_activity_card(card, cx))
+                                    .when(card.activity_kind == ActivityKind::Stage, |col| {
+                                        if let Some(party) = parse_stage_activity_party(
+                                            "stage:1001:2002:5:stage_inst_361686",
+                                        ) {
+                                            col.child(render_stage_activity_delegate(
+                                                &party,
+                                                card.details.as_deref().unwrap_or(&card.name),
+                                                cx,
+                                            ))
+                                        } else {
+                                            col
+                                        }
+                                    })
                             })),
                     ),
             )
@@ -1160,5 +1302,38 @@ mod tests {
             vec![("Join Website".into(), Some("https://example.com".into()))];
         let (_, acts) = resolve_user_activity_actions(&data);
         assert_eq!(acts.len(), 3);
+    }
+
+    #[test]
+    fn stage_activity_delegate_361686_party_parser_and_intl() {
+        for key in ["+AJFJy", "T+DNAA"] {
+            assert!(dc_intl::has_key(key), "missing 361686 key {key}");
+        }
+        let party =
+            parse_stage_activity_party("stage:100:200:5:inst_9").expect("valid stage party");
+        assert_eq!(party.guild_id, 100);
+        assert_eq!(party.channel_id, 200);
+        assert!(party.user_is_speaker);
+        assert!(!party.guild_is_partnered);
+        assert!(party.guild_is_verified);
+        assert_eq!(party.instance_id, "inst_9");
+        assert!(parse_stage_activity_party("game:1:2:0:x").is_none());
+        assert!(stage_activity_should_show(
+            Some(STAGE_APPLICATION_ID),
+            Some("stage:100:200:1:abc"),
+            true
+        ));
+        assert!(!stage_activity_should_show(
+            Some(STAGE_APPLICATION_ID),
+            Some("stage:100:200:1:abc"),
+            false
+        ));
+        assert!(!stage_activity_should_show(
+            Some("123"),
+            Some("stage:100:200:1:abc"),
+            true
+        ));
+        assert_eq!(stage_activity_header_subtitle(), "In a Stage Channel");
+        assert!(stage_activity_join_label("Town Hall").contains("Town Hall"));
     }
 }

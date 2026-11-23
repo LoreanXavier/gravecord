@@ -886,4 +886,236 @@ mod tests {
             json!([{"id": "22", "position": 0}, {"id": "20", "position": 1}])
         );
     }
+
+    #[test]
+    fn keyboard_dnd_353680_announcer_and_navigation() {
+        for key in ["vHD/Je", "lMkmz7", "u4d/eC"] {
+            assert!(dc_intl::has_key(key), "missing 353680 key {key}");
+        }
+        let mut dnd = KeyboardDndState::default();
+        let targets = vec![
+            (10, "#general".to_owned()),
+            (11, "#announcements".to_owned()),
+            (12, "#off-topic".to_owned()),
+        ];
+        dnd.begin_drag(10, "#general", targets);
+        assert!(dnd.active);
+        assert!(
+            dnd.last_announcement
+                .as_deref()
+                .is_some_and(|s| s.contains("#general"))
+        );
+        dnd.move_focus(1);
+        assert_eq!(dnd.focused_index, 1);
+        assert_eq!(dnd.last_announcement.as_deref(), Some("#announcements"));
+        dnd.move_focus(-1);
+        assert_eq!(dnd.focused_index, 0);
+        let dropped = dnd.commit_drop();
+        assert_eq!(dropped, Some((10, 10)));
+        assert!(!dnd.active);
+        assert_eq!(dnd.last_announcement.as_deref(), Some(dc_intl::t("lMkmz7")));
+
+        dnd.begin_drag(11, "#announcements", vec![(11, "#announcements".into())]);
+        dnd.cancel_drag();
+        assert!(!dnd.active);
+        assert_eq!(dnd.last_announcement.as_deref(), Some(dc_intl::t("u4d/eC")));
+    }
+}
+
+/// Module 353680 (`Announcer` + `KeyboardNavigator` + `DragPreviewer`): accessible keyboard
+/// drag-and-drop state & live-region announcements (`vHD/Je`, `lMkmz7`, `u4d/eC`).
+#[derive(Clone, Debug, Default)]
+#[allow(dead_code)]
+pub(crate) struct KeyboardDndState {
+    pub active: bool,
+    pub source_id: Option<Id>,
+    pub source_name: String,
+    pub targets: Vec<(Id, String)>,
+    pub focused_index: usize,
+    pub last_announcement: Option<String>,
+}
+
+#[allow(dead_code)]
+impl KeyboardDndState {
+    /// Module 353680 `announceDrag`: `"Picked up {itemName}"` (`vHD/Je`).
+    pub(crate) fn begin_drag(
+        &mut self,
+        source_id: Id,
+        source_name: &str,
+        targets: Vec<(Id, String)>,
+    ) {
+        self.active = true;
+        self.source_id = Some(source_id);
+        self.source_name = source_name.to_owned();
+        self.focused_index = targets
+            .iter()
+            .position(|(id, _)| *id == source_id)
+            .unwrap_or(0);
+        self.targets = targets;
+        self.last_announcement = Some(dc_intl::format(
+            "vHD/Je",
+            &[("itemName", source_name.into())],
+        ));
+    }
+
+    /// Module 353680 `KeyboardNavigator`: step to previous/next viable drop target (no wrap).
+    pub(crate) fn move_focus(&mut self, delta: isize) {
+        if !self.active || self.targets.is_empty() {
+            return;
+        }
+        let next = (self.focused_index as isize + delta).clamp(0, (self.targets.len() - 1) as isize)
+            as usize;
+        self.focused_index = next;
+        if let Some((_, name)) = self.targets.get(next) {
+            self.last_announcement = Some(name.clone());
+        }
+    }
+
+    /// Module 353680 `handleDrop` / `announceDrop`: returns `(source_id, target_id)` and emits `lMkmz7`.
+    pub(crate) fn commit_drop(&mut self) -> Option<(Id, Id)> {
+        if !self.active {
+            return None;
+        }
+        let src = self.source_id.take()?;
+        let target = self.targets.get(self.focused_index).map(|(id, _)| *id)?;
+        self.active = false;
+        self.last_announcement = Some(dc_intl::t("lMkmz7").to_owned());
+        Some((src, target))
+    }
+
+    /// Module 353680 `announceCancel`: aborts keyboard drag and emits `"Stopped dragging"` (`u4d/eC`).
+    pub(crate) fn cancel_drag(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
+        self.source_id = None;
+        self.last_announcement = Some(dc_intl::t("u4d/eC").to_owned());
+    }
+}
+
+impl Root {
+    /// Module 353680: renders the floating keyboard drag preview (`+30px, +15px` style card) and
+    /// live-region screen-reader announcement banner when keyboard DnD is active or announced.
+    pub(super) fn keyboard_dnd_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let dnd = self.keyboard_dnd.as_ref()?;
+        let announcement = dnd.last_announcement.as_deref()?;
+        let target_name = dnd
+            .targets
+            .get(dnd.focused_index)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_default();
+        Some(
+            gpui::deferred(
+                div()
+                    .id("keyboard-dnd-live-region")
+                    .aria_label(SharedString::from(announcement.to_owned()))
+                    .absolute()
+                    .left(px(96.))
+                    .bottom(px(74.))
+                    .px(px(14.))
+                    .py(px(10.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color(if dnd.active {
+                        "--control-primary-background-default"
+                    } else {
+                        "--border-subtle"
+                    }))
+                    .bg(color("--background-surface-high"))
+                    .shadow_xl()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(super::icon(
+                        "channel_type_text",
+                        16.,
+                        if dnd.active {
+                            "--brand-400"
+                        } else {
+                            "--icon-muted"
+                        },
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(gpui::FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(announcement.to_owned()),
+                            )
+                            .when(dnd.active && !target_name.is_empty(), |col| {
+                                col.child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(color("--text-muted"))
+                                        .child(format!(
+                                            "Target: {target_name} · Arrows move · Enter drops · Esc cancels"
+                                        )),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("keyboard-dnd-dismiss")
+                            .size(px(24.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(super::icon("modal_close", 14., "--interactive-icon-default"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.keyboard_dnd = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .with_priority(7)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_keyboard_dnd(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "close" => {
+                self.keyboard_dnd = None;
+                cx.notify();
+                "keyboard-dnd: closed".to_owned()
+            }
+            "drop" => {
+                let dnd = self.keyboard_dnd.get_or_insert_with(Default::default);
+                dnd.begin_drag(
+                    10,
+                    "#general",
+                    vec![(10, "#general".into()), (11, "#media".into())],
+                );
+                dnd.move_focus(1);
+                dnd.commit_drop();
+                cx.notify();
+                "keyboard-dnd: dropped".to_owned()
+            }
+            _ => {
+                let mut dnd = KeyboardDndState::default();
+                dnd.begin_drag(
+                    10,
+                    "#general",
+                    vec![
+                        (10, "#general".into()),
+                        (11, "#announcements".into()),
+                        (12, "#off-topic".into()),
+                    ],
+                );
+                self.keyboard_dnd = Some(Box::new(dnd));
+                cx.notify();
+                "keyboard-dnd: dragging".to_owned()
+            }
+        }
+    }
 }

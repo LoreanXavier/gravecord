@@ -2120,8 +2120,11 @@ impl Root {
                         Tab::Emoji => panel,
                     })
                     .children(picker.inline_nitro_upsell.map(|_| {
-                        // Module 148361 + 335588 (`.container_IM8diO`): scrim + bottom-anchored
-                        // Nitro pink-gradient upsell overlay (`0+11FF`, `dURIzS`, `gl/XHJ`).
+                        // Module 148361 + 335588 + 632150 (`.container_IM8diO`): scrim + bottom-anchored
+                        // Nitro pink/green gradient upsell overlay (`0+11FF`, `dURIzS`), Nitro Squad
+                        // upsell row (`BkJYQ5` + 3x 20px affinity avatars + chevron), and 2-button footer
+                        // (`ZnqyZ2` "View All Nitro Perks" + `pj0XBN` "Get Nitro").
+                        let (grad_start, grad_end) = nitro_upsell_gradient_stops(true, false);
                         div()
                             .id("picker-inline-nitro-upsell-scrim")
                             .occlude()
@@ -2153,13 +2156,13 @@ impl Root {
                                     .child(
                                         div()
                                             .w_full()
-                                            .px(px(32.))
-                                            .pt(px(32.))
+                                            .px(px(24.))
+                                            .pt(px(28.))
                                             .pb(px(12.))
                                             .bg(gpui::linear_gradient(
                                                 180.,
-                                                gpui::linear_color_stop(gpui::rgba(0xeb459e55), 0.),
-                                                gpui::linear_color_stop(gpui::rgba(0x00000000), 1.),
+                                                gpui::linear_color_stop(grad_start, 0.),
+                                                gpui::linear_color_stop(grad_end, 1.),
                                             ))
                                             .flex()
                                             .flex_col()
@@ -2193,7 +2196,7 @@ impl Root {
                                             )
                                             .child(
                                                 div()
-                                                    .size(px(52.))
+                                                    .size(px(48.))
                                                     .rounded_full()
                                                     .bg(gpui::rgba(0xeb459e33))
                                                     .flex()
@@ -2201,15 +2204,15 @@ impl Root {
                                                     .justify_center()
                                                     .child(super::icon(
                                                         "nitro_wheel",
-                                                        28.,
+                                                        26.,
                                                         "--white",
                                                     )),
                                             )
                                             .child(
                                                 div()
-                                                    .mt(px(16.))
-                                                    .mb(px(10.))
-                                                    .max_w(px(250.))
+                                                    .mt(px(14.))
+                                                    .mb(px(8.))
+                                                    .max_w(px(260.))
                                                     .text_center()
                                                     .text_size(px(18.))
                                                     .line_height(px(22.))
@@ -2219,23 +2222,124 @@ impl Root {
                                             )
                                             .child(
                                                 div()
-                                                    .max_w(px(380.))
+                                                    .max_w(px(360.))
                                                     .text_center()
                                                     .text_size(px(13.))
                                                     .line_height(px(18.))
                                                     .text_color(color("--text-muted"))
                                                     .child(dc_intl::t("dURIzS")),
+                                            )
+                                            // Module 335588 + 632150: Nitro Squad upsell row (`BkJYQ5`)
+                                            .child(
+                                                div()
+                                                    .id("picker-nitro-squad-upsell-row")
+                                                    .mt(px(14.))
+                                                    .w_full()
+                                                    .px(px(16.))
+                                                    .py(px(12.))
+                                                    .rounded(px(10.))
+                                                    .bg(color("--background-mod-muted"))
+                                                    .hover(|s| {
+                                                        s.bg(color("--background-mod-subtle"))
+                                                    })
+                                                    .cursor_pointer()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(12.))
+                                                    .child(
+                                                        div().flex().items_center().children(
+                                                            [
+                                                                ("M", 0x5865f2ffu32),
+                                                                ("K", 0xeb459effu32),
+                                                                ("A", 0x57f287ffu32),
+                                                            ]
+                                                            .into_iter()
+                                                            .enumerate()
+                                                            .map(|(idx, (ch, bg_hex))| {
+                                                                div()
+                                                                    .size(px(20.))
+                                                                    .rounded_full()
+                                                                    .bg(gpui::rgba(bg_hex))
+                                                                    .border_1()
+                                                                    .border_color(color(
+                                                                        "--background-base-low",
+                                                                    ))
+                                                                    .when(idx < 2, |d| {
+                                                                        d.mr(px(-5.))
+                                                                    })
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .justify_center()
+                                                                    .text_size(px(10.))
+                                                                    .font_weight(FontWeight(700.))
+                                                                    .text_color(color("--white"))
+                                                                    .child(ch)
+                                                            }),
+                                                        ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .text_size(px(12.))
+                                                            .line_height(px(16.))
+                                                            .font_weight(FontWeight(500.))
+                                                            .text_color(color("--text-default"))
+                                                            .child(dc_intl::t("BkJYQ5")),
+                                                    )
+                                                    .child(super::icon(
+                                                        "bot_chevron_small_right",
+                                                        16.,
+                                                        "--interactive-icon-default",
+                                                    ))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.picker = None;
+                                                        this.open_settings_section(
+                                                            "Subscriptions",
+                                                            cx,
+                                                        );
+                                                        cx.notify();
+                                                    })),
                                             ),
                                     )
                                     .child(
                                         div()
                                             .w_full()
-                                            .px(px(32.))
+                                            .px(px(24.))
                                             .pt(px(8.))
-                                            .pb(px(24.))
+                                            .pb(px(20.))
                                             .flex()
-                                            .items_center()
-                                            .justify_center()
+                                            .flex_col()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .id("picker-inline-nitro-upsell-view-all")
+                                                    .w_full()
+                                                    .h(px(36.))
+                                                    .rounded(px(8.))
+                                                    .bg(color(
+                                                        "--control-secondary-background-default",
+                                                    ))
+                                                    .hover(|s| {
+                                                        s.bg(color(
+                                                            "--control-secondary-background-hover",
+                                                        ))
+                                                    })
+                                                    .cursor_pointer()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(500.))
+                                                    .text_color(color(
+                                                        "--control-secondary-text-default",
+                                                    ))
+                                                    .child(dc_intl::t("ZnqyZ2"))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.picker = None;
+                                                        this.open_nitro(cx);
+                                                    })),
+                                            )
                                             .child(
                                                 div()
                                                     .id("picker-inline-nitro-upsell-cta")
@@ -2256,7 +2360,7 @@ impl Root {
                                                         16.,
                                                         "--white",
                                                     ))
-                                                    .child(dc_intl::t("gl/XHJ"))
+                                                    .child(dc_intl::t("pj0XBN"))
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.picker = None;
                                                         this.open_nitro(cx);
@@ -2400,10 +2504,38 @@ impl Root {
     }
 }
 
+/// Module 335588: returns `(start, end)` gradient stops for the Nitro bottom-sheet upsell
+/// (`nitro-pink` when `is_emoji_picker_overlay || use_nitro_gradient`, else `green`).
+pub(crate) fn nitro_upsell_gradient_stops(
+    is_emoji_picker_overlay: bool,
+    use_nitro_gradient: bool,
+) -> (gpui::Rgba, gpui::Rgba) {
+    if is_emoji_picker_overlay || use_nitro_gradient {
+        (gpui::rgba(0xeb459e55), gpui::rgba(0x00000000))
+    } else {
+        (gpui::rgba(0x23a55a55), gpui::rgba(0x00000000))
+    }
+}
+
 #[cfg(test)]
 mod toggle_tests {
     use super::*;
     use gpui::point;
+
+    #[test]
+    fn nitro_bottom_sheet_335588_squad_and_gradient_intl() {
+        for key in ["BkJYQ5", "ZnqyZ2", "pj0XBN", "0+11FF", "dURIzS"] {
+            assert!(dc_intl::has_key(key), "missing 335588 key {key}");
+        }
+        assert_ne!(
+            nitro_upsell_gradient_stops(true, false),
+            nitro_upsell_gradient_stops(false, false)
+        );
+        assert_eq!(
+            nitro_upsell_gradient_stops(false, true),
+            nitro_upsell_gradient_stops(true, false)
+        );
+    }
 
     #[test]
     fn only_the_button_strip_of_the_composer_is_a_toggle_press() {

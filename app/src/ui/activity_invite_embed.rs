@@ -25,6 +25,14 @@ use serde_json::json;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
+/// Module 333189 (`j.rD`): invite destination row kind (`USER`, `GROUP_DM`, `TEXT_CHANNEL`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivityInviteRowKind {
+    User,
+    GroupDm,
+    TextChannel,
+}
+
 /// State for the `196492` "Invite to Play" modal (`ActivityInviteManager` + `333189` searchable
 /// invite picker: `2tN7ih`, `MAxtks`, `BddRzS`, `5h0QOP`, `HBJiRR`, `Jf0OOQ`, `6F9ivu`, `i6A1Xw`).
 #[derive(Clone)]
@@ -34,6 +42,8 @@ pub(crate) struct ActivityInviteModalState {
     pub party_id: String,
     pub is_private: bool,
     pub query: Entity<Editor>,
+    /// Module 333189: in-flight sending row IDs (distinct from `sent_ids`).
+    pub sending_ids: HashSet<Id>,
     pub sent_ids: HashSet<Id>,
 }
 
@@ -1084,6 +1094,7 @@ impl Root {
             party_id,
             is_private,
             query,
+            sending_ids: HashSet::new(),
             sent_ids: HashSet::new(),
         });
         cx.notify();
@@ -1210,15 +1221,33 @@ impl Root {
             );
         }
 
-        // Branch B (`!isPrivate`): 480px searchable invite modal (`333189`, `5h0QOP`, `HBJiRR`,
-        // `Jf0OOQ`, `6F9ivu`, `i6A1Xw`).
+        // Branch B (`!isPrivate`): 500px searchable invite modal (`333189`, `5h0QOP`, `HBJiRR`,
+        // `Jf0OOQ`, `6F9ivu`, `i6A1Xw`) with `USER`, `GROUP_DM`, and `TEXT_CHANNEL` rows + per-row sending state.
         let filter = modal.query.read(cx).text().trim().to_ascii_lowercase();
-        let mut playing_rows: Vec<(Id, String, String)> = Vec::new();
-        let mut other_rows: Vec<(Id, String, String)> = Vec::new();
+        let mut playing_rows: Vec<(Id, ActivityInviteRowKind, String, String)> = Vec::new();
+        let mut other_rows: Vec<(Id, ActivityInviteRowKind, String, String)> = Vec::new();
 
         let mut seen_dm_users: HashSet<Id> = HashSet::new();
         for dm in &self.stores.private_channels {
-            let (name, sub, same_app) = if let Some(uid) = dm.recipients.first().copied() {
+            let (kind, name, sub, same_app) = if dm.recipients.len() > 1 {
+                let n = dm.name.clone().unwrap_or_else(|| "Group DM".to_owned());
+                let members: Vec<String> = dm
+                    .recipients
+                    .iter()
+                    .filter_map(|uid| {
+                        self.stores
+                            .users
+                            .get(uid)
+                            .map(|u| u.display_name().to_owned())
+                    })
+                    .collect();
+                let sub = if members.is_empty() {
+                    "Group DM".to_owned()
+                } else {
+                    members.join(", ")
+                };
+                (ActivityInviteRowKind::GroupDm, n, sub, false)
+            } else if let Some(uid) = dm.recipients.first().copied() {
                 let user = self.stores.users.get(&uid);
                 if user.is_some_and(|u| u.system || u.bot) || !seen_dm_users.insert(uid) {
                     continue;
@@ -1238,10 +1267,15 @@ impl Root {
                             .is_some_and(|n| n.eq_ignore_ascii_case(&modal.app_name))
                     })
                 });
-                (disp, uname, playing_same)
+                (ActivityInviteRowKind::User, disp, uname, playing_same)
             } else {
                 let n = dm.name.clone().unwrap_or_else(|| "Group DM".to_owned());
-                (n, "Group DM".to_owned(), false)
+                (
+                    ActivityInviteRowKind::GroupDm,
+                    n,
+                    "Group DM".to_owned(),
+                    false,
+                )
             };
             if !filter.is_empty()
                 && !name.to_ascii_lowercase().contains(&filter)
@@ -1250,18 +1284,23 @@ impl Root {
                 continue;
             }
             if same_app {
-                playing_rows.push((dm.id, name, sub));
+                playing_rows.push((dm.id, kind, name, sub));
             } else {
-                other_rows.push((dm.id, name, sub));
+                other_rows.push((dm.id, kind, name, sub));
             }
         }
-        if !filter.is_empty() {
+        if !filter.is_empty() || other_rows.len() < 4 {
             for g in &self.stores.guilds {
                 for ch in &g.channels {
                     if ch.kind == dc_state::ChannelKind::Text
-                        && ch.name.to_ascii_lowercase().contains(&filter)
+                        && (filter.is_empty() || ch.name.to_ascii_lowercase().contains(&filter))
                     {
-                        other_rows.push((ch.id, format!("#{}", ch.name), g.name.clone()));
+                        other_rows.push((
+                            ch.id,
+                            ActivityInviteRowKind::TextChannel,
+                            format!("#{}", ch.name),
+                            g.name.clone(),
+                        ));
                     }
                 }
             }
@@ -1270,12 +1309,77 @@ impl Root {
         let show_headers = !playing_rows.is_empty() && !other_rows.is_empty();
         let app_id = modal.app_id.clone();
         let party_id = modal.party_id.clone();
+        let sending_ids = modal.sending_ids.clone();
         let sent_ids = modal.sent_ids.clone();
 
-        let make_row = |idx: usize, (cid, name, sub): (Id, String, String), prefix: &str| {
+        let make_row = |idx: usize,
+                        (cid, kind, name, sub): (Id, ActivityInviteRowKind, String, String),
+                        prefix: &str| {
+            let is_sending = sending_ids.contains(&cid);
             let is_sent = sent_ids.contains(&cid);
+            let disabled = is_sent || is_sending;
             let app_c = app_id.clone();
             let party_c = party_id.clone();
+            let badge: AnyElement = match kind {
+                ActivityInviteRowKind::TextChannel => div()
+                    .flex_none()
+                    .size(px(32.))
+                    .rounded(px(8.))
+                    .bg(color("--background-mod-strong"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("channel_type_text", 16., "--icon-subtle"))
+                    .into_any_element(),
+                ActivityInviteRowKind::GroupDm => div()
+                    .flex_none()
+                    .size(px(32.))
+                    .rounded_full()
+                    .bg(color("--brand-500"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight(700.))
+                    .text_color(color("--white"))
+                    .child(
+                        name.chars()
+                            .next()
+                            .map(|c| c.to_ascii_uppercase().to_string())
+                            .unwrap_or_else(|| "G".to_owned()),
+                    )
+                    .into_any_element(),
+                ActivityInviteRowKind::User => div()
+                    .relative()
+                    .flex_none()
+                    .size(px(32.))
+                    .rounded_full()
+                    .bg(color("--background-mod-strong"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child(
+                        name.chars()
+                            .next()
+                            .map(|c| c.to_ascii_uppercase().to_string())
+                            .unwrap_or_else(|| "?".to_owned()),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .right(px(-1.))
+                            .bottom(px(-1.))
+                            .size(px(10.))
+                            .rounded_full()
+                            .border_2()
+                            .border_color(color("--background-surface-high"))
+                            .bg(color("--status-positive")),
+                    )
+                    .into_any_element(),
+            };
             div()
                 .id(format!("activity-invite-row-{prefix}-{idx}"))
                 .h(px(48.))
@@ -1293,25 +1397,7 @@ impl Root {
                         .flex()
                         .items_center()
                         .gap(px(12.))
-                        .child(
-                            div()
-                                .flex_none()
-                                .size(px(32.))
-                                .rounded_full()
-                                .bg(color("--background-mod-strong"))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(13.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--text-strong"))
-                                .child(
-                                    name.chars()
-                                        .next()
-                                        .map(|c| c.to_ascii_uppercase().to_string())
-                                        .unwrap_or_else(|| "?".to_owned()),
-                                ),
-                        )
+                        .child(badge)
                         .child(
                             div()
                                 .flex_1()
@@ -1352,35 +1438,43 @@ impl Root {
                         .rounded(px(6.))
                         .border_1()
                         .border_color(color("--border-subtle"))
-                        .bg(if is_sent {
+                        .bg(if disabled {
                             color("--background-mod-subtle")
                         } else {
                             color("--control-secondary-background-default")
                         })
-                        .when(!is_sent, |d| {
+                        .when(!disabled, |d| {
                             d.hover(|s| s.bg(color("--control-secondary-background-hover")))
                                 .cursor_pointer()
                         })
-                        .when(is_sent, |d| d.opacity(0.6))
+                        .when(disabled, |d| d.opacity(0.6))
                         .flex()
                         .items_center()
                         .justify_center()
                         .text_size(px(13.))
                         .font_weight(FontWeight(600.))
-                        .text_color(if is_sent {
+                        .text_color(if disabled {
                             color("--text-muted")
                         } else {
                             color("--text-strong")
                         })
-                        .child(dc_intl::t(if is_sent { "i6A1Xw" } else { "6F9ivu" }))
+                        .child(if is_sending {
+                            "..."
+                        } else {
+                            dc_intl::t(if is_sent { "i6A1Xw" } else { "6F9ivu" })
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if is_sent {
+                            if disabled {
                                 return;
+                            }
+                            if let Some(m) = this.activity_invite_modal.as_mut() {
+                                m.sending_ids.insert(cid);
                             }
                             let _ = this
                                 .requests
                                 .send(send_activity_invite_request(cid, &party_c, &app_c));
                             if let Some(m) = this.activity_invite_modal.as_mut() {
+                                m.sending_ids.remove(&cid);
                                 m.sent_ids.insert(cid);
                             }
                             cx.notify();
@@ -1436,7 +1530,7 @@ impl Root {
             .id("activity-invite-search-modal")
             .occlude()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .w(px(480.))
+            .w(px(500.))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-subtle"))

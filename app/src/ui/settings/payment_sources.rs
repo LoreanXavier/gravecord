@@ -618,11 +618,7 @@ impl Root {
                                 .flex()
                                 .items_start()
                                 .gap(px(8.))
-                                .child(crate::ui::icon(
-                                    "circle_info",
-                                    16.,
-                                    "--text-feedback-info",
-                                ))
+                                .child(crate::ui::icon("circle_info", 16., "--text-feedback-info"))
                                 .child(
                                     div()
                                         .flex_1()
@@ -708,8 +704,7 @@ impl Root {
                                                 ))
                                             })
                                             .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(p) =
-                                                    this.payment_source_picker.as_mut()
+                                                if let Some(p) = this.payment_source_picker.as_mut()
                                                 {
                                                     p.selected_id = Some(id_str.clone());
                                                     p.dropdown_open = false;
@@ -734,11 +729,12 @@ impl Root {
                                             .child(dc_intl::t("eQ2bLp"))
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.payment_source_picker = None;
-                                                this.billing_address_modal = Some(
-                                                    crate::ui::billing_address::BillingAddressModal::demo(
-                                                        "US", false,
-                                                    ),
-                                                );
+                                                let _ =
+                                                    this.requests.send(
+                                                        payment_source_creation_context_request(),
+                                                    );
+                                                this.add_payment_method_modal =
+                                                    Some(Box::new(AddPaymentMethodState::new()));
                                                 cx.notify();
                                             })),
                                     ),
@@ -828,6 +824,178 @@ impl Root {
         });
         cx.notify();
         format!("payment-picker: {arg}")
+    }
+}
+
+/// Module 362111 (`671334`): steps of the standalone "Add a new payment method" modal (`eQ2bLp`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(in crate::ui) enum AddPaymentStep {
+    PaymentElement,
+    CreditCard,
+    ExternalMethod,
+    Address,
+    AwaitingAuth,
+}
+
+/// Module 362111: selectable payment method types in `AddPaymentMethodState`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(in crate::ui) enum AddPaymentKind {
+    Card,
+    PayPal,
+    Venmo,
+    CashApp,
+    Ideal,
+    Pix,
+}
+
+impl AddPaymentKind {
+    pub(in crate::ui) const ALL: [Self; 6] = [
+        Self::Card,
+        Self::PayPal,
+        Self::Venmo,
+        Self::CashApp,
+        Self::Ideal,
+        Self::Pix,
+    ];
+
+    pub(in crate::ui) fn label(self) -> &'static str {
+        match self {
+            Self::Card => dc_intl::t("ei5/p8"),
+            Self::PayPal => dc_intl::t("QQBAos"),
+            Self::Venmo => dc_intl::t("jYOezc"),
+            Self::CashApp => dc_intl::t("+rbTmL"),
+            Self::Ideal => dc_intl::t("nSbwqC"),
+            Self::Pix => dc_intl::t("JG3WQU"),
+        }
+    }
+
+    pub(in crate::ui) fn connect_cta(self) -> &'static str {
+        match self {
+            Self::PayPal => dc_intl::t("Djzd7L"),
+            Self::Venmo => dc_intl::t("4KoTLM"),
+            Self::CashApp => dc_intl::t("9ALP8w"),
+            _ => dc_intl::t("PDTjLN"),
+        }
+    }
+}
+
+/// Module 362111 (`AddPaymentMethodModal`, CSS `998973`/`24404`): standalone add payment method state.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(in crate::ui) struct AddPaymentMethodState {
+    pub step: AddPaymentStep,
+    pub selected_kind: AddPaymentKind,
+    pub card_number: String,
+    pub exp_date: String,
+    pub cvc: String,
+    pub cardholder_name: String,
+    pub country_locked: bool,
+    pub error_message: Option<String>,
+    pub submitting: bool,
+}
+
+impl AddPaymentMethodState {
+    pub(in crate::ui) fn new() -> Self {
+        Self {
+            step: AddPaymentStep::PaymentElement,
+            selected_kind: AddPaymentKind::Card,
+            card_number: String::new(),
+            exp_date: String::new(),
+            cvc: String::new(),
+            cardholder_name: String::new(),
+            country_locked: false,
+            error_message: None,
+            submitting: false,
+        }
+    }
+
+    /// Module 362111 (`671334`): validates credit card fields returning official intl error keys.
+    pub(in crate::ui) fn validate_card(&self) -> Result<(), &'static str> {
+        let digits: String = self
+            .card_number
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect();
+        if digits.is_empty() {
+            return Err(dc_intl::t("eOIfuy"));
+        }
+        if digits.len() < 13 || digits.len() > 19 {
+            return Err(dc_intl::t("x4pWtJ"));
+        }
+        let exp = self.exp_date.trim();
+        if !exp.contains('/') || exp.len() < 4 {
+            return Err(dc_intl::t("9/zZdl"));
+        }
+        let cvc_digits = self.cvc.chars().filter(|c| c.is_ascii_digit()).count();
+        if !(3..=4).contains(&cvc_digits) {
+            return Err(dc_intl::t("ro4isZ"));
+        }
+        if self.cardholder_name.trim().is_empty() {
+            return Err(dc_intl::t("lIkVsi"));
+        }
+        Ok(())
+    }
+}
+
+/// Module 362111: `GET /users/@me/billing/payment-source-creation-context`.
+pub(in crate::ui) fn payment_source_creation_context_request() -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some("billing:creation-context".to_owned()),
+        method: reqwest::Method::GET,
+        route: "/users/@me/billing/payment-source-creation-context".to_owned(),
+        body: None,
+    }
+}
+
+/// Module 362111: `POST /users/@me/billing/payment-sources/validate-billing-address`.
+#[allow(dead_code)]
+pub(in crate::ui) fn validate_billing_address_request(
+    name: &str,
+    line_1: &str,
+    city: &str,
+    postal_code: &str,
+    country: &str,
+) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some("billing:validate-address".to_owned()),
+        method: reqwest::Method::POST,
+        route: "/users/@me/billing/payment-sources/validate-billing-address".to_owned(),
+        body: Some(serde_json::json!({
+            "billing_address": {
+                "name": name,
+                "line_1": line_1,
+                "city": city,
+                "postal_code": postal_code,
+                "country": country,
+            }
+        })),
+    }
+}
+
+/// Module 362111: `POST /users/@me/billing/payment-sources?location={location}`.
+#[allow(dead_code)]
+pub(in crate::ui) fn create_payment_source_request(
+    location: &str,
+    payment_gateway: u32,
+    token: &str,
+    billing_address_token: Option<&str>,
+    is_default: bool,
+) -> crate::net::Request {
+    let mut body = serde_json::json!({
+        "payment_gateway": payment_gateway,
+        "token": token,
+        "default": is_default,
+    });
+    if let Some(bat) = billing_address_token {
+        body["billing_address_token"] = serde_json::json!(bat);
+    }
+    crate::net::Request::Rest {
+        key: Some("billing:create-payment-source".to_owned()),
+        method: reqwest::Method::POST,
+        route: format!("/users/@me/billing/payment-sources?location={location}"),
+        body: Some(body),
     }
 }
 
@@ -1163,6 +1331,505 @@ impl crate::ui::Root {
         cx.notify();
         format!("payment-auth: {mode}")
     }
+
+    /// Module 362111 (`AddPaymentMethodModal`, CSS `998973`/`24404`): standalone "Add a new payment method" flow.
+    pub(in crate::ui) fn add_payment_method_layer(
+        &self,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        use crate::ui::{color, icon};
+        use gpui::{FontWeight, IntoElement, SharedString, div, prelude::*, px, rgba};
+
+        let state = self.add_payment_method_modal.as_deref()?;
+        let step = state.step;
+        let selected_kind = state.selected_kind;
+        let error_msg = state.error_message.clone();
+        let country_locked = state.country_locked;
+
+        let body: gpui::AnyElement = match step {
+            AddPaymentStep::PaymentElement => div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .when_some(error_msg.clone(), |col, err| {
+                    col.child(
+                        div()
+                            .p(px(10.))
+                            .rounded(px(8.))
+                            .bg(rgba(0xda373c1a))
+                            .border_1()
+                            .border_color(color("--status-danger"))
+                            .text_size(px(13.))
+                            .text_color(color("--text-feedback-critical"))
+                            .child(err),
+                    )
+                })
+                .child(div().flex().flex_wrap().gap(px(8.)).children(
+                    AddPaymentKind::ALL.into_iter().map(|kind| {
+                        let active = kind == selected_kind;
+                        div()
+                            .id(SharedString::from(format!("add-pm-kind-{kind:?}")))
+                            .w(px(196.))
+                            .h(px(44.))
+                            .px(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color(if active {
+                                "--control-primary-background-default"
+                            } else {
+                                "--border-subtle"
+                            }))
+                            .bg(color(if active {
+                                "--background-mod-strong"
+                            } else {
+                                "--background-base-lower"
+                            }))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(if active { 600. } else { 500. }))
+                            .text_color(color("--text-strong"))
+                            .child(kind.label())
+                            .when(active, |d| {
+                                d.child(icon("circle_check", 16., "--brand-400"))
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(m) = this.add_payment_method_modal.as_deref_mut() {
+                                    m.selected_kind = kind;
+                                    m.error_message = None;
+                                }
+                                cx.notify();
+                            }))
+                    }),
+                ))
+                .when(country_locked, |col| {
+                    col.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("Pg2hU0")),
+                    )
+                })
+                .into_any_element(),
+            AddPaymentStep::CreditCard => div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .when_some(error_msg.clone(), |col, err| {
+                    col.child(
+                        div()
+                            .p(px(10.))
+                            .rounded(px(8.))
+                            .bg(rgba(0xda373c1a))
+                            .border_1()
+                            .border_color(color("--status-danger"))
+                            .text_size(px(13.))
+                            .text_color(color("--text-feedback-critical"))
+                            .child(err),
+                    )
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("cVyJ3o")),
+                        )
+                        .child(
+                            div()
+                                .h(px(38.))
+                                .px(px(10.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--input-border-default"))
+                                .bg(color("--input-background-default"))
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .text_color(color(if state.card_number.is_empty() {
+                                    "--text-muted"
+                                } else {
+                                    "--text-strong"
+                                }))
+                                .child(if state.card_number.is_empty() {
+                                    dc_intl::t("gPRHfw").to_owned()
+                                } else {
+                                    state.card_number.clone()
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("CeBa/4")),
+                                )
+                                .child(
+                                    div()
+                                        .h(px(38.))
+                                        .px(px(10.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--input-border-default"))
+                                        .bg(color("--input-background-default"))
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(14.))
+                                        .text_color(color(if state.exp_date.is_empty() {
+                                            "--text-muted"
+                                        } else {
+                                            "--text-strong"
+                                        }))
+                                        .child(if state.exp_date.is_empty() {
+                                            dc_intl::t("xeEWQ6").to_owned()
+                                        } else {
+                                            state.exp_date.clone()
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("Fd3rOz")),
+                                )
+                                .child(
+                                    div()
+                                        .h(px(38.))
+                                        .px(px(10.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--input-border-default"))
+                                        .bg(color("--input-background-default"))
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(14.))
+                                        .text_color(color(if state.cvc.is_empty() {
+                                            "--text-muted"
+                                        } else {
+                                            "--text-strong"
+                                        }))
+                                        .child(if state.cvc.is_empty() {
+                                            dc_intl::t("wZz04F").to_owned()
+                                        } else {
+                                            state.cvc.clone()
+                                        }),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("VUlFdU")),
+                        )
+                        .child(
+                            div()
+                                .h(px(38.))
+                                .px(px(10.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--input-border-default"))
+                                .bg(color("--input-background-default"))
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .text_color(color(if state.cardholder_name.is_empty() {
+                                    "--text-muted"
+                                } else {
+                                    "--text-strong"
+                                }))
+                                .child(if state.cardholder_name.is_empty() {
+                                    dc_intl::t("yf7ms+").to_owned()
+                                } else {
+                                    state.cardholder_name.clone()
+                                }),
+                        ),
+                )
+                .into_any_element(),
+            AddPaymentStep::ExternalMethod => {
+                let helper = match selected_kind {
+                    AddPaymentKind::PayPal => dc_intl::t("hopw7X"),
+                    AddPaymentKind::Venmo => dc_intl::t("mIL6Jb"),
+                    AddPaymentKind::CashApp => dc_intl::t("1MqcjI"),
+                    _ => dc_intl::t("Pg2hU0"),
+                };
+                div()
+                    .py(px(12.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(icon("role_shield", 36., "--brand-400"))
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(selected_kind.label()),
+                    )
+                    .child(
+                        div()
+                            .text_center()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-muted"))
+                            .child(helper),
+                    )
+                    .into_any_element()
+            }
+            AddPaymentStep::Address | AddPaymentStep::AwaitingAuth => div()
+                .p(px(12.))
+                .rounded(px(8.))
+                .bg(color("--background-base-lower"))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .text_size(px(13.))
+                .line_height(px(18.))
+                .text_color(color("--text-default"))
+                .child(if step == AddPaymentStep::AwaitingAuth {
+                    dc_intl::t("eALkIR")
+                } else {
+                    dc_intl::t("Pg2hU0")
+                })
+                .into_any_element(),
+        };
+
+        let primary_label = match step {
+            AddPaymentStep::ExternalMethod => selected_kind.connect_cta(),
+            _ => dc_intl::t("PDTjLN"),
+        };
+
+        let dialog = div()
+            .id("add-payment-method-dialog")
+            .w(px(460.))
+            .rounded(px(12.))
+            .bg(color("--background-surface-high"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .px(px(20.))
+                    .py(px(16.))
+                    .border_b_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("eQ2bLp")),
+                    )
+                    .child(
+                        div()
+                            .id("add-pm-close")
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 16., "--interactive-icon-default"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.add_payment_method_modal = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(div().p(px(20.)).child(body))
+            .child(
+                div()
+                    .px(px(20.))
+                    .py(px(14.))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-base-lower"))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .id("add-pm-back")
+                            .h(px(36.))
+                            .px(px(14.))
+                            .rounded(px(8.))
+                            .bg(color("--control-secondary-background-default"))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--control-secondary-text-default"))
+                            .child(dc_intl::t("ETE/oC"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(m) = this.add_payment_method_modal.as_deref_mut()
+                                    && m.step != AddPaymentStep::PaymentElement
+                                {
+                                    m.step = AddPaymentStep::PaymentElement;
+                                    m.error_message = None;
+                                } else {
+                                    this.add_payment_method_modal = None;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("add-pm-next")
+                            .h(px(36.))
+                            .px(px(18.))
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(primary_label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                match step {
+                                    AddPaymentStep::PaymentElement => {
+                                        if let Some(m) =
+                                            this.add_payment_method_modal.as_deref_mut()
+                                        {
+                                            m.step = if m.selected_kind == AddPaymentKind::Card {
+                                                AddPaymentStep::CreditCard
+                                            } else {
+                                                AddPaymentStep::ExternalMethod
+                                            };
+                                        }
+                                    }
+                                    AddPaymentStep::CreditCard => {
+                                        if let Some(m) =
+                                            this.add_payment_method_modal.as_deref_mut()
+                                        {
+                                            if let Err(err) = m.validate_card() {
+                                                m.error_message = Some(err.to_owned());
+                                            } else {
+                                                m.error_message = None;
+                                                m.step = AddPaymentStep::Address;
+                                            }
+                                        }
+                                    }
+                                    AddPaymentStep::ExternalMethod | AddPaymentStep::Address => {
+                                        let _ = this.requests.send(create_payment_source_request(
+                                            "user_settings",
+                                            1,
+                                            "tok_demo",
+                                            None,
+                                            true,
+                                        ));
+                                        this.add_payment_method_modal = None;
+                                        this.show_success_toast(
+                                            dc_intl::t("VJPg+l").to_owned(),
+                                            cx,
+                                        );
+                                    }
+                                    AddPaymentStep::AwaitingAuth => {
+                                        this.add_payment_method_modal = None;
+                                    }
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("add-payment-method-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.add_payment_method_modal = None;
+                        cx.notify();
+                    }))
+                    .child(dialog),
+            )
+            .with_priority(4)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_add_payment_method(
+        &mut self,
+        arg: &str,
+        cx: &mut gpui::Context<Self>,
+    ) -> String {
+        match arg.trim() {
+            "close" => {
+                self.add_payment_method_modal = None;
+                cx.notify();
+                "add-payment: closed".to_owned()
+            }
+            "card" => {
+                let mut m = AddPaymentMethodState::new();
+                m.step = AddPaymentStep::CreditCard;
+                m.card_number = "4242 4242 4242 4242".to_owned();
+                m.exp_date = "08/29".to_owned();
+                m.cvc = "424".to_owned();
+                m.cardholder_name = "Lorean Xavier".to_owned();
+                self.add_payment_method_modal = Some(Box::new(m));
+                cx.notify();
+                "add-payment: card".to_owned()
+            }
+            _ => {
+                let mut m = AddPaymentMethodState::new();
+                m.country_locked = true;
+                self.add_payment_method_modal = Some(Box::new(m));
+                cx.notify();
+                "add-payment: methods".to_owned()
+            }
+        }
+    }
 }
 
 /// Module 6151 (`a`): sentinel option ID for "Add new payment method".
@@ -1410,6 +2077,50 @@ mod tests {
             crate::net::Request::Rest { method, route, .. }
                 if method == reqwest::Method::GET
                     && route == "/users/@me/billing/stripe/payment-intents/payments/p42"
+        ));
+    }
+
+    #[test]
+    fn add_payment_method_362111_validation_routes_and_intl() {
+        for key in [
+            "eQ2bLp", "VJPg+l", "PDTjLN", "cVyJ3o", "gPRHfw", "CeBa/4", "xeEWQ6", "Fd3rOz",
+            "wZz04F", "VUlFdU", "yf7ms+", "eOIfuy", "x4pWtJ", "9/zZdl", "ro4isZ", "lIkVsi",
+            "4vnhKV", "vZ8y7l", "Pg2hU0", "QQBAos", "Djzd7L", "4KoTLM", "9ALP8w",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 362111 key {key}");
+        }
+        let mut s = AddPaymentMethodState::new();
+        assert_eq!(s.validate_card(), Err(dc_intl::t("eOIfuy")));
+        s.card_number = "1234".into();
+        assert_eq!(s.validate_card(), Err(dc_intl::t("x4pWtJ")));
+        s.card_number = "4242424242424242".into();
+        s.exp_date = "bad".into();
+        assert_eq!(s.validate_card(), Err(dc_intl::t("9/zZdl")));
+        s.exp_date = "08/29".into();
+        s.cvc = "1".into();
+        assert_eq!(s.validate_card(), Err(dc_intl::t("ro4isZ")));
+        s.cvc = "424".into();
+        assert_eq!(s.validate_card(), Err(dc_intl::t("lIkVsi")));
+        s.cardholder_name = "Alex".into();
+        assert!(s.validate_card().is_ok());
+
+        assert!(matches!(
+            payment_source_creation_context_request(),
+            crate::net::Request::Rest { method, route, .. }
+                if method == reqwest::Method::GET
+                    && route == "/users/@me/billing/payment-source-creation-context"
+        ));
+        assert!(matches!(
+            validate_billing_address_request("Alex", "123 Main", "NY", "10001", "US"),
+            crate::net::Request::Rest { method, route, .. }
+                if method == reqwest::Method::POST
+                    && route == "/users/@me/billing/payment-sources/validate-billing-address"
+        ));
+        assert!(matches!(
+            create_payment_source_request("billing", 1, "tok", Some("bat"), true),
+            crate::net::Request::Rest { method, route, .. }
+                if method == reqwest::Method::POST
+                    && route == "/users/@me/billing/payment-sources?location=billing"
         ));
     }
 }

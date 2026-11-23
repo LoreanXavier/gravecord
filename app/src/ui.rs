@@ -961,6 +961,8 @@ pub struct Root {
     conjure_agent_browser: Option<Box<conjure_workspace::ConjureAgentBrowserState>>,
     conjure_aux_modal: Option<Box<conjure_workspace::ConjureAuxModal>>,
     payment_auth_modal: Option<Box<settings::payment_sources::PaymentAuthModalState>>,
+    add_payment_method_modal: Option<Box<settings::payment_sources::AddPaymentMethodState>>,
+    keyboard_dnd: Option<Box<channel_drag::KeyboardDndState>>,
     gift_coachmark: Option<GiftCoachmark>,
     how_boosting_works: Option<boost_page::HowBoostingWorksModal>,
     guild_room_selector: Option<guild_space::GuildRoomSelectorModal>,
@@ -1651,6 +1653,8 @@ impl Root {
             conjure_agent_browser: None,
             conjure_aux_modal: None,
             payment_auth_modal: None,
+            add_payment_method_modal: None,
+            keyboard_dnd: None,
             gift_coachmark: None,
             how_boosting_works: None,
             guild_room_selector: None,
@@ -12455,6 +12459,7 @@ impl Render for Root {
                         || this.family_center.disconnect_link.is_some()
                         || this.family_center.spending_cap.is_some()
                         || this.family_center.teen_qr_modal.is_some()
+                        || this.family_center.downtime_schedule.is_some()
                         || this.incode_age_verify.is_some()
                         || this.age_verify_aux.is_some()
                         || this.favorites_thread_settings.is_some()
@@ -12463,6 +12468,9 @@ impl Render for Root {
                         || this.conjure_agent_browser.is_some()
                         || this.conjure_aux_modal.is_some()
                         || this.payment_auth_modal.is_some()
+                        || this.add_payment_method_modal.is_some()
+                        || this.keyboard_dnd.is_some()
+                        || this.voice_hover.avatar_list_popout.is_some()
                         || this.gift_coachmark.is_some()
                         || this.how_boosting_works.is_some()
                         || this.guild_room_selector.is_some()
@@ -12527,6 +12535,12 @@ impl Render for Root {
                     this.conjure_agent_browser = None;
                     this.conjure_aux_modal = None;
                     this.payment_auth_modal = None;
+                    this.add_payment_method_modal = None;
+                    if let Some(dnd) = this.keyboard_dnd.as_deref_mut() {
+                        dnd.cancel_drag();
+                    }
+                    this.keyboard_dnd = None;
+                    this.voice_hover.avatar_list_popout = None;
                     this.gift_coachmark = None;
                     this.how_boosting_works = None;
                     this.guild_room_selector = None;
@@ -14005,10 +14019,14 @@ impl Render for Root {
             .children(self.family_center_disconnect_link_modal(cx))
             .children(self.family_center_spending_cap_modal(cx))
             .children(self.family_center_teen_qr_modal(cx))
+            .children(self.family_center_downtime_modal(cx))
             .children(self.in_game_auth_check_modal_layer(cx))
             .children(self.conjure_agent_browser_layer(cx))
             .children(self.conjure_aux_modal_layer(cx))
             .children(self.payment_auth_modal_layer(cx))
+            .children(self.add_payment_method_layer(cx))
+            .children(self.avatar_stack_popout_layer(cx))
+            .children(self.keyboard_dnd_layer(cx))
             .children(self.gift_coachmark_layer(cx))
             .children(self.how_boosting_works_overlay(cx))
             .children(self.premium_announcement_modal_layer(cx))
