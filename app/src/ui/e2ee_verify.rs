@@ -519,7 +519,7 @@ impl Root {
         )
     }
 
-    /// Capture harness: `e2ee-verify [new|verified|devices|close]` (module 730713).
+    /// Capture harness: `e2ee-verify [new|verified|devices|close]` (module 730713 + 144485 launchers).
     #[cfg(feature = "capture")]
     pub(crate) fn script_e2ee_verify(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         let uid = self
@@ -555,5 +555,50 @@ impl Root {
                 "e2ee-verify: new".to_owned()
             }
         }
+    }
+}
+
+/// Module 144485 (`openSecureFramesUpdateConfirmation`): confirmation payload for Secure Frames
+/// (DAVE E2EE) update prompts (`confirmText` defaults to `cY+Oob` `"Confirm"`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct SecureFramesUpdateConfirmation {
+    pub title: String,
+    pub subtitle: String,
+    pub confirm_text: String,
+}
+
+#[allow(dead_code)]
+impl SecureFramesUpdateConfirmation {
+    pub(crate) fn new(
+        title: impl Into<String>,
+        subtitle: impl Into<String>,
+        confirm_text: Option<&str>,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            subtitle: subtitle.into(),
+            confirm_text: confirm_text
+                .unwrap_or_else(|| dc_intl::t("cY+Oob"))
+                .to_owned(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secure_frames_launchers_144485_defaults_and_intl() {
+        assert_eq!(dc_intl::t("cY+Oob"), "Confirm");
+        let cfg = SecureFramesUpdateConfirmation::new(
+            "Update Secure Frames",
+            "Reconnect to apply protocol update.",
+            None,
+        );
+        assert_eq!(cfg.confirm_text, "Confirm");
+        let custom = SecureFramesUpdateConfirmation::new("Title", "Sub", Some("Continue"));
+        assert_eq!(custom.confirm_text, "Continue");
     }
 }

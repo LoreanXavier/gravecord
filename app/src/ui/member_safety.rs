@@ -598,6 +598,295 @@ impl Root {
     }
 }
 
+/// Module 123393 (`useGuildJoinRequestActions`): maximum rejection reason length (`867276`).
+pub(crate) const JOIN_REQUEST_REJECTION_MAX_LEN: usize = 160;
+
+/// Module 123393 (`624458.A.updateGuildJoinRequest`): `PATCH /guilds/{guildId}/requests/{requestId}`
+/// with `{ "action": "APPROVED" }`.
+#[allow(dead_code)]
+pub(crate) fn approve_join_request_request(guild_id: Id, request_id: Id) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("join-request:approve:{guild_id}:{request_id}")),
+        method: reqwest::Method::PATCH,
+        route: format!("/guilds/{guild_id}/requests/{request_id}"),
+        body: Some(serde_json::json!({ "action": "APPROVED" })),
+    }
+}
+
+/// Module 123393 + 867276: `PATCH /guilds/{guildId}/requests/{requestId}` with
+/// `{ "action": "REJECTED", "rejection_reason"?: reason }` (clamped to 160 chars).
+pub(crate) fn reject_join_request_request(
+    guild_id: Id,
+    request_id: Id,
+    reason: Option<&str>,
+) -> crate::net::Request {
+    let mut body = serde_json::json!({ "action": "REJECTED" });
+    if let Some(text) = reason.map(str::trim).filter(|s| !s.is_empty()) {
+        let clamped: String = text.chars().take(JOIN_REQUEST_REJECTION_MAX_LEN).collect();
+        body["rejection_reason"] = serde_json::Value::String(clamped);
+    }
+    crate::net::Request::Rest {
+        key: Some(format!("join-request:reject:{guild_id}:{request_id}")),
+        method: reqwest::Method::PATCH,
+        route: format!("/guilds/{guild_id}/requests/{request_id}"),
+        body: Some(body),
+    }
+}
+
+/// Module 123393 (`624458.A.createOrEnterJoinRequestInterview`): `POST /join-requests/{requestId}/interview`.
+#[allow(dead_code)]
+pub(crate) fn create_join_request_interview_request(request_id: Id) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("join-request:interview:{request_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/join-requests/{request_id}/interview"),
+        body: None,
+    }
+}
+
+/// Module 123393 + 867276: open Join Request rejection confirmation modal state.
+#[derive(Clone, Debug)]
+pub(crate) struct JoinRequestRejectModalState {
+    pub guild_id: Id,
+    pub request_id: Id,
+    pub applicant_name: String,
+    pub reason: String,
+    pub submitting: bool,
+}
+
+impl Root {
+    /// Renders the `123393`/`867276` Join Request rejection confirmation modal when open.
+    pub(super) fn join_request_reject_modal_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let state = self.join_request_reject_modal.as_ref()?;
+        let guild_id = state.guild_id;
+        let request_id = state.request_id;
+        let reason = state.reason.clone();
+        let submitting = state.submitting;
+        let title = if dc_intl::has_key("mFP/qw") {
+            dc_intl::t("mFP/qw").to_owned()
+        } else {
+            "Reject Application".to_owned()
+        };
+        let reject_cta = if dc_intl::has_key("hDtbsz") {
+            dc_intl::t("hDtbsz").to_owned()
+        } else {
+            "Reject".to_owned()
+        };
+        Some(
+            gpui::deferred(
+                div()
+                    .id("join-request-reject-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            if !submitting {
+                                this.join_request_reject_modal = None;
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("join-request-reject-modal")
+                            .w(px(440.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .child(
+                                div()
+                                    .px(px(20.))
+                                    .pt(px(20.))
+                                    .pb(px(12.))
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(18.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(title),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(format!(
+                                                        "Applicant: {}",
+                                                        state.applicant_name
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("join-request-reject-close")
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.join_request_reject_modal = None;
+                                                cx.notify();
+                                            }))
+                                            .child(icon("modal_close", 16., "--icon-subtle")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(20.))
+                                    .pb(px(16.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .p(px(10.))
+                                            .min_h(px(72.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-normal"))
+                                            .bg(color("--input-background-default"))
+                                            .text_size(px(13.))
+                                            .text_color(color(if state.reason.is_empty() {
+                                                "--text-muted"
+                                            } else {
+                                                "--text-default"
+                                            }))
+                                            .child(if state.reason.is_empty() {
+                                                "Optional rejection reason (max 160 characters)"
+                                                    .to_owned()
+                                            } else {
+                                                state.reason.clone()
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .justify_end()
+                                            .text_size(px(11.))
+                                            .text_color(color("--text-muted"))
+                                            .child(format!(
+                                                "{}/{}",
+                                                state.reason.chars().count(),
+                                                JOIN_REQUEST_REJECTION_MAX_LEN
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(20.))
+                                    .py(px(14.))
+                                    .bg(color("--background-base-lower"))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .id("join-request-reject-cancel")
+                                            .h(px(36.))
+                                            .px(px(14.))
+                                            .rounded(px(8.))
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .text_color(color("--text-default"))
+                                            .child(dc_intl::t("ETE/oC"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.join_request_reject_modal = None;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("join-request-reject-confirm")
+                                            .h(px(36.))
+                                            .px(px(16.))
+                                            .rounded(px(8.))
+                                            .bg(color("--status-danger"))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(reject_cta)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                let _ = this.requests.send(
+                                                    reject_join_request_request(
+                                                        guild_id,
+                                                        request_id,
+                                                        Some(&reason),
+                                                    ),
+                                                );
+                                                this.join_request_reject_modal = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_join_request_reject(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.join_request_reject_modal = None;
+            cx.notify();
+            return "join-request-reject: closed".to_owned();
+        }
+        self.join_request_reject_modal = Some(JoinRequestRejectModalState {
+            guild_id: self.guild.unwrap_or(1),
+            request_id: 9001,
+            applicant_name: "new_applicant".to_owned(),
+            reason: "Please fill out all membership questions before reapplying.".to_owned(),
+            submitting: false,
+        });
+        cx.notify();
+        "join-request-reject: opened".to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,5 +922,35 @@ mod tests {
         assert!(REACH.contains(&permissions::BAN_MEMBERS));
         assert!(REACH.contains(&MANAGE_NICKNAMES));
         assert_eq!(REACH.len(), 7);
+    }
+
+    #[test]
+    fn join_request_moderation_123393_requests_and_intl() {
+        assert_eq!(dc_intl::t("R0RpRX"), "Oops, something went wrong...");
+        assert!(matches!(
+            approve_join_request_request(10, 20),
+            crate::net::Request::Rest { route, body: Some(ref b), .. }
+                if route == "/guilds/10/requests/20" && b["action"] == "APPROVED"
+        ));
+        let long_reason = "x".repeat(200);
+        let req = reject_join_request_request(10, 20, Some(&long_reason));
+        let crate::net::Request::Rest {
+            route,
+            body: Some(b),
+            ..
+        } = req
+        else {
+            panic!("expected Rest");
+        };
+        assert_eq!(route, "/guilds/10/requests/20");
+        assert_eq!(b["action"], "REJECTED");
+        assert_eq!(
+            b["rejection_reason"].as_str().unwrap().len(),
+            JOIN_REQUEST_REJECTION_MAX_LEN
+        );
+        assert!(matches!(
+            create_join_request_interview_request(20),
+            crate::net::Request::Rest { route, .. } if route == "/join-requests/20/interview"
+        ));
     }
 }

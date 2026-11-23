@@ -81,6 +81,7 @@ mod compact_header;
 mod components;
 pub(crate) mod composer_ai;
 mod composer_plus;
+mod conjure_workspace;
 #[cfg(feature = "capture")]
 mod content_demo;
 mod context_menu;
@@ -128,6 +129,7 @@ mod graphic_modal;
 mod group_dm;
 mod group_manage;
 mod guild_cap;
+mod guild_friends;
 mod guild_menu;
 mod guild_notifications;
 mod guild_space;
@@ -165,6 +167,7 @@ mod provider_player;
 mod role_dot;
 pub(crate) mod role_gradient;
 mod role_popout;
+mod safety_flows;
 mod schedule_message;
 mod sent_attachment;
 mod small_dialogs;
@@ -954,6 +957,11 @@ pub struct Root {
     guild_room_selector: Option<guild_space::GuildRoomSelectorModal>,
     game_org_error_modal: Option<game_org_invite::GameOrgErrorModalState>,
     app_channels: app_channel::AppChannelState,
+    join_request_reject_modal: Option<member_safety::JoinRequestRejectModalState>,
+    guild_friends_modal: Option<guild_friends::GuildFriendsModalState>,
+    powerup_coachmark: Option<boost_page::PowerupCoachmarkState>,
+    safety_flows_modal: Option<safety_flows::SafetyFlowsModalState>,
+    conjure_workspace: Option<conjure_workspace::ConjureWorkspaceState>,
     /// Server-driven Nitro Announcement Modal Variant 1 (module 962263).
     premium_announcement_modal: Option<premium_announcement_modal::PremiumAnnouncementModalState>,
     /// Checkpoint 2026 full-screen interactive overlay (module 925433).
@@ -1630,6 +1638,11 @@ impl Root {
             guild_room_selector: None,
             game_org_error_modal: None,
             app_channels: app_channel::AppChannelState::default(),
+            join_request_reject_modal: None,
+            guild_friends_modal: None,
+            powerup_coachmark: None,
+            safety_flows_modal: None,
+            conjure_workspace: None,
             premium_announcement_modal: None,
             checkpoint_2026: None,
             game_server_success_modal: None,
@@ -12377,7 +12390,12 @@ impl Render for Root {
                         || this.incode_age_verify.is_some()
                         || this.guild_room_selector.is_some()
                         || this.game_org_error_modal.is_some()
-                        || this.app_channels.preview.is_some())
+                        || this.app_channels.preview.is_some()
+                        || this.join_request_reject_modal.is_some()
+                        || this.guild_friends_modal.is_some()
+                        || this.powerup_coachmark.is_some()
+                        || this.safety_flows_modal.is_some()
+                        || this.conjure_workspace.is_some())
                 {
                     this.billing_address_modal = None;
                     this.clear_activity_history_modal = None;
@@ -12428,6 +12446,11 @@ impl Render for Root {
                     this.guild_room_selector = None;
                     this.game_org_error_modal = None;
                     this.app_channels.preview = None;
+                    this.join_request_reject_modal = None;
+                    this.guild_friends_modal = None;
+                    this.powerup_coachmark = None;
+                    this.safety_flows_modal = None;
+                    this.conjure_workspace = None;
                     this.close_premium_announcement_modal();
                     this.close_guild_space();
                     this.close_checkpoint_2026();
@@ -13895,6 +13918,11 @@ impl Render for Root {
             .children(self.guild_room_selector_modal(cx))
             .children(self.game_org_error_modal_layer(cx))
             .children(self.app_channel_preview_layer(cx))
+            .children(self.join_request_reject_modal_layer(cx))
+            .children(self.guild_friends_modal_layer(cx))
+            .children(self.powerup_coachmark_layer(cx))
+            .children(self.safety_flows_modal_layer(cx))
+            .children(self.conjure_workspace_layer(cx))
             .children(self.checkpoint_2026_layer(cx))
             .children(self.game_server_success_modal_layer(cx))
             .children(self.soundboard_nux_preview_layer(cx))

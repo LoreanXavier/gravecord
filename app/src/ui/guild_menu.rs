@@ -29,6 +29,8 @@ enum Entry {
     ShowAll,
     /// `linked-roles` (module 480900 / 488358): opens Role Connection Verification when the guild has linked roles.
     LinkedRoles,
+    /// `friends-in-server` (module 151203): opens `GuildFriendsModal`.
+    FriendsInServer,
     Notifications,
     Privacy,
     Profile,
@@ -171,6 +173,7 @@ const ENTRIES: [&[(Entry, &str, &str)]; 4] = [
     &[
         (Entry::ShowAll, "clips_eye", "Show All Channels"),
         (Entry::LinkedRoles, "oauth_entry_link", "Linked Roles"),
+        (Entry::FriendsInServer, "members", "Friends in Server"),
         (
             Entry::Notifications,
             "guild_menu_notifications",
@@ -262,6 +265,7 @@ impl Root {
                         .is_some_and(|user| user.has_flag(dc_state::USER_FLAG_STAFF))
             }
             Entry::LinkedRoles => known.role_info.values().any(|role| role.guild_connection),
+            Entry::FriendsInServer => self.stores.relationships.values().any(|&kind| kind == 1),
             _ => true,
         }
     }
@@ -353,6 +357,7 @@ impl Root {
             }
             // `application-directory` (module 808144): `transitionToGlobalDiscovery({tab: APPS})`.
             Entry::AppDirectory => self.open_discover(super::discover::Place::Apps, cx),
+            Entry::FriendsInServer => self.open_guild_friends_modal(guild, cx),
             // Not in the pinned client: the plugins' rows.
             Entry::PluginApplyNewGuildSettings => self.apply_new_guild_settings(guild),
             Entry::PluginViewPermissions => self.permissions_viewer_open_guild(guild, cx),

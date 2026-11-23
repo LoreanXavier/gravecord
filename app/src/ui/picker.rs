@@ -204,6 +204,40 @@ pub(crate) struct Picker {
     /// `2026-09-default-emojis`: showing the `"Nitro Emoji Packs"` catalog inside the picker (`eo`).
     pub(super) show_emoji_packs: bool,
     pub(super) expanded_pack_ids: HashSet<String>,
+    /// Module 148361 (`EmojiPickerNitroUpsellOverlay`): inline Nitro upsell overlay inside the picker.
+    pub(super) inline_nitro_upsell: Option<EmojiPickerUpsellType>,
+}
+
+/// Module 148361 (`t` priority order): analytics upsell kind for the inline emoji picker Nitro overlay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum EmojiPickerUpsellType {
+    ReactionEmojiClicked,
+    FloatingUpsell,
+    TopServerEmojiClicked,
+    NewlyAddedEmojiClicked,
+    EmojiClicked,
+}
+
+/// Module 148361: resolves the inline emoji picker upsell analytics type in exact official priority.
+#[allow(dead_code)]
+pub(crate) fn classify_emoji_picker_upsell(
+    is_reaction: bool,
+    has_emoji: bool,
+    is_top_guild_emoji: bool,
+    is_newly_added_emoji: bool,
+) -> EmojiPickerUpsellType {
+    if is_reaction {
+        EmojiPickerUpsellType::ReactionEmojiClicked
+    } else if !has_emoji {
+        EmojiPickerUpsellType::FloatingUpsell
+    } else if is_top_guild_emoji {
+        EmojiPickerUpsellType::TopServerEmojiClicked
+    } else if is_newly_added_emoji {
+        EmojiPickerUpsellType::NewlyAddedEmojiClicked
+    } else {
+        EmojiPickerUpsellType::EmojiClicked
+    }
 }
 
 impl Picker {
@@ -722,6 +756,7 @@ impl Root {
             burst,
             show_emoji_packs: false,
             expanded_pack_ids: HashSet::new(),
+            inline_nitro_upsell: None,
         });
         window.focus(&search.read(cx).focus_handle(cx), cx);
         cx.notify();
@@ -888,15 +923,19 @@ impl Root {
                 format!("{name}:{id}"),
             ),
         };
-        // Emoji of other servers and animated emoji need Nitro in a message: the upsell opens instead.
+        // Module 148361 (`EmojiPickerNitroUpsellOverlay`): locked custom/animated emojis show the
+        // inline bottom-anchored Nitro pink-gradient overlay inside the picker instead of closing it.
         if matches!(
             target,
             Target::Composer | Target::ForwardNote | Target::Field | Target::InventoryReply(_)
         ) && let Item::Custom { id, animated, .. } = &item
             && self.picker_item_locked(*id, *animated)
         {
-            self.picker = None;
-            self.open_nitro(cx);
+            if let Some(p) = self.picker.as_mut() {
+                p.inline_nitro_upsell =
+                    Some(classify_emoji_picker_upsell(false, true, false, false));
+            }
+            cx.notify();
             return;
         }
         let usage_key = match &item {
@@ -2079,7 +2118,153 @@ impl Root {
                         Tab::Gifs => self.gif_panel(window, cx),
                         Tab::Stickers => self.sticker_panel(window, cx),
                         Tab::Emoji => panel,
-                    }),
+                    })
+                    .children(picker.inline_nitro_upsell.map(|_| {
+                        // Module 148361 + 335588 (`.container_IM8diO`): scrim + bottom-anchored
+                        // Nitro pink-gradient upsell overlay (`0+11FF`, `dURIzS`, `gl/XHJ`).
+                        div()
+                            .id("picker-inline-nitro-upsell-scrim")
+                            .occlude()
+                            .absolute()
+                            .inset_0()
+                            .bg(gpui::rgba(0x00000099))
+                            .flex()
+                            .flex_col()
+                            .justify_end()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                if let Some(p) = this.picker.as_mut() {
+                                    p.inline_nitro_upsell = None;
+                                }
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .id("picker-inline-nitro-upsell-sheet")
+                                    .relative()
+                                    .w_full()
+                                    .rounded_t(px(12.))
+                                    .bg(color("--background-base-low"))
+                                    .overflow_hidden()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .on_click(|_, _, cx| cx.stop_propagation())
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .px(px(32.))
+                                            .pt(px(32.))
+                                            .pb(px(12.))
+                                            .bg(gpui::linear_gradient(
+                                                180.,
+                                                gpui::linear_color_stop(gpui::rgba(0xeb459e55), 0.),
+                                                gpui::linear_color_stop(gpui::rgba(0x00000000), 1.),
+                                            ))
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .id("picker-inline-nitro-upsell-close")
+                                                    .absolute()
+                                                    .top(px(12.))
+                                                    .right(px(12.))
+                                                    .size(px(28.))
+                                                    .rounded(px(6.))
+                                                    .cursor_pointer()
+                                                    .hover(|s| {
+                                                        s.bg(color("--background-mod-subtle"))
+                                                    })
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        if let Some(p) = this.picker.as_mut() {
+                                                            p.inline_nitro_upsell = None;
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                                    .child(super::icon(
+                                                        "modal_close",
+                                                        16.,
+                                                        "--interactive-text-active",
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .size(px(52.))
+                                                    .rounded_full()
+                                                    .bg(gpui::rgba(0xeb459e33))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(super::icon(
+                                                        "nitro_wheel",
+                                                        28.,
+                                                        "--white",
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .mt(px(16.))
+                                                    .mb(px(10.))
+                                                    .max_w(px(250.))
+                                                    .text_center()
+                                                    .text_size(px(18.))
+                                                    .line_height(px(22.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(dc_intl::t("0+11FF")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .max_w(px(380.))
+                                                    .text_center()
+                                                    .text_size(px(13.))
+                                                    .line_height(px(18.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(dc_intl::t("dURIzS")),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .px(px(32.))
+                                            .pt(px(8.))
+                                            .pb(px(24.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                div()
+                                                    .id("picker-inline-nitro-upsell-cta")
+                                                    .w_full()
+                                                    .h(px(38.))
+                                                    .rounded(px(8.))
+                                                    .bg(gpui::rgba(0xeb459eff))
+                                                    .cursor_pointer()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .gap(px(8.))
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(600.))
+                                                    .text_color(color("--white"))
+                                                    .child(super::icon(
+                                                        "nitro_wheel",
+                                                        16.,
+                                                        "--white",
+                                                    ))
+                                                    .child(dc_intl::t("gl/XHJ"))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.picker = None;
+                                                        this.open_nitro(cx);
+                                                    })),
+                                            ),
+                                    ),
+                            )
+                    })),
             )
             .with_priority(1)
             .into_any_element(),
@@ -2185,6 +2370,34 @@ impl Root {
         };
         Some(super::modal::render_small(spec, cx))
     }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_picker_upsell(
+        &mut self,
+        arg: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            if let Some(p) = self.picker.as_mut() {
+                p.inline_nitro_upsell = None;
+            }
+            self.picker = None;
+            cx.notify();
+            return "picker-upsell: closed".to_owned();
+        }
+        self.open_picker(
+            Target::Composer,
+            gpui::point(px(640.), px(640.)),
+            window,
+            cx,
+        );
+        if let Some(p) = self.picker.as_mut() {
+            p.inline_nitro_upsell = Some(EmojiPickerUpsellType::EmojiClicked);
+        }
+        cx.notify();
+        "picker-upsell: opened".to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -2198,5 +2411,34 @@ mod toggle_tests {
         assert!(on_composer_tools(composer, point(px(1202.), px(683.))));
         assert!(!on_composer_tools(composer, point(px(700.), px(683.))));
         assert!(!on_composer_tools(composer, point(px(1202.), px(300.))));
+    }
+
+    #[test]
+    fn emoji_picker_upsell_148361_priority_and_intl() {
+        assert_eq!(
+            classify_emoji_picker_upsell(true, true, true, true),
+            EmojiPickerUpsellType::ReactionEmojiClicked
+        );
+        assert_eq!(
+            classify_emoji_picker_upsell(false, false, true, true),
+            EmojiPickerUpsellType::FloatingUpsell
+        );
+        assert_eq!(
+            classify_emoji_picker_upsell(false, true, true, true),
+            EmojiPickerUpsellType::TopServerEmojiClicked
+        );
+        assert_eq!(
+            classify_emoji_picker_upsell(false, true, false, true),
+            EmojiPickerUpsellType::NewlyAddedEmojiClicked
+        );
+        assert_eq!(
+            classify_emoji_picker_upsell(false, true, false, false),
+            EmojiPickerUpsellType::EmojiClicked
+        );
+        assert_eq!(
+            dc_intl::t("0+11FF"),
+            "Take your emoji game to the next level"
+        );
+        assert!(dc_intl::t("dURIzS").contains("Nitro"));
     }
 }

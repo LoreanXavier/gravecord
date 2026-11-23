@@ -315,6 +315,7 @@ impl Root {
             discoverable: guild.as_ref().is_some_and(|guild| guild.discoverable),
         };
         let (line, cta) = branch(facts);
+        let is_pack = matches!(found, Some(Source::Pack));
         let description: AnyElement = match &found {
             // `uERlTd`.
             Some(Source::Application(app)) => text(14., 18., 400., "--text-default")
@@ -322,9 +323,9 @@ impl Root {
                     "This emoji is from the {app} app"
                 )))
                 .into_any_element(),
-            // `/jdd/7` (a Nitro emoji pack) is not in the message catalog the snapshot dumps; read as unavailable.
+            // Module 137133: Nitro Emoji Pack popout uses its dedicated preview section below.
             Some(Source::Pack) => text(14., 18., 400., "--text-default")
-                .child(Line::InviteOnly.text())
+                .child(dc_intl::t("leUgZw"))
                 .into_any_element(),
             _ => text(14., 18., 400., "--text-default")
                 .child(line.text())
@@ -335,7 +336,92 @@ impl Root {
             .flex()
             .flex_col()
             .child(self.emoji_header(kind, name.to_owned(), description));
-        if cta == Cta::GetNitro {
+        if is_pack {
+            // Module 137133 (`v`, CSS `23236`): divider + Nitro wheel + "Nitro exclusive emoji" +
+            // BETA pill + 32x32 preview strip + "View Set" (`DtK5IG`) / "Get Nitro" (`gl/XHJ`).
+            let is_nitro_tier2 = self.stores.account.premium_type == Some(2);
+            let preview_glyphs = ["✨", "🔥", "🎉", "💜", "⚡", "🌟"];
+            top = top
+                .child(
+                    div()
+                        .my(px(16.))
+                        .h(px(1.))
+                        .w_full()
+                        .bg(color("--border-subtle")),
+                )
+                .child(
+                    div()
+                        .mb(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(super::icon("nitro_wheel", 16., "--text-default"))
+                                .child(
+                                    text(14., 18., 500., "--text-default")
+                                        .child(dc_intl::t("leUgZw")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded(px(10.))
+                                .bg(color("--background-brand"))
+                                .text_size(px(10.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--white"))
+                                .child("BETA"),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(4.))
+                        .children(preview_glyphs.into_iter().map(|g| {
+                            div()
+                                .size(px(32.))
+                                .rounded(px(6.))
+                                .bg(color("--background-mod-subtle"))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(18.))
+                                .child(g)
+                        })),
+                )
+                .child(div().mt(px(16.)).child(if is_nitro_tier2 {
+                    small_button("emoji-popout-view-set", dc_intl::t("DtK5IG"), true).on_click(
+                        cx.listener(|this, _, window, cx| {
+                            this.close_emoji_popout(cx);
+                            this.open_picker(
+                                super::picker::Target::Composer,
+                                gpui::point(px(640.), px(640.)),
+                                window,
+                                cx,
+                            );
+                            if let Some(p) = this.picker.as_mut() {
+                                p.show_emoji_packs = true;
+                            }
+                            cx.notify();
+                        }),
+                    )
+                } else {
+                    small_button("emoji-popout-pack-nitro", dc_intl::t("gl/XHJ"), true).on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.close_emoji_popout(cx);
+                            this.open_settings_page("nitro", cx);
+                        }),
+                    )
+                }));
+        } else if cta == Cta::GetNitro {
             top = top.child(div().mt(px(PADDING)).child(
                 small_button("emoji-popout-nitro", "Get Nitro", true).on_click(cx.listener(
                     |this, _, _, cx| {
@@ -839,5 +925,9 @@ mod tests {
     #[test]
     fn the_lookup_route_is_the_source_route() {
         assert_eq!(source_route(77), "/emojis/77/source");
+        // Module 137133 Nitro Emoji Pack popout keys.
+        assert_eq!(dc_intl::t("leUgZw"), "Nitro exclusive emoji");
+        assert_eq!(dc_intl::t("DtK5IG"), "View Set");
+        assert_eq!(dc_intl::t("gl/XHJ"), "Get Nitro");
     }
 }

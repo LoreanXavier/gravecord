@@ -3273,6 +3273,40 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_app_channel(&arg, cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["picker-upsell", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_picker_upsell(&arg, window, cx))
+                    })
+                    .unwrap_or_else(|_| "picker-upsell: window closed".to_owned());
+                let _ = writeln!(output, "{msg}");
+            }
+            ["join-request-reject", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_join_request_reject(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["guild-friends", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_guild_friends(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["powerup-coachmark", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_powerup_coachmark(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["safety-flows", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_safety_flows(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["conjure-workspace", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_conjure_workspace(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));

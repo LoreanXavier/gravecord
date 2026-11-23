@@ -448,6 +448,208 @@ impl Root {
     }
 }
 
+/// Module 128790 (`Z`, CSS `968069` / `736033`): source category of a gifting breadcrumb recommendation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum GiftingBreadcrumbSource {
+    Wishlist,
+    Popular,
+}
+
+/// Module 128790: single SKU card inside the Slayer Storefront gifting breadcrumb widget.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct GiftingBreadcrumbItem {
+    pub sku_id: String,
+    pub product_name: String,
+    pub price: String,
+    pub source: GiftingBreadcrumbSource,
+    pub recommender_initials: Vec<String>,
+}
+
+/// Module 128790: header title switches to `"Wishlist"` (`7lZ31J`) when only wishlist items are
+/// present, else `"Suggested Gifts"` (`BCi1gT`).
+#[allow(dead_code)]
+pub(crate) fn gifting_breadcrumb_header(items: &[GiftingBreadcrumbItem]) -> &'static str {
+    let has_wishlist = items
+        .iter()
+        .any(|i| i.source == GiftingBreadcrumbSource::Wishlist);
+    let has_popular = items
+        .iter()
+        .any(|i| i.source == GiftingBreadcrumbSource::Popular);
+    if has_wishlist && !has_popular {
+        dc_intl::t("7lZ31J")
+    } else {
+        dc_intl::t("BCi1gT")
+    }
+}
+
+/// Module 128790 (`808247.A.fetchWishlistRecommendations`): `GET /wishlist/gift-recommendations`.
+#[allow(dead_code)]
+pub(crate) fn fetch_gifting_breadcrumb_request(
+    application_id: &str,
+    user_ids: &[dc_state::Id],
+    max_recommendations: usize,
+) -> crate::net::Request {
+    let mut query = format!(
+        "/wishlist/gift-recommendations?application_ids[]={application_id}&max_recommendations={max_recommendations}&localize=true"
+    );
+    for uid in user_ids {
+        query.push_str(&format!("&user_ids[]={uid}"));
+    }
+    crate::net::Request::Fetch {
+        key: format!("wishlist-recs:{application_id}"),
+        route: query,
+    }
+}
+
+/// Module 128790: compact Slayer Storefront gifting breadcrumb widget (`Wishlist` / `Suggested Gifts`
+/// header + optional green `.offerBadge_viLuyz` + horizontal row of 90px SKU cards).
+#[allow(dead_code)]
+pub(crate) fn render_gifting_breadcrumb_widget(
+    items: &[GiftingBreadcrumbItem],
+    offer_badge_label: Option<&str>,
+    cx: &mut Context<Root>,
+) -> Option<AnyElement> {
+    if items.is_empty() {
+        return None;
+    }
+    let has_wishlist = items
+        .iter()
+        .any(|i| i.source == GiftingBreadcrumbSource::Wishlist);
+    let has_popular = items
+        .iter()
+        .any(|i| i.source == GiftingBreadcrumbSource::Popular);
+    let show_icons = has_wishlist && has_popular;
+    let title = gifting_breadcrumb_header(items);
+    Some(
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-muted"))
+                            .child(title),
+                    )
+                    .children(offer_badge_label.map(|label| {
+                        div()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .rounded_full()
+                            .bg(gpui::rgba(0x23a55a2e))
+                            .border_1()
+                            .border_color(color("--status-positive"))
+                            .text_size(px(11.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--status-positive"))
+                            .child(label.to_owned())
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_stretch()
+                    .gap(px(8.))
+                    .children(items.iter().enumerate().map(|(idx, item)| {
+                        let details_aria = dc_intl::format(
+                            "ZBB4Ty",
+                            &[(
+                                "productName",
+                                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&item.product_name)),
+                            )],
+                        );
+                        let name = item.product_name.clone();
+                        div()
+                            .id(SharedString::from(format!("gift-bc-{idx}-{}", item.sku_id)))
+                            .aria_label(details_aria)
+                            .w(px(96.))
+                            .p(px(8.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-mod-subtle"))
+                            .hover(|s| s.bg(color("--background-mod-normal")))
+                            .cursor_pointer()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.put_app_toast(name.clone(), true, cx);
+                            }))
+                            .child(
+                                div()
+                                    .relative()
+                                    .w_full()
+                                    .h(px(64.))
+                                    .rounded(px(6.))
+                                    .bg(color("--background-base-lowest"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("gift", 22., "--icon-subtle"))
+                                    .when(
+                                        show_icons
+                                            && item.source == GiftingBreadcrumbSource::Wishlist
+                                            && !item.recommender_initials.is_empty(),
+                                        |tile| {
+                                            tile.child(
+                                                div()
+                                                    .absolute()
+                                                    .bottom(px(4.))
+                                                    .right(px(4.))
+                                                    .flex()
+                                                    .gap(px(2.))
+                                                    .children(
+                                                        item.recommender_initials
+                                                            .iter()
+                                                            .take(2)
+                                                            .map(|init| {
+                                                                div()
+                                                                    .size(px(16.))
+                                                                    .rounded_full()
+                                                                    .bg(color("--background-brand"))
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .justify_center()
+                                                                    .text_size(px(9.))
+                                                                    .font_weight(FontWeight(700.))
+                                                                    .text_color(color("--white"))
+                                                                    .child(init.clone())
+                                                            }),
+                                                    ),
+                                            )
+                                        },
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .truncate()
+                                    .child(item.product_name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(color("--text-muted"))
+                                    .child(item.price.clone()),
+                            )
+                    })),
+            )
+            .into_any_element(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,5 +683,39 @@ mod tests {
         assert!(game_stats_prompt("Valorant", true, false).contains("show off"));
         assert!(game_stats_prompt("Valorant", false, false).contains("get your own"));
         assert!(game_stats_prompt("Valorant", true, true).contains("Valorant"));
+    }
+
+    #[test]
+    fn gifting_breadcrumb_128790_header_route_and_intl() {
+        assert_eq!(dc_intl::t("7lZ31J"), "Wishlist");
+        assert_eq!(dc_intl::t("BCi1gT"), "Suggested Gifts");
+        assert!(dc_intl::has_key("ZBB4Ty"));
+        let wl = GiftingBreadcrumbItem {
+            sku_id: "s1".into(),
+            product_name: "Starlight Bundle".into(),
+            price: "$9.99".into(),
+            source: GiftingBreadcrumbSource::Wishlist,
+            recommender_initials: vec!["A".into()],
+        };
+        let pop = GiftingBreadcrumbItem {
+            sku_id: "s2".into(),
+            product_name: "Neon Skin".into(),
+            price: "$4.99".into(),
+            source: GiftingBreadcrumbSource::Popular,
+            recommender_initials: Vec::new(),
+        };
+        assert_eq!(
+            gifting_breadcrumb_header(std::slice::from_ref(&wl)),
+            "Wishlist"
+        );
+        assert_eq!(gifting_breadcrumb_header(&[wl, pop]), "Suggested Gifts");
+        let crate::net::Request::Fetch { route, .. } =
+            fetch_gifting_breadcrumb_request("12345", &[1, 2], 2)
+        else {
+            panic!("expected Fetch");
+        };
+        assert!(route.starts_with("/wishlist/gift-recommendations?"));
+        assert!(route.contains("application_ids[]=12345"));
+        assert!(route.contains("user_ids[]=1&user_ids[]=2"));
     }
 }

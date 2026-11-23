@@ -521,27 +521,69 @@ impl Root {
                 let opt_id = option.id;
                 let selected = flow.selected_options.contains(&opt_id);
                 let siblings = option_ids.clone();
+                let is_unseen = !flow.options_seen.contains_key(&opt_id);
+                // Module 164048 (`OnboardingOptionButton`, CSS `455168`): 12px radius,
+                // `--opacity-blurple-8` selected fill, floating `-10px` 20px `--brand-500` check badge,
+                // and floating `"NEW"` badge for unseen options.
                 let card = div()
                     .id(("onboarding-option", opt_id))
+                    .relative()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(14.))
-                    .py(px(10.))
-                    .rounded(px(8.))
+                    .gap(px(12.))
+                    .px(px(16.))
+                    .py(px(12.))
+                    .rounded(px(12.))
                     .border_1()
                     .cursor_pointer()
                     .border_color(if selected {
-                        color("--brand-500")
+                        color("--background-brand")
                     } else {
                         color("--border-subtle")
                     })
                     .bg(if selected {
-                        color("--background-mod-subtle")
+                        color("--opacity-blurple-8")
                     } else {
-                        color("--background-surface-high")
+                        color("--background-mod-muted")
                     })
-                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                    .hover(|s| {
+                        s.bg(if selected {
+                            color("--opacity-blurple-12")
+                        } else {
+                            color("--background-mod-subtle")
+                        })
+                    })
+                    .when(selected, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(-10.))
+                                .right(px(-10.))
+                                .size(px(20.))
+                                .rounded_full()
+                                .bg(color("--brand-500"))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(super::icon("ob_check", 10., "--white")),
+                        )
+                    })
+                    .when(!selected && is_unseen, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(-10.))
+                                .right(px(-10.))
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded(px(8.))
+                                .bg(color("--background-brand"))
+                                .text_size(px(10.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--white"))
+                                .child("NEW"),
+                        )
+                    })
                     .when_some(option.emoji_name.clone(), |row, emoji| {
                         row.child(div().text_size(px(18.)).child(emoji))
                     })
@@ -1207,6 +1249,34 @@ impl Root {
     }
 }
 
+/// Module 164048 (`386784.A`): `GET /guilds/{guildId}/roles/member-counts`.
+#[allow(dead_code)]
+pub(crate) fn fetch_role_member_counts_request(guild_id: Id) -> crate::net::Request {
+    crate::net::Request::Fetch {
+        key: format!("guild-role-member-counts:{guild_id}"),
+        route: format!("/guilds/{guild_id}/roles/member-counts"),
+    }
+}
+
+/// Module 164048: returns the maximum member count across an onboarding option's `roleIds` (0 if empty).
+#[allow(dead_code)]
+pub(crate) fn max_role_member_count(role_ids: &[Id], counts: &HashMap<Id, u32>) -> u32 {
+    role_ids
+        .iter()
+        .filter_map(|id| counts.get(id).copied())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Module 164048 (`EgKsZA`): `"**+{memberCount}** people in common"` plain text for the 3s pill.
+#[allow(dead_code)]
+pub(crate) fn format_common_member_count(member_count: u32) -> String {
+    dc_intl::format(
+        "EgKsZA",
+        &[("memberCount", dc_intl::Arg::Num(f64::from(member_count)))],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1337,5 +1407,19 @@ mod tests {
             guild_splash_url(&g).as_deref(),
             Some("https://cdn.discordapp.com/splashes/42/abc123.png?size=2048")
         );
+    }
+
+    #[test]
+    fn onboarding_option_pill_164048_member_count_and_intl() {
+        assert!(dc_intl::has_key("EgKsZA"));
+        let counts = HashMap::from([(10_u64, 14_u32), (11_u64, 42_u32)]);
+        assert_eq!(max_role_member_count(&[10, 11], &counts), 42);
+        assert_eq!(max_role_member_count(&[], &counts), 0);
+        let copy = format_common_member_count(42);
+        assert!(copy.contains("42"));
+        assert!(matches!(
+            fetch_role_member_counts_request(99),
+            crate::net::Request::Fetch { route, .. } if route == "/guilds/99/roles/member-counts"
+        ));
     }
 }

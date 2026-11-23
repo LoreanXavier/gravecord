@@ -3688,6 +3688,500 @@ impl Root {
     }
 }
 
+/// Module 148700: Guild Powerups & Game Servers coachmark popovers (all 11 official exports).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum PowerupCoachmarkKind {
+    LevelUp {
+        perk_name: String,
+    },
+    NewPerks,
+    PurchasablePerks {
+        guild_name: String,
+        perk_names: Vec<String>,
+        single_sku_id: Option<String>,
+    },
+    NewPerkAvailable {
+        sku_id: String,
+    },
+    GameServerHosting {
+        available_boosts: u32,
+    },
+    GameServersEnabled,
+    BoostForGameServers,
+    GuildThemeMember {
+        needed_boosts: u32,
+    },
+    NewTitlesGameServers {
+        is_admin: bool,
+    },
+    BoostToUnlock {
+        perk_name: String,
+        needed_boosts: u32,
+    },
+    ExpiringPerk {
+        perk_name: Option<String>,
+        is_game_server: bool,
+        expiring_boosts: u32,
+        days_until_expiry: u32,
+    },
+}
+
+/// Module 148700 (`bo` / `X`): official SKU priority order for New Perk Available coachmark.
+pub(crate) const SKU_BADGE_WAVE2_A: &str = "1466209416922667288";
+pub(crate) const SKU_BADGE_WAVE2_B: &str = "1466209416931055898";
+pub(crate) const SKU_BADGE_WAVE1_A: &str = "1395150519886024775";
+pub(crate) const SKU_BADGE_WAVE1_B: &str = "1395150923734581339";
+pub(crate) const SKU_UPLOADS_250MB: &str = "1479204648718958665";
+
+pub(crate) const FEATURED_GAME_1: &str = "Windrose";
+pub(crate) const FEATURED_GAME_2: &str = "Factorio";
+pub(crate) const FEATURED_GAME_3: &str = "V Rising";
+
+/// Module 148700 (`bo` / `X`): picks the highest-priority newly available powerup SKU.
+#[allow(dead_code)]
+pub(crate) fn select_new_perk_coachmark_sku<'a>(available_skus: &[&'a str]) -> Option<&'a str> {
+    let priority = [
+        SKU_GUILD_THEME,
+        SKU_VANITY_URL,
+        SKU_BADGE_WAVE2_A,
+        SKU_BADGE_WAVE2_B,
+        SKU_BADGE_WAVE1_A,
+        SKU_BADGE_WAVE1_B,
+        SKU_UPLOADS_250MB,
+    ];
+    priority
+        .into_iter()
+        .find(|sku| available_skus.contains(sku))
+}
+
+/// Module 148700: open pink-gradient coachmark popover state.
+#[derive(Clone, Debug)]
+pub(crate) struct PowerupCoachmarkState {
+    pub guild_id: Id,
+    pub kind: PowerupCoachmarkKind,
+}
+
+fn pc_copy(key: &str, fallback: &str) -> String {
+    if dc_intl::has_key(key) {
+        let s = dc_intl::t(key);
+        if !s.trim().is_empty() {
+            return s.to_owned();
+        }
+    }
+    fallback.to_owned()
+}
+
+/// Module 148700: resolves `(title, body, primary_cta)` for each of the 11 official coachmarks.
+pub(crate) fn powerup_coachmark_copy(kind: &PowerupCoachmarkKind) -> (String, String, String) {
+    use dc_intl::Arg;
+    use std::borrow::Cow;
+    match kind {
+        PowerupCoachmarkKind::LevelUp { perk_name } => (
+            if dc_intl::has_key("Zg/m9K") {
+                dc_intl::format(
+                    "Zg/m9K",
+                    &[("perkName", Arg::Str(Cow::Borrowed(perk_name)))],
+                )
+            } else {
+                format!("You've reached {perk_name}")
+            },
+            if dc_intl::has_key("1EGXSK") {
+                dc_intl::format(
+                    "1EGXSK",
+                    &[("perkName", Arg::Str(Cow::Borrowed(perk_name)))],
+                )
+            } else {
+                format!(
+                    "Congrats! Your server now has full access to all of the {perk_name} perks."
+                )
+            },
+            pc_copy("RzWDqY", "Check it out"),
+        ),
+        PowerupCoachmarkKind::NewPerks => (
+            pc_copy("QpQBPQ", "New Perks. New Possibilities."),
+            pc_copy(
+                "6hn0xF",
+                "Use Boosts to unlock a Server Tag and Enhanced Role Styles!",
+            ),
+            pc_copy("RzWDqY", "Check it out"),
+        ),
+        PowerupCoachmarkKind::PurchasablePerks {
+            guild_name,
+            perk_names,
+            single_sku_id,
+        } => {
+            let title = if dc_intl::has_key("LmpChE") {
+                dc_intl::format(
+                    "LmpChE",
+                    &[("guildName", Arg::Str(Cow::Borrowed(guild_name)))],
+                )
+            } else {
+                format!("{guild_name} has available Boosts!")
+            };
+            let body = match perk_names.as_slice() {
+                [p] => {
+                    if dc_intl::has_key("ZF8NT6") {
+                        dc_intl::format("ZF8NT6", &[("perk", Arg::Str(Cow::Borrowed(p)))])
+                    } else {
+                        format!("Use them to unlock {p}!")
+                    }
+                }
+                [p1, p2, p3, ..] => {
+                    if dc_intl::has_key("6Sv+3M") {
+                        dc_intl::format(
+                            "6Sv+3M",
+                            &[
+                                ("perk", Arg::Str(Cow::Borrowed(p1))),
+                                ("perk2", Arg::Str(Cow::Borrowed(p2))),
+                                ("perk3", Arg::Str(Cow::Borrowed(p3))),
+                            ],
+                        )
+                    } else {
+                        format!("Use them to unlock perks like {p1}, {p2}, and {p3}!")
+                    }
+                }
+                _ => {
+                    let joined = perk_names.join(", ");
+                    if dc_intl::has_key("wcQOqC") {
+                        dc_intl::format("wcQOqC", &[("perks", Arg::Str(Cow::Borrowed(&joined)))])
+                    } else {
+                        format!("Use them to unlock perks like {joined}!")
+                    }
+                }
+            };
+            let cta = if single_sku_id.is_some() {
+                pc_copy("gSxlHf", "Enable")
+            } else {
+                pc_copy("RzWDqY", "Check it out")
+            };
+            (title, body, cta)
+        }
+        PowerupCoachmarkKind::NewPerkAvailable { sku_id } => match sku_id.as_str() {
+            SKU_GUILD_THEME => (
+                pc_copy("RK6NbY", "This server could have its own look"),
+                pc_copy(
+                    "xlAqGk",
+                    "Admins can now use Boosts to give this server a custom theme.",
+                ),
+                pc_copy("RzWDqY", "Check it out"),
+            ),
+            SKU_VANITY_URL => (
+                pc_copy("Ygpx4Q", "Customize This Server's URL!"),
+                pc_copy(
+                    "mmNkUA",
+                    "Get a Custom Invite Link with Boosts - no level required! Perfect for growing your server.",
+                ),
+                pc_copy("RzWDqY", "Check it out"),
+            ),
+            SKU_UPLOADS_250MB => (
+                pc_copy("rp0Ff1", "Unlock 250MB uploads"),
+                pc_copy(
+                    "3L/DZq",
+                    "Use Boosts to unlock bigger file sharing for the whole server.",
+                ),
+                pc_copy("RzWDqY", "Check it out"),
+            ),
+            _ => (
+                pc_copy("kA2c+n", "New Badge Packs!"),
+                pc_copy(
+                    "TUilLj",
+                    "Use Boosts to unlock special, themed badge packs for your Server Tag!",
+                ),
+                pc_copy("RzWDqY", "Check it out"),
+            ),
+        },
+        PowerupCoachmarkKind::GameServerHosting { available_boosts } => (
+            pc_copy("wXLChx", "Host your own game server"),
+            if *available_boosts > 0 && dc_intl::has_key("IQ1E+d") {
+                dc_intl::format(
+                    "IQ1E+d",
+                    &[("boostCount", Arg::Num(f64::from(*available_boosts)))],
+                )
+            } else if dc_intl::has_key("7KXp9J") {
+                dc_intl::format(
+                    "7KXp9J",
+                    &[
+                        ("gameName", Arg::Str(Cow::Borrowed(FEATURED_GAME_1))),
+                        ("gameName2", Arg::Str(Cow::Borrowed(FEATURED_GAME_2))),
+                    ],
+                )
+            } else {
+                format!(
+                    "Spin up a server and start playing in seconds using Boosts! Pick from titles like {FEATURED_GAME_1}, {FEATURED_GAME_2}, and more."
+                )
+            },
+            pc_copy("RzWDqY", "Check it out"),
+        ),
+        PowerupCoachmarkKind::GameServersEnabled => (
+            pc_copy("eX64+z", "Game servers enabled"),
+            pc_copy(
+                "NpgfEB",
+                "Visit the Game Servers tab to jump in and start playing together!",
+            ),
+            pc_copy("RzWDqY", "Check it out"),
+        ),
+        PowerupCoachmarkKind::BoostForGameServers => (
+            pc_copy("t3LNW1", "Boost for Game Servers"),
+            if dc_intl::has_key("V9qFAU") {
+                dc_intl::format(
+                    "V9qFAU",
+                    &[
+                        ("gameName", Arg::Str(Cow::Borrowed(FEATURED_GAME_1))),
+                        ("gameName2", Arg::Str(Cow::Borrowed(FEATURED_GAME_2))),
+                    ],
+                )
+            } else {
+                format!(
+                    "Pitch in to help unlock a game server for {FEATURED_GAME_1}, {FEATURED_GAME_2}, or other supported games."
+                )
+            },
+            pc_copy("oPAx73", "Boost This Server"),
+        ),
+        PowerupCoachmarkKind::GuildThemeMember { needed_boosts } => (
+            pc_copy("RK6NbY", "This server could have its own look"),
+            format!(
+                "Add {} more Boost(s) to help unlock Server Theme.",
+                needed_boosts
+            ),
+            pc_copy("oPAx73", "Boost This Server"),
+        ),
+        PowerupCoachmarkKind::NewTitlesGameServers { is_admin } => (
+            pc_copy("wy+j5s", "New titles for Game Servers"),
+            if dc_intl::has_key("7OETrT") {
+                dc_intl::format(
+                    "7OETrT",
+                    &[
+                        ("gameName", Arg::Str(Cow::Borrowed(FEATURED_GAME_1))),
+                        ("gameName2", Arg::Str(Cow::Borrowed(FEATURED_GAME_2))),
+                        ("gameName3", Arg::Str(Cow::Borrowed(FEATURED_GAME_3))),
+                    ],
+                )
+            } else {
+                format!(
+                    "Spin up game servers for {FEATURED_GAME_1}, {FEATURED_GAME_2}, {FEATURED_GAME_3} and other titles using Boosts."
+                )
+            },
+            if *is_admin {
+                pc_copy("k0Y0BE", "Check it out")
+            } else {
+                pc_copy("oPAx73", "Boost This Server")
+            },
+        ),
+        PowerupCoachmarkKind::BoostToUnlock {
+            perk_name,
+            needed_boosts,
+        } => (
+            pc_copy("n37JhA", "You're almost there!"),
+            if dc_intl::has_key("Yr1ogl") {
+                dc_intl::format(
+                    "Yr1ogl",
+                    &[
+                        ("boostCount", Arg::Num(f64::from(*needed_boosts))),
+                        ("perkName", Arg::Str(Cow::Borrowed(perk_name))),
+                    ],
+                )
+            } else {
+                format!("Just {needed_boosts} more Boost(s) to unlock {perk_name} for everyone.")
+            },
+            pc_copy("oPAx73", "Boost This Server"),
+        ),
+        PowerupCoachmarkKind::ExpiringPerk {
+            perk_name,
+            is_game_server,
+            expiring_boosts,
+            days_until_expiry,
+        } => {
+            let title = if *is_game_server {
+                pc_copy("9L0pAN", "A game server is expiring soon")
+            } else {
+                let name = perk_name.as_deref().unwrap_or("Perk");
+                if dc_intl::has_key("gG8bI8") {
+                    dc_intl::format("gG8bI8", &[("perkName", Arg::Str(Cow::Borrowed(name)))])
+                } else {
+                    format!("{name} expiring soon")
+                }
+            };
+            let body = if *days_until_expiry == 0 && dc_intl::has_key("BNS5zl") {
+                dc_intl::format(
+                    "BNS5zl",
+                    &[("boostCount", Arg::Num(f64::from(*expiring_boosts)))],
+                )
+            } else if dc_intl::has_key("Xla/TL") {
+                dc_intl::format(
+                    "Xla/TL",
+                    &[
+                        ("boostCount", Arg::Num(f64::from(*expiring_boosts))),
+                        ("days", Arg::Num(f64::from(*days_until_expiry))),
+                    ],
+                )
+            } else {
+                format!(
+                    "Add {expiring_boosts} Boost(s) before it expires in {days_until_expiry} day(s) to keep it active."
+                )
+            };
+            (title, body, pc_copy("oPAx73", "Boost This Server"))
+        }
+    }
+}
+
+impl Root {
+    /// Module 148700: renders the active pink-gradient Guild Powerups / Game Servers coachmark popover.
+    pub(super) fn powerup_coachmark_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.powerup_coachmark.as_ref()?;
+        let (title, body, cta) = powerup_coachmark_copy(&state.kind);
+        let guild_id = state.guild_id;
+        let single_sku = match &state.kind {
+            PowerupCoachmarkKind::PurchasablePerks { single_sku_id, .. } => single_sku_id.clone(),
+            _ => None,
+        };
+        Some(
+            gpui::deferred(
+                div()
+                    .id("powerup-coachmark-popover")
+                    .occlude()
+                    .absolute()
+                    .left(px(320.))
+                    .top(px(140.))
+                    .w(px(320.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(gpui::linear_gradient(
+                        135.,
+                        gpui::linear_color_stop(rgba(0x4a2252ff), 0.),
+                        gpui::linear_color_stop(rgba(0x232428ff), 1.),
+                    ))
+                    .shadow_lg()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(108.))
+                            .w_full()
+                            .bg(gpui::linear_gradient(
+                                135.,
+                                gpui::linear_color_stop(rgba(0xeb459e66), 0.),
+                                gpui::linear_color_stop(rgba(0x5865f255), 1.),
+                            ))
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("boost_gem", 40., "--white"))
+                            .child(
+                                div()
+                                    .id("powerup-coachmark-close")
+                                    .absolute()
+                                    .top(px(8.))
+                                    .right(px(8.))
+                                    .size(px(26.))
+                                    .rounded(px(6.))
+                                    .bg(rgba(0x00000055))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.powerup_coachmark = None;
+                                        cx.notify();
+                                    }))
+                                    .child(icon("modal_close", 14., "--white")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .p(px(16.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(21.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-default"))
+                                    .child(body),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(4.))
+                                    .id("powerup-coachmark-cta")
+                                    .w_full()
+                                    .h(px(36.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(cta)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        if let Some(sku) = single_sku.as_deref() {
+                                            let _ = this.requests.send(
+                                                toggle_guild_powerup_request(guild_id, sku, true),
+                                            );
+                                        } else {
+                                            this.open_boost_page(cx);
+                                        }
+                                        this.powerup_coachmark = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .with_priority(98)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_powerup_coachmark(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.powerup_coachmark = None;
+            cx.notify();
+            return "powerup-coachmark: closed".to_owned();
+        }
+        let kind = match arg.trim() {
+            "level-up" => PowerupCoachmarkKind::LevelUp {
+                perk_name: "Level 2".to_owned(),
+            },
+            "purchasable" => PowerupCoachmarkKind::PurchasablePerks {
+                guild_name: "gravecord fixture".to_owned(),
+                perk_names: vec!["Server Theme".to_owned()],
+                single_sku_id: Some(SKU_GUILD_THEME.to_owned()),
+            },
+            "expiring" => PowerupCoachmarkKind::ExpiringPerk {
+                perk_name: Some("Server Tag".to_owned()),
+                is_game_server: false,
+                expiring_boosts: 2,
+                days_until_expiry: 3,
+            },
+            _ => PowerupCoachmarkKind::GameServerHosting {
+                available_boosts: 4,
+            },
+        };
+        self.powerup_coachmark = Some(PowerupCoachmarkState {
+            guild_id: self.guild.unwrap_or(1),
+            kind,
+        });
+        cx.notify();
+        format!("powerup-coachmark: opened ({})", arg.trim())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3717,6 +4211,32 @@ mod tests {
         assert_eq!(toggled_faq(open, 4), Some(4));
         assert_eq!(toggled_faq(Some(4), 4), None);
         assert!(FAQ.iter().all(|(_, answer, _)| !answer.is_empty()));
+    }
+
+    #[test]
+    fn powerup_coachmarks_148700_priority_requests_and_intl() {
+        for key in [
+            "RzWDqY", "oPAx73", "Zg/m9K", "QpQBPQ", "LmpChE", "gSxlHf", "wXLChx", "eX64+z",
+            "t3LNW1", "wy+j5s", "n37JhA", "9L0pAN", "gG8bI8",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 148700 key {key}");
+        }
+        assert_eq!(
+            select_new_perk_coachmark_sku(&[SKU_UPLOADS_250MB, SKU_VANITY_URL, SKU_GUILD_THEME]),
+            Some(SKU_GUILD_THEME)
+        );
+        assert_eq!(
+            select_new_perk_coachmark_sku(&[SKU_UPLOADS_250MB, SKU_BADGE_WAVE1_A]),
+            Some(SKU_BADGE_WAVE1_A)
+        );
+        assert!(matches!(
+            toggle_guild_powerup_request(77, SKU_GUILD_THEME, true),
+            crate::net::Request::Rest { route, .. } if route == format!("/guilds/77/skus/{SKU_GUILD_THEME}")
+        ));
+        let (t, b, c) = powerup_coachmark_copy(&PowerupCoachmarkKind::GameServerHosting {
+            available_boosts: 3,
+        });
+        assert!(!t.is_empty() && !b.is_empty() && !c.is_empty());
     }
 
     #[test]
