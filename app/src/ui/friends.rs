@@ -693,6 +693,13 @@ impl Root {
                                                 super::name_styles::Display::Font,
                                             )),
                                     )
+                                    // `guildTag_` chiplet (frame friends/tab-all): the server tag 4px after the name,
+                                    // before the hover username.
+                                    .children(
+                                        user.tag
+                                            .as_ref()
+                                            .map(|tag| self.server_tag_chip(tag).ml(px(4.))),
+                                    )
                                     .child({
                                         let (shown, concealed) = self.profile_username(user);
                                         self.streamer_tip(
