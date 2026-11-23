@@ -16,7 +16,7 @@
 //!   the 568602 `Shaker` (`±5px` offset toggled every other frame unless reduced motion is active).
 
 use super::tooltip::{Active, Body, Side, Tip};
-use super::{Root, color, icon};
+use super::{Root, icon};
 use gpui::{ClipboardItem, Context, IntoElement, SharedString, Window, div, prelude::*, px};
 use std::time::Duration;
 
@@ -227,15 +227,18 @@ impl Root {
             // `y5MwJy`: "Copy Username", delay 0ms (`993382.js`).
             Tip::text(dc_intl::t("y5MwJy"), Side::Top)
         };
+        // `copyButton_hpQ_E_`: a 24px button around the 16px icon.
         let btn = div()
             .id(KEY)
-            .size(px(18.))
-            .rounded(px(4.))
+            .size(px(24.))
+            .rounded_full()
+            // `.copyButton_hpQ_E_{opacity:0}`, `.visible` while the popout is hovered or focused.
+            .opacity(0.)
+            .group_hover("status-popout", |style| style.opacity(1.))
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|s| s.bg(color("--background-mod-subtle")))
             .on_hover(cx.listener(|this, over: &bool, _, cx| {
                 if *over {
                     this.copy_combo.on_hover_enter(KEY);
@@ -248,7 +251,7 @@ impl Root {
                 cx.stop_propagation();
                 this.trigger_copy_combo(KEY, username.clone(), Side::Top, window, cx);
             }))
-            .child(icon("menu_copy_text", 13., "--icon-subtle"));
+            .child(icon("menu_copy_text", 16., "--interactive-text-default"));
         self.with_tip(KEY, tip, btn, cx).into_any_element()
     }
 

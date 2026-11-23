@@ -446,21 +446,31 @@ impl Root {
             .flex()
             .flex_col()
             .child(
-                div().h(px(24.)).flex().items_center().gap(px(4.)).child(
-                    div()
-                        .id("status-popout-display-name")
-                        .cursor_pointer()
-                        .hover(|style| style.underline())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.status_popout = None;
-                            this.open_full_profile(user.id, window, cx);
-                        }))
-                        .text_size(px(20.))
-                        .line_height(px(24.))
-                        .font_weight(FontWeight(600.))
-                        .text_color(color("--text-strong"))
-                        .child(user.display_name().to_owned()),
-                ),
+                div()
+                    .h(px(24.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .id("status-popout-display-name")
+                            .cursor_pointer()
+                            .hover(|style| style.underline())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.status_popout = None;
+                                this.open_full_profile(user.id, window, cx);
+                            }))
+                            .text_size(px(20.))
+                            .line_height(px(24.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(user.display_name().to_owned()),
+                    )
+                    // `displayNameTrailing_C2XpHA` (frame rail/account-popout): Copy Username sits 4px after the display
+                    // name, not after the username.
+                    .when(!self.profile_username(&user).1, |row| {
+                        row.child(self.copy_username_button(user.username.clone(), cx))
+                    }),
             )
             .child(
                 div()
@@ -495,13 +505,7 @@ impl Root {
                             )
                             .into_any_element()
                         } else {
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.))
-                                .child(line)
-                                .child(self.copy_username_button(user.username.clone(), cx))
-                                .into_any_element()
+                            line.into_any_element()
                         }
                     })
                     .when(!badges.is_empty(), |this| {
@@ -623,6 +627,8 @@ impl Root {
 
         let card = div()
             .id("status-popout")
+            // Module 993382: `isHoveringOrFocusing` of the popout shows Copy Username.
+            .group("status-popout")
             // The account popout opens with `animation: FADE` above its target (module 993382).
             .popout("status-popout", PopKind::Fade, PopSide::Top)
             .occlude()
