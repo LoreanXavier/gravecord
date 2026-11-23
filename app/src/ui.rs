@@ -1124,6 +1124,7 @@ pub struct Root {
     follow_blocker_forced: bool,
     guild_events: Option<guild_events::GuildEvents>,
     guild_menu: bool,
+    guild_menu_scroll: gpui::ScrollHandle,
     /// The Favorites server is open (`/channels/@favorites/<channel>`): its sidebar replaces the server's.
     favorites_view: bool,
     /// "Dismiss suggested channels" of the Favorites sidebar (module 132598 `Q`), for this run.
@@ -1489,6 +1490,7 @@ impl Root {
             boost_page: None,
             boost_apply: None,
             menu_scroll: gpui::ScrollHandle::new(),
+            guild_menu_scroll: gpui::ScrollHandle::new(),
             channel_browser_open: false,
             channel_browser: None,
             onboarding_flow: None,
@@ -13892,7 +13894,7 @@ impl Render for Root {
             .children(self.feedback_modal(cx))
             .children(self.publish_modal(cx))
             .children(self.guild_events_layer(window, cx))
-            .children(self.guild_menu_layer(cx))
+            .children(self.guild_menu_layer(window, cx))
             .children(self.thread_browser_popout(window, cx))
             .children(self.active_threads_modal(window, cx))
             .children(self.inbox_popout(window, cx))

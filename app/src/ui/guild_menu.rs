@@ -195,6 +195,9 @@ const ENTRIES: [&[(Entry, &str, &str)]; 4] = [
     ],
 ];
 
+/// The menu's top edge in the window (`design/dom/menus/guild-header-darker-cozy.json`).
+const MENU_TOP: f32 = 86.;
+
 impl Root {
     pub(super) fn toggle_guild_menu(&mut self, cx: &mut Context<Self>) {
         let opening = !self.guild_menu;
@@ -202,6 +205,10 @@ impl Root {
             self.close_competing_popouts(super::keyboard::Layer::GuildMenu);
         }
         self.guild_menu = opening;
+        if opening {
+            self.guild_menu_scroll
+                .set_offset(gpui::point(px(0.), px(0.)));
+        }
         cx.notify();
     }
 
@@ -366,7 +373,11 @@ impl Root {
         cx.notify();
     }
 
-    pub(super) fn guild_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn guild_menu_layer(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.guild_menu {
             return None;
         }
@@ -505,17 +516,23 @@ impl Root {
                 );
             }
         }
+        // The menu's `max-height` is the layer's `--reference-position-layer-max-height` (module 623646): the room
+        // below its top less 12px; past that its scroller scrolls.
+        let max_height = (f32::from(window.viewport_size().height) - MENU_TOP - 12.).max(0.);
         Some(
             deferred(
-                div().absolute().left(px(114.)).top(px(86.)).child(
+                div().absolute().left(px(114.)).top(px(MENU_TOP)).child(
                     div()
                         .parity_with_border("guild-menu", 1.)
                         .id("guild-menu")
                         // The server header menu opens with `animation: SCALE` below its target (module 260269).
                         .popout("guild-menu", PopKind::Scale, PopSide::Bottom)
                         .occlude()
+                        .relative()
                         .w(px(220.))
-                        .p(px(8.))
+                        .max_h(px(max_height))
+                        .flex()
+                        .flex_col()
                         .rounded(px(8.))
                         .border_1()
                         .border_color(color("--border-subtle"))
@@ -536,7 +553,22 @@ impl Root {
                                 }
                             },
                         ))
-                        .children(items),
+                        .child(
+                            div()
+                                .id("guild-menu-scroller")
+                                .track_scroll(&self.guild_menu_scroll)
+                                .overflow_y_scroll()
+                                // The border box holds the scroller: its 1px border on each side comes off.
+                                .max_h(px((max_height - 2.).max(0.)))
+                                .p(px(8.))
+                                .flex()
+                                .flex_col()
+                                // Rows keep their height when the menu scrolls.
+                                .children(
+                                    items.into_iter().map(|row| div().flex_none().child(row)),
+                                ),
+                        )
+                        .child(super::menu::menu_scrollbar(self.guild_menu_scroll.clone())),
                 ),
             )
             .with_priority(2)
