@@ -27,6 +27,61 @@ pub(super) enum HeaderPopout {
     },
     /// `191565`: the server behind a tag.
     GuildTag { guild: Id, anchor: Bounds<Pixels> },
+    /// Module 54391 (`g`): Community Updates official Discord Staff info popout.
+    CommunityUpdates { anchor: Bounds<Pixels> },
+}
+
+/// Official Community Updates guild & author IDs (`455207.MZ`, module 54391).
+pub(crate) const COMMUNITY_UPDATES_GUILD_ID: Id = 667_560_445_975_986_187;
+pub(crate) const COMMUNITY_UPDATES_AUTHOR_ID: Id = 669_627_189_624_307_712;
+
+/// Module 54391 (`I` priority order): resolved message-author click popout target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AuthorPopoutTarget {
+    CommunityUpdates,
+    CrosspostGuild { guild_id: Id, stripped_name: String },
+    SuppressedPendingInteraction,
+    UserProfile { user_id: Id },
+}
+
+/// Module 54391 (`455207.MZ`): true if the message is a Community Updates official post.
+pub(crate) fn is_community_updates_message(message: &Message) -> bool {
+    (is_crosspost(message) && message.reference_guild_id == Some(COMMUNITY_UPDATES_GUILD_ID))
+        || message.author.id == COMMUNITY_UPDATES_AUTHOR_ID
+}
+
+/// Module 54391 (`I`): dispatches clicking a message author's avatar or username in exact official priority:
+/// 1. Community Updates (`455207.MZ`) -> Community Updates popout (`g`)
+/// 2. Announcement Crosspost (`943667.A`) -> Guild Profile popout (`191565`) with last word stripped from name
+/// 3. Pending interaction (`sending`) -> suppressed
+/// 4. Normal user / webhook author -> `UserGuildPopout`
+pub(crate) fn resolve_author_popout(
+    message: &Message,
+    is_pending_interaction: bool,
+) -> AuthorPopoutTarget {
+    if is_community_updates_message(message) {
+        return AuthorPopoutTarget::CommunityUpdates;
+    }
+    if is_crosspost(message)
+        && let Some(guild_id) = message.reference_guild_id
+    {
+        let words: Vec<&str> = message.author.username.split(' ').collect();
+        let stripped = if words.len() > 1 {
+            words[..words.len() - 1].join(" ")
+        } else {
+            message.author.username.clone()
+        };
+        return AuthorPopoutTarget::CrosspostGuild {
+            guild_id,
+            stripped_name: stripped,
+        };
+    }
+    if is_pending_interaction {
+        return AuthorPopoutTarget::SuppressedPendingInteraction;
+    }
+    AuthorPopoutTarget::UserProfile {
+        user_id: message.author.id,
+    }
 }
 
 /// Which app-style tag a message author gets (module 812299 `k`).
@@ -685,6 +740,183 @@ impl Root {
         }
     }
 
+    /// Module 54391 (`g`, CSS `475973`): Community Updates official Discord Staff info popout
+    /// (`240px`, `p: 24px 16px`, 100px rounded avatar, Staff badge `oMx98L`, `xfAlNx`, `BUZ0sl`, `w5beJH`).
+    fn community_updates_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("community-updates-popout")
+            .occlude()
+            .w(px(240.))
+            .px(px(16.))
+            .py(px(24.))
+            .rounded(px(8.))
+            .bg(color("--background-base-lower"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .flex()
+            .flex_col()
+            .items_center()
+            .text_center()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .size(px(100.))
+                    .rounded(px(16.))
+                    .bg(color("--control-primary-background-default"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("community_info", 48., "--white")),
+            )
+            .child(
+                div()
+                    .mt(px(16.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.))
+                    .child(
+                        self.with_tip(
+                            "community-updates-staff-tip",
+                            Tip::text(dc_intl::t("oMx98L"), Side::Top),
+                            div()
+                                .size(px(18.))
+                                .rounded(px(4.))
+                                .bg(color("--control-primary-background-default"))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("mod_info_verified", 12., "--white")),
+                            cx,
+                        ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("xfAlNx")),
+                    ),
+            )
+            .child(
+                div()
+                    .mt(px(8.))
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-default"))
+                    .child(dc_intl::t("BUZ0sl")),
+            )
+            .child(
+                div()
+                    .mt(px(8.))
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-default"))
+                    .child(dc_intl::t("w5beJH")),
+            )
+            .into_any_element()
+    }
+
+    /// Module 54391 (`I`): routes clicking a message author's avatar or username using official
+    /// priority (`CommunityUpdates` -> `CrosspostGuild` -> `SuppressedPendingInteraction` -> `UserProfile`).
+    pub(super) fn message_author_trigger(
+        &self,
+        key: String,
+        message: &Message,
+        target: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match resolve_author_popout(message, false) {
+            AuthorPopoutTarget::CommunityUpdates => {
+                let anchors = self.tip_anchors.clone();
+                let shared = SharedString::from(key);
+                let stored = shared.clone();
+                let lookup = shared.clone();
+                div()
+                    .id(shared)
+                    .relative()
+                    .cursor_pointer()
+                    .child(target)
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, _| {
+                                anchors.borrow_mut().insert(stored.clone(), bounds);
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let anchor = this.tip_anchors.borrow().get(&lookup).copied();
+                        if let Some(anchor) = anchor {
+                            this.close_competing_popouts(super::keyboard::Layer::HeaderPopout);
+                            this.header_popout = Some(HeaderPopout::CommunityUpdates { anchor });
+                            cx.notify();
+                        }
+                    }))
+                    .into_any_element()
+            }
+            AuthorPopoutTarget::CrosspostGuild { guild_id, .. } => {
+                let anchors = self.tip_anchors.clone();
+                let shared = SharedString::from(key);
+                let stored = shared.clone();
+                let lookup = shared.clone();
+                div()
+                    .id(shared)
+                    .relative()
+                    .cursor_pointer()
+                    .child(target)
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, _| {
+                                anchors.borrow_mut().insert(stored.clone(), bounds);
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let anchor = this.tip_anchors.borrow().get(&lookup).copied();
+                        if let Some(anchor) = anchor {
+                            this.open_guild_tag_popout(guild_id, anchor, cx);
+                        }
+                    }))
+                    .into_any_element()
+            }
+            AuthorPopoutTarget::SuppressedPendingInteraction => target.into_any_element(),
+            AuthorPopoutTarget::UserProfile { user_id } => {
+                self.profile_trigger(key, user_id, target, cx)
+            }
+        }
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_community_updates_popout(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.close_header_popout(cx);
+            return "community updates popout closed".to_owned();
+        }
+        self.header_popout = Some(HeaderPopout::CommunityUpdates {
+            anchor: gpui::Bounds::new(
+                gpui::point(px(360.), px(220.)),
+                gpui::size(px(24.), px(24.)),
+            ),
+        });
+        cx.notify();
+        "community updates popout opened".to_owned()
+    }
+
     pub(super) fn close_header_popout(&mut self, cx: &mut Context<Self>) {
         if self.header_popout.take().is_some() {
             cx.notify();
@@ -702,6 +934,7 @@ impl Root {
             HeaderPopout::GuildTag { guild, anchor, .. } => {
                 (self.guild_profile_card(*guild, cx), *anchor)
             }
+            HeaderPopout::CommunityUpdates { anchor } => (self.community_updates_card(cx), *anchor),
         };
         // `position: "right"`, `align: "center"` for the role icon (module 549587 `S`).
         let at = point(
@@ -1138,5 +1371,42 @@ mod tests {
         let mut message = crosspost_message();
         message.kind = 19;
         assert!(!is_crosspost(&message), "a reply is not a crosspost");
+    }
+
+    #[test]
+    fn author_popout_dispatcher_54391_priority_and_intl() {
+        for key in ["oMx98L", "xfAlNx", "BUZ0sl", "w5beJH"] {
+            assert!(dc_intl::has_key(key), "missing 54391 key {key}");
+        }
+        let mut msg = crosspost_message();
+        msg.reference_guild_id = Some(COMMUNITY_UPDATES_GUILD_ID);
+        assert_eq!(
+            resolve_author_popout(&msg, false),
+            AuthorPopoutTarget::CommunityUpdates
+        );
+
+        let mut cp = crosspost_message();
+        cp.author.username = "Discord News #announcements".into();
+        cp.reference_guild_id = Some(555);
+        assert_eq!(
+            resolve_author_popout(&cp, false),
+            AuthorPopoutTarget::CrosspostGuild {
+                guild_id: 555,
+                stripped_name: "Discord News".into(),
+            }
+        );
+
+        let mut normal = crosspost_message();
+        normal.flags = 0;
+        assert_eq!(
+            resolve_author_popout(&normal, true),
+            AuthorPopoutTarget::SuppressedPendingInteraction
+        );
+        assert_eq!(
+            resolve_author_popout(&normal, false),
+            AuthorPopoutTarget::UserProfile {
+                user_id: normal.author.id
+            }
+        );
     }
 }

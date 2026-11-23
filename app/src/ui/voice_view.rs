@@ -1477,17 +1477,10 @@ impl Root {
             self.activities.stage_seen = true;
         }
         let grid = if activity_stage {
-            // The running activity's page is a native surface laid over this box (`dc-webhost`).
-            div()
-                .absolute()
-                .left(px(8.))
-                .right(px(8.))
-                .top(px(56.))
-                .bottom(px(96.))
-                .rounded(px(8.))
-                .bg(mid("--background-base-lowest"))
-                .child(self.anchor_probe("activity-stage"))
-                .into_any_element()
+            // Module 12830 (`VoiceChannelAppSurface`): 16:9 embedded app stage over `--black`.
+            self.render_voice_channel_app_surface(
+                super::activity_host::VoiceAppSurfaceState::Launched,
+            )
         } else if let Some(index) = focused {
             self.focus_body(&people, index, width, height, cx)
         } else if people.is_empty() && hides_participants {

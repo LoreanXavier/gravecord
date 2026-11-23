@@ -276,17 +276,44 @@ impl Root {
         let running = self.activities.running.as_ref()?;
         let (x, y, width, height) = pip_bounds(window);
         let app_id = running.application_id.clone();
-        let app_name = if running.name.is_empty() {
+        let raw_app_name = if running.name.is_empty() {
             self.activities
                 .names
                 .get(&app_id)
                 .cloned()
-                .unwrap_or_else(|| "Activity".to_owned())
+                .unwrap_or_default()
         } else {
             running.name.clone()
         };
         let target_guild = running.guild;
         let target_channel = running.channel;
+        let ch_name = self
+            .stores
+            .guild(target_guild)
+            .and_then(|g| g.channels.iter().find(|c| c.id == target_channel))
+            .map(|c| c.name.as_str());
+        let resolved_title = pip_activity_title(
+            (!raw_app_name.is_empty()).then_some(raw_app_name.as_str()),
+            ch_name,
+        );
+        let app_name = if resolved_title.is_empty() {
+            "Activity".to_owned()
+        } else {
+            resolved_title.to_owned()
+        };
+        let me_id = self.stores.current_user.as_ref().map(|u| u.id).unwrap_or(0);
+        let pip_candidates: Vec<ActivityPipCandidate> = self
+            .stores
+            .voice_members(target_guild, target_channel)
+            .iter()
+            .map(|vs| ActivityPipCandidate {
+                user_id: vs.user_id,
+                is_activity: false,
+                is_stream: vs.self_stream,
+                has_video: vs.self_video || vs.self_stream,
+            })
+            .collect();
+        let _featured_pip_participant = select_activity_pip_participant(&pip_candidates, me_id);
         let cover = self.images.get(&format!("shelf-banner:{app_id}")).cloned();
         let guild_icon_img = self.images.get(&format!("guild:{target_guild}")).cloned();
         let guild_acronym: String = self
@@ -1131,9 +1158,311 @@ impl Root {
     }
 }
 
+/// Module 12830 (`111518.n`): 7 lifecycle states of the Voice Channel Conjure / Embedded App Surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum VoiceAppSurfaceState {
+    Launched,
+    RenderingElsewhere,
+    NoApplication,
+    DoesNotSupportSurface,
+    Error,
+    AwaitingLaunch,
+    Loading,
+}
+
+/// Module 12830: candidate voice participant for the single-slot Activity PiP overlay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActivityPipCandidate {
+    pub user_id: dc_state::Id,
+    pub is_activity: bool,
+    pub is_stream: bool,
+    pub has_video: bool,
+}
+
+/// Module 12830 (`A`): selects the single priority non-self video participant for the PiP overlay
+/// (excludes `ACTIVITY`, self, and non-video; prefers first `STREAM` participant else first video).
+pub(crate) fn select_activity_pip_participant(
+    candidates: &[ActivityPipCandidate],
+    me_id: dc_state::Id,
+) -> Option<dc_state::Id> {
+    let eligible = candidates
+        .iter()
+        .filter(|c| !c.is_activity && c.user_id != me_id && c.has_video);
+    eligible
+        .clone()
+        .find(|c| c.is_stream)
+        .or_else(|| eligible.into_iter().next())
+        .map(|c| c.user_id)
+}
+
+/// Module 12830 (`378859.A`): localized status heading & optional error line for each non-launched state.
+pub(crate) fn voice_app_surface_status_copy(
+    state: VoiceAppSurfaceState,
+) -> Option<(String, Option<String>)> {
+    match state {
+        VoiceAppSurfaceState::RenderingElsewhere => Some((dc_intl::t("2KIDX+").to_owned(), None)),
+        VoiceAppSurfaceState::NoApplication => Some((
+            if dc_intl::has_key("TQptZV") {
+                dc_intl::t("TQptZV").to_owned()
+            } else {
+                "This app couldn't be found.".to_owned()
+            },
+            None,
+        )),
+        VoiceAppSurfaceState::DoesNotSupportSurface => Some((
+            if dc_intl::has_key("13FYwI") {
+                dc_intl::t("13FYwI").to_owned()
+            } else {
+                "This app can't run in a voice channel.".to_owned()
+            },
+            None,
+        )),
+        VoiceAppSurfaceState::Error => Some((
+            dc_intl::t("VquUff").to_owned(),
+            Some(dc_intl::t("Sd9D/R").to_owned()),
+        )),
+        _ => None,
+    }
+}
+
+/// Module 56129 (`Mp` / `gE` / `tM`): embedded-activity PiP control modes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum EmbeddedActivityPipMode {
+    /// `tM`: interactive PiP collapsible 12px -> 40px top header with `2TiKgS` / `oN8bqe` chevron.
+    InteractiveHeader { expanded: bool, show_expand: bool },
+    /// `Mp`: text-channel activity PiP overlay (top back/title + bottom participants + leave).
+    TextActivity,
+    /// `gE`: voice-channel non-interactive activity PiP overlay (video toggle + popout + leave).
+    VoiceActivity {
+        can_popout: bool,
+        camera_unavailable: bool,
+    },
+}
+
+/// Module 56129 (`F`): expand/collapse aria-label (`2TiKgS` "Collapse" vs `oN8bqe` "Picture in Picture, Expand").
+pub(crate) fn pip_expand_aria_label(expanded: bool) -> &'static str {
+    if expanded {
+        dc_intl::t("2TiKgS")
+    } else {
+        dc_intl::t("oN8bqe")
+    }
+}
+
+/// Module 56129: resolves PiP header title (`application.name ?? channel_name ?? ""`).
+pub(crate) fn pip_activity_title<'a>(
+    app_name: Option<&'a str>,
+    channel_name: Option<&'a str>,
+) -> &'a str {
+    app_name
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| channel_name.filter(|s| !s.trim().is_empty()))
+        .unwrap_or("")
+}
+
+impl Root {
+    /// Module 12830 (`VoiceChannelAppSurface`, CSS `649914`): renders the 16:9 embedded app stage
+    /// over `--black` with all 7 lifecycle states (`Launched`, `RenderingElsewhere`, `NoApplication`,
+    /// `DoesNotSupportSurface`, `Error`, `AwaitingLaunch`/`Loading`).
+    pub(super) fn render_voice_channel_app_surface(
+        &self,
+        state: VoiceAppSurfaceState,
+    ) -> AnyElement {
+        let stage_inner: AnyElement = match state {
+            VoiceAppSurfaceState::Launched => div()
+                .size_full()
+                .child(self.anchor_probe("activity-stage"))
+                .into_any_element(),
+            VoiceAppSurfaceState::AwaitingLaunch | VoiceAppSurfaceState::Loading => div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(super::voice_view::spinner())
+                .into_any_element(),
+            _ => {
+                let (heading, err) = voice_app_surface_status_copy(state)
+                    .unwrap_or_else(|| (dc_intl::t("VquUff").to_owned(), None));
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.))
+                    .p(px(24.))
+                    .child(icon("home_shop", 32., "--icon-muted"))
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-default"))
+                            .child(heading),
+                    )
+                    .children(err.map(|e| {
+                        div()
+                            .text_size(px(13.))
+                            .text_color(color("--text-feedback-critical"))
+                            .child(e)
+                    }))
+                    .into_any_element()
+            }
+        };
+        div()
+            .absolute()
+            .left(px(8.))
+            .right(px(8.))
+            .top(px(56.))
+            .bottom(px(96.))
+            .rounded(px(8.))
+            .bg(color("--black"))
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(div().size_full().child(stage_inner))
+            .into_any_element()
+    }
+
+    /// Module 56129 (`tM` / `Mp` / `gE` / `ll`): renders the embedded-activity PiP controls bar.
+    #[allow(dead_code)]
+    pub(super) fn render_embedded_activity_pip_controls(
+        &self,
+        mode: EmbeddedActivityPipMode,
+        title: &str,
+        show_toggle_participants: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match mode {
+            EmbeddedActivityPipMode::InteractiveHeader {
+                expanded,
+                show_expand,
+            } => div()
+                .w_full()
+                .h(if expanded { px(40.) } else { px(12.) })
+                .px(px(8.))
+                .bg(color("--black"))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child(if expanded {
+                            title.to_owned()
+                        } else {
+                            String::new()
+                        }),
+                )
+                .when(expanded, |row| {
+                    row.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .when(show_expand, |btns| {
+                                btns.child(
+                                    div()
+                                        .id("pip-activity-expand")
+                                        .size(px(24.))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .aria_label(gpui::SharedString::from(
+                                            pip_expand_aria_label(expanded),
+                                        ))
+                                        .child(icon("chevron_down", 16., "--white")),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id("pip-activity-leave")
+                                    .size(px(24.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .aria_label(gpui::SharedString::from(dc_intl::t("R/FK4A")))
+                                    .child(icon("modal_close", 14., "--white"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.leave_activity(cx);
+                                    })),
+                            ),
+                    )
+                })
+                .into_any_element(),
+            EmbeddedActivityPipMode::TextActivity
+            | EmbeddedActivityPipMode::VoiceActivity { .. } => div()
+                .relative()
+                .size_full()
+                .p(px(8.))
+                .flex()
+                .flex_col()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(icon("clips_back", 16., "--white"))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(title.to_owned()),
+                        ),
+                )
+                .when(show_toggle_participants, |box_el| {
+                    box_el.child(
+                        div()
+                            .id("pip-activity-participants-toggle")
+                            .absolute()
+                            .right(px(16.))
+                            .top(px(72.))
+                            .size(px(28.))
+                            .rounded_full()
+                            .bg(gpui::rgba(0x00000099))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("members_nav", 14., "--white")),
+                    )
+                })
+                .child(
+                    div().flex().items_center().justify_end().child(
+                        div()
+                            .id("pip-activity-bottom-leave")
+                            .size(px(28.))
+                            .rounded_full()
+                            .bg(color("--control-critical-primary-background-default"))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .aria_label(gpui::SharedString::from(dc_intl::t("R/FK4A")))
+                            .child(icon("modal_close", 14., "--white"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.leave_activity(cx);
+                            })),
+                    ),
+                )
+                .into_any_element(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{elapsed_text, pip_mute_label, pip_open_label};
+    use super::{
+        ActivityPipCandidate, VoiceAppSurfaceState, elapsed_text, pip_activity_title,
+        pip_expand_aria_label, pip_mute_label, pip_open_label, select_activity_pip_participant,
+        voice_app_surface_status_copy,
+    };
 
     #[test]
     fn the_counter_reads_like_the_official_one() {
@@ -1148,5 +1477,40 @@ mod tests {
         assert_eq!(pip_mute_label(false), "Turn off sound");
         assert_eq!(pip_mute_label(true), "Turn on sound");
         assert_eq!(dc_intl::t("VkMnR2"), "Close App");
+    }
+
+    #[test]
+    fn voice_app_surface_12830_and_pip_controls_56129() {
+        for key in ["2KIDX+", "VquUff", "Sd9D/R", "2TiKgS", "oN8bqe", "R/FK4A"] {
+            assert!(dc_intl::has_key(key), "missing 12830/56129 key {key}");
+        }
+        let cands = vec![
+            ActivityPipCandidate {
+                user_id: 1,
+                is_activity: false,
+                is_stream: true,
+                has_video: true,
+            },
+            ActivityPipCandidate {
+                user_id: 2,
+                is_activity: false,
+                is_stream: false,
+                has_video: true,
+            },
+            ActivityPipCandidate {
+                user_id: 3,
+                is_activity: false,
+                is_stream: true,
+                has_video: true,
+            },
+        ];
+        // Self (1) excluded; stream (3) preferred over non-stream video (2).
+        assert_eq!(select_activity_pip_participant(&cands, 1), Some(3));
+        assert!(voice_app_surface_status_copy(VoiceAppSurfaceState::RenderingElsewhere).is_some());
+        assert!(voice_app_surface_status_copy(VoiceAppSurfaceState::Error).is_some());
+        assert_eq!(pip_expand_aria_label(true), dc_intl::t("2TiKgS"));
+        assert_eq!(pip_expand_aria_label(false), dc_intl::t("oN8bqe"));
+        assert_eq!(pip_activity_title(Some("Chess"), Some("General")), "Chess");
+        assert_eq!(pip_activity_title(None, Some("General")), "General");
     }
 }

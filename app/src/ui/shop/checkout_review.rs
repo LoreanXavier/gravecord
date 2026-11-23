@@ -1390,31 +1390,39 @@ impl Root {
                             })
                             .child(
                                 div()
-                                    .id("checkout-review-submit")
-                                    .h(px(38.))
-                                    .px(px(20.))
-                                    .rounded(px(8.))
-                                    .bg(color("--control-primary-background-default"))
-                                    .when(!modal.is_loading && !insufficient_orbs, |b| {
-                                        b.hover(|s| {
-                                            s.bg(color("--control-primary-background-hover"))
-                                        })
-                                        .cursor_pointer()
-                                    })
-                                    .when(modal.is_loading || insufficient_orbs, |b| b.opacity(0.5))
                                     .flex()
                                     .items_center()
-                                    .justify_center()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(color("--control-primary-text-default"))
-                                    .child(review_cta_label(modal.is_gift, modal.total_cents))
-                                    .when(!modal.is_loading && !insufficient_orbs, |b| {
-                                        b.on_click(cx.listener(|this, _, _, cx| {
-                                            this.close_shop_checkout_review();
-                                            cx.notify();
-                                        }))
-                                    }),
+                                    .child(payment_modal_lock_badge())
+                                    .child(
+                                        div()
+                                            .id("checkout-review-submit")
+                                            .h(px(38.))
+                                            .px(px(20.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .when(!modal.is_loading && !insufficient_orbs, |b| {
+                                                b.hover(|s| {
+                                                    s.bg(color("--control-primary-background-hover"))
+                                                })
+                                                .cursor_pointer()
+                                            })
+                                            .when(modal.is_loading || insufficient_orbs, |b| {
+                                                b.opacity(0.5)
+                                            })
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--control-primary-text-default"))
+                                            .child(review_cta_label(modal.is_gift, modal.total_cents))
+                                            .when(!modal.is_loading && !insufficient_orbs, |b| {
+                                                b.on_click(cx.listener(|this, _, _, cx| {
+                                                    this.close_shop_checkout_review();
+                                                    cx.notify();
+                                                }))
+                                            }),
+                                    ),
                             ),
                     )
                     .into_any_element()
@@ -1511,6 +1519,26 @@ impl Root {
         cx.notify();
         format!("shop-checkout-review: {arg}")
     }
+}
+
+/// Module 999784 (`PaymentModalLockIcon`, CSS `629264`): `"Secure"` (`Kv6Z4I`) lock badge shown
+/// immediately left of the primary purchase CTA in payment modal footers (`19311`, `981036`).
+pub(crate) fn payment_modal_lock_badge() -> AnyElement {
+    div()
+        .px(px(16.))
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .child(icon("access_lock", 16., "--text-muted"))
+        .child(
+            div()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-muted"))
+                .child(dc_intl::t("Kv6Z4I")),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -1613,7 +1641,8 @@ mod tests {
         assert!(!should_show_pix_cta(true, false, false, Some("US"), false));
         assert!(!should_show_pix_cta(true, false, false, Some("BR"), true));
 
-        // 891197
+        // 891197 & 999784
         assert_eq!(dc_intl::t("eALkIR"), "Waiting for authentication...");
+        assert_eq!(dc_intl::t("Kv6Z4I"), "Secure");
     }
 }

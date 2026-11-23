@@ -1394,67 +1394,105 @@ impl Root {
             )
             .children(rows);
 
-        // Module 662080 `V`: locked-sound Nitro upsell banner (`tw/SSq` + `pj0XBN`).
+        // Module 37336 (`SoundboardSoundPickerBrandRefreshUpsellBanner`, CSS `212000`) inside 662080 `V`:
+        // locked-sound Nitro upsell banner (`tw/SSq` with clickable `--text-link` Nitro link + `pj0XBN`).
         let upsell_row = has_locked.then(|| {
-            let copy = dc_intl::format("tw/SSq", &[("nitroTierName", dc_intl::t("lG6a5x").into())]);
-            div()
+            let nitro_name = dc_intl::t("lG6a5x");
+            let runs = dc_intl::format_runs("tw/SSq", &[("nitroTierName", nitro_name.into())]);
+            let is_light = super::theme() == dc_tokens::Theme::Light;
+            let mut bar = div()
                 .id("soundboard-suggest-upsell")
                 .occlude()
                 .w(px(WIDTH))
                 .min_h(px(UPSELL_HEIGHT))
                 .px(px(16.))
                 .py(px(12.))
-                .rounded_b(px(12.))
+                .rounded_b(px(8.))
                 .border_b_1()
                 .border_l_1()
                 .border_r_1()
                 .border_color(color("--border-subtle"))
-                .bg(gpui::linear_gradient(
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(16.))
+                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                    this.soundboard_hover(*inside, cx);
+                }));
+            bar = if is_light {
+                bar.bg(gpui::linear_gradient(
+                    90.,
+                    gpui::linear_color_stop(gpui::rgba(0xf9d8eeff), 0.),
+                    gpui::linear_color_stop(gpui::rgba(0xd6e0ffff), 1.),
+                ))
+            } else {
+                bar.bg(gpui::linear_gradient(
                     90.,
                     gpui::linear_color_stop(gpui::rgba(0x8c3297a6), 0.),
                     gpui::linear_color_stop(gpui::rgba(0x19175ca6), 1.),
                 ))
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(12.))
-                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
-                    this.soundboard_hover(*inside, cx);
-                }))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .text_size(px(13.))
-                        .line_height(px(18.))
-                        .font_weight(FontWeight(500.))
-                        .text_color(color("--white"))
-                        .child(copy),
-                )
-                .child(
-                    div()
-                        .id("soundboard-suggest-get-nitro")
-                        .flex_none()
-                        .h(px(32.))
-                        .px(px(14.))
-                        .rounded(px(8.))
-                        .bg(color("--white"))
-                        .hover(|s| s.opacity(0.92))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .text_size(px(13.))
-                        .font_weight(FontWeight(600.))
-                        .text_color(color("--black"))
-                        .child(icon("nitro_wheel", 16., "--black"))
-                        .child(dc_intl::t("pj0XBN"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.vv.suggest = false;
-                            this.open_purchase(false, cx);
-                            cx.notify();
-                        })),
-                )
+            };
+            bar.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-default"))
+                    .children(runs.into_iter().enumerate().flat_map(|(i, (seg, hook))| {
+                        let is_link = hook.is_some() || seg.trim() == nitro_name;
+                        if is_link {
+                            vec![
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "soundboard-upsell-nitro-link-{i}"
+                                    )))
+                                    .cursor_pointer()
+                                    .text_color(color("--text-link"))
+                                    .hover(|s| s.underline())
+                                    .child(seg)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.vv.suggest = false;
+                                        this.open_nitro(cx);
+                                        cx.notify();
+                                    }))
+                                    .into_any_element(),
+                            ]
+                        } else {
+                            seg.split_inclusive(' ')
+                                .map(|tok| div().child(tok.to_owned()).into_any_element())
+                                .collect()
+                        }
+                    })),
+            )
+            .child(
+                div()
+                    .id("soundboard-suggest-get-nitro")
+                    .flex_none()
+                    .h(px(32.))
+                    .px(px(14.))
+                    .rounded(px(8.))
+                    .bg(color("--white"))
+                    .hover(|s| s.opacity(0.92))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(13.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--black"))
+                    .child(icon("nitro_wheel", 16., "--black"))
+                    .child(dc_intl::t("pj0XBN"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.vv.suggest = false;
+                        this.open_purchase(false, cx);
+                        cx.notify();
+                    })),
+            )
         });
         vec![
             deferred(
@@ -3496,5 +3534,16 @@ mod tests {
         // 2020-01-01 as a snowflake.
         let snowflake = (1_577_836_800_000_u64 - 1_420_070_400_000) << 22;
         assert_eq!(created_ms(snowflake), 1_577_836_800_000);
+    }
+
+    #[test]
+    fn soundboard_brand_refresh_upsell_37336_intl() {
+        for key in ["tw/SSq", "lG6a5x", "pj0XBN"] {
+            assert!(dc_intl::has_key(key), "missing 37336 key {key}");
+        }
+        let runs =
+            dc_intl::format_runs("tw/SSq", &[("nitroTierName", dc_intl::t("lG6a5x").into())]);
+        let joined: String = runs.into_iter().map(|(s, _)| s).collect();
+        assert!(joined.contains("Nitro"), "got {joined}");
     }
 }

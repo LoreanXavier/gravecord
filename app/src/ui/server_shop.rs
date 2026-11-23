@@ -87,6 +87,10 @@ pub(crate) struct ServerShopModal {
     pub report: Option<ServerShopReportModal>,
     /// Active Unavailable Product alert (module 558067: `wLrh03`, `DW9yJj`, `BddRzS`).
     pub unavailable_alert: bool,
+    /// Full guild Server Shop description (`GET /guilds/{id}/role-subscriptions/settings`, module 13197).
+    pub description: Option<String>,
+    /// Active Server Shop Description modal (module 13197: `xPum5Q`, `D98gRz`, `wdo1oB`).
+    pub description_modal_open: bool,
 }
 
 /// Module 724609 (`.draftBadge_jGF6_I` + `805251.E` warning `Badge`, `vosPk5` "Draft"):
@@ -427,6 +431,10 @@ impl Root {
 
     pub(crate) fn close_server_shop(&mut self) -> bool {
         if let Some(m) = self.server_shop_modal.as_mut() {
+            if m.description_modal_open {
+                m.description_modal_open = false;
+                return true;
+            }
             if m.unavailable_alert {
                 m.unavailable_alert = false;
                 return true;
@@ -439,6 +447,113 @@ impl Root {
             }
         }
         self.server_shop_modal.take().is_some()
+    }
+
+    /// Module 13197 (`ServerShopDescriptionModal`, CSS `78311`):
+    /// modal displaying the full Server Shop description (`xPum5Q`, `aria-label: D98gRz`, `wdo1oB` "Sounds good").
+    fn server_shop_description_dialog(
+        &self,
+        description: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let dialog = div()
+            .id("server-shop-description-modal")
+            .occlude()
+            .w(px(460.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .p(px(24.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .aria_label(SharedString::from(dc_intl::t("D98gRz")))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .line_height(px(26.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("xPum5Q")),
+                    )
+                    .child(
+                        div()
+                            .id("server-shop-description-close")
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 16., "--icon-subtle"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(m) = this.server_shop_modal.as_mut() {
+                                    m.description_modal_open = false;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .line_height(px(22.))
+                    .text_color(color("--text-muted"))
+                    .child(description.to_owned()),
+            )
+            .child(
+                div()
+                    .id("server-shop-description-ok")
+                    .mt(px(8.))
+                    .w_full()
+                    .h(px(38.))
+                    .rounded(px(8.))
+                    .bg(color("--control-primary-background-default"))
+                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--white"))
+                    .child(dc_intl::t("wdo1oB"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(m) = this.server_shop_modal.as_mut() {
+                            m.description_modal_open = false;
+                        }
+                        cx.notify();
+                    })),
+            );
+        deferred(
+            div()
+                .id("server-shop-description-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x000000b3))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(m) = this.server_shop_modal.as_mut() {
+                        m.description_modal_open = false;
+                    }
+                    cx.notify();
+                }))
+                .child(dialog),
+        )
+        .with_priority(5)
+        .into_any_element()
     }
 
     /// Module 558067: `"This product is not available."` (`wLrh03`, `DW9yJj`, `BddRzS`, `size: "sm"` 400px).
@@ -522,6 +637,10 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let modal = self.server_shop_modal.as_ref()?;
+        if modal.description_modal_open {
+            let desc = modal.description.as_deref().unwrap_or("");
+            return Some(self.server_shop_description_dialog(desc, cx));
+        }
         if modal.unavailable_alert {
             return Some(self.server_shop_unavailable_dialog(cx));
         }
@@ -1620,6 +1739,11 @@ impl Root {
             detail,
             report,
             unavailable_alert: arg == "unavailable",
+            description: Some(
+                "Support the community with exclusive roles, downloadable packs, and custom perks."
+                    .to_owned(),
+            ),
+            description_modal_open: arg == "description",
         });
         cx.notify();
         format!("server-shop: {arg}")
@@ -2125,11 +2249,10 @@ impl Root {
                                     .child(dc_intl::t("J4cw1q"))
                                     .child(icon("shop_arrow_right", 12., "--text-strong"))
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.put_app_toast(
-                                            dc_intl::t("NY/FIW").to_owned(),
-                                            true,
-                                            cx,
-                                        );
+                                        if let Some(m) = this.server_shop_modal.as_mut() {
+                                            m.description_modal_open = true;
+                                            cx.notify();
+                                        }
                                     })),
                             ),
                     ),
@@ -2163,9 +2286,11 @@ mod tests {
         for key in [
             "qe4kTa", "WAI6xu", "odvTUp", "0JFpRW", "KzCF/6", "jqz+ly", "ycs4oO", "827i8I",
             "GF433I", "U2hvDo", "w/TNGT", "ih4QMU", "umfZ8q", "F4Z0nV", "pzTFpM", "YF35pV",
-            "r30bky", "al5EXL",
+            "r30bky", "al5EXL", "xPum5Q", "D98gRz", "wdo1oB",
         ] {
             assert!(!dc_intl::t(key).is_empty(), "empty key {key}");
         }
+        assert_eq!(dc_intl::t("xPum5Q"), "Read up on the shop");
+        assert_eq!(dc_intl::t("wdo1oB"), "Sounds good");
     }
 }

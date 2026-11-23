@@ -2565,6 +2565,9 @@ impl Root {
                     self.group_edit_answered(&body, cx);
                     return;
                 }
+                if self.handle_family_center_fetched(&key, &body, cx) {
+                    return;
+                }
                 if self.spotify_metadata_fetched(&key, &body, cx) {
                     return;
                 }
@@ -10317,9 +10320,9 @@ impl Root {
                                                         .flex()
                                                         .items_center()
                                                         .child(
-                                                            self.profile_trigger(
+                                                            self.message_author_trigger(
                                                                 format!("name-{id}"),
-                                                                message.author.id,
+                                                                message,
                                                                 div()
                                                                     .id(SharedString::from(
                                                                         format!("name-link-{id}"),
@@ -10364,9 +10367,9 @@ impl Root {
                                     .size(px(40.))
                                     .when(timed_out, |avatar| avatar.opacity(0.5))
                                     .child(
-                                        self.profile_trigger(
+                                        self.message_author_trigger(
                                             format!("avatar-{id}"),
-                                            message.author.id,
+                                            message,
                                             div().size(px(40.)).children(
                                                 self.live_avatar(&message.author, 40., playing, cx)
                                                     .or_else(|| {
@@ -10416,9 +10419,9 @@ impl Root {
                                             }),
                                     )
                                     .child(
-                                        self.profile_trigger(
+                                        self.message_author_trigger(
                                             format!("name-{id}"),
-                                            message.author.id,
+                                            message,
                                             div()
                                                 .id(SharedString::from(format!("name-link-{id}")))
                                                 // `.username.clickable:hover` underlines the name (module 2i8Bfm).
@@ -12355,7 +12358,9 @@ impl Render for Root {
                         || this.quests.menus.alert.is_some()
                         || this.library.game_menu.is_some()
                         || this.library.hide_confirm.is_some()
-                        || this.library.uninstall_confirm.is_some())
+                        || this.library.uninstall_confirm.is_some()
+                        || this.family_center.request_connection.is_some()
+                        || this.family_center.accept_link.is_some())
                 {
                     this.billing_address_modal = None;
                     this.clear_activity_history_modal = None;
@@ -12406,6 +12411,7 @@ impl Render for Root {
                     this.close_guild_space();
                     this.close_checkpoint_2026();
                     this.close_game_server_success_modal();
+                    this.close_family_center_modals();
                     this.library.launch_menu = None;
                     this.vv.soundboard_nux_preview = false;
                     this.premium_uncancel_modal = None;
@@ -13670,6 +13676,8 @@ impl Render for Root {
             .children(self.chat_alert_modal(cx))
             .children(self.disable_family_center_modal(cx))
             .children(self.family_center_share_modal(cx))
+            .children(self.family_center_request_modal(cx))
+            .children(self.family_center_accept_link_modal(cx))
             .children(self.follow_success_modal(cx))
             .children(self.guild_cap_upsell_layer(cx))
             .children(self.app_directory_promo_modal(cx))

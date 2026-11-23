@@ -1744,6 +1744,12 @@ impl Root {
                             color("--background-base-lowest")
                         })
                         .on_click(cx.listener(|this, _, _, cx| {
+                            // Module 32605 (`z`): non-Nitro user clicking Super Reactions opens BurstReactionModal upsell.
+                            let has_nitro = this.stores.account.premium_type.is_some_and(|p| p > 0);
+                            if !has_nitro {
+                                this.open_burst_reaction_upsell_modal(cx);
+                                return;
+                            }
                             if let Some(picker) = this.picker.as_mut() {
                                 picker.burst = !picker.burst;
                             }

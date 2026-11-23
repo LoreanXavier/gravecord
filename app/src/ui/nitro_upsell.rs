@@ -34,6 +34,8 @@ pub enum UpsellKind {
     TrialEndingWeek,
     /// Module 166247: "You've got 7 days of Nitro" (`Xm5q5l`, `svsMII`, `WHWwCY`, `mHF+AF`).
     ReverseTrial,
+    /// Module 32605: Burst / Super Reactions Nitro Upsell Modal (`N4SCJ0`, `JmbS+T`, `f3Pet9`).
+    BurstReactionModal,
 }
 
 /// Active offer attached to a Nitro upsell modal (`trialOffer` / `discountOffer` of module 811611).
@@ -172,6 +174,10 @@ pub fn upsell_body_copy(kind: UpsellKind, is_tier0: bool) -> (Option<String>, St
             Some(dc_intl::t("Xm5q5l").to_owned()),
             dc_intl::t("svsMII").to_owned(),
         ),
+        UpsellKind::BurstReactionModal => (
+            Some(dc_intl::t("N4SCJ0").to_owned()),
+            format_plain("JmbS+T", &[]),
+        ),
     }
 }
 
@@ -181,11 +187,32 @@ const REVERSE_TRIAL_HELP_URL: &str = "https://support.discord.com/hc/en-us/artic
 const REVERSE_TRIAL_ART_URL: &str = "https://cdn.discordapp.com/assets/content/0fd43f7e4e4408e8dcd461685e82ba9be4aef3381402dd1b8dc3fcf20e42d8bb.png";
 
 impl Root {
+    /// Module 32605 (`z`): opens the standalone Super Reactions Nitro upsell modal (`N4SCJ0`, `JmbS+T`, `f3Pet9`).
+    pub(super) fn open_burst_reaction_upsell_modal(&mut self, cx: &mut Context<Self>) {
+        self.nitro_upsell_modal = Some(NitroUpsellModal {
+            kind: UpsellKind::BurstReactionModal,
+            heading: dc_intl::t("N4SCJ0").to_owned(),
+            context: None,
+            offer: NitroOffer {
+                is_tier0: false,
+                discount_percent: None,
+                expires_at: None,
+            },
+        });
+        cx.notify();
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_nitro_upsell(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.nitro_upsell_modal = None;
+            cx.notify();
+            return "nitro-upsell: closed".to_owned();
+        }
         let now = Utc::now();
         let exp_days = (now + chrono::Duration::days(3)).to_rfc3339();
         let (kind, discount, heading, context) = match arg.trim() {
+            "burst-32605" => (UpsellKind::BurstReactionModal, None, String::new(), None),
             "reverse-trial" => (UpsellKind::ReverseTrial, None, String::new(), None),
             "trial-ending" => (UpsellKind::TrialEndingWeek, None, String::new(), None),
             "trial" => (UpsellKind::CustomProfileTryOut, None, String::new(), None),
@@ -243,9 +270,206 @@ impl Root {
         format!("nitro-upsell: kind={kind:?}")
     }
 
-    /// Renders the Nitro Offer Countdown / Feature Upsell modal overlay (modules 811611, 34255 & 166247).
+    /// Renders the Nitro Offer Countdown / Feature Upsell modal overlay (modules 811611, 34255, 166247 & 32605).
     pub(super) fn nitro_upsell_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let modal = self.nitro_upsell_modal.as_ref()?;
+        // Module 32605: Burst / Super Reactions Nitro Upsell Modal (`N4SCJ0`, `JmbS+T`, `f3Pet9`).
+        if modal.kind == UpsellKind::BurstReactionModal {
+            let runs = dc_intl::format_runs("JmbS+T", &[]);
+            return Some(
+                deferred(
+                    div()
+                        .id("burst-reaction-upsell-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b8))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p(px(24.))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.nitro_upsell_modal = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .id("burst-reaction-upsell-modal")
+                                .w(px(460.))
+                                .rounded(px(16.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-surface-high"))
+                                .overflow_hidden()
+                                .flex()
+                                .flex_col()
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                // Pink expressive hero header (`gradientColor: "nitro-pink"`)
+                                .child(
+                                    div()
+                                        .relative()
+                                        .h(px(160.))
+                                        .w_full()
+                                        .bg(linear_gradient(
+                                            135.,
+                                            linear_color_stop(rgba(0xb845c1ff), 0.),
+                                            linear_color_stop(rgba(0xe060a8ff), 1.),
+                                        ))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon("picker_super_reaction", 56., "--white"))
+                                        .child(
+                                            div()
+                                                .id("burst-upsell-close")
+                                                .absolute()
+                                                .top(px(10.))
+                                                .right(px(10.))
+                                                .size(px(30.))
+                                                .rounded_full()
+                                                .bg(rgba(0x00000055))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon("modal_close", 16., "--white"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.nitro_upsell_modal = None;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                )
+                                // Title (`N4SCJ0`) + Subtitle (`JmbS+T` with clickable Nitro link)
+                                .child(
+                                    div()
+                                        .p(px(24.))
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .gap(px(10.))
+                                        .child(
+                                            text(20., 26., 700., "--text-strong")
+                                                .text_center()
+                                                .child(dc_intl::t("N4SCJ0")),
+                                        )
+                                        .child(
+                                            div()
+                                                .w_full()
+                                                .min_w(px(0.))
+                                                .flex()
+                                                .flex_wrap()
+                                                .justify_center()
+                                                .text_center()
+                                                .text_size(px(14.))
+                                                .line_height(px(20.))
+                                                .text_color(color("--text-muted"))
+                                                .children(runs.into_iter().enumerate().flat_map(
+                                                    |(i, (seg, hook))| {
+                                                        if hook.is_some() || seg.trim() == "Nitro" {
+                                                            vec![
+                                                                div()
+                                                                    .id(gpui::SharedString::from(
+                                                                        format!(
+                                                                            "burst-upsell-nitro-{i}"
+                                                                        ),
+                                                                    ))
+                                                                    .cursor_pointer()
+                                                                    .text_color(color(
+                                                                        "--text-link",
+                                                                    ))
+                                                                    .hover(|s| s.underline())
+                                                                    .child(seg)
+                                                                    .on_click(cx.listener(
+                                                                        |this, _, _, cx| {
+                                                                            this.nitro_upsell_modal =
+                                                                                None;
+                                                                            this.open_nitro(cx);
+                                                                        },
+                                                                    ))
+                                                                    .into_any_element(),
+                                                            ]
+                                                        } else {
+                                                            seg.split_inclusive(' ')
+                                                                .map(|tok| {
+                                                                    div()
+                                                                        .child(tok.to_owned())
+                                                                        .into_any_element()
+                                                                })
+                                                                .collect()
+                                                        }
+                                                    },
+                                                )),
+                                        ),
+                                )
+                                // Footer: "No thanks" (`f3Pet9`) + "Get Nitro" (`pj0XBN`)
+                                .child(
+                                    div()
+                                        .px(px(24.))
+                                        .py(px(16.))
+                                        .border_t_1()
+                                        .border_color(color("--border-subtle"))
+                                        .bg(color("--background-base-lower"))
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap(px(12.))
+                                        .child(
+                                            div()
+                                                .id("burst-upsell-no-thanks")
+                                                .h(px(38.))
+                                                .px(px(14.))
+                                                .rounded(px(8.))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                                .flex()
+                                                .items_center()
+                                                .child(
+                                                    text(14., 18., 500., "--text-default")
+                                                        .child(dc_intl::t("f3Pet9")),
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.nitro_upsell_modal = None;
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("burst-upsell-get-nitro")
+                                                .h(px(38.))
+                                                .px(px(16.))
+                                                .rounded(px(8.))
+                                                .bg(linear_gradient(
+                                                    90.,
+                                                    linear_color_stop(rgba(0xb845c1ff), 0.),
+                                                    linear_color_stop(rgba(0xe060a8ff), 1.),
+                                                ))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(6.))
+                                                .child(icon("nitro_wheel", 16., "--white"))
+                                                .child(
+                                                    text(14., 18., 600., "--white")
+                                                        .child(dc_intl::t("pj0XBN")),
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.nitro_upsell_modal = None;
+                                                    this.open_purchase(false, cx);
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                ),
+                        ),
+                )
+                .with_priority(90)
+                .into_any_element(),
+            );
+        }
         // Module 166247: "You've got 7 days of Nitro" (Reverse Trial Initial Upsell Modal).
         if modal.kind == UpsellKind::ReverseTrial {
             let hero = if let Some(art) = self.images.get(REVERSE_TRIAL_ART_URL).cloned() {
@@ -855,6 +1079,14 @@ mod tests {
         assert!(b_rev.contains("Nitro"));
         for k in ["Xm5q5l", "svsMII", "WHWwCY", "mHF+AF"] {
             assert!(dc_intl::has_key(k), "missing 166247 key {k}");
+        }
+
+        // Module 32605: Burst / Super Reactions Nitro Upsell Modal.
+        let (h_burst, b_burst) = upsell_body_copy(UpsellKind::BurstReactionModal, false);
+        assert_eq!(h_burst.as_deref(), Some("A better way to react on Discord"));
+        assert!(b_burst.contains("Super Reactions"), "got {b_burst}");
+        for k in ["N4SCJ0", "JmbS+T", "f3Pet9"] {
+            assert!(dc_intl::has_key(k), "missing 32605 key {k}");
         }
     }
 }

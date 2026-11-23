@@ -40,13 +40,54 @@ pub struct ResolvedInvite {
     pub is_stream: bool,
     /// Module 897288 (`InviteRoles`): roles granted by the invite (`body["roles"]`).
     pub(super) roles: Vec<super::invite_embed::InviteRole>,
+    /// Module 999527 (`InviteExpiringSoon`): ISO-8601 `expires_at` from `GET /invites/{code}?with_expiration=true`.
+    pub expires_at: Option<String>,
+}
+
+/// Student Hubs guild ID excluded by module 999527 (`330936.TA`).
+pub(crate) const STUDENT_HUBS_GUILD_ID: &str = "884924873015689226";
+
+/// Module 999527 (`InviteExpiringSoon`): formats `"Invite expires in {n} day(s)/hour(s)/minute(s)"`
+/// (`l7PkYW`, `Ifgxdy`, `5fXjSj`) when a guild invite expires within 7 days.
+pub(crate) fn format_invite_expiring_soon(
+    expires_at: Option<&str>,
+    has_guild: bool,
+    has_target_app: bool,
+    guild_id: Option<&str>,
+    now_ms: i64,
+) -> Option<String> {
+    if !has_guild || has_target_app || guild_id == Some(STUDENT_HUBS_GUILD_ID) {
+        return None;
+    }
+    let iso = expires_at.filter(|s| !s.trim().is_empty())?;
+    let end_ms = chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()?
+        .timestamp_millis();
+    let diff_ms = end_ms - now_ms;
+    if diff_ms <= 0 || diff_ms > 604_800_000 {
+        return None;
+    }
+    let total_min = diff_ms / 60_000;
+    if total_min >= 1440 {
+        let days = (total_min / 1440) as f64;
+        Some(dc_intl::format("l7PkYW", &[("numDays", Arg::Num(days))]))
+    } else if total_min >= 60 {
+        let hours = (total_min / 60) as f64;
+        Some(dc_intl::format("Ifgxdy", &[("numHours", Arg::Num(hours))]))
+    } else {
+        let minutes = total_min.max(1) as f64;
+        Some(dc_intl::format(
+            "5fXjSj",
+            &[("numMinutes", Arg::Num(minutes))],
+        ))
+    }
 }
 
 #[derive(Clone, Debug)]
 pub(super) enum AcceptInvitePhase {
     Loading,
     Invalid { header: String, body: String },
-    Ready(ResolvedInvite),
+    Ready(Box<ResolvedInvite>),
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +162,7 @@ pub fn parse_resolved_invite(code: &str, body: &Value) -> Option<ResolvedInvite>
             .map(str::to_owned),
         is_stream: body["target_type"].as_u64() == Some(1),
         roles: super::invite_embed::invite_roles(body),
+        expires_at: body["expires_at"].as_str().map(str::to_owned),
     })
 }
 
@@ -200,7 +242,7 @@ impl Root {
             }
             if let Some(modal) = self.accept_invite_modal.as_mut() {
                 modal.phase = match parsed {
-                    Some(inv) => AcceptInvitePhase::Ready(inv),
+                    Some(inv) => AcceptInvitePhase::Ready(Box::new(inv)),
                     None => AcceptInvitePhase::Invalid {
                         header: dc_intl::t("u9zxnX").to_owned(),
                         body: dc_intl::t("FWkU6P").to_owned(),
@@ -679,6 +721,27 @@ impl Root {
                                 .child(SharedString::from(err)),
                         )
                     })
+                    // Module 999527 (`InviteExpiringSoon`): live expiration countdown above action buttons
+                    .when_some(
+                        format_invite_expiring_soon(
+                            inv.expires_at.as_deref(),
+                            inv.guild_name.is_some(),
+                            inv.target_application_name.is_some(),
+                            inv.guild_id.as_deref(),
+                            chrono::Utc::now().timestamp_millis(),
+                        ),
+                        |col, exp| {
+                            col.child(
+                                div()
+                                    .w_full()
+                                    .text_center()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-muted"))
+                                    .child(SharedString::from(exp)),
+                            )
+                        },
+                    )
                     // Action buttons
                     .child(
                         div()
@@ -890,6 +953,7 @@ impl Root {
                     unicode_emoji: None,
                 },
             ],
+            expires_at: Some((chrono::Utc::now() + chrono::Duration::hours(5)).to_rfc3339()),
         };
         match mode.trim() {
             "loading" => {
@@ -926,7 +990,7 @@ impl Root {
             "limit" => {
                 self.accept_invite_modal = Some(AcceptInviteModal {
                     code: "gravecord".into(),
-                    phase: AcceptInvitePhase::Ready(base_inv),
+                    phase: AcceptInvitePhase::Ready(Box::new(base_inv)),
                     settings_open: false,
                     allow_dms: true,
                     show_activity: true,
@@ -942,7 +1006,7 @@ impl Root {
                 inv.target_application_name = Some("Watch Together".into());
                 self.accept_invite_modal = Some(AcceptInviteModal {
                     code: "gravecord".into(),
-                    phase: AcceptInvitePhase::Ready(inv),
+                    phase: AcceptInvitePhase::Ready(Box::new(inv)),
                     settings_open: false,
                     allow_dms: true,
                     show_activity: true,
@@ -961,7 +1025,7 @@ impl Root {
             _ => {
                 self.accept_invite_modal = Some(AcceptInviteModal {
                     code: "gravecord".into(),
-                    phase: AcceptInvitePhase::Ready(base_inv),
+                    phase: AcceptInvitePhase::Ready(Box::new(base_inv)),
                     settings_open: true,
                     allow_dms: true,
                     show_activity: true,
@@ -1004,5 +1068,50 @@ mod tests {
         .expect("invite");
         assert!(invite_eyebrow(&inv).contains("alice"));
         assert_eq!(inv.member_count, Some(50));
+    }
+
+    #[test]
+    fn invite_expiring_soon_999527_buckets_and_guards() {
+        for key in ["l7PkYW", "Ifgxdy", "5fXjSj"] {
+            assert!(dc_intl::has_key(key), "missing 999527 key {key}");
+        }
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-23T00:00:00Z")
+            .unwrap()
+            .timestamp_millis();
+        // 3 days -> l7PkYW
+        let d3 =
+            format_invite_expiring_soon(Some("2026-11-26T00:00:00Z"), true, false, Some("10"), now)
+                .unwrap();
+        assert!(d3.contains('3'), "got {d3}");
+        // 5 hours -> Ifgxdy
+        let h5 =
+            format_invite_expiring_soon(Some("2026-11-23T05:00:00Z"), true, false, Some("10"), now)
+                .unwrap();
+        assert!(h5.contains('5'), "got {h5}");
+        // 12 minutes -> 5fXjSj
+        let m12 =
+            format_invite_expiring_soon(Some("2026-11-23T00:12:00Z"), true, false, Some("10"), now)
+                .unwrap();
+        assert!(m12.contains("12"), "got {m12}");
+        // Student Hubs excluded
+        assert!(
+            format_invite_expiring_soon(
+                Some("2026-11-23T05:00:00Z"),
+                true,
+                false,
+                Some(STUDENT_HUBS_GUILD_ID),
+                now,
+            )
+            .is_none()
+        );
+        // > 7 days excluded
+        assert!(format_invite_expiring_soon(
+            Some("2026-12-05T00:00:00Z"),
+            true,
+            false,
+            Some("10"),
+            now,
+        )
+        .is_none());
     }
 }

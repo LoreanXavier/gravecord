@@ -3234,6 +3234,25 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_rail_scroll_bottom(cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["community-updates-popout", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| {
+                    root.script_community_updates_popout(&arg, cx)
+                });
+                let _ = writeln!(output, "{msg}");
+            }
+            ["family-request", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| {
+                    root.script_family_request_connection(&arg, cx)
+                });
+                let _ = writeln!(output, "{msg}");
+            }
+            ["family-accept", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_family_accept_link(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));
