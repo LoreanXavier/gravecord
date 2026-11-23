@@ -297,7 +297,9 @@ impl Root {
         };
         let input = cx.new(|cx| {
             let mut style = editor_style();
-            style.line_height = 20.;
+            // The reason `<textarea>` keeps `line-height: normal`: gg sans at 16px rounds its ascent (1018/1000) and
+            // descent (316/1000) to 16 + 5 = 21px, the line pitch of frame member-menu/dialog-timeout.
+            style.line_height = if kind == Kind::Nickname { 20. } else { 21. };
             let mut input = Editor::new(style, cx);
             input.set_keeps_text(true);
             input.set_reports_all_edits(true);
@@ -672,9 +674,10 @@ impl Root {
                     .flex()
                     .items_center()
             })
+            // `.textArea_uI0xjn`: `padding: var(--space-12) 10px` inside the 1px wrapper border (2px when focused).
             .when(!line, |d| {
-                d.pt(px(if focused { 10. } else { 11. }))
-                    .px(px(if focused { 8. } else { 9. }))
+                d.pt(px(if focused { 11. } else { 12. }))
+                    .px(px(if focused { 9. } else { 10. }))
             })
             .on_click(cx.listener(move |_, _, window, cx| {
                 window.focus(&input.read(cx).focus_handle(cx), cx);
