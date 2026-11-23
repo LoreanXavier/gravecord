@@ -278,6 +278,34 @@ pub(in crate::ui) enum NitroMgmtOverlay {
         step: u8,
         removing: bool,
     },
+    /// `115225` PremiumGroupCancelInviteModal (`U439m2`, `Sv6+Ox`, `2blqtw`, `grjTat`, `VgTgGu`,
+    /// `+YO9kw`, `rTU7/z`, `DELETE /users/@me/billing/subscriptions/{sub}/members/{user}/invite`,
+    /// error `100125` = invite already accepted).
+    CancelSquadInvite {
+        subscription_id: String,
+        invited_user_id: String,
+        invited_user_name: String,
+        already_accepted: bool,
+        has_error: bool,
+        submitting: bool,
+    },
+}
+
+/// Official error code `88001.Hy.BILLING_SUBSCRIPTION_GROUP_INVITE_ALREADY_ACCEPTED` (module 115225).
+pub(in crate::ui) const SQUAD_INVITE_ALREADY_ACCEPTED_CODE: u64 = 100_125;
+
+/// Builds `DELETE /users/@me/billing/subscriptions/{sub_id}/members/{invited_user_id}/invite` (`470147.kE`, module 115225).
+pub(in crate::ui) fn cancel_squad_invite_request(sub_id: &str, invited_user_id: &str) -> Request {
+    Request::Rest {
+        key: Some(format!(
+            "billing:squad-cancel-invite:{sub_id}:{invited_user_id}"
+        )),
+        method: reqwest::Method::DELETE,
+        route: format!(
+            "/users/@me/billing/subscriptions/{sub_id}/members/{invited_user_id}/invite"
+        ),
+        body: None,
+    }
 }
 
 /// Builds `DELETE /users/@me/billing/subscriptions/{sub_id}/members/{user_id}` (`470147.oO`, module 205463).
@@ -654,7 +682,12 @@ pub(super) fn render_squad_card(
                     }),
             )
             .children(action_label.map(|act| {
+                let invited_name = match seat {
+                    SquadSeat::Invited { name, .. } => Some(name.clone()),
+                    _ => None,
+                };
                 div()
+                    .id(("squad-seat-action", i))
                     .flex_none()
                     .px(px(8.))
                     .py(px(3.))
@@ -663,6 +696,33 @@ pub(super) fn render_squad_card(
                     .text_size(px(11.))
                     .font_weight(FontWeight(600.))
                     .text_color(color("--control-secondary-text-default"))
+                    .when(invited_name.is_some(), |btn| {
+                        let name = invited_name.unwrap_or_default();
+                        btn.cursor_pointer()
+                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                let sub_id = this
+                                    .nitro
+                                    .subscriptions
+                                    .as_ref()
+                                    .and_then(|v| v.as_array())
+                                    .and_then(|arr| arr.first())
+                                    .and_then(|s| s["id"].as_str())
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| "squad-sub".to_owned());
+                                this.nitro_mgmt_overlay =
+                                    Some(NitroMgmtOverlay::CancelSquadInvite {
+                                        subscription_id: sub_id,
+                                        invited_user_id: format!("invited-{i}"),
+                                        invited_user_name: name.clone(),
+                                        already_accepted: false,
+                                        has_error: false,
+                                        submitting: false,
+                                    });
+                                cx.notify();
+                            }))
+                    })
                     .child(act)
             }))
     });
@@ -2613,6 +2673,187 @@ impl Root {
                     )
                     .into_any_element()
             }
+            NitroMgmtOverlay::CancelSquadInvite {
+                subscription_id,
+                invited_user_id,
+                invited_user_name,
+                already_accepted,
+                has_error,
+                submitting,
+            } => {
+                let sub_id = subscription_id.clone();
+                let user_id = invited_user_id.clone();
+                let product = dc_intl::t("aFBQ3d");
+                let title = if *already_accepted {
+                    dc_intl::t("grjTat").to_owned()
+                } else {
+                    dc_intl::t("U439m2").to_owned()
+                };
+                let subtitle = if *already_accepted {
+                    dc_intl::t("VgTgGu").to_owned()
+                } else {
+                    format_plain(
+                        "Sv6+Ox",
+                        &[
+                            ("memberName", Arg::Str(Cow::Borrowed(invited_user_name))),
+                            ("premiumGroupProductName", Arg::Str(Cow::Borrowed(product))),
+                        ],
+                    )
+                };
+                let is_submitting = *submitting;
+                let is_already_accepted = *already_accepted;
+                let show_err = *has_error && !is_already_accepted;
+                div()
+                    .id("nitro-cancel-squad-invite-modal")
+                    .w(px(440.))
+                    .max_w(px(440.))
+                    .rounded(px(12.))
+                    .bg(color("--background-surface-high"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .pt(px(20.))
+                            .pb(px(12.))
+                            .flex()
+                            .items_start()
+                            .justify_between()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .text_size(px(18.))
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(title),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-muted"))
+                                            .child(subtitle),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("nitro-cancel-squad-invite-close")
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.nitro_mgmt_overlay = None;
+                                        cx.notify();
+                                    }))
+                                    .child(icon("close", 16., "--icon-subtle")),
+                            ),
+                    )
+                    .when(show_err, |col| {
+                        col.child(
+                            div()
+                                .mx(px(20.))
+                                .mb(px(12.))
+                                .p(px(10.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--status-danger"))
+                                .bg(rgba(0xda373c1a))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(icon("shop_circle_error", 18., "--status-danger"))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .text_size(px(13.))
+                                        .line_height(px(18.))
+                                        .text_color(color("--text-default"))
+                                        .child(dc_intl::t("rTU7/z")),
+                                ),
+                        )
+                    })
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .py(px(16.))
+                            .bg(color("--background-base-lower"))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .child(if is_already_accepted {
+                                div()
+                                    .id("nitro-cancel-squad-invite-manage")
+                                    .px(px(16.))
+                                    .py(px(8.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                    .cursor_pointer()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--control-secondary-text-default"))
+                                    .child(dc_intl::t("+YO9kw"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.nitro_mgmt_overlay = None;
+                                        this.open_settings_section("Subscriptions", cx);
+                                        cx.notify();
+                                    }))
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .id("nitro-cancel-squad-invite-submit")
+                                    .px(px(16.))
+                                    .py(px(8.))
+                                    .rounded(px(8.))
+                                    .bg(color("--status-danger"))
+                                    .when(is_submitting, |d| d.opacity(0.6))
+                                    .when(!is_submitting, |d| d.cursor_pointer())
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(dc_intl::t("2blqtw"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(NitroMgmtOverlay::CancelSquadInvite {
+                                            submitting,
+                                            has_error,
+                                            ..
+                                        }) = this.nitro_mgmt_overlay.as_mut()
+                                        {
+                                            if *submitting {
+                                                return;
+                                            }
+                                            *submitting = true;
+                                            *has_error = false;
+                                        }
+                                        let _ = this
+                                            .requests
+                                            .send(cancel_squad_invite_request(&sub_id, &user_id));
+                                        cx.notify();
+                                    }))
+                                    .into_any_element()
+                            }),
+                    )
+                    .into_any_element()
+            }
         };
 
         Some(
@@ -2637,6 +2878,42 @@ impl Root {
             .with_priority(6)
             .into_any_element(),
         )
+    }
+
+    /// Handles `DELETE /users/@me/billing/subscriptions/{sub}/members/{user}/invite` (module 115225):
+    /// closes modal on success, transitions to "Invite already accepted" on error `100125`, else shows alert.
+    pub(in crate::ui) fn handle_squad_invite_cancel_fetched(
+        &mut self,
+        key: &str,
+        body: &Value,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !key.starts_with("billing:squad-cancel-invite:") {
+            return false;
+        }
+        if let Some(NitroMgmtOverlay::CancelSquadInvite {
+            already_accepted,
+            has_error,
+            submitting,
+            ..
+        }) = self.nitro_mgmt_overlay.as_mut()
+        {
+            *submitting = false;
+            match body["code"].as_u64() {
+                None => {
+                    self.nitro_mgmt_overlay = None;
+                }
+                Some(code) if code == SQUAD_INVITE_ALREADY_ACCEPTED_CODE => {
+                    *already_accepted = true;
+                    *has_error = false;
+                }
+                Some(_) => {
+                    *has_error = true;
+                }
+            }
+            cx.notify();
+        }
+        true
     }
 
     /// Capture-only helper: `nitro-mgmt <alerts|squad-primary|squad-member|discount|preview-cancel|plan-change|close>`.
@@ -2777,6 +3054,30 @@ impl Root {
                 cx.notify();
                 "nitro-mgmt: leave-squad-2".into()
             }
+            "cancel-invite" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::CancelSquadInvite {
+                    subscription_id: "sub_squad_1".into(),
+                    invited_user_id: "987654321".into(),
+                    invited_user_name: "Alex".into(),
+                    already_accepted: false,
+                    has_error: false,
+                    submitting: false,
+                });
+                cx.notify();
+                "nitro-mgmt: cancel-invite".into()
+            }
+            "cancel-invite-accepted" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::CancelSquadInvite {
+                    subscription_id: "sub_squad_1".into(),
+                    invited_user_id: "987654321".into(),
+                    invited_user_name: "Alex".into(),
+                    already_accepted: true,
+                    has_error: false,
+                    submitting: false,
+                });
+                cx.notify();
+                "nitro-mgmt: cancel-invite-accepted".into()
+            }
             "close" => {
                 self.nitro_mgmt_overlay = None;
                 cx.notify();
@@ -2860,6 +3161,25 @@ mod tests {
             "aFBQ3d", "4e7WtF", "3kVEg0", "UFHNtO", "IrvJHs", "cQDYKU", "3PatSz", "cY+Oob",
         ] {
             assert!(dc_intl::has_key(k), "missing 205463 key {k}");
+        }
+    }
+
+    #[test]
+    fn cancel_squad_invite_115225_route_and_keys() {
+        let Request::Rest { method, route, .. } = cancel_squad_invite_request("sub-99", "user-42")
+        else {
+            panic!("expected Rest");
+        };
+        assert_eq!(method, reqwest::Method::DELETE);
+        assert_eq!(
+            route,
+            "/users/@me/billing/subscriptions/sub-99/members/user-42/invite"
+        );
+        assert_eq!(SQUAD_INVITE_ALREADY_ACCEPTED_CODE, 100_125);
+        for k in [
+            "U439m2", "Sv6+Ox", "2blqtw", "grjTat", "VgTgGu", "+YO9kw", "rTU7/z", "aFBQ3d",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 115225 key {k}");
         }
     }
 }

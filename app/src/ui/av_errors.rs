@@ -238,6 +238,8 @@ pub(super) struct AvErrors {
     forced: HashMap<u64, AvError>,
     /// The icon whose popout is open, and when the pointer left it (the 250 ms close delay).
     hovered: Option<(String, Option<Instant>)>,
+    /// Module 93067 (`isFocused`): icon toggled/focused via keyboard or click.
+    focused: Option<String>,
 }
 
 fn push(history: &mut VecDeque<Sample>, sample: Sample) {
@@ -420,10 +422,14 @@ impl Root {
             self.av_errors.streams.get(&owner).copied()
         }?;
         let key = format!("av-warning-{place}-{owner}");
-        let open = self.av_errors.hovered.as_ref().is_some_and(|(open, left)| {
+        let hovered = self.av_errors.hovered.as_ref().is_some_and(|(open, left)| {
             *open == key && left.is_none_or(|left| left.elapsed() < Duration::from_millis(250))
         });
+        let focused = self.av_errors.focused.as_deref() == Some(key.as_str());
+        let open = hovered || focused;
         let hover_key = key.clone();
+        let popout_hover_key = key.clone();
+        let focus_key = key.clone();
         let code = error.code();
         let message = error.message();
         let dev_suffix = self
@@ -445,35 +451,61 @@ impl Root {
         if let Some(suffix) = &dev_suffix {
             aria_label.push_str(suffix);
         }
+        // Module 93067 (`popout_0_PsGx`): 200px popout 8px below icon with a transparent hover
+        // bridge (`top: 20px, pt: 8px`) so pointer transit never flickers, plus `--shadow-high`.
         let popout = open.then(|| {
             div()
+                .id(SharedString::from(format!("{key}-popout-bridge")))
                 .absolute()
-                .top(px(28.))
+                .top(px(20.))
                 .left(px(-90.))
-                .w(px(200.))
-                .py(px(8.))
-                .px(px(12.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(color("--border-subtle"))
-                .bg(color("--background-surface-high"))
-                .text_size(px(14.))
-                .line_height(px(18.))
-                .text_color(color("--text-default"))
-                .child(message)
+                .pt(px(8.))
+                .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                    if *inside {
+                        this.av_errors.hovered = Some((popout_hover_key.clone(), None));
+                    } else if let Some((open, left)) = this.av_errors.hovered.as_mut()
+                        && *open == popout_hover_key
+                    {
+                        *left = Some(Instant::now());
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(260))
+                                .await;
+                            let _ = this.update(cx, |_, cx| cx.notify());
+                        })
+                        .detach();
+                    }
+                    cx.notify();
+                }))
                 .child(
                     div()
-                        .id(SharedString::from(format!("{key}-code")))
-                        .mt(px(8.))
+                        .w(px(200.))
+                        .py(px(8.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-surface-high"))
+                        .shadow_lg()
                         .text_size(px(14.))
                         .line_height(px(18.))
-                        .font_weight(FontWeight(600.))
-                        .text_color(color("--text-muted"))
-                        .cursor_pointer()
-                        .child(line)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.follow_link(CODES_ARTICLE, "", cx);
-                        })),
+                        .text_color(color("--text-default"))
+                        .child(message)
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("{key}-code")))
+                                .mt(px(8.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-muted"))
+                                .cursor_pointer()
+                                .child(line)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.follow_link(CODES_ARTICLE, "", cx);
+                                })),
+                        ),
                 )
         });
         Some(
@@ -482,8 +514,18 @@ impl Root {
                 .relative()
                 .size(px(20.))
                 .flex_none()
+                .cursor_pointer()
                 .aria_label(aria_label)
                 .child(icon("shop_circle_error", 20., "--yellow-300"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if this.av_errors.focused.as_deref() == Some(focus_key.as_str()) {
+                        this.av_errors.focused = None;
+                    } else {
+                        this.av_errors.focused = Some(focus_key.clone());
+                    }
+                    cx.notify();
+                }))
                 .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
                     if *inside {
                         this.av_errors.hovered = Some((hover_key.clone(), None));
@@ -666,5 +708,9 @@ mod tests {
             AvError::StreamSoundshareFailed.av_name(),
             "stream-soundshare-failed"
         );
+        // Module 93067 intl keys (`ejOT95`, `If5Q0h`) + Help Center URL.
+        assert!(dc_intl::has_key("ejOT95"));
+        assert!(dc_intl::has_key("If5Q0h"));
+        assert!(CODES_ARTICLE.ends_with("30952914470807"));
     }
 }

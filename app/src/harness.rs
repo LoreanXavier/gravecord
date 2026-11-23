@@ -3253,6 +3253,26 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_family_accept_link(&arg, cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["guild-room-selector", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_guild_room_selector(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["gift-card-promo", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_gift_card_promo(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["game-org-error", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_game_org_error(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["app-channel", rest @ ..] => {
+                let arg = rest.join(" ");
+                let msg = root.update(cx, |root, cx| root.script_app_channel(&arg, cx));
+                let _ = writeln!(output, "{msg}");
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));

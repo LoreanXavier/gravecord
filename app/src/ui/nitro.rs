@@ -142,6 +142,8 @@ pub(crate) struct NitroState {
     pub(super) sources: Option<Value>,
     /// A capture step set `sources`: the account's own read must not replace it.
     pub(super) sources_injected: bool,
+    /// Module 106512 (`GiftCardPromotion`): active promotional Nitro gift card banner config.
+    pub(super) gift_card_promotion: Option<home::GiftCardPromotionConfig>,
     pub(super) subscriptions: Option<Value>,
     /// A capture step set `subscriptions`: the account's own read must not replace it.
     pub(super) subscriptions_injected: bool,
@@ -181,6 +183,7 @@ impl Default for NitroState {
             handoff: None,
             sources: None,
             sources_injected: false,
+            gift_card_promotion: None,
             subscriptions: None,
             subscriptions_injected: false,
             favorites_tab: 0,

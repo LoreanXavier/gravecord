@@ -351,6 +351,9 @@ pub enum ChannelKind {
     Other(u64),
 }
 
+/// `ChannelTypes.GUILD_APP` (module 478437 / 98492).
+pub const GUILD_APP_CHANNEL_TYPE: u64 = 21;
+
 impl ChannelKind {
     fn from_u64(value: u64) -> Self {
         match value {
@@ -359,6 +362,10 @@ impl ChannelKind {
             4 => Self::Category,
             other => Self::Other(other),
         }
+    }
+
+    pub fn is_guild_app(self) -> bool {
+        self == Self::Other(GUILD_APP_CHANNEL_TYPE)
     }
 }
 
@@ -393,6 +400,8 @@ pub struct Channel {
     pub default_reaction_emoji: Option<DefaultReactionEmoji>,
     /// `linked_lobby.application_id`: application linked to this channel (module 181094 `Ud5ryv`).
     pub linked_lobby_application_id: Option<Id>,
+    /// `application_id`: configured application on a `GUILD_APP` channel (type 21, module 98492).
+    pub application_id: Option<Id>,
 }
 
 /// `ChannelFlags.IS_MODERATOR_REPORT_CHANNEL` (module 746080 `lx`, `1 << 19`).
@@ -486,6 +495,7 @@ impl Channel {
                 &value["default_reaction_emoji"],
             ),
             linked_lobby_application_id: id(&value["linked_lobby"]["application_id"]),
+            application_id: id(&value["application_id"]),
         })
     }
 }

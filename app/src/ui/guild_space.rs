@@ -13,6 +13,66 @@ use gpui::{
 };
 use serde_json::json;
 
+/// Module 77580 (`GuildRoomSelectorModal`, CSS `692772` / `538517.iX`): selectable Guild Room background.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum GuildRoomBackground {
+    #[default]
+    Default = 0,
+    LivingRoom2 = 1,
+}
+
+impl GuildRoomBackground {
+    pub(crate) const ALL: [Self; 2] = [Self::Default, Self::LivingRoom2];
+
+    pub(crate) fn number(self) -> u32 {
+        match self {
+            Self::Default => 1,
+            Self::LivingRoom2 => 2,
+        }
+    }
+
+    pub(crate) fn display_name(self) -> String {
+        if dc_intl::has_key("3xb4VY") {
+            dc_intl::format(
+                "3xb4VY",
+                &[("number", dc_intl::Arg::Num(f64::from(self.number())))],
+            )
+        } else {
+            format!("Living Room {}", self.number())
+        }
+    }
+
+    pub(crate) fn aspect_ratio(self) -> f32 {
+        match self {
+            Self::Default => 4384. / 3208.,
+            Self::LivingRoom2 => 4384. / 3400.,
+        }
+    }
+}
+
+/// Module 77580 (`GuildRoomSelectorModal`) open modal state.
+#[derive(Clone, Debug)]
+pub(crate) struct GuildRoomSelectorModal {
+    pub guild_id: Id,
+    pub channel_id: Id,
+    pub current_bg: GuildRoomBackground,
+    pub selected_bg: GuildRoomBackground,
+}
+
+/// Module 77580 (`303227.AQ`): `POST /guilds/{guildId}/rooms/{channelId}/update` (`{ background }`).
+pub(crate) fn update_guild_room_request(
+    guild_id: Id,
+    channel_id: Id,
+    background: GuildRoomBackground,
+) -> Request {
+    Request::Rest {
+        key: Some(format!("guild-room:update:{guild_id}:{channel_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/guilds/{guild_id}/rooms/{channel_id}/update"),
+        body: Some(json!({ "background": background as u8 })),
+    }
+}
+
 /// Which column of the 2fr/1fr Server Hub grid a widget occupies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum GuildSpaceColumn {
@@ -1196,6 +1256,261 @@ fn default_catalog() -> Vec<GuildSpaceCatalogItem> {
     ]
 }
 
+impl Root {
+    /// Module 77580 (`GuildRoomSelectorModal`, CSS `692772`): modal choosing between Living Room 1
+    /// (`DEFAULT = 0`) and Living Room 2 (`LIVING_ROOM_2 = 1`) for a Guild Room voice space.
+    pub(super) fn guild_room_selector_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.guild_room_selector.as_ref()?;
+        let is_unchanged = modal.current_bg == modal.selected_bg;
+        let guild_id = modal.guild_id;
+        let channel_id = modal.channel_id;
+        let selected_bg = modal.selected_bg;
+        let title = hub_copy("kmzWUc", "Choose a Room");
+        let subtitle = hub_copy("Rqmi9/", "Select the room you'd like your space to use.");
+
+        let cards = GuildRoomBackground::ALL.into_iter().map(|bg| {
+            let is_selected = bg == selected_bg;
+            let (grad_start, grad_end) = match bg {
+                GuildRoomBackground::Default => (rgba(0x4b3f72ff), rgba(0x232036ff)),
+                GuildRoomBackground::LivingRoom2 => (rgba(0x2d5a6bff), rgba(0x1b2c38ff)),
+            };
+            let thumb_h = (200. / bg.aspect_ratio()).round();
+            div()
+                .id(SharedString::from(format!("guild-room-opt-{}", bg as u8)))
+                .flex_1()
+                .min_w(px(0.))
+                .p(px(8.))
+                .rounded(px(8.))
+                .bg(color("--background-mod-muted"))
+                .hover(|s| s.bg(color("--background-mod-normal")))
+                .when(is_selected, |d| {
+                    d.border_2().border_color(color("--background-brand"))
+                })
+                .when(!is_selected, |d| {
+                    d.border_1().border_color(color("--border-muted"))
+                })
+                .cursor_pointer()
+                .flex()
+                .flex_col()
+                .justify_between()
+                .gap(px(8.))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(m) = this.guild_room_selector.as_mut() {
+                        m.selected_bg = bg;
+                    }
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(thumb_h))
+                        .rounded(px(6.))
+                        .bg(linear_gradient(
+                            135.,
+                            linear_color_stop(grad_start, 0.),
+                            linear_color_stop(grad_end, 1.),
+                        ))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("home_shop", 28., "--white")),
+                )
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-default"))
+                        .child(bg.display_name()),
+                )
+        });
+
+        Some(
+            deferred(
+                div()
+                    .id("guild-room-selector-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.guild_room_selector = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("guild-room-selector-modal")
+                            .w(px(480.))
+                            .max_w(px(480.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .child(
+                                div()
+                                    .px(px(20.))
+                                    .pt(px(20.))
+                                    .pb(px(12.))
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(18.))
+                                                    .line_height(px(24.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(title),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .line_height(px(20.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(subtitle),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("guild-room-selector-close")
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.guild_room_selector = None;
+                                                cx.notify();
+                                            }))
+                                            .child(icon("close", 16., "--icon-subtle")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(20.))
+                                    .pb(px(20.))
+                                    .flex()
+                                    .items_stretch()
+                                    .gap(px(8.))
+                                    .children(cards),
+                            )
+                            .child(
+                                div()
+                                    .px(px(20.))
+                                    .py(px(14.))
+                                    .bg(color("--background-base-lower"))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .id("guild-room-selector-cancel")
+                                            .h(px(36.))
+                                            .px(px(14.))
+                                            .rounded(px(8.))
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-default"))
+                                            .child(dc_intl::t("ETE/oC"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.guild_room_selector = None;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("guild-room-selector-apply")
+                                            .h(px(36.))
+                                            .px(px(16.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .when(is_unchanged, |d| d.opacity(0.5))
+                                            .when(!is_unchanged, |d| d.cursor_pointer())
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(dc_intl::t("1Qm822"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if is_unchanged {
+                                                    return;
+                                                }
+                                                let _ =
+                                                    this.requests.send(update_guild_room_request(
+                                                        guild_id,
+                                                        channel_id,
+                                                        selected_bg,
+                                                    ));
+                                                this.guild_room_selector = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_guild_room_selector(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if arg.trim() == "close" {
+            self.guild_room_selector = None;
+            cx.notify();
+            return "guild-room-selector: closed".to_owned();
+        }
+        let selected_bg = if arg.trim() == "room2" {
+            GuildRoomBackground::LivingRoom2
+        } else {
+            GuildRoomBackground::Default
+        };
+        self.guild_room_selector = Some(GuildRoomSelectorModal {
+            guild_id: self.guild.unwrap_or(100),
+            channel_id: self.channel.unwrap_or(200),
+            current_bg: GuildRoomBackground::Default,
+            selected_bg,
+        });
+        cx.notify();
+        format!("guild-room-selector: opened ({selected_bg:?})")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1234,5 +1549,30 @@ mod tests {
             hydrate_guild_space_widgets_request(42, &["w1", "w2"]),
             Request::Rest { route, .. } if route == "/guilds/42/space/widgets/hydrate?widget_ids=w1,w2"
         ));
+    }
+
+    #[test]
+    fn guild_room_selector_77580_request_and_intl() {
+        for key in ["kmzWUc", "Rqmi9/", "3xb4VY", "ETE/oC", "1Qm822", "iufib1"] {
+            assert!(dc_intl::has_key(key), "missing 77580 key {key}");
+        }
+        assert!(GuildRoomBackground::Default.display_name().contains('1'));
+        assert!(
+            GuildRoomBackground::LivingRoom2
+                .display_name()
+                .contains('2')
+        );
+        let Request::Rest {
+            method,
+            route,
+            body,
+            ..
+        } = update_guild_room_request(11, 22, GuildRoomBackground::LivingRoom2)
+        else {
+            panic!("expected Rest");
+        };
+        assert_eq!(method, reqwest::Method::POST);
+        assert_eq!(route, "/guilds/11/rooms/22/update");
+        assert_eq!(body.unwrap()["background"], 1);
     }
 }

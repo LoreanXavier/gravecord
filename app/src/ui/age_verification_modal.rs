@@ -16,6 +16,93 @@ pub(crate) const AGE_VERIFY_LEARN_MORE_URL: &str =
     "https://support.discord.com/hc/articles/30326565624343";
 pub(crate) const SYSTEM_DMS_HELP_URL: &str = "https://support.discord.com/hc/articles/360036118732";
 
+/// Module 112954 (`IncodeAgeVerificationModal`): selectable verification method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IncodeMethod {
+    FacialAgeEstimation = 1,
+    IdVerification = 2,
+}
+
+/// Module 112954 capture reducer state machine (`"capturing"` | `"waiting_for_result"` |
+/// `"fallback_available"` | `"bootstrapping_fallback"` | `"error"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum IncodeCaptureState {
+    Capturing,
+    WaitingForResult,
+    FallbackAvailable,
+    BootstrappingFallback,
+    Error,
+}
+
+/// Module 112954: active Incode verification session state.
+#[derive(Clone, Debug)]
+pub(crate) struct IncodeAgeVerificationState {
+    pub selected_method: Option<IncodeMethod>,
+    pub capture_state: IncodeCaptureState,
+    pub interview_id: Option<String>,
+    pub hide_footer: bool,
+}
+
+/// Module 112954 (`295972.D0`): `POST /age-verification/verify` (`{ method, vendor: "INCODE" }`).
+pub(crate) fn incode_start_verification_request(method: IncodeMethod) -> Request {
+    Request::Rest {
+        key: Some(format!("incode:verify:{}", method as u8)),
+        method: reqwest::Method::POST,
+        route: "/age-verification/verify".to_owned(),
+        body: Some(json!({
+            "method": method as u8,
+            "vendor": "INCODE",
+        })),
+    }
+}
+
+/// Module 112954 (`295972.Zo`): `POST /age-verification/incode/interview` (`{ interview_id }`).
+pub(crate) fn incode_register_interview_request(interview_id: &str) -> Request {
+    Request::Rest {
+        key: Some(format!("incode:interview:{interview_id}")),
+        method: reqwest::Method::POST,
+        route: "/age-verification/incode/interview".to_owned(),
+        body: Some(json!({ "interview_id": interview_id })),
+    }
+}
+
+/// Module 112954 (`295972.eb`): `POST /age-verification/incode/session` (`{ previous_interview_id }`).
+pub(crate) fn incode_fallback_session_request(previous_interview_id: &str) -> Request {
+    Request::Rest {
+        key: Some(format!("incode:fallback:{previous_interview_id}")),
+        method: reqwest::Method::POST,
+        route: "/age-verification/incode/session".to_owned(),
+        body: Some(json!({ "previous_interview_id": previous_interview_id })),
+    }
+}
+
+/// Module 112954: true if a selfie attempt should trigger fallback to government ID scan.
+#[allow(dead_code)]
+pub(crate) fn incode_should_fallback_to_id(
+    method: IncodeMethod,
+    screen_event: Option<&str>,
+    finish_action: Option<&str>,
+    score_status: Option<&str>,
+) -> bool {
+    if method != IncodeMethod::FacialAgeEstimation {
+        return false;
+    }
+    screen_event.is_some_and(|e| e.ends_with("Exhausted"))
+        || finish_action == Some("rejected")
+        || matches!(score_status, Some("FAIL" | "MANUAL_FAIL"))
+}
+
+fn av_copy(key: &str, fallback: &str) -> String {
+    if dc_intl::has_key(key) {
+        let s = dc_intl::t(key);
+        if !s.trim().is_empty() {
+            return s.to_owned();
+        }
+    }
+    fallback.to_owned()
+}
+
 /// Official entry points from module `36149` (`ST` / `mK`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -401,17 +488,525 @@ impl Root {
         )
     }
 
+    /// Module 112954 (`IncodeAgeVerificationModal`, CSS `603494`): renders either the method picker
+    /// (`eZvwAe`/`5yWXmT`: "Take a selfie" `rgXXcW` vs "Scan your ID" `NeVlw/`) or the active
+    /// capture / fallback (`Ae/g7X` + `eVjNWp`) / waiting (`wJVyYR`) / error (`c6kn6F` + `/nicWo`) shell.
+    pub(super) fn incode_age_verification_modal(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let state = self.incode_age_verify.as_ref()?;
+        let body: AnyElement = match state.selected_method {
+            None => {
+                // Method picker (`ExpressiveModal` blue gradient header + 2 option cards)
+                div()
+                    .w(px(480.))
+                    .max_w(px(480.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .pt(px(24.))
+                            .pb(px(16.))
+                            .bg(gpui::linear_gradient(
+                                135.,
+                                gpui::linear_color_stop(rgba(0x5865f244), 0.),
+                                gpui::linear_color_stop(rgba(0x23242800), 1.),
+                            ))
+                            .flex()
+                            .items_start()
+                            .justify_between()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .line_height(px(26.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(av_copy(
+                                                "eZvwAe",
+                                                "How would you like to verify your age?",
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-muted"))
+                                            .child(av_copy(
+                                                "5yWXmT",
+                                                "Choose the option that works best for you.",
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("incode-picker-close")
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.incode_age_verify = None;
+                                        cx.notify();
+                                    }))
+                                    .child(icon("modal_close", 16., "--icon-subtle")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .pb(px(20.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .id("incode-pick-selfie")
+                                    .p(px(14.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-mod-subtle"))
+                                    .hover(|s| s.bg(color("--background-mod-normal")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(st) = this.incode_age_verify.as_mut() {
+                                            st.selected_method =
+                                                Some(IncodeMethod::FacialAgeEstimation);
+                                            st.capture_state = IncodeCaptureState::Capturing;
+                                        }
+                                        let _ = this.requests.send(
+                                            incode_start_verification_request(
+                                                IncodeMethod::FacialAgeEstimation,
+                                            ),
+                                        );
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        div()
+                                            .text_size(px(15.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(av_copy("rgXXcW", "Take a selfie")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .line_height(px(18.))
+                                            .text_color(color("--text-muted"))
+                                            .child(av_copy(
+                                                "fm7qBC",
+                                                "Fastest option. Your biometric data is processed locally and never leaves your device.",
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("incode-pick-id")
+                                    .p(px(14.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-mod-subtle"))
+                                    .hover(|s| s.bg(color("--background-mod-normal")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(st) = this.incode_age_verify.as_mut() {
+                                            st.selected_method = Some(IncodeMethod::IdVerification);
+                                            st.capture_state = IncodeCaptureState::Capturing;
+                                        }
+                                        let _ = this.requests.send(
+                                            incode_start_verification_request(
+                                                IncodeMethod::IdVerification,
+                                            ),
+                                        );
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        div()
+                                            .text_size(px(15.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(av_copy("NeVlw/", "Scan your ID")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .line_height(px(18.))
+                                            .text_color(color("--text-muted"))
+                                            .child(av_copy(
+                                                "ARmJ0M",
+                                                "Use a driver's license, passport, or other government ID.",
+                                            )),
+                                    ),
+                            ),
+                    )
+                    .when(!state.hide_footer, |card| {
+                        card.child(
+                            div()
+                                .px(px(24.))
+                                .py(px(14.))
+                                .bg(color("--background-base-lower"))
+                                .border_t_1()
+                                .border_color(color("--border-subtle"))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .id("incode-back-to-start")
+                                        .cursor_pointer()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-link"))
+                                        .hover(|s| s.underline())
+                                        .child(dc_intl::t("fjKFae"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.incode_age_verify = None;
+                                            this.open_age_verification_modal(
+                                                AgeVerificationEntryPoint::Default,
+                                                cx,
+                                            );
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("incode-picker-cancel")
+                                        .h(px(34.))
+                                        .px(px(14.))
+                                        .rounded(px(8.))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(14.))
+                                        .text_color(color("--text-default"))
+                                        .child(dc_intl::t("4gTnU0"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.incode_age_verify = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                    })
+                    .into_any_element()
+            }
+            Some(method) => {
+                let interview_id = state
+                    .interview_id
+                    .clone()
+                    .unwrap_or_else(|| "demo-interview".to_owned());
+                let prev_id = interview_id.clone();
+                let status_body: AnyElement = match state.capture_state {
+                    IncodeCaptureState::Error => div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(16.))
+                        .p(px(24.))
+                        .child(icon("shop_circle_error", 36., "--status-danger"))
+                        .child(
+                            div()
+                                .max_w(px(320.))
+                                .text_center()
+                                .text_size(px(16.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("c6kn6F")),
+                        )
+                        .child(
+                            div()
+                                .id("incode-retry")
+                                .h(px(38.))
+                                .px(px(18.))
+                                .rounded(px(8.))
+                                .bg(color("--control-primary-background-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("/nicWo"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(st) = this.incode_age_verify.as_mut() {
+                                        st.capture_state = IncodeCaptureState::Capturing;
+                                    }
+                                    let _ = this
+                                        .requests
+                                        .send(incode_start_verification_request(method));
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                    IncodeCaptureState::FallbackAvailable
+                    | IncodeCaptureState::BootstrappingFallback => {
+                        let loading =
+                            state.capture_state == IncodeCaptureState::BootstrappingFallback;
+                        let msg = if loading {
+                            av_copy("s+qGhK", "Preparing ID scan...")
+                        } else {
+                            av_copy("Ae/g7X", "We couldn't confirm your age with a selfie.")
+                        };
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(24.))
+                            .p(px(24.))
+                            .child(
+                                div()
+                                    .max_w(px(320.))
+                                    .text_center()
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(msg),
+                            )
+                            .child(
+                                div()
+                                    .id("incode-continue-id-scan")
+                                    .h(px(40.))
+                                    .px(px(18.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .when(loading, |d| d.opacity(0.6))
+                                    .when(!loading, |d| d.cursor_pointer())
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(av_copy("eVjNWp", "Continue with ID scan"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(st) = this.incode_age_verify.as_mut() {
+                                            st.capture_state =
+                                                IncodeCaptureState::BootstrappingFallback;
+                                            st.selected_method = Some(IncodeMethod::IdVerification);
+                                        }
+                                        let _ = this
+                                            .requests
+                                            .send(incode_fallback_session_request(&prev_id));
+                                        cx.notify();
+                                    })),
+                            )
+                            .into_any_element()
+                    }
+                    IncodeCaptureState::WaitingForResult => div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(16.))
+                        .p(px(24.))
+                        .child(super::voice_view::spinner())
+                        .child(
+                            div()
+                                .max_w(px(320.))
+                                .text_center()
+                                .text_size(px(16.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("wJVyYR")),
+                        )
+                        .into_any_element(),
+                    IncodeCaptureState::Capturing => div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(16.))
+                        .p(px(24.))
+                        .child(super::voice_view::spinner())
+                        .child(
+                            div()
+                                .max_w(px(320.))
+                                .text_center()
+                                .text_size(px(15.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(av_copy("S+mgl0", "Processing")),
+                        )
+                        .child(
+                            div()
+                                .id("incode-register-complete")
+                                .h(px(36.))
+                                .px(px(16.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--control-secondary-text-default"))
+                                .child(dc_intl::t("wJVyYR"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(st) = this.incode_age_verify.as_mut() {
+                                        st.capture_state = IncodeCaptureState::WaitingForResult;
+                                    }
+                                    let _ = this
+                                        .requests
+                                        .send(incode_register_interview_request(&interview_id));
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                };
+
+                div()
+                    .id("incode-capture-shell")
+                    .aria_label(av_copy("eKo6mw", "Age verification"))
+                    .w(px(520.))
+                    .max_w(px(700.))
+                    .min_h(px(380.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .py(px(16.))
+                            .border_b_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(av_copy("eKo6mw", "Age verification")),
+                            )
+                            .child(
+                                div()
+                                    .id("incode-shell-close")
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.incode_age_verify = None;
+                                        cx.notify();
+                                    }))
+                                    .child(icon("modal_close", 16., "--icon-subtle")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(status_body),
+                    )
+                    .into_any_element()
+            }
+        };
+
+        Some(
+            deferred(
+                div()
+                    .id("incode-age-verify-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.incode_age_verify = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(body),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_age_verify_modal(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         match arg.trim() {
             "close" => {
                 self.close_age_verification_modal();
+                self.incode_age_verify = None;
                 cx.notify();
                 "age verification modal closed".to_owned()
             }
             "stage" => {
                 self.open_age_verification_modal(AgeVerificationEntryPoint::StageChannelPrompt, cx);
                 "age verification modal opened (stage)".to_owned()
+            }
+            "incode-picker" => {
+                self.age_verification_modal = None;
+                self.incode_age_verify = Some(IncodeAgeVerificationState {
+                    selected_method: None,
+                    capture_state: IncodeCaptureState::Capturing,
+                    interview_id: None,
+                    hide_footer: false,
+                });
+                cx.notify();
+                "incode age verify opened (picker)".to_owned()
+            }
+            "incode-fallback" => {
+                self.age_verification_modal = None;
+                self.incode_age_verify = Some(IncodeAgeVerificationState {
+                    selected_method: Some(IncodeMethod::FacialAgeEstimation),
+                    capture_state: IncodeCaptureState::FallbackAvailable,
+                    interview_id: Some("int-42".to_owned()),
+                    hide_footer: false,
+                });
+                cx.notify();
+                "incode age verify opened (fallback)".to_owned()
+            }
+            "incode-error" => {
+                self.age_verification_modal = None;
+                self.incode_age_verify = Some(IncodeAgeVerificationState {
+                    selected_method: Some(IncodeMethod::FacialAgeEstimation),
+                    capture_state: IncodeCaptureState::Error,
+                    interview_id: None,
+                    hide_footer: false,
+                });
+                cx.notify();
+                "incode age verify opened (error)".to_owned()
             }
             _ => {
                 self.open_age_verification_modal(AgeVerificationEntryPoint::Default, cx);
@@ -448,6 +1043,55 @@ mod tests {
         assert!(matches!(
             req,
             Request::Rest { route, .. } if route == "/age-verification/verify"
+        ));
+    }
+
+    #[test]
+    fn incode_age_verification_112954_requests_fallback_and_intl() {
+        for key in [
+            "/nicWo", "4gTnU0", "fjKFae", "c6kn6F", "wJVyYR", "S+mgl0", "eZvwAe", "5yWXmT",
+            "rgXXcW", "fm7qBC", "NeVlw/", "ARmJ0M", "s+qGhK", "Ae/g7X", "eVjNWp", "eKo6mw",
+        ] {
+            assert!(dc_intl::has_key(key), "missing 112954 key {key}");
+        }
+        assert!(incode_should_fallback_to_id(
+            IncodeMethod::FacialAgeEstimation,
+            Some("selfieExhausted"),
+            None,
+            None,
+        ));
+        assert!(incode_should_fallback_to_id(
+            IncodeMethod::FacialAgeEstimation,
+            None,
+            Some("rejected"),
+            None,
+        ));
+        assert!(incode_should_fallback_to_id(
+            IncodeMethod::FacialAgeEstimation,
+            None,
+            None,
+            Some("MANUAL_FAIL"),
+        ));
+        assert!(!incode_should_fallback_to_id(
+            IncodeMethod::IdVerification,
+            Some("selfieExhausted"),
+            Some("rejected"),
+            Some("FAIL"),
+        ));
+        assert!(matches!(
+            incode_start_verification_request(IncodeMethod::FacialAgeEstimation),
+            Request::Rest { route, body: Some(ref b), .. }
+                if route == "/age-verification/verify" && b["vendor"] == "INCODE" && b["method"] == 1
+        ));
+        assert!(matches!(
+            incode_register_interview_request("int-1"),
+            Request::Rest { route, body: Some(ref b), .. }
+                if route == "/age-verification/incode/interview" && b["interview_id"] == "int-1"
+        ));
+        assert!(matches!(
+            incode_fallback_session_request("int-1"),
+            Request::Rest { route, body: Some(ref b), .. }
+                if route == "/age-verification/incode/session" && b["previous_interview_id"] == "int-1"
         ));
     }
 }

@@ -1207,7 +1207,181 @@ impl Root {
             .child(div().relative().mx(px(-8.)).child(row).children(actions))
             .into_any_element()
     }
+}
 
+/// Module 106512 (`GiftCardPromotion`, CSS `132344`): configurable promotional Nitro gifting card.
+#[derive(Clone, Debug, PartialEq)]
+pub(in crate::ui) struct GiftCardPromotionConfig {
+    pub header: String,
+    pub body: String,
+    pub additional_terms: Option<String>,
+    pub help_article_id: Option<String>,
+    pub gradient_colors: Option<(u32, u32)>,
+    pub gradient_angle: Option<f32>,
+    pub image_key: Option<String>,
+}
+
+/// Module 106512: Help Center article URL for `config.helpArticle.id` (`975571.A.getArticleURL`).
+pub(in crate::ui) fn gift_card_promotion_help_url(article_id: &str) -> String {
+    format!("https://support.discord.com/hc/en-us/articles/{article_id}")
+}
+
+impl Root {
+    /// Module 106512 (`GiftCardPromotion`, CSS `132344`): `.giftCardPromotion_YCu_-o` row card
+    /// (32px padding, 40px gap, 232x130 cover image, heading + body + optional italic terms,
+    /// Gift CTA + optional `"Learn More"` `hvVgAZ` button).
+    pub(in crate::ui) fn gift_card_promotion_banner(
+        &self,
+        cfg: &GiftCardPromotionConfig,
+        container: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut card = div()
+            .id("gift-card-promotion-banner")
+            .w_full()
+            .p(px(32.))
+            .rounded(px(16.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-mod-muted"))
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .gap(px(40.));
+        if let Some((start, end)) = cfg.gradient_colors {
+            card = card.bg(linear_gradient(
+                cfg.gradient_angle.unwrap_or(180.),
+                linear_color_stop(gpui::rgba(start), 0.),
+                linear_color_stop(gpui::rgba(end), 1.),
+            ));
+        }
+        let media = cfg
+            .image_key
+            .as_deref()
+            .and_then(|k| self.images.get(k).cloned())
+            .map(|pic| {
+                img(pic)
+                    .w(px(232.))
+                    .h(px(130.))
+                    .rounded(px(8.))
+                    .object_fit(ObjectFit::Cover)
+                    .into_any_element()
+            })
+            .unwrap_or_else(|| {
+                div()
+                    .flex_none()
+                    .w(px(232.))
+                    .h(px(130.))
+                    .rounded(px(8.))
+                    .bg(linear_gradient(
+                        135.,
+                        linear_color_stop(gpui::rgba(0x8c3297ff), 0.),
+                        linear_color_stop(gpui::rgba(0x5865f2ff), 1.),
+                    ))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("gift", 40., "--white"))
+                    .into_any_element()
+            });
+        let learn_more_url = cfg
+            .help_article_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .map(gift_card_promotion_help_url);
+
+        div()
+            .w(px(content_width(container)))
+            .child(
+                card.child(media).child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .child(
+                            div()
+                                .mb(px(8.))
+                                .text_size(px(20.))
+                                .line_height(px(26.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(cfg.header.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-muted"))
+                                .child(cfg.body.clone()),
+                        )
+                        .children(cfg.additional_terms.as_ref().map(|terms| {
+                            div()
+                                .mt(px(6.))
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .italic()
+                                .text_color(color("--text-muted"))
+                                .child(terms.clone())
+                        }))
+                        .child(
+                            div()
+                                .mt(px(16.))
+                                .flex()
+                                .items_center()
+                                .gap(px(16.))
+                                .child(self.gift_button("gift-card-promo-cta", cx))
+                                .children(learn_more_url.map(|url| {
+                                    div()
+                                        .id("gift-card-promo-learn-more")
+                                        .h(px(38.))
+                                        .px(px(16.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .child(dc_intl::t("hvVgAZ"))
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.open_url(&url);
+                                        }))
+                                })),
+                        ),
+                ),
+            )
+            .into_any_element()
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_gift_card_promo(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.nitro.gift_card_promotion = None;
+            cx.notify();
+            return "gift-card-promo: closed".to_owned();
+        }
+        self.nitro.gift_card_promotion = Some(GiftCardPromotionConfig {
+            header: "Gift Nitro, Get a Bonus Gift".to_owned(),
+            body: "Send a Nitro gift during this promotion to unlock exclusive seasonal perks for you and your friend.".to_owned(),
+            additional_terms: Some("Offer valid for a limited time. Terms apply.".to_owned()),
+            help_article_id: Some("115000435108".to_owned()),
+            gradient_colors: Some((0x3a2459ff, 0x1d2038ff)),
+            gradient_angle: Some(135.),
+            image_key: Some(GIFT_BANNER_KEY.to_owned()),
+        });
+        cx.notify();
+        "gift-card-promo: opened".to_owned()
+    }
+}
+
+impl Root {
     /// `Y.A` (module 175020), default variant: a bordered card with the banner picture, "Gift Nitro", a line of copy and
     /// the Gift Nitro button.
     fn nitro_gift_banner(&self, container: f32, cx: &mut Context<Self>) -> AnyElement {
@@ -1474,6 +1648,11 @@ impl Root {
                                     .child(self.nitro_greeting(container))
                                     .child(self.nitro_whats_new(&whats_new, container, window, cx))
                                     .child(self.nitro_favorites(&favorites, container, window, cx))
+                                    .children(self.nitro.gift_card_promotion.as_ref().map(|cfg| {
+                                        div().mb(px(24.)).child(
+                                            self.gift_card_promotion_banner(cfg, container, cx),
+                                        )
+                                    }))
                                     .child(self.nitro_gift_banner(container, cx))
                                     // `footerSpacing_IRnLy8`; the 112 x 85 `bottomIllustration` sits at the bottom
                                     // of the page, centred.
@@ -1693,5 +1872,14 @@ mod tests {
         assert_eq!(page_step(12, view, end, false), 2108. + 280. - view + 16.);
         assert_eq!(page_step(0, view, 0., true), 0.);
         assert_eq!(page_step(3, view, 0., true), 0.);
+    }
+
+    #[test]
+    fn gift_card_promotion_106512_intl_and_help_url() {
+        assert_eq!(dc_intl::t("hvVgAZ"), "Learn More");
+        assert_eq!(
+            gift_card_promotion_help_url("115000435108"),
+            "https://support.discord.com/hc/en-us/articles/115000435108"
+        );
     }
 }

@@ -703,6 +703,7 @@ impl Root {
                 default_forum_layout: 0,
                 default_reaction_emoji: None,
                 linked_lobby_application_id: None,
+                application_id: None,
             });
         }
         self.stores.stage_instances.dispatch(
@@ -1008,34 +1009,17 @@ impl Root {
                 cx,
             )
         });
-        let tile = |user: &dc_state::User, is_speaker: bool| {
+        let mut tile = |user: &dc_state::User, is_speaker: bool| {
             let picture = self.images.get(&super::avatar_source(user).0).cloned();
             let person = user.id;
             let raised = hands.contains(&person);
             let probe = format!("stage-audience-{person}");
             let click_probe = probe.clone();
-            let is_stage_mod = is_speaker
-                && self
-                    .stores
-                    .guild(guild)
-                    .is_some_and(|g| g.viewing_roles.is_none() && g.owner_id == Some(person));
-            let mod_badge = is_stage_mod.then(|| {
-                div()
-                    .id(gpui::SharedString::from(format!(
-                        "stage-mod-badge-{person}"
-                    )))
-                    .aria_label(dc_intl::t("GMZqSi"))
-                    .absolute()
-                    .top(px(6.))
-                    .right(px(6.))
-                    .size(px(20.))
-                    .rounded_full()
-                    .bg(color("--background-surface-high"))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon("mod_chip_shield", 12., "--status-positive"))
-            });
+            // Module 58303 (`StageModeratorTileBadge`): 24x24 white shield badge with `GMZqSi` tooltip
+            // for Stage moderators (MANAGE_CHANNELS | MUTE_MEMBERS | MOVE_MEMBERS via `is_stage_moderator`).
+            let mod_badge = is_speaker
+                .then(|| self.stage_moderator_tile_badge(guild, channel.id, person, false, cx))
+                .flatten();
             div()
                 .id(gpui::SharedString::from(if is_speaker {
                     format!("stage-speaker-{person}")
@@ -1134,10 +1118,10 @@ impl Root {
                 )
                 .into_any_element()
         };
-        let section = |title: String,
-                       people: &[dc_state::User],
-                       icon_name: &'static str,
-                       is_speaker: bool| {
+        let mut section = |title: String,
+                           people: &[dc_state::User],
+                           icon_name: &'static str,
+                           is_speaker: bool| {
             div()
                 .flex_none()
                 .child(
@@ -1180,6 +1164,22 @@ impl Root {
                 )
                 .into_any_element()
         };
+        let speakers_section = (!self.call_popped_out() && !speakers.is_empty()).then(|| {
+            section(
+                format!("{} \u{2013} {}", dc_intl::t("CduOkx"), speakers.len()),
+                &speakers,
+                "members",
+                true,
+            )
+        });
+        let audience_section = (!self.call_popped_out()).then(|| {
+            section(
+                format!("{} \u{2013} {}", dc_intl::t("3foUu5"), audience.len()),
+                &audience,
+                "members",
+                false,
+            )
+        });
         // stage-live and stage-live-hover: at rest the page shows neither the header nor the controls; the pointer over
         // the page brings both (`visible`).
         let header = stage_header(
@@ -1543,22 +1543,8 @@ impl Root {
                                 )
                         }),
                     )
-                    .children((!self.call_popped_out() && !speakers.is_empty()).then(|| {
-                        section(
-                            format!("{} \u{2013} {}", dc_intl::t("CduOkx"), speakers.len()),
-                            &speakers,
-                            "members",
-                            true,
-                        )
-                    }))
-                    .children((!self.call_popped_out()).then(|| {
-                        section(
-                            format!("{} \u{2013} {}", dc_intl::t("3foUu5"), audience.len()),
-                            &audience,
-                            "members",
-                            false,
-                        )
-                    })),
+                    .children(speakers_section)
+                    .children(audience_section),
             )
             .children(coach)
             // `caret_uDaE_S`: 22 by 14 under the box, centred on the hand button.
@@ -2777,6 +2763,65 @@ impl Root {
     }
 }
 
+/// Module 58303 (`StageModeratorTileBadge`): true when the participant is a non-stream Stage Moderator
+/// in a Guild Stage voice channel (`718734.e` + `312006.Ay.isModerator`).
+pub(crate) fn should_show_stage_moderator_badge(
+    is_guild_stage: bool,
+    is_stream: bool,
+    is_moderator: bool,
+) -> bool {
+    is_guild_stage && !is_stream && is_moderator
+}
+
+impl Root {
+    /// Module 58303 (`StageModeratorTileBadge`): 24x24 white Stage Moderator shield badge with
+    /// `GMZqSi` (`"Stage Moderator"`) tooltip and aria-label on Stage participant tiles.
+    pub(super) fn stage_moderator_tile_badge(
+        &self,
+        guild: Id,
+        channel: Id,
+        user_id: Id,
+        is_stream: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let is_stage = self
+            .stores
+            .guild(guild)
+            .and_then(|g| g.channels.iter().find(|c| c.id == channel))
+            .is_some_and(|c| c.kind == STAGE);
+        let is_mod = is_stage && self.is_stage_moderator(guild, channel, user_id);
+        if !should_show_stage_moderator_badge(is_stage, is_stream, is_mod) {
+            return None;
+        }
+        let label = dc_intl::t("GMZqSi");
+        let badge = div()
+            .id(gpui::SharedString::from(format!(
+                "stage-mod-badge-{channel}-{user_id}"
+            )))
+            .aria_label(label)
+            .size(px(24.))
+            .rounded_full()
+            .bg(color("--white"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon("mod_chip_shield", 14., "--background-base-lowest"));
+        Some(
+            div()
+                .absolute()
+                .top(px(8.))
+                .left(px(8.))
+                .child(self.with_tip(
+                    format!("stage-mod-tip-{channel}-{user_id}"),
+                    super::tooltip::Tip::text(label, super::tooltip::Side::Top),
+                    badge,
+                    cx,
+                ))
+                .into_any_element(),
+        )
+    }
+}
+
 /// Module 623413: grid width for up to 5 speaker tiles (`168px` per column, 2 columns when 4
 /// speakers else up to 3 columns).
 pub(super) fn stage_speaker_grid_width(count: usize) -> f32 {
@@ -2846,6 +2891,7 @@ mod tests {
             default_forum_layout: 0,
             default_reaction_emoji: None,
             linked_lobby_application_id: None,
+            application_id: None,
         }
     }
 
@@ -2918,5 +2964,18 @@ mod hand_tests {
         assert_eq!(dc_intl::t("6VQaqd"), "Invite to Stream");
         assert_eq!(dc_intl::t("OzOM/q"), "Invite To Activity");
         assert_eq!(dc_intl::t("VINpSK"), "Invite");
+    }
+
+    #[test]
+    fn stage_moderator_tile_badge_58303_guards_and_intl() {
+        assert!(super::should_show_stage_moderator_badge(true, false, true));
+        assert!(!super::should_show_stage_moderator_badge(
+            false, false, true
+        ));
+        assert!(!super::should_show_stage_moderator_badge(true, true, true));
+        assert!(!super::should_show_stage_moderator_badge(
+            true, false, false
+        ));
+        assert_eq!(dc_intl::t("GMZqSi"), "Stage Moderator");
     }
 }

@@ -38,6 +38,7 @@ mod add_server;
 mod age_verification_modal;
 mod alt_text;
 mod announcements;
+mod app_channel;
 mod app_dm;
 mod app_storefront;
 mod app_sub_cancel;
@@ -114,6 +115,7 @@ mod game_add_to_profile;
 mod game_announcements;
 mod game_communities;
 mod game_gift_redeem;
+mod game_org_invite;
 mod game_similar;
 mod games_spec;
 mod gateway_screens;
@@ -948,6 +950,10 @@ pub struct Root {
     guild_space: Option<guild_space::GuildSpaceState>,
     /// Primary Age Verification Get Started modal (module 929180).
     age_verification_modal: Option<age_verification_modal::AgeVerificationModalState>,
+    incode_age_verify: Option<age_verification_modal::IncodeAgeVerificationState>,
+    guild_room_selector: Option<guild_space::GuildRoomSelectorModal>,
+    game_org_error_modal: Option<game_org_invite::GameOrgErrorModalState>,
+    app_channels: app_channel::AppChannelState,
     /// Server-driven Nitro Announcement Modal Variant 1 (module 962263).
     premium_announcement_modal: Option<premium_announcement_modal::PremiumAnnouncementModalState>,
     /// Checkpoint 2026 full-screen interactive overlay (module 925433).
@@ -1620,6 +1626,10 @@ impl Root {
             guild_space_nux: None,
             guild_space: None,
             age_verification_modal: None,
+            incode_age_verify: None,
+            guild_room_selector: None,
+            game_org_error_modal: None,
+            app_channels: app_channel::AppChannelState::default(),
             premium_announcement_modal: None,
             checkpoint_2026: None,
             game_server_success_modal: None,
@@ -2566,6 +2576,9 @@ impl Root {
                     return;
                 }
                 if self.handle_family_center_fetched(&key, &body, cx) {
+                    return;
+                }
+                if self.handle_squad_invite_cancel_fetched(&key, &body, cx) {
                     return;
                 }
                 if self.spotify_metadata_fetched(&key, &body, cx) {
@@ -12360,7 +12373,11 @@ impl Render for Root {
                         || this.library.hide_confirm.is_some()
                         || this.library.uninstall_confirm.is_some()
                         || this.family_center.request_connection.is_some()
-                        || this.family_center.accept_link.is_some())
+                        || this.family_center.accept_link.is_some()
+                        || this.incode_age_verify.is_some()
+                        || this.guild_room_selector.is_some()
+                        || this.game_org_error_modal.is_some()
+                        || this.app_channels.preview.is_some())
                 {
                     this.billing_address_modal = None;
                     this.clear_activity_history_modal = None;
@@ -12407,6 +12424,10 @@ impl Render for Root {
                     this.close_nitro_trials_picker();
                     this.close_user_activity_preview();
                     this.close_age_verification_modal();
+                    this.incode_age_verify = None;
+                    this.guild_room_selector = None;
+                    this.game_org_error_modal = None;
+                    this.app_channels.preview = None;
                     this.close_premium_announcement_modal();
                     this.close_guild_space();
                     this.close_checkpoint_2026();
@@ -13868,8 +13889,12 @@ impl Render for Root {
             .children(app_storefront)
             .children(self.frames_announcement_layer(cx))
             .children(self.age_verification_modal_layer(cx))
+            .children(self.incode_age_verification_modal(cx))
             .children(self.premium_announcement_modal_layer(cx))
             .children(self.guild_space_layer(cx))
+            .children(self.guild_room_selector_modal(cx))
+            .children(self.game_org_error_modal_layer(cx))
+            .children(self.app_channel_preview_layer(cx))
             .children(self.checkpoint_2026_layer(cx))
             .children(self.game_server_success_modal_layer(cx))
             .children(self.soundboard_nux_preview_layer(cx))

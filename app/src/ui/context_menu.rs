@@ -9688,6 +9688,7 @@ mod tests {
             default_forum_layout: 0,
             default_reaction_emoji: None,
             linked_lobby_application_id: None,
+            application_id: None,
         }
     }
 

@@ -85,6 +85,111 @@ impl StreamRequestDisabled {
     }
 }
 
+/// Module 116653 (`932157.U1` + `381438.Y.ADULT`): `discord_classifications` bits that mark an
+/// application/game as restricted to adults (bits 0, 3, 4).
+pub(crate) const RESTRICTED_TO_ADULT_MASK: u64 = (1 << 0) | (1 << 3) | (1 << 4);
+
+/// Module 116653 (`c` variant prop): whether the age-restricted embed is a game invite or app embed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum AgeRestrictedEmbedVariant {
+    GameInvite,
+    AppEmbed,
+}
+
+/// Module 116653 visibility decision (`"display"` | `"block_underage"` | `"block_channel_restriction"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgeRestrictedEmbedDecision {
+    Display,
+    BlockUnderage,
+    BlockChannelRestriction,
+}
+
+/// Module 116653 (`c`): evaluates whether an embed with optional `discord_classifications` bitfield
+/// may be displayed or must be replaced by a muted age-restriction notice.
+pub(crate) fn evaluate_age_restricted_embed_gate(
+    discord_classifications: Option<u64>,
+    nsfw_allowed: bool,
+    is_private_channel: bool,
+    channel_nsfw: bool,
+) -> AgeRestrictedEmbedDecision {
+    let is_adult =
+        discord_classifications.is_some_and(|bits| (bits & RESTRICTED_TO_ADULT_MASK) != 0);
+    if !is_adult {
+        return AgeRestrictedEmbedDecision::Display;
+    }
+    if !nsfw_allowed {
+        return AgeRestrictedEmbedDecision::BlockUnderage;
+    }
+    if is_private_channel || channel_nsfw {
+        AgeRestrictedEmbedDecision::Display
+    } else {
+        AgeRestrictedEmbedDecision::BlockChannelRestriction
+    }
+}
+
+/// Module 116653 (`pkq6Vq`/`bZBN64` + `GhU4yl`/`B99UMJ`/`LPOzxB`/`NIZyKq`): localized title & reason.
+pub(crate) fn age_restricted_embed_copy(
+    variant: AgeRestrictedEmbedVariant,
+    decision: AgeRestrictedEmbedDecision,
+) -> Option<(&'static str, &'static str)> {
+    match (variant, decision) {
+        (_, AgeRestrictedEmbedDecision::Display) => None,
+        (AgeRestrictedEmbedVariant::GameInvite, AgeRestrictedEmbedDecision::BlockUnderage) => {
+            Some((dc_intl::t("pkq6Vq"), dc_intl::t("GhU4yl")))
+        }
+        (
+            AgeRestrictedEmbedVariant::GameInvite,
+            AgeRestrictedEmbedDecision::BlockChannelRestriction,
+        ) => Some((dc_intl::t("pkq6Vq"), dc_intl::t("B99UMJ"))),
+        (AgeRestrictedEmbedVariant::AppEmbed, AgeRestrictedEmbedDecision::BlockUnderage) => {
+            Some((dc_intl::t("bZBN64"), dc_intl::t("LPOzxB")))
+        }
+        (
+            AgeRestrictedEmbedVariant::AppEmbed,
+            AgeRestrictedEmbedDecision::BlockChannelRestriction,
+        ) => Some((dc_intl::t("bZBN64"), dc_intl::t("NIZyKq"))),
+    }
+}
+
+/// Module 116653 (`.embed_BmHBi0`): 350px muted placeholder card replacing blocked adult embeds.
+pub(crate) fn render_age_restricted_embed_placeholder(
+    variant: AgeRestrictedEmbedVariant,
+    decision: AgeRestrictedEmbedDecision,
+) -> Option<AnyElement> {
+    let (title, reason) = age_restricted_embed_copy(variant, decision)?;
+    Some(
+        div()
+            .w_full()
+            .max_w(px(350.))
+            .p(px(12.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--border-normal"))
+            .bg(color("--background-surface-highest"))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-default"))
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-muted"))
+                    .child(reason),
+            )
+            .into_any_element(),
+    )
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum ActivityInviteVariant {
     Spotify {
@@ -110,6 +215,11 @@ pub(crate) enum ActivityInviteVariant {
         can_launch: bool,
         can_cloud_try: bool,
         spectate: bool,
+    },
+    /// Module 116653: age-restricted game invite or application embed placeholder (`.embed_BmHBi0`).
+    AgeRestricted {
+        variant: AgeRestrictedEmbedVariant,
+        decision: AgeRestrictedEmbedDecision,
     },
 }
 
@@ -195,26 +305,50 @@ impl Root {
                     disabled,
                 }
             }
-            ACTIVITY_SPECTATE => ActivityInviteVariant::GameInvite {
-                app_name,
-                details: String::new(),
-                party_size: 1,
-                max_party_size: Some(4),
-                expired: false,
-                can_launch: true,
-                can_cloud_try: false,
-                spectate: true,
-            },
-            ACTIVITY_JOIN => ActivityInviteVariant::GameInvite {
-                app_name,
-                details: String::new(),
-                party_size: 1,
-                max_party_size: Some(4),
-                expired: false,
-                can_launch: true,
-                can_cloud_try: false,
-                spectate: false,
-            },
+            ACTIVITY_SPECTATE | ACTIVITY_JOIN => {
+                let is_private = self.guild.is_none()
+                    || self
+                        .stores
+                        .private_channels
+                        .iter()
+                        .any(|c| c.id == message.channel_id);
+                let channel_nsfw = self
+                    .guild
+                    .and_then(|gid| self.stores.guild(gid))
+                    .and_then(|g| g.channels.iter().find(|c| c.id == message.channel_id))
+                    .is_some_and(|c| c.nsfw);
+                let classification_bits =
+                    message.extra.application.as_ref().and_then(|(app_id, _)| {
+                        self.fetched
+                            .get(&format!("game-profile:{app_id}"))
+                            .and_then(|v| {
+                                v["content_classification"]["discord_classifications"].as_u64()
+                            })
+                    });
+                let decision = evaluate_age_restricted_embed_gate(
+                    classification_bits,
+                    self.stores.account.nsfw_allowed,
+                    is_private,
+                    channel_nsfw,
+                );
+                if decision != AgeRestrictedEmbedDecision::Display {
+                    ActivityInviteVariant::AgeRestricted {
+                        variant: AgeRestrictedEmbedVariant::GameInvite,
+                        decision,
+                    }
+                } else {
+                    ActivityInviteVariant::GameInvite {
+                        app_name,
+                        details: String::new(),
+                        party_size: 1,
+                        max_party_size: Some(4),
+                        expired: false,
+                        can_launch: true,
+                        can_cloud_try: false,
+                        spectate: activity_kind == ACTIVITY_SPECTATE,
+                    }
+                }
+            }
             _ => return None,
         };
 
@@ -711,6 +845,10 @@ impl Root {
                     )
                     .into_any_element()
             }
+            ActivityInviteVariant::AgeRestricted { variant, decision } => {
+                render_age_restricted_embed_placeholder(*variant, *decision)
+                    .unwrap_or_else(|| div().into_any_element())
+            }
         }
     }
 
@@ -769,6 +907,38 @@ impl Root {
                 self.activity_invite_preview = None;
                 cx.notify();
                 "activity-invite: closed".to_owned()
+            }
+            "age-restricted" => {
+                let d1 = evaluate_age_restricted_embed_gate(
+                    Some(RESTRICTED_TO_ADULT_MASK),
+                    false,
+                    false,
+                    false,
+                );
+                let d2 = evaluate_age_restricted_embed_gate(
+                    Some(RESTRICTED_TO_ADULT_MASK),
+                    true,
+                    false,
+                    false,
+                );
+                self.activity_invite_preview = Some(vec![
+                    ActivityInviteCard {
+                        id: "age-game-underage".to_owned(),
+                        variant: ActivityInviteVariant::AgeRestricted {
+                            variant: AgeRestrictedEmbedVariant::GameInvite,
+                            decision: d1,
+                        },
+                    },
+                    ActivityInviteCard {
+                        id: "age-app-channel".to_owned(),
+                        variant: ActivityInviteVariant::AgeRestricted {
+                            variant: AgeRestrictedEmbedVariant::AppEmbed,
+                            decision: d2,
+                        },
+                    },
+                ]);
+                cx.notify();
+                "activity-invite: age-restricted".to_owned()
             }
             "spotify" => {
                 self.activity_invite_preview = Some(vec![
@@ -1410,5 +1580,50 @@ mod tests {
         ] {
             assert!(dc_intl::has_key(k), "missing 196492 key {k}");
         }
+    }
+
+    #[test]
+    fn age_restricted_embed_gate_116653_matrix_and_intl() {
+        assert_eq!(
+            evaluate_age_restricted_embed_gate(None, false, false, false),
+            AgeRestrictedEmbedDecision::Display
+        );
+        assert_eq!(
+            evaluate_age_restricted_embed_gate(Some(1 << 1), false, false, false),
+            AgeRestrictedEmbedDecision::Display
+        );
+        assert_eq!(
+            evaluate_age_restricted_embed_gate(Some(1 << 3), false, true, true),
+            AgeRestrictedEmbedDecision::BlockUnderage
+        );
+        assert_eq!(
+            evaluate_age_restricted_embed_gate(Some(1 << 4), true, false, false),
+            AgeRestrictedEmbedDecision::BlockChannelRestriction
+        );
+        assert_eq!(
+            evaluate_age_restricted_embed_gate(Some(1 << 0), true, true, false),
+            AgeRestrictedEmbedDecision::Display
+        );
+        assert_eq!(
+            evaluate_age_restricted_embed_gate(Some(1 << 0), true, false, true),
+            AgeRestrictedEmbedDecision::Display
+        );
+        for k in ["pkq6Vq", "bZBN64", "GhU4yl", "B99UMJ", "LPOzxB", "NIZyKq"] {
+            assert!(dc_intl::has_key(k), "missing 116653 key {k}");
+        }
+        assert!(
+            age_restricted_embed_copy(
+                AgeRestrictedEmbedVariant::GameInvite,
+                AgeRestrictedEmbedDecision::BlockUnderage
+            )
+            .is_some()
+        );
+        assert!(
+            age_restricted_embed_copy(
+                AgeRestrictedEmbedVariant::AppEmbed,
+                AgeRestrictedEmbedDecision::BlockChannelRestriction
+            )
+            .is_some()
+        );
     }
 }

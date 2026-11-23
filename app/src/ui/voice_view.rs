@@ -1995,6 +1995,10 @@ impl Root {
                     live
                 })
         });
+        let stage_mod_badge = {
+            let (guild, channel) = self.vv.shown_call;
+            self.stage_moderator_tile_badge(guild, channel, user_id, stream_tile, cx)
+        };
         div()
             .id(SharedString::from(format!("{tag}-{user_id}")))
             .group(group)
@@ -2164,6 +2168,7 @@ impl Root {
             )
             .children(indicators)
             .children(camera_warning)
+            .children(stage_mod_badge)
             .child(
                 div()
                     .absolute()
