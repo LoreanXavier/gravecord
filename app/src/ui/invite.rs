@@ -582,8 +582,11 @@ impl Root {
             .as_ref()
             .is_some_and(|invite| invite.sent.contains(&id));
         let avatar = self.images.get(&avatar_source(user).0).cloned();
+        // `.inviteRow_COIWNl`: `margin-inline: -8px`, 5px start and 8px end padding (frame modals/invite: 417 to 863).
+        // `.inviteRow_COIWNl`: `margin-inline: -8px`, 5px start and 8px end padding (frame modals/invite: 417 to 863).
         div()
             .ml(px(-8.))
+            .mr(px(-8.))
             .h(px(48.))
             .pl(px(5.))
             .pr(px(8.))
@@ -1487,7 +1490,9 @@ impl Root {
                         .h(px(325.))
                         .mx(px(-24.))
                         .pl(px(24.))
-                        .pr(px(8.))
+                        // `.bodyList_dvN-MP` pads 8px at the end and `scrollbarGutterStable` keeps a 16px gutter
+                        // (frame modals/invite: the 478px list's rows end at 855).
+                        .pr(px(24.))
                         .py(px(12.))
                         .overflow_y_scroll()
                         .children(rows),
