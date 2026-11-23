@@ -776,7 +776,8 @@ impl Root {
                 .text_color(color("--text-strong"))
                 .child(div().flex_1().child(DELETE_HISTORY[dialog.delete].1))
                 .child(
-                    div().w(px(36.)).flex().justify_center().child(
+                    // `.chevronButton_vWC4bk`: 36px wide with `padding-inline: 0 var(--space-4)`.
+                    div().w(px(36.)).pr(px(4.)).flex().justify_center().child(
                         gpui::svg()
                             .path("icons/combo_chevron.svg")
                             .size(px(20.))
