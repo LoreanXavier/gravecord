@@ -1213,6 +1213,15 @@ impl Root {
             }
         };
         let height = (rows.len().min(5) as f32) * 40. + 8.;
+        let menu_h = height + 2.;
+        let space_below = (self.viewport.1 - f32::from(field.bottom()) - 12.).max(0.);
+        let space_above = (f32::from(field.top()) - 12.).max(0.);
+        let open_up = space_below < menu_h && space_above > space_below;
+        let top = if open_up {
+            (field.top() - px(4.) - px(menu_h)).max(px(8.))
+        } else {
+            field.bottom() + px(4.)
+        };
         Some(
             gpui::deferred(
                 div()
@@ -1220,15 +1229,17 @@ impl Root {
                     .occlude()
                     .absolute()
                     .left(field.left())
-                    .top(field.bottom() + px(4.))
+                    .top(top)
                     .w(field.size.width)
-                    .h(px(height + 2.))
+                    .h(px(menu_h))
                     .p(px(4.))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(color("--border-subtle"))
                     .bg(color("--background-surface-higher"))
+                    .shadow(vec![super::shadow_high()])
                     .overflow_y_scroll()
+                    .on_click(|_, _, cx| cx.stop_propagation())
                     .on_mouse_down_out(cx.listener(
                         move |this, event: &gpui::MouseDownEvent, _, cx| {
                             if !field.contains(&event.position)

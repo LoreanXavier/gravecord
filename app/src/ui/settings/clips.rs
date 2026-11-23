@@ -540,7 +540,7 @@ fn resolve_default_location(videos: Option<PathBuf>, documents: Option<PathBuf>)
 
 /// Which select's list is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ClipSelect {
+pub(in crate::ui) enum ClipSelect {
     Length,
     FrameRate,
     Resolution,
@@ -606,7 +606,7 @@ pub(in crate::ui) struct ClipsState {
     recording: bool,
     recording_held: Vec<[u32; 2]>,
     modifiers: Modifiers,
-    open: Option<ClipSelect>,
+    pub(in crate::ui) open: Option<ClipSelect>,
     drag: Option<Drag>,
     hovered: bool,
     focus: RefCell<Option<FocusHandle>>,

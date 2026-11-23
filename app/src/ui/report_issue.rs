@@ -45,7 +45,7 @@ pub(super) struct ReportIssue {
     query: Entity<Editor>,
     feedback: Entity<Editor>,
     picked: Option<Found>,
-    list_open: bool,
+    pub(super) list_open: bool,
     _events: [Subscription; 2],
 }
 
@@ -481,30 +481,40 @@ impl Root {
                                 cx.notify();
                             }))
                     });
-                    div()
-                        .id("report-issue-list")
-                        .occlude()
-                        .absolute()
-                        .top(px(44.))
-                        .left_0()
-                        .right_0()
-                        .max_h(px(210.))
-                        .p(px(4.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(color("--border-subtle"))
-                        .bg(color("--background-surface-higher"))
-                        .shadow(vec![gpui::BoxShadow {
-                            color: gpui::hsla(0., 0., 0., 0.16),
-                            offset: gpui::point(px(0.), px(2.)),
-                            blur_radius: px(8.),
-                            spread_radius: px(0.),
-                            inset: false,
-                        }])
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_col()
-                        .children(rows)
+                    gpui::deferred(
+                        div()
+                            .id("report-issue-list")
+                            .occlude()
+                            .absolute()
+                            .top(px(44.))
+                            .left_0()
+                            .right_0()
+                            .max_h(px(210.))
+                            .p(px(4.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-higher"))
+                            .shadow(vec![gpui::BoxShadow {
+                                color: gpui::hsla(0., 0., 0., 0.16),
+                                offset: gpui::point(px(0.), px(2.)),
+                                blur_radius: px(8.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            }])
+                            .overflow_y_scroll()
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                if let Some(open) = this.report_issue.as_mut() {
+                                    open.list_open = false;
+                                    cx.notify();
+                                }
+                            }))
+                            .flex()
+                            .flex_col()
+                            .children(rows),
+                    )
+                    .with_priority(3)
                 });
                 let submit_ready = !query_text.trim().is_empty();
                 (

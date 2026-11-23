@@ -41,7 +41,7 @@ pub(super) enum Section {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Select {
+pub(super) enum Select {
     Slowmode,
     Archive,
 }
@@ -64,7 +64,7 @@ pub(crate) struct ChannelSettings {
     spoiler: bool,
     archive: u64,
     saved: Values,
-    open_select: Option<Select>,
+    pub(super) open_select: Option<Select>,
     pub(super) confirm_delete: bool,
     /// Advanced permissions: the role or member shown, and overwrites changed but not saved (allow, deny, type).
     pub(super) perm_target: Option<Id>,
@@ -765,12 +765,16 @@ impl Root {
                         spread_radius: px(0.),
                         inset: false,
                     }])
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        if let Some(settings) = this.channel_settings.as_mut() {
-                            settings.open_select = None;
-                        }
-                        cx.notify();
-                    }))
+                    .on_mouse_down_out(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            if !field.contains(&event.position)
+                                && let Some(settings) = this.channel_settings.as_mut()
+                            {
+                                settings.open_select = None;
+                                cx.notify();
+                            }
+                        },
+                    ))
                     .child(
                         // `auto_tqapBM`: a 16px gutter beside the rows for the scrollbar.
                         div()

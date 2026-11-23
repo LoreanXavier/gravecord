@@ -12862,6 +12862,14 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape"
+                    && let Some(follow) = this.follow.as_mut()
+                    && follow.open.take().is_some()
+                {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape"
                     && (this.guild_notifications.is_some()
                         || this.channel_status.is_some()
                         || this.follow.is_some()
@@ -12917,7 +12925,13 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape" && this.report_issue.is_some() {
-                    this.report_issue = None;
+                    if let Some(open) = this.report_issue.as_mut()
+                        && open.list_open
+                    {
+                        open.list_open = false;
+                    } else {
+                        this.report_issue = None;
+                    }
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -13035,6 +13049,15 @@ impl Render for Root {
                 }
                 // "Upload a Sound" / "Edit Sound" and a stream's "Report a problem", over Server Settings or the app.
                 if keys.key == "escape"
+                    && let Some(form) = this.stream_report.as_mut()
+                    && form.open
+                {
+                    form.open = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape"
                     && (this.sound_dialog.take().is_some() || this.stream_report.take().is_some())
                 {
                     cx.notify();
@@ -13080,6 +13103,9 @@ impl Render for Root {
                 }
                 if this.channel_settings.is_some() && keys.key == "escape" {
                     if let Some(settings) = this.channel_settings.as_mut()
+                        && settings.open_select.take().is_some()
+                    {
+                    } else if let Some(settings) = this.channel_settings.as_mut()
                         && settings.confirm_delete_open()
                     {
                         settings.close_delete();
@@ -13171,6 +13197,13 @@ impl Render for Root {
                     return;
                 }
                 if event.keystroke.key == "escape"
+                    && this.close_member_action_delete_select()
+                {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "escape"
                     && (this.friend_menu.is_some()
                         || this.confirm_remove_friend.is_some()
                         || this.friend_nickname.is_some()
@@ -13223,7 +13256,14 @@ impl Render for Root {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.custom_reminder.is_some() {
-                    this.custom_reminder = None;
+                    if let Some(rem) = this.custom_reminder.as_mut()
+                        && (rem.calendar_open || rem.times_open)
+                    {
+                        rem.calendar_open = false;
+                        rem.times_open = false;
+                    } else {
+                        this.custom_reminder = None;
+                    }
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.submenu.is_some() {
@@ -13932,6 +13972,7 @@ impl Render for Root {
             .children(self.chat_alert_modal_at(true, cx))
             .children(self.group_leave_layer(cx))
             .children(self.member_action_layer(window, cx))
+            .children(self.member_action_delete_select_layer(cx))
             .children(self.inventory_about_layer(cx))
             .children(self.group_dm_modal(window, cx))
             .children(self.quick_switcher_modal(window, cx))

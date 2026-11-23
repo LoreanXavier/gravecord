@@ -522,9 +522,15 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(8.))
+                    .relative()
+                    .child(self.anchor_probe("discover-show-trigger"))
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.discover.servers.menu = Menu::Show;
+                        this.discover.servers.menu = if this.discover.servers.menu == Menu::Show {
+                            Menu::None
+                        } else {
+                            Menu::Show
+                        };
                         cx.notify();
                     }))
                     .child(text(14., 18., 500., "--text-muted").child(selected_name))
@@ -544,70 +550,84 @@ impl Root {
                 for (id, count) in &results.counts {
                     items.push((*id, category_name(*id), *count));
                 }
-                this.child(gpui::deferred(
-                    div()
-                        .id("discover-show-menu")
-                        .occlude()
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.discover.servers.menu = Menu::None;
-                            cx.notify();
-                        }))
-                        .absolute()
-                        .top(px(34.))
-                        .left(px(41.))
-                        .w(px(144.))
-                        .max_h(px(300.))
-                        .overflow_y_scroll()
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(color("--border-subtle"))
-                        .bg(color("--background-surface-higher"))
-                        .shadow(vec![gpui::BoxShadow {
-                            color: gpui::rgba(0x0000003d).into(),
-                            offset: point(px(0.), px(12.)),
-                            blur_radius: px(24.),
-                            spread_radius: px(0.),
-                            inset: false,
-                        }])
-                        .p(px(8.))
-                        .flex()
-                        .flex_col()
-                        .children(items.into_iter().map(|(id, name, count)| {
-                            let selected = id == results.category;
-                            div()
-                                .id(SharedString::from(format!("discover-show-{id}")))
-                                .flex_none()
-                                .h(px(52.))
-                                .p(px(8.))
-                                .rounded(px(4.))
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .hover(|style| style.bg(color("--background-mod-subtle")))
-                                .when(selected, |row| {
-                                    row.child(div().mr(px(8.)).child(icon(
-                                        "discover_check_circle",
-                                        20.,
-                                        "--text-strong",
-                                    )))
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .child(text(14., 18., 500., "--text-strong").child(name))
-                                        .child(
-                                            text(12., 16., 400., "--text-muted")
-                                                .mt(px(2.))
-                                                .child(data::group_digits(count)),
-                                        ),
-                                )
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.servers_refilter(Some(id), None);
-                                    cx.notify();
-                                }))
-                        })),
-                ))
+                let trigger_bounds = self
+                    .tip_anchors
+                    .borrow()
+                    .get("discover-show-trigger")
+                    .copied();
+                this.child(
+                    gpui::deferred(
+                        div()
+                            .id("discover-show-menu")
+                            .occlude()
+                            .on_mouse_down_out(cx.listener(
+                                move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    if trigger_bounds.is_none_or(|b| !b.contains(&event.position)) {
+                                        this.discover.servers.menu = Menu::None;
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .absolute()
+                            .top(px(34.))
+                            .left(px(41.))
+                            .w(px(144.))
+                            .max_h(px(300.))
+                            .overflow_y_scroll()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-higher"))
+                            .shadow(vec![gpui::BoxShadow {
+                                color: gpui::rgba(0x0000003d).into(),
+                                offset: point(px(0.), px(12.)),
+                                blur_radius: px(24.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            }])
+                            .p(px(8.))
+                            .flex()
+                            .flex_col()
+                            .children(items.into_iter().map(|(id, name, count)| {
+                                let selected = id == results.category;
+                                div()
+                                    .id(SharedString::from(format!("discover-show-{id}")))
+                                    .flex_none()
+                                    .h(px(52.))
+                                    .p(px(8.))
+                                    .rounded(px(4.))
+                                    .flex()
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                                    .when(selected, |row| {
+                                        row.child(div().mr(px(8.)).child(icon(
+                                            "discover_check_circle",
+                                            20.,
+                                            "--text-strong",
+                                        )))
+                                    })
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                text(14., 18., 500., "--text-strong").child(name),
+                                            )
+                                            .child(
+                                                text(12., 16., 400., "--text-muted")
+                                                    .mt(px(2.))
+                                                    .child(data::group_digits(count)),
+                                            ),
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.servers_refilter(Some(id), None);
+                                        cx.notify();
+                                    }))
+                            })),
+                    )
+                    .with_priority(2),
+                )
             });
         let language = results
             .language
@@ -634,9 +654,16 @@ impl Root {
                     .rule(crate::ui::motion::Rule::TextField)
                     .flex()
                     .items_center()
+                    .relative()
+                    .child(self.anchor_probe("discover-language-trigger"))
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.discover.servers.menu = Menu::Language;
+                        this.discover.servers.menu = if this.discover.servers.menu == Menu::Language
+                        {
+                            Menu::None
+                        } else {
+                            Menu::Language
+                        };
                         cx.notify();
                     }))
                     .child(
@@ -670,88 +697,106 @@ impl Root {
                 // 16px gutter, so the rows are 154 wide and the thumb sits at the right edge of the list).
                 let list = self.discover.servers.language_scroll.clone();
                 let thumb = super::super::settings::auto_scrollbar(list.clone());
-                this.child(gpui::deferred(
-                    div()
-                        .id("discover-language-menu")
-                        .occlude()
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.discover.servers.menu = Menu::None;
-                            cx.notify();
-                        }))
-                        .absolute()
-                        .top(px(44.))
-                        .left_0()
-                        .w(px(180.))
-                        .h(px(210.))
-                        .rounded(px(8.))
-                        .bg(color("--background-surface-higher"))
-                        .border_1()
-                        .border_color(color("--border-subtle"))
-                        .shadow(vec![gpui::BoxShadow {
-                            color: gpui::rgba(0x00000029).into(),
-                            offset: point(px(0.), px(2.)),
-                            blur_radius: px(8.),
-                            spread_radius: px(0.),
-                            inset: false,
-                        }])
-                        .p(px(4.))
-                        .child(
-                            div()
-                                .relative()
-                                .size_full()
-                                .child(
-                                    div()
-                                        .id("discover-language-scroll")
-                                        .size_full()
-                                        .overflow_y_scroll()
-                                        .track_scroll(&list)
-                                        .pr(px(16.))
-                                        .flex()
-                                        .flex_col()
-                                        .children(data::LANGUAGES.iter().map(|(code, name)| {
-                                            let code = *code;
-                                            let selected = code == language;
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "discover-lang-{code}"
-                                                )))
-                                                .flex_none()
-                                                .h(px(40.))
-                                                .pl(px(8.))
-                                                .pr(px(4.))
-                                                .rounded(px(4.))
-                                                .flex()
-                                                .items_center()
-                                                .cursor_pointer()
-                                                .hover(|style| {
-                                                    style.bg(color("--background-mod-subtle"))
-                                                })
-                                                .child(
-                                                    text(16., 20., 500., "--text-strong")
-                                                        .flex_1()
-                                                        .min_w(px(0.))
-                                                        .truncate()
-                                                        .child(*name),
-                                                )
-                                                .when(selected, |row| {
-                                                    row.child(icon(
-                                                        "discover_check",
-                                                        20.,
-                                                        "--text-strong",
-                                                    ))
-                                                })
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.servers_refilter(
-                                                        None,
-                                                        Some(Some(code.to_owned())),
-                                                    );
-                                                    cx.notify();
-                                                }))
-                                        })),
-                                )
-                                .child(thumb),
-                        ),
-                ))
+                let lang_trigger = self
+                    .tip_anchors
+                    .borrow()
+                    .get("discover-language-trigger")
+                    .copied();
+                this.child(
+                    gpui::deferred(
+                        div()
+                            .id("discover-language-menu")
+                            .occlude()
+                            .on_mouse_down_out(cx.listener(
+                                move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    if lang_trigger.is_none_or(|b| !b.contains(&event.position)) {
+                                        this.discover.servers.menu = Menu::None;
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .absolute()
+                            .top(px(44.))
+                            .left_0()
+                            .w(px(180.))
+                            .h(px(210.))
+                            .rounded(px(8.))
+                            .bg(color("--background-surface-higher"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .shadow(vec![gpui::BoxShadow {
+                                color: gpui::rgba(0x00000029).into(),
+                                offset: point(px(0.), px(2.)),
+                                blur_radius: px(8.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            }])
+                            .p(px(4.))
+                            .child(
+                                div()
+                                    .relative()
+                                    .size_full()
+                                    .child(
+                                        div()
+                                            .id("discover-language-scroll")
+                                            .size_full()
+                                            .overflow_y_scroll()
+                                            .track_scroll(&list)
+                                            .pr(px(16.))
+                                            .flex()
+                                            .flex_col()
+                                            .children(data::LANGUAGES.iter().map(
+                                                |(code, name)| {
+                                                    let code = *code;
+                                                    let selected = code == language;
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "discover-lang-{code}"
+                                                        )))
+                                                        .flex_none()
+                                                        .h(px(40.))
+                                                        .pl(px(8.))
+                                                        .pr(px(4.))
+                                                        .rounded(px(4.))
+                                                        .flex()
+                                                        .items_center()
+                                                        .cursor_pointer()
+                                                        .hover(|style| {
+                                                            style.bg(color(
+                                                                "--background-mod-subtle",
+                                                            ))
+                                                        })
+                                                        .child(
+                                                            text(16., 20., 500., "--text-strong")
+                                                                .flex_1()
+                                                                .min_w(px(0.))
+                                                                .truncate()
+                                                                .child(*name),
+                                                        )
+                                                        .when(selected, |row| {
+                                                            row.child(icon(
+                                                                "discover_check",
+                                                                20.,
+                                                                "--text-strong",
+                                                            ))
+                                                        })
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.servers_refilter(
+                                                                    None,
+                                                                    Some(Some(code.to_owned())),
+                                                                );
+                                                                cx.notify();
+                                                            },
+                                                        ))
+                                                },
+                                            )),
+                                    )
+                                    .child(thumb),
+                            ),
+                    )
+                    .with_priority(2),
+                )
             });
         let mut page = div().relative().w_full().flex().flex_col().child(
             div()

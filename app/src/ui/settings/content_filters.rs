@@ -299,6 +299,17 @@ impl Root {
             } else {
                 Vec::new()
             };
+            let anchor_key = format!("content-filter-anchor-{kind}-{row}");
+            let flip_up = self
+                .tip_anchors
+                .borrow()
+                .get(anchor_key.as_str())
+                .copied()
+                .is_some_and(|b| {
+                    let est_h = (option_rows.len() as f32) * 36. + 20.;
+                    let below = self.viewport.1 - f32::from(b.bottom()) - 12.;
+                    below < est_h && f32::from(b.top()) - 12. > below
+                });
             let dropdown = open.then(|| {
                 gpui::deferred(
                     crate::ui::keyboard::outside(
@@ -310,7 +321,8 @@ impl Root {
                     )
                     .occlude()
                     .absolute()
-                    .top(px(46.))
+                    .when(!flip_up, |d| d.top(px(46.)))
+                    .when(flip_up, |d| d.bottom(px(46.)))
                     .right(px(0.))
                     .w(px(180.))
                     .p(px(8.))
@@ -318,6 +330,7 @@ impl Root {
                     .bg(color("--background-surface-higher"))
                     .border_1()
                     .border_color(color("--border-subtle"))
+                    .shadow(vec![super::super::shadow_high()])
                     .flex()
                     .flex_col()
                     .children(option_rows),
@@ -327,6 +340,7 @@ impl Root {
             });
             div()
                 .relative()
+                .child(self.anchor_probe(&anchor_key))
                 .child(
                     div()
                         .id(SharedString::from(format!("content-filter-{kind}-{row}")))

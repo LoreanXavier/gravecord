@@ -1074,6 +1074,7 @@ impl Root {
         let trigger = div()
             .id("custom-status-clear")
             .relative()
+            .child(self.anchor_probe("custom-status-clear"))
             .h(px(40.))
             .flex()
             .items_center()
@@ -1093,6 +1094,11 @@ impl Root {
                 cx.stop_propagation();
             }))
             .when(open.clear_open, |this| {
+                let trigger_bounds = self
+                    .tip_anchors
+                    .borrow()
+                    .get("custom-status-clear")
+                    .copied();
                 this.child(
                     deferred(
                         anchored().child(
@@ -1106,6 +1112,19 @@ impl Root {
                                 .bg(color("--background-surface-higher"))
                                 .border_1()
                                 .border_color(color("--border-subtle"))
+                                .shadow(vec![super::shadow_high()])
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                                .on_mouse_down_out(cx.listener(
+                                    move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                        if trigger_bounds
+                                            .is_none_or(|b| !b.contains(&event.position))
+                                            && let Some(open) = this.custom_status.as_mut()
+                                        {
+                                            open.clear_open = false;
+                                            cx.notify();
+                                        }
+                                    },
+                                ))
                                 .children(ClearAfter::ALL.iter().map(|choice| {
                                     let choice = *choice;
                                     div()

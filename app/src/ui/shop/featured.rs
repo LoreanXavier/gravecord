@@ -1395,6 +1395,12 @@ impl Root {
         choose: fn(&mut Root, Sort, &mut Context<Root>),
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let trigger_bounds = self.tip_anchors.borrow().get(id).copied();
+        let flip_up = trigger_bounds.is_some_and(|b| {
+            let est_h = (options.len() as f32) * 36. + 20.;
+            let below = self.viewport.1 - f32::from(b.bottom()) - 12.;
+            below < est_h && f32::from(b.top()) - 12. > below
+        });
         let menu = open.then(|| {
             let rows: Vec<AnyElement> = options
                 .iter()
@@ -1409,15 +1415,20 @@ impl Root {
                         .items_center()
                         .cursor_pointer()
                         .hover(|row| row.bg(color("--background-mod-subtle")))
-                        .on_click(cx.listener(move |this, _, _, cx| choose(this, sort, cx)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            choose(this, sort, cx);
+                        }))
                         .child(text(14., 18., 500., "--text-strong").child(dc_intl::tr(name)))
                         .into_any_element()
                 })
                 .collect();
             deferred(
                 div()
+                    .id(SharedString::from(format!("{id}-menu")))
                     .absolute()
-                    .top(px(44.))
+                    .when(!flip_up, |d| d.top(px(44.)))
+                    .when(flip_up, |d| d.bottom(px(44.)))
                     .left_0()
                     .w(px(width))
                     .occlude()
@@ -1426,6 +1437,15 @@ impl Root {
                     .bg(color("--background-surface-high"))
                     .border(px(1.))
                     .border_color(color("--border-subtle"))
+                    .shadow(vec![super::super::shadow_high()])
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            if trigger_bounds.is_none_or(|b| !b.contains(&event.position)) {
+                                toggle(this, false, cx);
+                            }
+                        },
+                    ))
                     .flex()
                     .flex_col()
                     .children(rows),
@@ -1436,6 +1456,7 @@ impl Root {
             .id(id)
             .parity("shop-select")
             .relative()
+            .child(self.anchor_probe(id))
             .flex_none()
             .w(px(width))
             .h(px(40.))

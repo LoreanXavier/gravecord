@@ -1153,71 +1153,84 @@ impl Root {
                                 )
                                 .when(menu_open, |wrap| {
                                     wrap.child(
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "{menu_key}-popover"
-                                            )))
-                                            .occlude()
-                                            .absolute()
-                                            .left_0()
-                                            .right_0()
-                                            .top(px(36.))
-                                            .p(px(6.))
-                                            .rounded(px(8.))
-                                            .border_1()
-                                            .border_color(color("--border-subtle"))
-                                            .bg(color("--background-surface-highest"))
-                                            .shadow(vec![gpui::BoxShadow {
-                                                color: gpui::hsla(0., 0., 0., 0.32),
-                                                offset: gpui::point(px(0.), px(6.)),
-                                                blur_radius: px(14.),
-                                                spread_radius: px(0.),
-                                                inset: false,
-                                            }])
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(2.))
-                                            .child(
-                                                div()
-                                                    .px(px(8.))
-                                                    .py(px(4.))
-                                                    .text_size(px(11.))
-                                                    .font_weight(FontWeight(600.))
-                                                    .text_color(color("--text-muted"))
-                                                    .child(dc_intl::t("3XhYOS")),
-                                            )
-                                            .children(distributors.into_iter().map(|opt| {
-                                                let url = opt.url.clone();
-                                                let lbl = opt.menu_label.clone();
-                                                div()
-                                                    .id(SharedString::from(format!(
-                                                        "{menu_key}-{}",
-                                                        opt.distributor
-                                                    )))
-                                                    .px(px(8.))
-                                                    .py(px(6.))
-                                                    .rounded(px(4.))
-                                                    .hover(|s| {
-                                                        s.bg(color("--background-mod-subtle"))
-                                                    })
-                                                    .cursor_pointer()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(8.))
-                                                    .text_size(px(13.))
-                                                    .font_weight(FontWeight(500.))
-                                                    .text_color(color("--text-strong"))
-                                                    .child(icon(opt.icon_name, 16., "--text-strong"))
-                                                    .child(opt.menu_label)
-                                                    .on_click(cx.listener(
-                                                        move |this, _, _, cx| {
-                                                            cx.stop_propagation();
-                                                            this.distributor_menu = None;
-                                                            this.follow_link(&url, &lbl, cx);
-                                                            cx.notify();
-                                                        },
-                                                    ))
-                                            })),
+                                        gpui::deferred(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "{menu_key}-popover"
+                                                )))
+                                                .occlude()
+                                                .absolute()
+                                                .left_0()
+                                                .right_0()
+                                                .top(px(36.))
+                                                .p(px(6.))
+                                                .rounded(px(8.))
+                                                .border_1()
+                                                .border_color(color("--border-subtle"))
+                                                .bg(color("--background-surface-highest"))
+                                                .shadow(vec![gpui::BoxShadow {
+                                                    color: gpui::hsla(0., 0., 0., 0.32),
+                                                    offset: gpui::point(px(0.), px(6.)),
+                                                    blur_radius: px(14.),
+                                                    spread_radius: px(0.),
+                                                    inset: false,
+                                                }])
+                                                .on_click(|_, _, cx| cx.stop_propagation())
+                                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                                    if this.distributor_menu.take().is_some() {
+                                                        cx.notify();
+                                                    }
+                                                }))
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(2.))
+                                                .child(
+                                                    div()
+                                                        .px(px(8.))
+                                                        .py(px(4.))
+                                                        .text_size(px(11.))
+                                                        .font_weight(FontWeight(600.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(dc_intl::t("3XhYOS")),
+                                                )
+                                                .children(distributors.into_iter().map(|opt| {
+                                                    let url = opt.url.clone();
+                                                    let lbl = opt.menu_label.clone();
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "{menu_key}-{}",
+                                                            opt.distributor
+                                                        )))
+                                                        .px(px(8.))
+                                                        .py(px(6.))
+                                                        .rounded(px(4.))
+                                                        .hover(|s| {
+                                                            s.bg(color("--background-mod-subtle"))
+                                                        })
+                                                        .cursor_pointer()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(8.))
+                                                        .text_size(px(13.))
+                                                        .font_weight(FontWeight(500.))
+                                                        .text_color(color("--text-strong"))
+                                                        .child(icon(
+                                                            opt.icon_name,
+                                                            16.,
+                                                            "--text-strong",
+                                                        ))
+                                                        .child(opt.menu_label)
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                cx.stop_propagation();
+                                                                this.distributor_menu = None;
+                                                                this.follow_link(&url, &lbl, cx);
+                                                                cx.notify();
+                                                            },
+                                                        ))
+                                                })),
+                                        )
+                                        .with_priority(3),
                                     )
                                 }),
                         );

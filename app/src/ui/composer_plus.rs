@@ -543,6 +543,7 @@ impl Root {
             .iter()
             .find(|(hours, _)| *hours == form.duration)
             .map_or(dc_intl::tr("24 hours"), |(_, label)| dc_intl::tr(label));
+        let poll_trigger_bounds = self.tip_anchors.borrow().get("poll-duration").copied();
         let list = form.duration_open.then(|| {
             div()
                 .id("poll-duration-list")
@@ -555,6 +556,17 @@ impl Root {
                 .bg(color("--background-surface-higher"))
                 .flex()
                 .flex_col()
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .on_mouse_down_out(
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        if poll_trigger_bounds.is_none_or(|b| !b.contains(&event.position))
+                            && let Some(form) = this.poll.as_mut()
+                        {
+                            form.duration_open = false;
+                            cx.notify();
+                        }
+                    }),
+                )
                 .children(DURATIONS.iter().map(|(hours, text)| {
                     let hours = *hours;
                     div()
@@ -637,6 +649,8 @@ impl Root {
             .child(
                 div()
                     .id("poll-duration")
+                    .relative()
+                    .child(self.anchor_probe("poll-duration"))
                     .mt(px(8.))
                     .h(px(40.))
                     .px(px(12.))

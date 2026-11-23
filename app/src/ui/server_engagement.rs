@@ -777,6 +777,14 @@ otherwise only online members and voice channels will be provided."),
                 }
             }
         }
+        let menu_h = ((rows.len() as f32) * 40. + 10.).min(210.);
+        let space_below = (self.viewport.1 - f32::from(field.bottom()) - 12.).max(0.);
+        let space_above = (f32::from(field.top()) - 12.).max(0.);
+        let top = if space_below < menu_h && space_above > space_below {
+            (field.top() - px(4.) - px(menu_h)).max(px(8.))
+        } else {
+            field.bottom() + px(4.)
+        };
         Some(
             deferred(
                 div()
@@ -784,7 +792,7 @@ otherwise only online members and voice channels will be provided."),
                     .occlude()
                     .absolute()
                     .left(field.left())
-                    .top(field.bottom() + px(4.))
+                    .top(top)
                     .w(field.size.width)
                     .max_h(px(210.))
                     .p(px(4.))
@@ -792,17 +800,22 @@ otherwise only online members and voice channels will be provided."),
                     .border_1()
                     .border_color(color("--border-subtle"))
                     .bg(color("--background-surface-higher"))
+                    .shadow(vec![super::shadow_high()])
                     .overflow_y_scroll()
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        if let Some(state) = this
-                            .server_settings
-                            .as_mut()
-                            .map(|open| &mut open.engagement)
-                        {
-                            state.open_select = None;
-                        }
-                        cx.notify();
-                    }))
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            if !field.contains(&event.position)
+                                && let Some(state) = this
+                                    .server_settings
+                                    .as_mut()
+                                    .map(|open| &mut open.engagement)
+                            {
+                                state.open_select = None;
+                                cx.notify();
+                            }
+                        },
+                    ))
                     .flex()
                     .flex_col()
                     .children(rows),

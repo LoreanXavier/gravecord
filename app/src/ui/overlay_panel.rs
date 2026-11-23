@@ -949,55 +949,71 @@ impl Root {
             )
             .when(open, |this| {
                 this.child(
-                    div()
-                        .absolute()
-                        .top(px(44.))
-                        .left_0()
-                        .w_full()
-                        .p(px(4.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(onyx("--border-subtle"))
-                        .bg(onyx("--background-surface-higher"))
-                        .occlude()
-                        .children(options.into_iter().enumerate().map(|(at, option)| {
-                            div()
-                                .id(SharedString::from(format!(
-                                    "overlay-report-option-{index}-{at}"
-                                )))
-                                .min_h(px(32.))
-                                .px(px(8.))
-                                .flex()
-                                .items_center()
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .hover(|style| style.bg(onyx("--interactive-background-hover")))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let games: Vec<String> = this
-                                        .detect
-                                        .store
-                                        .running_games()
-                                        .iter()
-                                        .filter_map(|game| game.name.clone())
-                                        .collect();
-                                    if let Some(report) = this.overlay.report.as_mut() {
-                                        match index {
-                                            0 => {
-                                                report.category = Some(at);
-                                                report.missing = false;
-                                            }
-                                            1 => report.game = games.get(at).cloned(),
-                                            _ => {
-                                                report.fullscreen =
-                                                    FULLSCREEN.get(at).map(|(kind, _, _)| *kind)
-                                            }
-                                        }
-                                        report.open = None;
-                                    }
+                    gpui::deferred(
+                        div()
+                            .id(SharedString::from(format!("overlay-report-list-{index}")))
+                            .absolute()
+                            .top(px(44.))
+                            .left_0()
+                            .w_full()
+                            .max_h(px(208.))
+                            .overflow_y_scroll()
+                            .p(px(4.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(onyx("--border-subtle"))
+                            .bg(onyx("--background-surface-higher"))
+                            .shadow(vec![super::shadow_high()])
+                            .occlude()
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                if let Some(report) = this.overlay.report.as_mut() {
+                                    report.open = None;
                                     cx.notify();
-                                }))
-                                .child(text(14., 18., 500., "--text-default").child(option))
-                        })),
+                                }
+                            }))
+                            .children(options.into_iter().enumerate().map(|(at, option)| {
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "overlay-report-option-{index}-{at}"
+                                    )))
+                                    .flex_none()
+                                    .min_h(px(32.))
+                                    .px(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(onyx("--interactive-background-hover")))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        let games: Vec<String> = this
+                                            .detect
+                                            .store
+                                            .running_games()
+                                            .iter()
+                                            .filter_map(|game| game.name.clone())
+                                            .collect();
+                                        if let Some(report) = this.overlay.report.as_mut() {
+                                            match index {
+                                                0 => {
+                                                    report.category = Some(at);
+                                                    report.missing = false;
+                                                }
+                                                1 => report.game = games.get(at).cloned(),
+                                                _ => {
+                                                    report.fullscreen =
+                                                        FULLSCREEN.get(at).map(|(kind, _, _)| *kind)
+                                                }
+                                            }
+                                            report.open = None;
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(text(14., 18., 500., "--text-default").child(option))
+                            })),
+                    )
+                    .with_priority(3),
                 )
             })
             .into_any_element()

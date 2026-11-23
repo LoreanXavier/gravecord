@@ -329,6 +329,7 @@ impl Root {
             .collect();
         deferred(
             div()
+                .id("reminder-calendar-popover")
                 .popout("reminder-calendar", PopKind::Translate, PopSide::Top)
                 .absolute()
                 .left(px(0.))
@@ -345,6 +346,13 @@ impl Root {
                     inset: false,
                 }])
                 .occlude()
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if let Some(state) = this.custom_reminder.as_mut() {
+                        state.calendar_open = false;
+                        cx.notify();
+                    }
+                }))
                 .child(
                     div()
                         .relative()
@@ -392,6 +400,7 @@ impl Root {
             (0..96).filter_map(|step| NaiveTime::from_hms_opt(step / 4, (step % 4) * 15, 0));
         deferred(
             div()
+                .id("reminder-times-popover")
                 .absolute()
                 .left(px(219.))
                 .top(px(72.))
@@ -408,6 +417,13 @@ impl Root {
                     inset: false,
                 }])
                 .occlude()
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if let Some(state) = this.custom_reminder.as_mut() {
+                        state.times_open = false;
+                        cx.notify();
+                    }
+                }))
                 .p(px(4.))
                 .child(
                     div()

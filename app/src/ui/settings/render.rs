@@ -640,6 +640,12 @@ const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[
         "overlay_voice_widget_display_users/open",
         &["Always", "Only While Speaking"],
     ),
+    // Notifications: reaction notification level ("All Messages", "Only Direct Messages", "Never").
+    (
+        "reaction_notifications",
+        "reaction_notifications/open",
+        &["All Messages", "Only Direct Messages", "Never"],
+    ),
     // `ef`: `officialMessageStyle` default, no_text_color, no_gradient, hidden.
     (
         "official_message_style",
@@ -1000,6 +1006,8 @@ impl Root {
                     }),
                 )
                 .id(SharedString::from(format!("{key}-field")))
+                .relative()
+                .child(self.anchor_probe(&format!("{key}-field")))
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.setting_choices.insert(open_key, Choice::On(!open));
@@ -1007,6 +1015,17 @@ impl Root {
                 })),
             )
             .when(open, |this| {
+                let anchor_key = format!("{key}-field");
+                let est_h = ((rows.len() as f32) * 40. + 10.).min(SELECT_LIST_MAX + 10.);
+                let flip_up = self
+                    .tip_anchors
+                    .borrow()
+                    .get(anchor_key.as_str())
+                    .copied()
+                    .is_some_and(|b| {
+                        let below = self.viewport.1 - f32::from(b.bottom()) - 12.;
+                        below < est_h && f32::from(b.top()) - 12. > below
+                    });
                 this.child(
                     gpui::deferred(
                         super::super::keyboard::outside(
@@ -1016,7 +1035,8 @@ impl Root {
                         )
                         .occlude()
                         .absolute()
-                        .top(px(44.))
+                        .when(!flip_up, |d| d.top(px(44.)))
+                        .when(flip_up, |d| d.bottom(px(44.)))
                         .left_0()
                         .right_0()
                         .p(px(4.))

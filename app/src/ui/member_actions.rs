@@ -255,6 +255,25 @@ impl Root {
             "remove-timeout" => self.open_remove_timeout(guild, user, window, cx),
             "kick" => self.open_member_action(Kind::Kick, guild, user, window, cx),
             "ban" => self.open_member_action(Kind::Ban, guild, user, window, cx),
+            "ban-delete-open" => {
+                if let Some(d) = self.member_action.as_mut() {
+                    d.delete_open = true;
+                    cx.notify();
+                } else {
+                    self.open_member_action(Kind::Ban, guild, user, window, cx);
+                    if let Some(d) = self.member_action.as_mut() {
+                        d.delete_open = true;
+                    }
+                    cx.notify();
+                }
+            }
+            "ban-delete-7d" => {
+                if let Some(d) = self.member_action.as_mut() {
+                    d.delete = DELETE_HISTORY.len() - 1;
+                    d.delete_open = false;
+                    cx.notify();
+                }
+            }
             _ => self.open_member_action(Kind::Timeout, guild, user, window, cx),
         }
         format!("dialog open for {user}")
@@ -729,81 +748,51 @@ impl Root {
                 }),
             )
         };
-        // The Delete Message History select: a 40px box with the chevron at the right; its list opens below.
+        // The Delete Message History select: a 40px box with the chevron at the right; its popout list is rendered
+        // in `member_action_delete_select_layer` (`deferred` priority 3, viewport-flipping) so `modal::render`'s
+        // `.overflow_y_scroll()` body never clips it and the footer never covers it.
         let history = {
             let open = dialog.delete_open;
             div()
+                .id("ban-delete")
                 .relative()
-                .child(
-                    div()
-                        .id("ban-delete")
-                        .h(px(40.))
-                        .w_full()
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(color("--input-border-default"))
-                        .bg(color("--input-background-default"))
-                        .flex()
-                        .items_center()
-                        .cursor_pointer()
-                        .pl(px(12.))
-                        .text_size(px(16.))
-                        .line_height(px(20.))
-                        .text_color(color("--text-strong"))
-                        .child(div().flex_1().child(DELETE_HISTORY[dialog.delete].1))
-                        .child(div().w(px(36.)).flex().justify_center().child(icon(
-                            "combo_chevron",
-                            20.,
-                            "--text-strong",
-                        )))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(dialog) = this.member_action.as_mut() {
-                                dialog.delete_open = !dialog.delete_open;
-                            }
-                            cx.notify();
-                        })),
-                )
-                .when(open, |d| {
-                    d.child(
-                        div()
-                            .id("ban-delete-list")
-                            .occlude()
-                            .absolute()
-                            .top(px(44.))
-                            .left(px(0.))
-                            .w_full()
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--border-subtle"))
-                            .bg(color("--background-surface-higher"))
-                            .p(px(8.))
-                            .children(DELETE_HISTORY.iter().enumerate().map(|(index, entry)| {
-                                div()
-                                    .id(gpui::SharedString::from(format!("ban-delete-{index}")))
-                                    .h(px(40.))
-                                    .px(px(8.))
-                                    .rounded(px(4.))
-                                    .flex()
-                                    .items_center()
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(color("--background-mod-subtle")))
-                                    .text_size(px(16.))
-                                    .line_height(px(20.))
-                                    .text_color(color("--text-strong"))
-                                    .child(div().flex_1().child(entry.1))
-                                    .when(index == dialog.delete, |row| {
-                                        row.child(icon("select_check", 20., "--text-strong"))
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some(dialog) = this.member_action.as_mut() {
-                                            dialog.delete = index;
-                                            dialog.delete_open = false;
-                                        }
-                                        cx.notify();
-                                    }))
-                            })),
-                    )
+                .child(self.anchor_probe("ban-delete"))
+                .h(px(40.))
+                .w_full()
+                .rounded(px(8.))
+                .border_1()
+                .border_color(if open {
+                    color("--input-border-active")
+                } else {
+                    color("--input-border-default")
                 })
+                .bg(color("--input-background-default"))
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .pl(px(12.))
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .text_color(color("--text-strong"))
+                .child(div().flex_1().child(DELETE_HISTORY[dialog.delete].1))
+                .child(
+                    div().w(px(36.)).flex().justify_center().child(
+                        gpui::svg()
+                            .path("icons/combo_chevron.svg")
+                            .size(px(20.))
+                            .text_color(color("--text-strong"))
+                            .with_transformation(gpui::Transformation::rotate(gpui::percentage(
+                                if open { 0.5 } else { 0. },
+                            ))),
+                    ),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    if let Some(dialog) = this.member_action.as_mut() {
+                        dialog.delete_open = !dialog.delete_open;
+                    }
+                    cx.notify();
+                }))
         };
         let body: Option<AnyElement> = match dialog.kind {
             Kind::RemoveTimeout => Some(
@@ -998,6 +987,115 @@ impl Root {
             },
             cx,
         ))
+    }
+
+    /// Closes only the Ban modal's open Delete Message History select dropdown (for Escape handling).
+    pub(super) fn close_member_action_delete_select(&mut self) -> bool {
+        if let Some(dialog) = self.member_action.as_mut()
+            && dialog.delete_open
+        {
+            dialog.delete_open = false;
+            return true;
+        }
+        false
+    }
+
+    /// Top-level deferred popout for the Ban modal's "Delete Message History" select (module 333179):
+    /// anchored to `ban-delete`, viewport-flipping upward when near the bottom edge so every option
+    /// is visible and clickable above the modal scrim/footer.
+    pub(super) fn member_action_delete_select_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let dialog = self.member_action.as_ref()?;
+        if dialog.kind != Kind::Ban || !dialog.delete_open {
+            return None;
+        }
+        let field = self
+            .tip_anchors
+            .borrow()
+            .get("ban-delete")
+            .copied()?
+            .dilate(px(1.));
+        let selected = dialog.delete;
+        let ideal_height = (DELETE_HISTORY.len() as f32) * 40. + 10.;
+        let space_below = (self.viewport.1 - f32::from(field.bottom()) - 12.).max(0.);
+        let space_above = (f32::from(field.top()) - 12.).max(0.);
+        let open_up = space_below < ideal_height && space_above > space_below;
+        let max_avail = if open_up { space_above } else { space_below }.max(128.);
+        let menu_height = ideal_height.min(max_avail);
+        let top = if open_up {
+            (field.top() - px(4.) - px(menu_height)).max(px(8.))
+        } else {
+            field.bottom() + px(4.)
+        };
+        let rows = DELETE_HISTORY.iter().enumerate().map(|(index, entry)| {
+            let active = index == selected;
+            div()
+                .id(gpui::SharedString::from(format!("ban-delete-{index}")))
+                .flex_none()
+                .h(px(40.))
+                .pl(px(8.))
+                .pr(px(4.))
+                .rounded(px(4.))
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .when(active, |row| row.bg(color("--background-mod-subtle")))
+                .hover(|style| style.bg(color("--background-mod-normal")))
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .text_color(color("--text-strong"))
+                .child(div().flex_1().child(entry.1))
+                .when(active, |row| {
+                    row.child(
+                        div()
+                            .px(px(4.))
+                            .child(icon("select_check", 16., "--text-brand")),
+                    )
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if let Some(dialog) = this.member_action.as_mut() {
+                        dialog.delete = index;
+                        dialog.delete_open = false;
+                    }
+                    cx.notify();
+                }))
+        });
+        Some(
+            gpui::deferred(
+                div()
+                    .id("ban-delete-list")
+                    .occlude()
+                    .absolute()
+                    .left(field.left())
+                    .top(top)
+                    .w(field.size.width)
+                    .h(px(menu_height))
+                    .p(px(4.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-higher"))
+                    .shadow(vec![super::shadow_high()])
+                    .overflow_y_scroll()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            if !field.contains(&event.position)
+                                && let Some(dialog) = this.member_action.as_mut()
+                            {
+                                dialog.delete_open = false;
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .child(div().flex().flex_col().children(rows)),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
     }
 }
 

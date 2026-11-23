@@ -732,6 +732,8 @@ impl Root {
                     .child(
                         div()
                             .id(SharedString::from(format!("modal-select-{id}")))
+                            .relative()
+                            .child(self.anchor_probe(&format!("modal-select-{id}")))
                             .flex()
                             .items_center()
                             .min_h(px(40.))
@@ -784,20 +786,32 @@ impl Root {
                         // A popout layer (deferred, absolute under the trigger like the select of a bot message): drawn
                         // above the dialog and outside the fields' scroll area, so the scroll area does not clip it and
                         // the dialog does not change height.
+                        let anchor_key = format!("modal-select-{id}");
+                        let flip_up = self
+                            .tip_anchors
+                            .borrow()
+                            .get(anchor_key.as_str())
+                            .copied()
+                            .is_some_and(|b| {
+                                let est_h = (options.len().min(5) as f32 * 38. + 8.).max(80.);
+                                let below = self.viewport.1 - f32::from(b.bottom()) - 12.;
+                                below < est_h && f32::from(b.top()) - 12. > below
+                            });
                         let list = super::keyboard::outside(
                             div()
                                 .id(SharedString::from(format!("modal-list-{id}")))
                                 .occlude()
                                 .absolute()
-                                .top(px(48.))
+                                .when(!flip_up, |d| d.top(px(48.)).rounded_b(px(4.)))
+                                .when(flip_up, |d| d.bottom(px(48.)).rounded_t(px(4.)))
                                 .left_0()
                                 .right_0()
-                                .rounded_b(px(4.))
                                 .border_1()
                                 .border_color(color("--border-subtle"))
                                 .bg(color("--background-surface-higher"))
+                                .shadow(vec![super::shadow_high()])
                                 .max_h(px(5. * 38.))
-                                .overflow_hidden()
+                                .overflow_y_scroll()
                                 .flex()
                                 .flex_col(),
                             super::keyboard::Layer::InteractionSelect,

@@ -1005,6 +1005,13 @@ impl Root {
                 })
                 .collect()
         };
+        let space_below = (self.viewport.1 - f32::from(field.bottom()) - 12.).max(0.);
+        let space_above = (f32::from(field.top()) - 12.).max(0.);
+        let top = if space_below < 210. && space_above > space_below {
+            (field.top() - px(4.) - px(210.)).max(px(8.))
+        } else {
+            field.bottom() + px(4.)
+        };
         Some(
             deferred(
                 div()
@@ -1012,23 +1019,28 @@ impl Root {
                     .occlude()
                     .absolute()
                     .left(field.left())
-                    .top(field.bottom() + px(4.))
+                    .top(top)
                     .w(field.size.width)
                     .p(px(4.))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(color("--border-subtle"))
                     .bg(color("--background-surface-higher"))
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        if let Some(discovery) = this
-                            .server_settings
-                            .as_mut()
-                            .map(|open| &mut open.discovery)
-                        {
-                            discovery.open = None;
-                        }
-                        cx.notify();
-                    }))
+                    .shadow(vec![super::shadow_high()])
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            if !field.contains(&event.position)
+                                && let Some(discovery) = this
+                                    .server_settings
+                                    .as_mut()
+                                    .map(|open| &mut open.discovery)
+                            {
+                                discovery.open = None;
+                                cx.notify();
+                            }
+                        },
+                    ))
                     .child(
                         div()
                             .relative()

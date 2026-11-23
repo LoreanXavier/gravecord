@@ -774,6 +774,16 @@ impl Root {
                     .child(chevron),
             )
             .when(open, |this| this.child(focus_ring()));
+        let phone_country_anchor = self
+            .tip_anchors
+            .borrow()
+            .get("phone-country-field")
+            .copied();
+        let phone_flip_up = phone_country_anchor.is_some_and(|b| {
+            let est_h = COUNTRY_ROW * COUNTRY_ROWS + 12.;
+            let below = self.viewport.1 - f32::from(b.bottom()) - 12.;
+            below < est_h && f32::from(b.top()) - 12. > below
+        });
         let list = open.then(|| {
             let matches = country_matches(&query);
             let rows: Vec<AnyElement> = matches
@@ -832,7 +842,8 @@ impl Root {
                 )
                 .occlude()
                 .absolute()
-                .top(px(44.))
+                .when(!phone_flip_up, |d| d.top(px(44.)))
+                .when(phone_flip_up, |d| d.bottom(px(44.)))
                 .left_0()
                 .w(px(192.))
                 .p(px(4.))
@@ -867,6 +878,7 @@ impl Root {
         });
         div()
             .relative()
+            .child(self.anchor_probe("phone-country-field"))
             .flex_none()
             .w(px(192.))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {

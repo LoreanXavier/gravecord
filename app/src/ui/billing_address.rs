@@ -658,18 +658,31 @@ impl Root {
                                             .left_0()
                                             .right_0()
                                             .top(px(64.))
-                                            .max_h(px(180.))
+                                            .max_h(px(200.))
                                             .overflow_y_scroll()
                                             .p(px(4.))
                                             .rounded(px(6.))
                                             .border_1()
                                             .border_color(color("--border-subtle"))
                                             .bg(color("--background-surface-high"))
+                                            .shadow(vec![super::shadow_high()])
+                                            .on_click(|_, _, cx| cx.stop_propagation())
+                                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                                if let Some(m) = this.billing_address_modal.as_mut()
+                                                {
+                                                    m.country_open = false;
+                                                    m.state_open = false;
+                                                    cx.notify();
+                                                }
+                                            }))
                                             .flex()
                                             .flex_col()
-                                            .children(opts.iter().take(16).map(|&(code, name)| {
+                                            .children(opts.iter().map(|&(code, name)| {
                                                 div()
-                                                    .id(SharedString::from(format!("billing-opt-{field:?}-{code}")))
+                                                    .id(SharedString::from(format!(
+                                                        "billing-opt-{field:?}-{code}"
+                                                    )))
+                                                    .flex_none()
                                                     .px(px(8.))
                                                     .py(px(6.))
                                                     .rounded(px(4.))

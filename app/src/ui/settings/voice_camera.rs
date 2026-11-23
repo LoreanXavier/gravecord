@@ -381,6 +381,16 @@ impl Root {
                     .into_any_element()
             })
             .collect();
+        let flip_up = self
+            .tip_anchors
+            .borrow()
+            .get("camera-device-field")
+            .copied()
+            .is_some_and(|b| {
+                let est_h = (rows.len().min(5) as f32 * 48. + 8.).min(260.);
+                let below = self.viewport.1 - f32::from(b.bottom()) - 12.;
+                below < est_h && f32::from(b.top()) - 12. > below
+            });
         div()
             .py(px(8.))
             .flex()
@@ -396,29 +406,38 @@ impl Root {
                         .child(dc_intl::tr("Camera")),
                 )
             })
-            .child(div().relative().child(field).when(open, |this| {
-                this.child(
-                    deferred(
-                        super::super::keyboard::outside(
-                            div().id("camera-device-list"),
-                            super::super::keyboard::Layer::SettingsSelect,
-                            cx,
+            .child(
+                div()
+                    .relative()
+                    .child(self.anchor_probe("camera-device-field"))
+                    .child(field)
+                    .when(open, |this| {
+                        this.child(
+                            deferred(
+                                super::super::keyboard::outside(
+                                    div().id("camera-device-list"),
+                                    super::super::keyboard::Layer::SettingsSelect,
+                                    cx,
+                                )
+                                .occlude()
+                                .absolute()
+                                .when(!flip_up, |d| d.top(px(48.)))
+                                .when(flip_up, |d| d.bottom(px(48.)))
+                                .left_0()
+                                .right_0()
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-surface-higher"))
+                                .shadow(vec![super::super::shadow_high()])
+                                .max_h(px(260.))
+                                .overflow_y_scroll()
+                                .child(div().flex().flex_col().children(rows)),
+                            )
+                            .with_priority(2),
                         )
-                        .occlude()
-                        .absolute()
-                        .top(px(48.))
-                        .left_0()
-                        .right_0()
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(color("--border-subtle"))
-                        .bg(color("--background-surface-higher"))
-                        .overflow_hidden()
-                        .child(div().flex().flex_col().children(rows)),
-                    )
-                    .with_priority(2),
-                )
-            }))
+                    }),
+            )
             .when(!bare, |this| {
                 this.child(
                     div()

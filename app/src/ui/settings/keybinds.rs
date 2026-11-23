@@ -1071,9 +1071,20 @@ impl Root {
                         cx.notify();
                     }))
             });
+        let anchor_key = format!("keybind-action-field-{id}");
+        let flip_up = self
+            .tip_anchors
+            .borrow()
+            .get(anchor_key.as_str())
+            .copied()
+            .is_some_and(|b| {
+                let below = self.viewport.1 - f32::from(b.bottom()) - 12.;
+                below < 218. && f32::from(b.top()) - 12. > below
+            });
         div()
             .relative()
             .flex_none()
+            .child(self.anchor_probe(&anchor_key))
             .child(field)
             .when(open, |this| {
                 this.child(
@@ -1085,7 +1096,8 @@ impl Root {
                         )
                         .occlude()
                         .absolute()
-                        .top(px(44.))
+                        .when(!flip_up, |d| d.top(px(44.)))
+                        .when(flip_up, |d| d.bottom(px(44.)))
                         .left_0()
                         .right_0()
                         .p(px(4.))

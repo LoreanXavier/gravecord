@@ -2320,34 +2320,56 @@ impl Root {
             Vec::new()
         };
         let _ = width;
+        let anchor_key = format!("voice-device-field-{side:?}");
+        let flip_up = self
+            .tip_anchors
+            .borrow()
+            .get(anchor_key.as_str())
+            .copied()
+            .is_some_and(|b| {
+                let est_h = (rows.len().min(5) as f32 * 64. + 8.).min(320.);
+                let below = self.viewport.1 - f32::from(b.bottom()) - 12.;
+                below < est_h && f32::from(b.top()) - 12. > below
+            });
         div()
             .py(px(8.))
             .flex()
             .flex_col()
             .child(label_text(label).mb(px(8.)))
-            .child(div().relative().child(field).when(open, |this| {
-                this.child(
-                    deferred(
-                        super::super::keyboard::outside(
-                            div().id(SharedString::from(format!("voice-device-list-{side:?}"))),
-                            super::super::keyboard::Layer::SettingsSelect,
-                            cx,
+            .child(
+                div()
+                    .relative()
+                    .child(self.anchor_probe(&anchor_key))
+                    .child(field)
+                    .when(open, |this| {
+                        this.child(
+                            deferred(
+                                super::super::keyboard::outside(
+                                    div().id(SharedString::from(format!(
+                                        "voice-device-list-{side:?}"
+                                    ))),
+                                    super::super::keyboard::Layer::SettingsSelect,
+                                    cx,
+                                )
+                                .occlude()
+                                .absolute()
+                                .when(!flip_up, |d| d.top(px(48.)))
+                                .when(flip_up, |d| d.bottom(px(48.)))
+                                .left_0()
+                                .right_0()
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-surface-higher"))
+                                .shadow(vec![super::super::shadow_high()])
+                                .max_h(px(320.))
+                                .overflow_y_scroll()
+                                .child(div().flex().flex_col().children(rows)),
+                            )
+                            .with_priority(2),
                         )
-                        .occlude()
-                        .absolute()
-                        .top(px(48.))
-                        .left_0()
-                        .right_0()
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(color("--border-subtle"))
-                        .bg(color("--background-surface-higher"))
-                        .overflow_hidden()
-                        .child(div().flex().flex_col().children(rows)),
-                    )
-                    .with_priority(2),
-                )
-            }))
+                    }),
+            )
             .into_any_element()
     }
 

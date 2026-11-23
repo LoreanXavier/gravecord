@@ -329,11 +329,14 @@ fn search_body(query: &str, sort: u64, join: &JoinFilter) -> Value {
 }
 
 impl Root {
-    /// Escape: the Prune Members role list, the dialog and the sort list close one at a time (top first).
+    /// Escape: Bulk Ban, Prune Members role list, the dialog and the sort/page-size lists close one at a time (top first).
     pub(super) fn close_members_layer(&mut self) -> bool {
         let Some(state) = self.members_state_mut() else {
             return false;
         };
+        if state.bulk_ban.take().is_some() {
+            return true;
+        }
         if let Some(prune) = state.prune.as_mut() {
             if std::mem::take(&mut prune.roles_open) {
                 return true;
@@ -1536,71 +1539,83 @@ impl Root {
                 }))
                 .when(page_size_open, |el| {
                     el.child(
-                        div()
-                            .id("member-safety-page-size-menu")
-                            .occlude()
-                            .absolute()
-                            .bottom(px(36.))
-                            .left(px(0.))
-                            .w(px(96.))
-                            .p(px(4.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--border-subtle"))
-                            .bg(color("--background-surface-higher"))
-                            .shadow(vec![super::shadow_high()])
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .children(PAGE_SIZES.into_iter().map(|sz| {
-                                let selected = sz == page_size;
-                                div()
-                                    .id(SharedString::from(format!("member-page-size-{sz}")))
-                                    .h(px(28.))
-                                    .px(px(8.))
-                                    .rounded(px(4.))
-                                    .cursor_pointer()
-                                    .when(selected, |r| r.bg(color("--background-mod-subtle")))
-                                    .hover(|s| s.bg(color("--background-mod-subtle")))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .text_size(px(14.))
-                                    .text_color(color("--text-default"))
-                                    .child(sz.to_string())
-                                    .when(selected, |r| {
-                                        r.child(icon(
-                                            "circle_check",
-                                            14.,
-                                            "--control-primary-background-default",
-                                        ))
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        let mut changed = false;
-                                        if let Some(state) = this.members_state_mut() {
-                                            if state.page_size != sz {
-                                                let old = state.page_size;
-                                                state.current_page = recalculate_page_for_size(
-                                                    old,
-                                                    sz,
-                                                    state.current_page,
-                                                );
-                                                state.page_size = sz;
-                                                changed = true;
-                                            }
-                                            state.page_size_open = false;
-                                        }
-                                        if changed {
-                                            let next_page =
-                                                this.members_state().map_or(1, |s| s.current_page);
-                                            this.research_members(guild, cx);
-                                            if let Some(state) = this.members_state_mut() {
-                                                state.current_page = next_page;
-                                            }
-                                        }
+                        gpui::deferred(
+                            div()
+                                .id("member-safety-page-size-menu")
+                                .occlude()
+                                .absolute()
+                                .bottom(px(36.))
+                                .left(px(0.))
+                                .w(px(96.))
+                                .p(px(4.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-surface-higher"))
+                                .shadow(vec![super::shadow_high()])
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    if let Some(state) = this.members_state_mut() {
+                                        state.page_size_open = false;
                                         cx.notify();
-                                    }))
-                            })),
+                                    }
+                                }))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .children(PAGE_SIZES.into_iter().map(|sz| {
+                                    let selected = sz == page_size;
+                                    div()
+                                        .id(SharedString::from(format!("member-page-size-{sz}")))
+                                        .h(px(28.))
+                                        .px(px(8.))
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .when(selected, |r| r.bg(color("--background-mod-subtle")))
+                                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .text_size(px(14.))
+                                        .text_color(color("--text-default"))
+                                        .child(sz.to_string())
+                                        .when(selected, |r| {
+                                            r.child(icon(
+                                                "circle_check",
+                                                14.,
+                                                "--control-primary-background-default",
+                                            ))
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            let mut changed = false;
+                                            if let Some(state) = this.members_state_mut() {
+                                                if state.page_size != sz {
+                                                    let old = state.page_size;
+                                                    state.current_page = recalculate_page_for_size(
+                                                        old,
+                                                        sz,
+                                                        state.current_page,
+                                                    );
+                                                    state.page_size = sz;
+                                                    changed = true;
+                                                }
+                                                state.page_size_open = false;
+                                            }
+                                            if changed {
+                                                let next_page = this
+                                                    .members_state()
+                                                    .map_or(1, |s| s.current_page);
+                                                this.research_members(guild, cx);
+                                                if let Some(state) = this.members_state_mut() {
+                                                    state.current_page = next_page;
+                                                }
+                                            }
+                                            cx.notify();
+                                        }))
+                                })),
+                        )
+                        .with_priority(3),
                     )
                 });
             div()
@@ -2274,12 +2289,16 @@ impl Root {
                     .border_1()
                     .border_color(color("--border-subtle"))
                     .bg(color("--background-surface-high"))
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        if let Some(state) = this.members_state_mut() {
-                            state.sort_open = false;
-                        }
-                        cx.notify();
-                    }))
+                    .on_mouse_down_out(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            if !anchor.contains(&event.position)
+                                && let Some(state) = this.members_state_mut()
+                            {
+                                state.sort_open = false;
+                                cx.notify();
+                            }
+                        },
+                    ))
                     .children(rows),
             )
             .with_priority(2)

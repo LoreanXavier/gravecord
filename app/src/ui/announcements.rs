@@ -27,8 +27,8 @@ const ANNOUNCEMENT: ChannelKind = ChannelKind::Other(5);
 const TOO_MANY_WEBHOOKS: u64 = 30007;
 
 /// Which select of the Follow modal is open.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Select {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Select {
     Guild,
     Channel,
 }
@@ -46,7 +46,8 @@ const FOLLOW_ART_LIGHT: [&str; 3] = [
 ];
 /// Module 505859's lines ("What a nice addition to your server. Lookin' real ... in here.").
 const FOLLOW_LINES: [&str; 10] = [
-    "w2o/60", "FiAvKg", "vKUFek", "veQl5T", "Pxb7BR", "W03w++", "95HTb5", "+XFelz", "hedHel", "jgC65t",
+    "w2o/60", "FiAvKg", "vKUFek", "veQl5T", "Pxb7BR", "W03w++", "95HTb5", "+XFelz", "hedHel",
+    "jgC65t",
 ];
 
 /// The picture for the current theme.
@@ -63,7 +64,7 @@ pub(super) struct FollowModal {
     channel: Id,
     guild: Option<Id>,
     destination: Option<Id>,
-    open: Option<Select>,
+    pub(super) open: Option<Select>,
     error: Option<String>,
     busy: bool,
 }
@@ -407,11 +408,8 @@ impl Root {
     /// `text-muted`, 16px above and 32px under it) and Got it! (`primary`).
     pub(super) fn follow_success_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (art, line) = self.follow_success?;
-        let pose = super::motion::legacy_modal_pose(
-            "follow-success-modal",
-            "follow-success-layer",
-            false,
-        );
+        let pose =
+            super::motion::legacy_modal_pose("follow-success-modal", "follow-success-layer", false);
         let close = |this: &mut Self, cx: &mut Context<Self>| {
             this.follow_success = None;
             cx.notify();
@@ -431,9 +429,12 @@ impl Root {
             .flex_col()
             .items_center()
             // The picture is lifted only once it has loaded (an `img` without its file has no height).
-            .children(
-                picture.map(|picture| div().w(px(280.)).mt(px(-96.)).child(img(picture).w(px(280.)))),
-            )
+            .children(picture.map(|picture| {
+                div()
+                    .w(px(280.))
+                    .mt(px(-96.))
+                    .child(img(picture).w(px(280.)))
+            }))
             .child(
                 div()
                     .w(px(400.))
@@ -692,22 +693,32 @@ impl Root {
             (open.open == Some(shown) && !disabled).then(|| {
                 deferred(
                     div()
+                        .id(SharedString::from(format!("follow-select-list-{shown:?}")))
                         .absolute()
                         .top(px(top + 72.))
                         .left(px(0.))
                         .right(px(0.))
-                        .max_h(px(200.))
-                        .overflow_hidden()
+                        .max_h(px(208.))
+                        .overflow_y_scroll()
                         .rounded(px(8.))
                         .border_1()
                         .border_color(color("--border-subtle"))
                         .bg(color("--background-surface-higher"))
+                        .shadow(vec![super::shadow_high()])
                         .py(px(4.))
                         .occlude()
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            if let Some(open) = this.follow.as_mut() {
+                                open.open = None;
+                                cx.notify();
+                            }
+                        }))
                         .children(options.into_iter().enumerate().map(
                             |(index, (picked, label))| {
                                 div()
                                     .id(SharedString::from(format!("follow-option-{index}")))
+                                    .flex_none()
                                     .h(px(40.))
                                     .px(px(12.))
                                     .flex()
@@ -720,6 +731,7 @@ impl Root {
                                         style.bg(color("--interactive-background-hover"))
                                     })
                                     .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
                                         this.follow_pick(shown, picked);
                                         cx.notify();
                                     }))

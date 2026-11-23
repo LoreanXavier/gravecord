@@ -317,12 +317,15 @@ impl Root {
     /// A settings select's list is open: its choice key ends in `/open` (the add-game popout's own key is a layer of
     /// its own).
     fn settings_select_is_open(&self) -> bool {
-        self.setting_choices
-            .iter()
-            .any(|(key, value)| is_select_key(key) && *value == Choice::On(true))
+        self.clips.open.is_some()
+            || self
+                .setting_choices
+                .iter()
+                .any(|(key, value)| is_select_key(key) && *value == Choice::On(true))
     }
 
     fn close_settings_selects(&mut self) {
+        self.clips.open = None;
         let open: Vec<&'static str> = self
             .setting_choices
             .iter()

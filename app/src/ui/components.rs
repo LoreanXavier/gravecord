@@ -1113,8 +1113,11 @@ impl Root {
                 .child(shown[0].1.clone())
                 .into_any_element()
         };
+        let anchor_key = format!("comp-select-anchor-{message_id}-{component_id}");
         let control = div()
             .id(SharedString::from(key))
+            .relative()
+            .child(self.anchor_probe(&anchor_key))
             .flex()
             .items_center()
             .min_h(px(40.))
@@ -1343,6 +1346,17 @@ impl Root {
             })
             .collect();
         let searchable = open.search.is_some();
+        let anchor_key = format!("comp-select-anchor-{message_id}-{component_id}");
+        let est_h = (items.len().min(5) as f32 * 38. + if searchable { 56. } else { 8. }).max(96.);
+        let flip_up = self
+            .tip_anchors
+            .borrow()
+            .get(anchor_key.as_str())
+            .copied()
+            .is_some_and(|b| {
+                let below = self.viewport.1 - f32::from(b.bottom()) - 12.;
+                below < est_h && f32::from(b.top()) - 12. > below
+            });
         deferred(
             outside(
                 div().id(SharedString::from(format!(
@@ -1353,13 +1367,14 @@ impl Root {
             )
             .occlude()
             .absolute()
-            .top(px(48.))
+            .when(!flip_up, |d| d.top(px(48.)).rounded_b(px(4.)))
+            .when(flip_up, |d| d.bottom(px(48.)).rounded_t(px(4.)))
             .left_0()
             .right_0()
-            .rounded_b(px(4.))
             .border_1()
             .border_color(color("--border-subtle"))
             .bg(color("--background-surface-higher"))
+            .shadow(vec![super::shadow_high()])
             .when_some(
                 open.search.clone().filter(|_| searchable),
                 |this, search| {

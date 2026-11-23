@@ -8574,6 +8574,14 @@ impl Root {
                 }
                 _ => return None,
             };
+        let space_below = (self.viewport.1 - f32::from(bounds.bottom()) - 12.).max(0.);
+        let space_above = (f32::from(bounds.top()) - 12.).max(0.);
+        let flip_up = space_below < 260. && space_above > space_below;
+        let top = if flip_up {
+            (bounds.top() - px(264.)).max(px(8.))
+        } else {
+            bounds.bottom()
+        };
         Some(
             deferred(
                 div()
@@ -8581,10 +8589,21 @@ impl Root {
                     .occlude()
                     .absolute()
                     .left(bounds.left())
-                    .top(bounds.bottom())
+                    .top(top)
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            if !bounds.contains(&event.position)
+                                && let Some(state) = this.onboarding_mut()
+                            {
+                                state.dropdown = None;
+                                cx.notify();
+                            }
+                        },
+                    ))
                     .child(content),
             )
-            .with_priority(2)
+            .with_priority(3)
             .into_any_element(),
         )
     }
@@ -8771,8 +8790,10 @@ impl Root {
 
     fn onboarding_results_box(list: gpui::Div) -> AnyElement {
         div()
+            .id("onboarding-results-scroll")
             .w(px(430.))
             .max_h(px(260.))
+            .overflow_y_scroll()
             .pt(px(16.))
             .pb(px(16.))
             .px(px(12.))
@@ -8795,9 +8816,11 @@ impl Root {
     ) -> AnyElement {
         let pick = std::rc::Rc::new(pick);
         let mut list = div()
+            .id("onboarding-single-list-scroll")
             .mt(px(4.))
             .w(px(430.))
             .max_h(px(240.))
+            .overflow_y_scroll()
             .p(px(1.))
             .rounded(px(8.))
             .border_1()
