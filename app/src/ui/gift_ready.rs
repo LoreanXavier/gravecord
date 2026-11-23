@@ -334,7 +334,107 @@ impl Root {
                                 ),
                             )
                             .child(icon("automod_chevron_down", 14., "--text-muted"))
-                            .child(self.anchor_probe("gift-recipient-select")),
+                            .child(self.anchor_probe("gift-recipient-select"))
+                            .when(modal.picker_open && !friends.is_empty(), |trigger| {
+                                trigger.child(
+                                    deferred(
+                                        div()
+                                            .id("gift-friend-list")
+                                            .occlude()
+                                            .absolute()
+                                            .left_0()
+                                            .right_0()
+                                            .top(px(42.))
+                                            .p(px(4.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-subtle"))
+                                            .bg(color("--background-surface-high"))
+                                            .shadow(vec![super::shadow_high()])
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(2.))
+                                            // `maxOptionsVisible` 5 (select of module 890497): five 30px rows, 2px gaps, 4px padding.
+                                            .max_h(px(166.))
+                                            .overflow_y_scroll()
+                                            .on_click(|_, _, cx| cx.stop_propagation())
+                                            .on_mouse_down_out(cx.listener(
+                                                |this, event: &gpui::MouseDownEvent, _, cx| {
+                                                    let on_trigger = this
+                                                        .tip_anchors
+                                                        .borrow()
+                                                        .get("gift-recipient-select")
+                                                        .is_some_and(|field| {
+                                                            field.contains(&event.position)
+                                                        });
+                                                    if !on_trigger
+                                                        && let Some(m) =
+                                                            this.gift_ready_modal.as_mut()
+                                                        && m.picker_open
+                                                    {
+                                                        m.picker_open = false;
+                                                        cx.notify();
+                                                    }
+                                                },
+                                            ))
+                                            .children(friends.into_iter().map(|name| {
+                                                let picked =
+                                                    modal.selected_recipients.contains(&name);
+                                                let n_click = name.clone();
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "gift-friend-{name}"
+                                                    )))
+                                                    .flex_none()
+                                                    .px(px(8.))
+                                                    .py(px(6.))
+                                                    .rounded(px(4.))
+                                                    .hover(|s| {
+                                                        s.bg(color("--background-mod-subtle"))
+                                                    })
+                                                    .cursor_pointer()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        if let Some(m) =
+                                                            this.gift_ready_modal.as_mut()
+                                                        {
+                                                            if m.gift_count == 1 {
+                                                                m.selected_recipients =
+                                                                    vec![n_click.clone()];
+                                                                m.picker_open = false;
+                                                            } else if let Some(pos) = m
+                                                                .selected_recipients
+                                                                .iter()
+                                                                .position(|x| x == &n_click)
+                                                            {
+                                                                m.selected_recipients.remove(pos);
+                                                            } else if m.selected_recipients.len()
+                                                                < m.gift_count
+                                                            {
+                                                                m.selected_recipients
+                                                                    .push(n_click.clone());
+                                                            }
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                                    .child(
+                                                        text(13., 18., 500., "--text-default")
+                                                            .child(name),
+                                                    )
+                                                    .when(picked, |r| {
+                                                        r.child(icon(
+                                                            "checkbox_check",
+                                                            14.,
+                                                            "--text-brand",
+                                                        ))
+                                                    })
+                                            })),
+                                    )
+                                    .with_priority(99),
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -365,75 +465,6 @@ impl Root {
                             ),
                     ),
             )
-            .when(modal.picker_open && !friends.is_empty(), |col| {
-                col.child(
-                    div()
-                        .id("gift-friend-list")
-                        .w_full()
-                        .p(px(4.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(color("--border-subtle"))
-                        .bg(color("--background-surface-high"))
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        // `maxOptionsVisible` 5 (select of module 890497): five 30px rows, 2px gaps, 4px padding.
-                        .max_h(px(166.))
-                        .overflow_y_scroll()
-                        .on_click(|_, _, cx| cx.stop_propagation())
-                        .on_mouse_down_out(cx.listener(
-                            |this, event: &gpui::MouseDownEvent, _, cx| {
-                                let on_trigger = this
-                                    .tip_anchors
-                                    .borrow()
-                                    .get("gift-recipient-select")
-                                    .is_some_and(|field| field.contains(&event.position));
-                                if !on_trigger
-                                    && let Some(m) = this.gift_ready_modal.as_mut()
-                                    && m.picker_open
-                                {
-                                    m.picker_open = false;
-                                    cx.notify();
-                                }
-                            },
-                        ))
-                        .children(friends.into_iter().map(|name| {
-                            let picked = modal.selected_recipients.contains(&name);
-                            let n_click = name.clone();
-                            div()
-                                .id(SharedString::from(format!("gift-friend-{name}")))
-                                .flex_none()
-                                .px(px(8.))
-                                .py(px(6.))
-                                .rounded(px(4.))
-                                .hover(|s| s.bg(color("--background-mod-subtle")))
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(m) = this.gift_ready_modal.as_mut() {
-                                        if m.gift_count == 1 {
-                                            m.selected_recipients = vec![n_click.clone()];
-                                            m.picker_open = false;
-                                        } else if let Some(pos) =
-                                            m.selected_recipients.iter().position(|x| x == &n_click)
-                                        {
-                                            m.selected_recipients.remove(pos);
-                                        } else if m.selected_recipients.len() < m.gift_count {
-                                            m.selected_recipients.push(n_click.clone());
-                                        }
-                                    }
-                                    cx.notify();
-                                }))
-                                .child(text(13., 18., 500., "--text-default").child(name))
-                                .when(picked, |r| {
-                                    r.child(icon("checkbox_check", 14., "--text-brand"))
-                                })
-                        })),
-                )
-            })
             .child(
                 text(
                     12.,

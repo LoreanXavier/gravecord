@@ -3644,14 +3644,6 @@ impl Root {
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .when(dropdown_open, |col| {
-                    col.on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        if let Some(p) = this.nitro.purchase.as_mut() {
-                            p.extra.gift_eu_dropdown_open = false;
-                        }
-                        cx.notify();
-                    }))
-                })
                 .child(
                     div()
                         .text_size(px(12.))
@@ -3661,72 +3653,105 @@ impl Root {
                 )
                 .child(
                     div()
-                        .id("gift-card-eu-country")
-                        .h(px(48.))
-                        .px(px(12.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(color(if err.is_some() {
-                            "--status-danger"
-                        } else {
-                            "--input-border-default"
-                        }))
-                        .bg(color("--input-background-default"))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .text_size(px(14.))
-                        .text_color(color("--text-strong"))
-                        .child(country_code.clone())
-                        .child(icon("chevron_down", 14., "--icon-subtle"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(p) = this.nitro.purchase.as_mut() {
-                                p.extra.gift_eu_dropdown_open = !p.extra.gift_eu_dropdown_open;
-                            }
-                            cx.notify();
-                        })),
+                        .relative()
+                        .child(
+                            div()
+                                .id("gift-card-eu-country")
+                                .relative()
+                                .h(px(48.))
+                                .px(px(12.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color(if err.is_some() {
+                                    "--status-danger"
+                                } else {
+                                    "--input-border-default"
+                                }))
+                                .bg(color("--input-background-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .text_size(px(14.))
+                                .text_color(color("--text-strong"))
+                                .child(country_code.clone())
+                                .child(icon("chevron_down", 14., "--icon-subtle"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(p) = this.nitro.purchase.as_mut() {
+                                        p.extra.gift_eu_dropdown_open =
+                                            !p.extra.gift_eu_dropdown_open;
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(self.anchor_probe("gift-card-eu-country")),
+                        )
+                        .when(dropdown_open, |col| {
+                            col.child(
+                                gpui::deferred(
+                                    div()
+                                        .id("gift-card-eu-country-list")
+                                        .occlude()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .top(px(52.))
+                                        .shadow(vec![super::shadow_high()])
+                                        .max_h(px(160.))
+                                        .overflow_y_scroll()
+                                        .on_click(|_, _, cx| cx.stop_propagation())
+                                        .on_mouse_down_out(cx.listener(
+                                            |this, event: &gpui::MouseDownEvent, _, cx| {
+                                                let on_trigger = this
+                                                    .tip_anchors
+                                                    .borrow()
+                                                    .get("gift-card-eu-country")
+                                                    .is_some_and(|b| b.contains(&event.position));
+                                                if !on_trigger
+                                                    && let Some(p) = this.nitro.purchase.as_mut()
+                                                {
+                                                    p.extra.gift_eu_dropdown_open = false;
+                                                    cx.notify();
+                                                }
+                                            },
+                                        ))
+                                        .p(px(4.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--border-subtle"))
+                                        .bg(color("--background-surface-higher"))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .children(EURO_CURRENCY_COUNTRIES.iter().map(|&cc| {
+                                            div()
+                                                .id(gpui::SharedString::from(format!(
+                                                    "gift-eu-{cc}"
+                                                )))
+                                                .flex_none()
+                                                .h(px(30.))
+                                                .px(px(8.))
+                                                .rounded(px(4.))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                                .flex()
+                                                .items_center()
+                                                .text_size(px(13.))
+                                                .text_color(color("--text-default"))
+                                                .child(cc)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if let Some(p) = this.nitro.purchase.as_mut() {
+                                                        p.extra.gift_country = cc.to_owned();
+                                                        p.extra.gift_billing_error = None;
+                                                        p.extra.gift_eu_dropdown_open = false;
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                        })),
+                                )
+                                .with_priority(99),
+                            )
+                        }),
                 )
-                .when(dropdown_open, |col| {
-                    col.child(
-                        div()
-                            .id("gift-card-eu-country-list")
-                            .max_h(px(160.))
-                            .overflow_y_scroll()
-                            .on_click(|_, _, cx| cx.stop_propagation())
-                            .p(px(4.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--border-subtle"))
-                            .bg(color("--background-surface-higher"))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .children(EURO_CURRENCY_COUNTRIES.iter().map(|&cc| {
-                                div()
-                                    .id(gpui::SharedString::from(format!("gift-eu-{cc}")))
-                                    .flex_none()
-                                    .h(px(30.))
-                                    .px(px(8.))
-                                    .rounded(px(4.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(color("--background-mod-subtle")))
-                                    .flex()
-                                    .items_center()
-                                    .text_size(px(13.))
-                                    .text_color(color("--text-default"))
-                                    .child(cc)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some(p) = this.nitro.purchase.as_mut() {
-                                            p.extra.gift_country = cc.to_owned();
-                                            p.extra.gift_billing_error = None;
-                                            p.extra.gift_eu_dropdown_open = false;
-                                        }
-                                        cx.notify();
-                                    }))
-                            })),
-                    )
-                })
                 .when_some(err, |col, msg| {
                     col.child(
                         div()

@@ -313,14 +313,6 @@ impl Root {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                if let Some(m) = this.purchase_waivers_modal.as_mut()
-                                    && m.picker_open
-                                {
-                                    m.picker_open = false;
-                                    cx.notify();
-                                }
-                            }))
                             .child(
                                 div()
                                     .text_size(px(12.))
@@ -331,6 +323,7 @@ impl Root {
                             .child(
                                 div()
                                     .id("waivers-dir-select")
+                                    .relative()
                                     .h(px(38.))
                                     .px(px(12.))
                                     .rounded(px(8.))
@@ -364,17 +357,15 @@ impl Root {
                                             ),
                                     )
                                     .child(icon("chevron_down", 16., "--interactive-icon-default"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if let Some(m) = this.purchase_waivers_modal.as_mut() {
-                                            m.picker_open = !m.picker_open;
-                                        }
-                                        cx.notify();
-                                    })),
-                            )
-                            .when(modal.picker_open, |col| {
-                                col.child(
-                                    div()
+                                    .child(self.anchor_probe("waivers-dir-select"))
+                                    .when(modal.picker_open, |col| {
+col.child(gpui::deferred(div()
                                         .id("waivers-dir-list")
+.occlude()
+.absolute()
+.left_0()
+.right_0()
+.top(px(42.))
                                         // `maxOptionsVisible` 5 (module 691885): five 34px rows, 2px gaps, 4px padding.
                                         .max_h(px(186.))
                                         .overflow_y_scroll()
@@ -382,11 +373,26 @@ impl Root {
                                         .border_1()
                                         .border_color(color("--border-subtle"))
                                         .bg(color("--background-base-lower"))
+.shadow(vec![super::shadow_high()])
                                         .p(px(4.))
                                         .flex()
                                         .flex_col()
                                         .gap(px(2.))
                                         .on_click(|_, _, cx| cx.stop_propagation())
+.on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+let on_trigger = this
+.tip_anchors
+.borrow()
+.get("waivers-dir-select")
+.is_some_and(|b| b.contains(&event.position));
+if !on_trigger
+&& let Some(m) = this.purchase_waivers_modal.as_mut()
+&& m.picker_open
+{
+m.picker_open = false;
+cx.notify();
+}
+}))
                                         .children(modal.directories.iter().enumerate().map(
                                             |(i, d)| {
                                                 let active = i == modal.selected_dir_idx;
@@ -452,9 +458,15 @@ impl Root {
                                                 .text_size(px(13.))
                                                 .text_color(color("--text-muted"))
                                                 .child(dc_intl::t("cL/rrq")),
-                                        ),
-                                )
-                            })
+                                        )).with_priority(99))
+})
+.on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(m) = this.purchase_waivers_modal.as_mut() {
+                                            m.picker_open = !m.picker_open;
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
                             .when_some(dir_error, |col, err| {
                                 col.child(
                                     div()

@@ -1153,24 +1153,19 @@ impl Root {
                                                         .child(self.anchor_probe(
                                                             "monetization-team-select",
                                                         ))
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            if let Some(m) = this
-                                                                .monetization_team_onboarding_modal
-                                                                .as_mut()
-                                                            {
-                                                                m.dropdown_open = !m.dropdown_open;
-                                                            }
-                                                            cx.notify();
-                                                        })),
-                                                )
-                                                .when(modal.dropdown_open, |sel| {
-                                                    sel.child(
-                                                        div()
+                                                        .when(modal.dropdown_open, |sel| {
+sel.child(gpui::deferred(div()
                                                             .id("monetization-team-list")
+.occlude()
+.absolute()
+.left_0()
+.right_0()
+.top(px(44.))
                                                             .rounded(px(8.))
                                                             .border_1()
                                                             .border_color(color("--border-subtle"))
                                                             .bg(color("--background-base-lower"))
+.shadow(vec![crate::ui::shadow_high()])
                                                             .p(px(4.))
                                                             .flex()
                                                             .flex_col()
@@ -1248,9 +1243,19 @@ impl Root {
                                                                             },
                                                                         ))
                                                                 },
-                                                            )),
-                                                    )
-                                                }),
+                                                            ))).with_priority(99))
+})
+.on_click(cx.listener(|this, _, _, cx| {
+                                                            if let Some(m) = this
+                                                                .monetization_team_onboarding_modal
+                                                                .as_mut()
+                                                            {
+                                                                m.dropdown_open = !m.dropdown_open;
+                                                            }
+                                                            cx.notify();
+                                                        })),
+                                                )
+                                                ,
                                         )
                                     })
                                     .when(!needs_new_team, |col| {

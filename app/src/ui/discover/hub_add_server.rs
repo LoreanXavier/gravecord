@@ -852,6 +852,9 @@ impl Root {
                                     )
                                     .child(
                                         div()
+                                            .relative()
+                                            .child(
+                                        div()
                                             .id("hub-cat-select")
                                             .relative()
                                             .h(px(40.))
@@ -891,13 +894,19 @@ impl Root {
                                     )
                                     .when(dropdown_open, |col| {
                                         col.child(
+                                            gpui::deferred(
                                             div()
                                                 .id("hub-cat-list")
-                                                .mt(px(4.))
+                                                .occlude()
+                                                .absolute()
+                                                .left_0()
+                                                .right_0()
+                                                .top(px(44.))
                                                 .p(px(4.))
                                                 .rounded(px(8.))
                                                 .border_1()
                                                 .border_color(color("--border-subtle"))
+                                                .shadow(vec![crate::ui::shadow_high()])
                                                 .bg(color("--background-base-lower"))
                                                 .flex()
                                                 .flex_col()
@@ -969,9 +978,11 @@ impl Root {
                                                                 cx.notify();
                                                             },
                                                         ))
-                                                })),
+                                                })))
+                                                .with_priority(99)
                                         )
-                                    }),
+                                    })
+                                                    )
                             ),
                     )
                     .child(

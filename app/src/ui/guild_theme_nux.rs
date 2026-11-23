@@ -221,16 +221,37 @@ impl Root {
             );
 
         let dropdown_menu = dropdown_open.then(|| {
-            div()
-                .mt(px(4.))
+            let list = div()
+                .id("guild-theme-list")
+                .occlude()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(44.))
                 .rounded(px(8.))
                 .border_1()
                 .border_color(color("--border-subtle"))
                 .bg(color("--background-base-lower"))
+                .shadow(vec![super::shadow_high()])
                 .p(px(4.))
                 .flex()
                 .flex_col()
                 .gap(px(2.))
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    let on_trigger = this
+                        .tip_anchors
+                        .borrow()
+                        .get("guild-theme-select")
+                        .is_some_and(|b| b.contains(&event.position));
+                    if !on_trigger
+                        && let Some(m) = this.guild_theme_nux_modal.as_mut()
+                        && m.dropdown_open
+                    {
+                        m.dropdown_open = false;
+                        cx.notify();
+                    }
+                }))
                 .children(
                     [GuildThemeChoice::Guild, GuildThemeChoice::Personal]
                         .into_iter()
@@ -274,7 +295,8 @@ impl Root {
                                     ))
                                 })
                         }),
-                )
+                );
+            deferred(list).with_priority(99)
         });
 
         Some(
@@ -382,18 +404,12 @@ impl Root {
                                             .flex()
                                             .flex_col()
                                             .gap(px(12.))
-                                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                                if let Some(m) = this.guild_theme_nux_modal.as_mut()
-                                                    && m.dropdown_open
-                                                {
-                                                    m.dropdown_open = false;
-                                                    cx.notify();
-                                                }
-                                            }))
+                                            .relative()
                                             .child(
                                                 div()
                                                     .id("guild-theme-select")
                                                     .aria_label(dc_intl::t("Q7mm4g"))
+                                                    .relative()
                                                     .cursor_pointer()
                                                     .h(px(40.))
                                                     .px(px(12.))
@@ -426,7 +442,8 @@ impl Root {
                                                         "shop_select_chevron",
                                                         16.,
                                                         "--icon-subtle",
-                                                    )),
+                                                    ))
+                                                    .child(self.anchor_probe("guild-theme-select")),
                                             )
                                             .children(dropdown_menu),
                                     )

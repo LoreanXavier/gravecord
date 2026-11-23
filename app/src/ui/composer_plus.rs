@@ -545,50 +545,57 @@ impl Root {
             .map_or(dc_intl::tr("24 hours"), |(_, label)| dc_intl::tr(label));
         let poll_trigger_bounds = self.tip_anchors.borrow().get("poll-duration").copied();
         let list = form.duration_open.then(|| {
-            div()
-                .id("poll-duration-list")
-                .occlude()
-                .mt(px(4.))
-                .p(px(8.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(color("--border-subtle"))
-                .bg(color("--background-surface-higher"))
-                .flex()
-                .flex_col()
-                .on_click(|_, _, cx| cx.stop_propagation())
-                .on_mouse_down_out(
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                        if poll_trigger_bounds.is_none_or(|b| !b.contains(&event.position))
-                            && let Some(form) = this.poll.as_mut()
-                        {
-                            form.duration_open = false;
-                            cx.notify();
-                        }
-                    }),
-                )
-                .children(DURATIONS.iter().map(|(hours, text)| {
-                    let hours = *hours;
-                    div()
-                        .id(SharedString::from(format!("poll-duration-{hours}")))
-                        .h(px(32.))
-                        .px(px(8.))
-                        .rounded(px(4.))
-                        .flex()
-                        .items_center()
-                        .cursor_pointer()
-                        .hover(|this| this.bg(color("--background-mod-subtle")))
-                        .text_size(px(14.))
-                        .text_color(color("--text-default"))
-                        .child(dc_intl::tr(text))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(form) = this.poll.as_mut() {
-                                form.duration = hours;
+            gpui::deferred(
+                div()
+                    .id("poll-duration-list")
+                    .occlude()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(44.))
+                    .p(px(8.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-higher"))
+                    .shadow(vec![super::shadow_high()])
+                    .flex()
+                    .flex_col()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            if poll_trigger_bounds.is_none_or(|b| !b.contains(&event.position))
+                                && let Some(form) = this.poll.as_mut()
+                            {
                                 form.duration_open = false;
+                                cx.notify();
                             }
-                            cx.notify();
-                        }))
-                }))
+                        },
+                    ))
+                    .children(DURATIONS.iter().map(|(hours, text)| {
+                        let hours = *hours;
+                        div()
+                            .id(SharedString::from(format!("poll-duration-{hours}")))
+                            .h(px(32.))
+                            .px(px(8.))
+                            .rounded(px(4.))
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .hover(|this| this.bg(color("--background-mod-subtle")))
+                            .text_size(px(14.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::tr(text))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(form) = this.poll.as_mut() {
+                                    form.duration = hours;
+                                    form.duration_open = false;
+                                }
+                                cx.notify();
+                            }))
+                    })),
+            )
+            .with_priority(99)
         });
         let body = div()
             .flex()
@@ -648,31 +655,35 @@ impl Root {
             .child(div().mt(px(18.)).child(label(dc_intl::tr("Duration"))))
             .child(
                 div()
-                    .id("poll-duration")
                     .relative()
-                    .child(self.anchor_probe("poll-duration"))
                     .mt(px(8.))
-                    .h(px(40.))
-                    .px(px(12.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(color("--border-muted"))
-                    .bg(color("--input-background-default"))
-                    .flex()
-                    .items_center()
-                    .cursor_pointer()
-                    .text_size(px(16.))
-                    .text_color(color("--text-default"))
-                    .child(div().flex_1().child(duration_label))
-                    .child(icon("chevron_down", 16., "--interactive-icon-default"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(form) = this.poll.as_mut() {
-                            form.duration_open = !form.duration_open;
-                        }
-                        cx.notify();
-                    })),
-            )
-            .children(list);
+                    .child(
+                        div()
+                            .id("poll-duration")
+                            .relative()
+                            .child(self.anchor_probe("poll-duration"))
+                            .h(px(40.))
+                            .px(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-muted"))
+                            .bg(color("--input-background-default"))
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .text_size(px(16.))
+                            .text_color(color("--text-default"))
+                            .child(div().flex_1().child(duration_label))
+                            .child(icon("chevron_down", 16., "--interactive-icon-default"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(form) = this.poll.as_mut() {
+                                    form.duration_open = !form.duration_open;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .children(list),
+            );
         let multiple = form.multiple;
         let checkbox = div()
             .id("poll-multiple")

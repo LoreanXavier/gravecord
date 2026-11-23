@@ -636,17 +636,10 @@ impl Root {
                                 .flex()
                                 .flex_col()
                                 .gap(px(12.))
-                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                    if let Some(p) = this.payment_source_picker.as_mut()
-                                        && p.dropdown_open
-                                    {
-                                        p.dropdown_open = false;
-                                        cx.notify();
-                                    }
-                                }))
                                 .child(
                                     div()
                                         .id("payment-picker-select")
+                                        .relative()
                                         .h(px(44.))
                                         .px(px(12.))
                                         .rounded(px(8.))
@@ -669,17 +662,17 @@ impl Root {
                                             16.,
                                             "--interactive-icon-default",
                                         ))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            if let Some(p) = this.payment_source_picker.as_mut() {
-                                                p.dropdown_open = !p.dropdown_open;
-                                            }
-                                            cx.notify();
-                                        })),
-                                )
-                                .when(dropdown_open, |col| {
-                                    col.child(
+                                        .child(self.anchor_probe("payment-picker-select"))
+                                        .when(dropdown_open, |trigger| {
+                                    trigger.child(
+                                        gpui::deferred(
                                         div()
                                             .id("payment-picker-list")
+                                            .occlude()
+                                            .absolute()
+                                            .left_0()
+                                            .right_0()
+                                            .top(px(48.))
                                             // `maxOptionsVisible` 5 (module 691885): five 36px rows, 2px gaps, 4px padding.
                                             .max_h(px(196.))
                                             .overflow_y_scroll()
@@ -688,10 +681,28 @@ impl Root {
                                             .border_1()
                                             .border_color(color("--border-subtle"))
                                             .bg(color("--background-base-lower"))
+                                            .shadow(vec![crate::ui::shadow_high()])
                                             .flex()
                                             .flex_col()
                                             .gap(px(2.))
                                             .on_click(|_, _, cx| cx.stop_propagation())
+                                            .on_mouse_down_out(cx.listener(
+                                                |this, event: &gpui::MouseDownEvent, _, cx| {
+                                                    let on_trigger = this
+                                                        .tip_anchors
+                                                        .borrow()
+                                                        .get("payment-picker-select")
+                                                        .is_some_and(|b| b.contains(&event.position));
+                                                    if !on_trigger
+                                                        && let Some(p) =
+                                                            this.payment_source_picker.as_mut()
+                                                        && p.dropdown_open
+                                                    {
+                                                        p.dropdown_open = false;
+                                                        cx.notify();
+                                                    }
+                                                },
+                                            ))
                                             .children(picker.sources.iter().enumerate().map(
                                                 |(i, src)| {
                                                     let is_sel = selected_src
@@ -777,8 +788,17 @@ impl Root {
                                                         cx.notify();
                                                     })),
                                             ),
+                                        )
+                                        .with_priority(99),
                                     )
-                                }),
+                                })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(p) = this.payment_source_picker.as_mut() {
+                                                p.dropdown_open = !p.dropdown_open;
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
                         )
                     })
                     .when_some(notice, |col, (text, is_error)| {

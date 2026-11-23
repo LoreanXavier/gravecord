@@ -2451,60 +2451,92 @@ impl Root {
             )
             .child(
                 div()
-                    .id("server-prune-roles")
-                    .h(px(40.))
-                    .pl(px(12.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(color("--input-border-default"))
-                    .bg(color("--input-background-default"))
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
+                    .relative()
                     .child(
                         div()
-                            .flex_1()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .text_color(if names.is_empty() {
-                                color("--input-placeholder-text-default")
-                            } else {
-                                color("--text-default")
-                            })
-                            .child(shown),
+                            .id("server-prune-roles")
+                            .relative()
+                            .h(px(40.))
+                            .pl(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--input-border-default"))
+                            .bg(color("--input-background-default"))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(if names.is_empty() {
+                                        color("--input-placeholder-text-default")
+                                    } else {
+                                        color("--text-default")
+                                    })
+                                    .child(shown),
+                            )
+                            .child(div().w(px(36.)).flex().justify_center().child(icon(
+                                "select_chevron",
+                                20.,
+                                "--interactive-text-active",
+                            )))
+                            .child(self.anchor_probe("server-prune-roles"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(prune) = this
+                                    .members_state_mut()
+                                    .and_then(|state| state.prune.as_mut())
+                                {
+                                    prune.roles_open = !prune.roles_open;
+                                }
+                                cx.notify();
+                            })),
                     )
-                    .child(div().w(px(36.)).flex().justify_center().child(icon(
-                        "select_chevron",
-                        20.,
-                        "--interactive-text-active",
-                    )))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(prune) = this
-                            .members_state_mut()
-                            .and_then(|state| state.prune.as_mut())
-                        {
-                            prune.roles_open = !prune.roles_open;
-                        }
-                        cx.notify();
-                    })),
+                    .when(!role_rows.is_empty(), |this| {
+                        this.child(
+                            gpui::deferred(
+                                div()
+                                    .id("server-prune-role-list")
+                                    .occlude()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top(px(44.))
+                                    .max_h(px(160.))
+                                    .p(px(4.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-surface-higher"))
+                                    .shadow(vec![super::shadow_high()])
+                                    .overflow_y_scroll()
+                                    .flex()
+                                    .flex_col()
+                                    .on_click(|_, _, cx| cx.stop_propagation())
+                                    .on_mouse_down_out(cx.listener(
+                                        |this, event: &gpui::MouseDownEvent, _, cx| {
+                                            let on_trigger = this
+                                                .tip_anchors
+                                                .borrow()
+                                                .get("server-prune-roles")
+                                                .is_some_and(|b| b.contains(&event.position));
+                                            if !on_trigger
+                                                && let Some(prune) = this
+                                                    .members_state_mut()
+                                                    .and_then(|state| state.prune.as_mut())
+                                            {
+                                                prune.roles_open = false;
+                                                cx.notify();
+                                            }
+                                        },
+                                    ))
+                                    .children(role_rows),
+                            )
+                            .with_priority(99),
+                        )
+                    }),
             )
-            .when(!role_rows.is_empty(), |this| {
-                this.child(
-                    div()
-                        .id("server-prune-role-list")
-                        .mt(px(4.))
-                        .max_h(px(160.))
-                        .p(px(4.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(color("--border-subtle"))
-                        .bg(color("--background-surface-higher"))
-                        .overflow_y_scroll()
-                        .flex()
-                        .flex_col()
-                        .children(role_rows),
-                )
-            })
             .child(
                 div()
                     .mt(px(16.))

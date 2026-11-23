@@ -1559,15 +1559,33 @@ impl Root {
             let dropdown = studio.guild_menu_open.then(|| {
                 let mut list = div()
                     .id("emoji-studio-guild-dropdown")
-                    .mt(px(4.))
+                    .occlude()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(44.))
                     .max_h(px(180.))
                     .overflow_y_scroll()
                     .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                        let on_trigger = this
+                            .tip_anchors
+                            .borrow()
+                            .get("emoji-studio-guild-trigger")
+                            .is_some_and(|b| b.contains(&event.position));
+                        if !on_trigger {
+                            if let Some(studio) = this.emoji_studio.as_mut() {
+                                studio.guild_menu_open = false;
+                            }
+                            cx.notify();
+                        }
+                    }))
                     .p(px(4.))
                     .rounded(px(8.))
                     .bg(color("--background-surface-highest"))
                     .border_1()
                     .border_color(color("--border-subtle"))
+                    .shadow(vec![super::shadow_high()])
                     .flex()
                     .flex_col()
                     .gap(px(2.));
@@ -1619,72 +1637,70 @@ impl Root {
                             })),
                     );
                 }
-                list
+                gpui::deferred(list).with_priority(99)
             });
 
             div()
                 .flex()
                 .flex_col()
-                .when(studio.guild_menu_open, |d| {
-                    d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        if let Some(studio) = this.emoji_studio.as_mut() {
-                            studio.guild_menu_open = false;
-                        }
-                        cx.notify();
-                    }))
-                })
                 .child(field_label(dc_intl::t("9uKafS"), true))
                 .child(
                     div()
-                        .id("emoji-studio-guild-trigger")
-                        .h(px(40.))
-                        .px(px(10.))
-                        .rounded(px(8.))
-                        .bg(color("--input-background-default"))
-                        .border_1()
-                        .border_color(if guild_error.is_some() {
-                            color("--text-feedback-critical")
-                        } else {
-                            color("--border-subtle")
-                        })
-                        .when(!disabled, |d| d.cursor_pointer())
-                        .when(disabled, |d| d.opacity(0.5))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(8.))
+                        .relative()
                         .child(
                             div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .text_size(px(14.))
-                                .line_height(px(18.))
-                                .text_color(color("--text-default"))
-                                .child(trigger_text),
+                                .id("emoji-studio-guild-trigger")
+                                .relative()
+                                .h(px(40.))
+                                .px(px(10.))
+                                .rounded(px(8.))
+                                .bg(color("--input-background-default"))
+                                .border_1()
+                                .border_color(if guild_error.is_some() {
+                                    color("--text-feedback-critical")
+                                } else {
+                                    color("--border-subtle")
+                                })
+                                .when(!disabled, |d| d.cursor_pointer())
+                                .when(disabled, |d| d.opacity(0.5))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .text_color(color("--text-default"))
+                                        .child(trigger_text),
+                                )
+                                .children(trigger_slots.map(|slots| {
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .text_color(color("--text-muted"))
+                                        .child(slots)
+                                }))
+                                .child(icon("automod_chevron_down", 16., "--icon-muted"))
+                                .child(self.anchor_probe("emoji-studio-guild-trigger"))
+                                .when(!disabled, |d| {
+                                    d.on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(studio) = this.emoji_studio.as_mut() {
+                                            studio.guild_menu_open = !studio.guild_menu_open;
+                                            studio.reset_menu_open = false;
+                                        }
+                                        cx.notify();
+                                    }))
+                                }),
                         )
-                        .children(trigger_slots.map(|slots| {
-                            div()
-                                .flex_none()
-                                .text_size(px(12.))
-                                .line_height(px(16.))
-                                .text_color(color("--text-muted"))
-                                .child(slots)
-                        }))
-                        .child(icon("automod_chevron_down", 16., "--icon-muted"))
-                        .when(!disabled, |d| {
-                            d.on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(studio) = this.emoji_studio.as_mut() {
-                                    studio.guild_menu_open = !studio.guild_menu_open;
-                                    studio.reset_menu_open = false;
-                                }
-                                cx.notify();
-                            }))
-                        }),
+                        .children(dropdown),
                 )
-                .children(dropdown)
                 .children(guild_error.map(|err| {
                     div()
                         .mt(px(4.))

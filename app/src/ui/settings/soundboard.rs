@@ -128,6 +128,7 @@ impl Root {
 
         let trigger = div()
             .id("entrance-sounds-server-trigger")
+            .relative()
             .w(px(348.))
             .h(px(40.))
             .px(px(12.))
@@ -171,6 +172,7 @@ impl Root {
                 18.,
                 "--interactive-icon-default",
             ))
+            .child(self.anchor_probe("entrance-sounds-server-trigger"))
             .on_click(cx.listener(move |this, _, window, cx| {
                 let next = !matches!(this.setting_choices.get(OPEN), Some(Choice::On(true)));
                 this.setting_choices.insert(OPEN, Choice::On(next));
@@ -266,28 +268,44 @@ impl Root {
                     .into_any_element()
             };
 
-            div()
-                .mt(px(4.))
-                .w(px(348.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(color("--border-subtle"))
-                .bg(color("--background-surface-higher"))
-                .shadow_lg()
-                .overflow_hidden()
-                .child(search_row)
-                .child(list_body)
+            gpui::deferred(
+                div()
+                    .id("entrance-sounds-server-dropdown")
+                    .occlude()
+                    .absolute()
+                    .left_0()
+                    .top(px(44.))
+                    .w(px(348.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-higher"))
+                    .shadow_lg()
+                    .overflow_hidden()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                        let on_trigger = this
+                            .tip_anchors
+                            .borrow()
+                            .get("entrance-sounds-server-trigger")
+                            .is_some_and(|b| b.contains(&event.position));
+                        if !on_trigger
+                            && matches!(this.setting_choices.get(OPEN), Some(Choice::On(true)))
+                        {
+                            this.setting_choices.insert(OPEN, Choice::On(false));
+                            cx.notify();
+                        }
+                    }))
+                    .child(search_row)
+                    .child(list_body),
+            )
+            .with_priority(99)
         });
 
         div()
+            .relative()
             .flex()
             .flex_col()
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                if matches!(this.setting_choices.get(OPEN), Some(Choice::On(true))) {
-                    this.setting_choices.insert(OPEN, Choice::On(false));
-                    cx.notify();
-                }
-            }))
             .child(trigger)
             .children(dropdown)
             .into_any_element()

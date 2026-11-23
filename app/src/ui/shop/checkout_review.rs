@@ -984,18 +984,10 @@ impl Root {
                                     .flex()
                                     .flex_col()
                                     .gap(px(6.))
-                                    .when(modal.picker_open, |col| {
-                                        col.on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                            if let Some(m) = this.shop_checkout_review_modal.as_mut()
-                                            {
-                                                m.picker_open = false;
-                                            }
-                                            cx.notify();
-                                        }))
-                                    })
-                                    .child(
+                                    .child(div().relative().child(
                                         div()
                                             .id("checkout-review-method")
+                                            .relative()
                                             .h(px(40.))
                                             .px(px(12.))
                                             .rounded(px(8.))
@@ -1025,15 +1017,41 @@ impl Root {
                                                     m.picker_open = !m.picker_open;
                                                 }
                                                 cx.notify();
-                                            })),
+                                            }))
+                                            .child(self.anchor_probe("checkout-review-method")),
                                     )
                                     .when(modal.picker_open, |col| {
-                                        col.child(
+                                        col.child(gpui::deferred(
                                             div()
                                                 .id("checkout-method-list")
+                                                .occlude()
+                                                .absolute()
+                                                .left_0()
+                                                .right_0()
+                                                .top(px(44.))
+                                                .shadow(vec![crate::ui::shadow_high()])
                                                 .max_h(px(160.))
                                                 .overflow_y_scroll()
                                                 .on_click(|_, _, cx| cx.stop_propagation())
+                                                .on_mouse_down_out(cx.listener(
+                                                    |this, event: &gpui::MouseDownEvent, _, cx| {
+                                                        let on_trigger = this
+                                                            .tip_anchors
+                                                            .borrow()
+                                                            .get("checkout-review-method")
+                                                            .is_some_and(|b| {
+                                                                b.contains(&event.position)
+                                                            });
+                                                        if !on_trigger
+                                                            && let Some(m) = this
+                                                                .shop_checkout_review_modal
+                                                                .as_mut()
+                                                        {
+                                                            m.picker_open = false;
+                                                            cx.notify();
+                                                        }
+                                                    },
+                                                ))
                                                 .p(px(4.))
                                                 .rounded(px(8.))
                                                 .border_1()
@@ -1091,8 +1109,8 @@ impl Root {
                                                             ))
                                                     },
                                                 )),
-                                        )
-                                    })
+                                        ).with_priority(99))
+                                    }))
                                     .when(modal.orb_cost.is_none(), |col| {
                                         col.child(
                                             div()
@@ -1116,16 +1134,6 @@ impl Root {
                                         .flex()
                                         .flex_col()
                                         .gap(px(6.))
-                                        .when(modal.currency_picker_open, |col| {
-                                            col.on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                                if let Some(m) =
-                                                    this.shop_checkout_review_modal.as_mut()
-                                                {
-                                                    m.currency_picker_open = false;
-                                                }
-                                                cx.notify();
-                                            }))
-                                        })
                                         .child(
                                             div()
                                                 .text_size(px(12.))
@@ -1133,9 +1141,10 @@ impl Root {
                                                 .text_color(color("--text-default"))
                                                 .child(dc_intl::t("/AAR02")),
                                         )
-                                        .child(
+                                        .child(div().relative().child(
                                             div()
                                                 .id("checkout-currency-select")
+                                                .relative()
                                                 .h(px(38.))
                                                 .px(px(12.))
                                                 .rounded(px(8.))
@@ -1165,15 +1174,41 @@ impl Root {
                                                             !m.currency_picker_open;
                                                     }
                                                     cx.notify();
-                                                })),
+                                                }))
+                                                .child(self.anchor_probe("checkout-currency-select")),
                                         )
                                         .when(modal.currency_picker_open, |cur_col| {
-                                            cur_col.child(
+                                            cur_col.child(gpui::deferred(
                                                 div()
                                                     .id("checkout-currency-list")
+                                                    .occlude()
+                                                    .absolute()
+                                                    .left_0()
+                                                    .right_0()
+                                                    .top(px(42.))
+                                                    .shadow(vec![crate::ui::shadow_high()])
                                                     .max_h(px(150.))
                                                     .overflow_y_scroll()
                                                     .on_click(|_, _, cx| cx.stop_propagation())
+                                                    .on_mouse_down_out(cx.listener(
+                                                        |this, event: &gpui::MouseDownEvent, _, cx| {
+                                                            let on_trigger = this
+                                                                .tip_anchors
+                                                                .borrow()
+                                                                .get("checkout-currency-select")
+                                                                .is_some_and(|b| {
+                                                                    b.contains(&event.position)
+                                                                });
+                                                            if !on_trigger
+                                                                && let Some(m) = this
+                                                                    .shop_checkout_review_modal
+                                                                    .as_mut()
+                                                            {
+                                                                m.currency_picker_open = false;
+                                                                cx.notify();
+                                                            }
+                                                        },
+                                                    ))
                                                     .p(px(4.))
                                                     .rounded(px(8.))
                                                     .border_1()
@@ -1247,8 +1282,8 @@ impl Root {
                                                                     ))
                                                             }),
                                                     ),
-                                            )
-                                        }),
+                                            ).with_priority(99))
+                                        }))
                                 )
                             })
                             // Module 886767 (`P` Pix link, `giftRedemptionLink_ESq30h`, 8px top margin):

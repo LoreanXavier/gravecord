@@ -289,14 +289,6 @@ impl Root {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
-                            .when(modal.origin_dropdown_open && !origin_disabled, |el| {
-                                el.on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                    if let Some(m) = this.app_test_mode_modal.as_mut() {
-                                        m.origin_dropdown_open = false;
-                                        cx.notify();
-                                    }
-                                }))
-                            })
                             .when(origin_disabled, |el| el.opacity(0.5))
                             .child(
                                 div()
@@ -307,38 +299,70 @@ impl Root {
                             )
                             .child(
                                 div()
-                                    .id("app-test-mode-origin-select")
-                                    .h(px(40.))
-                                    .px(px(12.))
-                                    .rounded(px(8.))
-                                    .bg(color("--background-base-lowest"))
-                                    .border_1()
-                                    .border_color(color("--border-subtle"))
-                                    .when(!origin_disabled, |s| s.cursor_pointer())
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if !origin_disabled
-                                            && let Some(m) = this.app_test_mode_modal.as_mut()
-                                        {
-                                            m.origin_dropdown_open = !m.origin_dropdown_open;
-                                            cx.notify();
-                                        }
-                                    }))
+                                    .relative()
                                     .child(
                                         div()
-                                            .text_size(px(14.))
-                                            .text_color(color("--text-default"))
-                                            .child(origin_label),
+                                            .id("app-test-mode-origin-select")
+                                            .relative()
+                                            .h(px(40.))
+                                            .px(px(12.))
+                                            .rounded(px(8.))
+                                            .bg(color("--background-base-lowest"))
+                                            .border_1()
+                                            .border_color(color("--border-subtle"))
+                                            .when(!origin_disabled, |s| s.cursor_pointer())
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !origin_disabled
+                                                    && let Some(m) =
+                                                        this.app_test_mode_modal.as_mut()
+                                                {
+                                                    m.origin_dropdown_open =
+                                                        !m.origin_dropdown_open;
+                                                    cx.notify();
+                                                }
+                                            }))
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .text_color(color("--text-default"))
+                                                    .child(origin_label),
+                                            )
+                                            .child(icon("chevron_down", 14., "--icon-subtle"))
+                                            .child(
+                                                self.anchor_probe("app-test-mode-origin-select"),
+                                            ),
                                     )
-                                    .child(icon("chevron_down", 14., "--icon-subtle")),
-                            )
-                            .when(modal.origin_dropdown_open && !origin_disabled, |el| {
-                                el.child(
+                                    .when(modal.origin_dropdown_open && !origin_disabled, |el| {
+                                        el.child(gpui::deferred(
                                     div()
                                         .id("app-test-mode-origin-list")
+                                        .occlude()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .top(px(44.))
+                                        .shadow(vec![super::shadow_high()])
                                         .on_click(|_, _, cx| cx.stop_propagation())
+                                        .on_mouse_down_out(cx.listener(
+                                            move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                                let on_trigger = this
+                                                    .tip_anchors
+                                                    .borrow()
+                                                    .get("app-test-mode-origin-select")
+                                                    .is_some_and(|b| b.contains(&event.position));
+                                                if !origin_disabled
+                                                    && !on_trigger
+                                                    && let Some(m) =
+                                                        this.app_test_mode_modal.as_mut()
+                                                {
+                                                    m.origin_dropdown_open = false;
+                                                    cx.notify();
+                                                }
+                                            },
+                                        ))
                                         .rounded(px(8.))
                                         .bg(color("--background-base-lower"))
                                         .border_1()
@@ -395,8 +419,9 @@ impl Root {
                                                 }))
                                                 .child(dc_intl::t("uaksyW")),
                                         ),
-                                )
-                            }),
+                                ).with_priority(99))
+                                    }),
+                            ),
                     )
                     // Localhost Port Number (`fF4zxq`, shown only for Localhost)
                     .when(modal.origin_type == OriginType::Localhost, |col| {

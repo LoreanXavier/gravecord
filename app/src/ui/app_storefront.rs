@@ -2059,24 +2059,20 @@ impl Root {
                                                     .child(self.anchor_probe(
                                                         "app-guild-sub-select-trigger",
                                                     ))
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        if let Some(m) = this
-                                                            .guild_sub_selection_modal
-                                                            .as_mut()
-                                                        {
-                                                            m.dropdown_open = !m.dropdown_open;
-                                                        }
-                                                        cx.notify();
-                                                    })),
-                                            )
-                                            .when(modal.dropdown_open, |col| {
-                                                col.child(
-                                                    div()
+                                                    .when(modal.dropdown_open, |col| {
+col.child(gpui::deferred(div()
                                                         .id("app-guild-sub-list")
+.occlude()
+.absolute()
+.left_0()
+.right_0()
+.top(gpui::relative(1.))
+.mt(px(4.))
                                                         .rounded(px(8.))
                                                         .border_1()
                                                         .border_color(color("--border-subtle"))
                                                         .bg(color("--background-base-lower"))
+.shadow(vec![crate::ui::shadow_high()])
                                                         .p(px(4.))
                                                         .flex()
                                                         .flex_col()
@@ -2164,9 +2160,18 @@ impl Root {
                                                                         cx.notify();
                                                                     },
                                                                 ))
-                                                        })),
-                                                )
-                                            })
+                                                        }))).with_priority(99))
+})
+.on_click(cx.listener(|this, _, _, cx| {
+                                                        if let Some(m) = this
+                                                            .guild_sub_selection_modal
+                                                            .as_mut()
+                                                        {
+                                                            m.dropdown_open = !m.dropdown_open;
+                                                        }
+                                                        cx.notify();
+                                                    })),
+)
                                             .into_any_element()
                                     }),
                             )

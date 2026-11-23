@@ -473,14 +473,6 @@ impl Root {
                         .flex()
                         .flex_col()
                         .gap(px(4.))
-                        .when(state.method_dropdown_open, |el| {
-                            el.on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                if let Some(m) = this.quests.split_modal.as_mut() {
-                                    m.method_dropdown_open = false;
-                                    cx.notify();
-                                }
-                            }))
-                        })
                         .child(
                             div()
                                 .text_size(px(12.))
@@ -488,9 +480,10 @@ impl Root {
                                 .text_color(color("--text-subtle"))
                                 .child(dc_intl::t("okJIPY")),
                         )
-                        .child(
+                        .child(div().relative().child(
                             div()
                                 .id("quest-split-method-trigger")
+                                .relative()
                                 .h(px(38.))
                                 .px(px(10.))
                                 .rounded(px(8.))
@@ -523,13 +516,35 @@ impl Root {
                                                 .child(current_label),
                                         ),
                                 )
-                                .child(icon("chevron_down", 14., "--icon-subtle")),
+                                .child(icon("chevron_down", 14., "--icon-subtle"))
+                                .child(self.anchor_probe("quest-split-method-trigger")),
                         )
                         .when(state.method_dropdown_open, |dd| {
-                            dd.child(
+                            dd.child(gpui::deferred(
                                 div()
                                     .id("quest-split-method-list")
+                                    .occlude()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top(px(42.))
+                                    .shadow(vec![super::shadow_high()])
                                     .on_click(|_, _, cx| cx.stop_propagation())
+                                    .on_mouse_down_out(cx.listener(
+                                        |this, event: &gpui::MouseDownEvent, _, cx| {
+                                            let on_trigger = this
+                                                .tip_anchors
+                                                .borrow()
+                                                .get("quest-split-method-trigger")
+                                                .is_some_and(|b| b.contains(&event.position));
+                                            if !on_trigger
+                                                && let Some(m) = this.quests.split_modal.as_mut()
+                                            {
+                                                m.method_dropdown_open = false;
+                                                cx.notify();
+                                            }
+                                        },
+                                    ))
                                     .p(px(4.))
                                     .rounded(px(8.))
                                     .bg(color("--background-base-lower"))
@@ -573,9 +588,9 @@ impl Root {
                                                 )
                                         },
                                     )),
-                            )
+                            ).with_priority(99))
                         }),
-                )
+                ))
             })
             // Checklist (`976019.A`, CSS `g2YoxE` + `zV869I`)
             .when(show_checklist, |this| {

@@ -307,75 +307,83 @@ impl Root {
         let dropdown_open = modal.dropdown_open;
 
         let dropdown_list = dropdown_open.then(|| {
-            div()
-                .mt(px(4.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(color("--border-subtle"))
-                .bg(color("--background-base-lower"))
-                .p(px(4.))
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .id("pick-guild-list")
-                // `maxOptionsVisible` 5 (select of module 890497): five 38px rows, 2px gaps, 4px padding.
-                .max_h(px(206.))
-                .overflow_y_scroll()
-                .on_click(|_, _, cx| cx.stop_propagation())
-                .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                    let on_trigger = this
-                        .tip_anchors
-                        .borrow()
-                        .get("pick-guild-dropdown")
-                        .is_some_and(|field| field.contains(&event.position));
-                    if !on_trigger
-                        && let Some(m) = this.pick_guild_settings_modal.as_mut()
-                        && m.dropdown_open
-                    {
-                        m.dropdown_open = false;
-                        cx.notify();
-                    }
-                }))
-                .children(guilds.iter().enumerate().map(|(idx, (gid, name))| {
-                    let gid = *gid;
-                    let is_sel = selected == Some(gid);
-                    div()
-                        .id(format!("pick-guild-opt-{idx}"))
-                        .flex_none()
-                        .cursor_pointer()
-                        .px(px(10.))
-                        .py(px(8.))
-                        .rounded(px(6.))
-                        .when(is_sel, |d| d.bg(rgba(0x5865f233)))
-                        .hover(|s| s.bg(color("--background-mod-subtle")))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(8.))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(m) = this.pick_guild_settings_modal.as_mut() {
-                                m.selected_guild = Some(gid);
-                                m.dropdown_open = false;
-                            }
+            deferred(
+                div()
+                    .occlude()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(44.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-base-lower"))
+                    .shadow(vec![super::shadow_high()])
+                    .p(px(4.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .id("pick-guild-list")
+                    // `maxOptionsVisible` 5 (select of module 890497): five 38px rows, 2px gaps, 4px padding.
+                    .max_h(px(206.))
+                    .overflow_y_scroll()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                        let on_trigger = this
+                            .tip_anchors
+                            .borrow()
+                            .get("pick-guild-dropdown")
+                            .is_some_and(|field| field.contains(&event.position));
+                        if !on_trigger
+                            && let Some(m) = this.pick_guild_settings_modal.as_mut()
+                            && m.dropdown_open
+                        {
+                            m.dropdown_open = false;
                             cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(px(14.))
-                                .text_color(color("--text-strong"))
-                                .truncate()
-                                .child(name.clone()),
-                        )
-                        .when(is_sel, |row| {
-                            row.child(icon(
-                                "circle_check",
-                                16.,
-                                "--control-primary-background-default",
-                            ))
-                        })
-                }))
+                        }
+                    }))
+                    .children(guilds.iter().enumerate().map(|(idx, (gid, name))| {
+                        let gid = *gid;
+                        let is_sel = selected == Some(gid);
+                        div()
+                            .id(format!("pick-guild-opt-{idx}"))
+                            .flex_none()
+                            .cursor_pointer()
+                            .px(px(10.))
+                            .py(px(8.))
+                            .rounded(px(6.))
+                            .when(is_sel, |d| d.bg(rgba(0x5865f233)))
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(m) = this.pick_guild_settings_modal.as_mut() {
+                                    m.selected_guild = Some(gid);
+                                    m.dropdown_open = false;
+                                }
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(14.))
+                                    .text_color(color("--text-strong"))
+                                    .truncate()
+                                    .child(name.clone()),
+                            )
+                            .when(is_sel, |row| {
+                                row.child(icon(
+                                    "circle_check",
+                                    16.,
+                                    "--control-primary-background-default",
+                                ))
+                            })
+                    })),
+            )
+            .with_priority(99)
         });
 
         let body = div()
@@ -439,7 +447,8 @@ impl Root {
                                             .child(selected_label),
                                     )
                                     .child(icon("shop_select_chevron", 16., "--icon-subtle"))
-                                    .child(self.anchor_probe("pick-guild-dropdown")),
+                                    .child(self.anchor_probe("pick-guild-dropdown"))
+                                    .children(dropdown_list),
                             )
                             .child(
                                 div()
@@ -477,8 +486,7 @@ impl Root {
                                         }
                                     })),
                             ),
-                    )
-                    .children(dropdown_list),
+                    ),
             )
             // Optional Create a Server stack (`canCreateGuild`)
             .when(can_create, |col| {
