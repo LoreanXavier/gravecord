@@ -468,22 +468,29 @@ impl Root {
             ("Add to Yahoo", 2),
             ("Add to Outlook", 3),
         ];
+        // The submenu is placed in window coordinates: its holder sits at the window's origin, as the menu's own
+        // layer does.
         deferred(
-            div().id("event-calendar-layer").child(
-                panel()
-                    .absolute()
-                    .left(px(left))
-                    .top(px(top))
-                    .occlude()
-                    .child(self.anchor_probe("event-calendar-submenu"))
-                    .children(items.map(|(label, which)| {
-                        row(("event-calendar", which), label, false, false)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.event_calendar_pick(event, which, cx);
-                            }))
-                            .into_any_element()
-                    })),
-            ),
+            div()
+                .id("event-calendar-layer")
+                .absolute()
+                .top_0()
+                .left_0()
+                .child(
+                    panel()
+                        .absolute()
+                        .left(px(left))
+                        .top(px(top))
+                        .occlude()
+                        .child(self.anchor_probe("event-calendar-submenu"))
+                        .children(items.map(|(label, which)| {
+                            row(("event-calendar", which), label, false, false)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.event_calendar_pick(event, which, cx);
+                                }))
+                                .into_any_element()
+                        })),
+                ),
         )
         .with_priority(3)
         .into_any_element()
