@@ -200,7 +200,8 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(icon("boost_gem", 12., "--text-muted"))
+                    // `mc` of module 158935: the gem is `GUILD_BOOSTING_PINK_REFRESH` (#ff4cd2), not the muted text.
+                    .child(icon("boost_gem", 12., "--guild-boosting-pink-refresh"))
                     .child(text(count, 12., 16., 600., "--text-muted"))
                     .when(tier > 0, |this| {
                         this.child(div().size(px(4.)).rounded_full().bg(color("--text-muted")))
