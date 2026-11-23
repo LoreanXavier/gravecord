@@ -289,17 +289,30 @@ fn drain_pending_outputs(
     encoder: &mut Encoder,
     video: &mut impl FnMut(EncodedFrame),
     last_encoded: &mut Instant,
+    stats: &mut ShareStats,
 ) -> Result<()> {
     while let Some(out) = encoder.take_pending_output()? {
         state.encoded.fetch_add(1, Ordering::AcqRel);
+        stats.drained(out.data.len());
+        // Stamped with the capture time of the picture it encodes, never the time it came out: a drained output
+        // stamped "now" sits a frame or two late against its neighbours and the viewer's playout judders.
         video(EncodedFrame {
             data: out.data,
             keyframe: out.keyframe,
-            timestamp: rtp_ticks(Instant::now().saturating_duration_since(state.origin)),
+            timestamp: rtp_ticks(out.at),
         });
         *last_encoded = Instant::now();
     }
     Ok(())
+}
+
+/// The capture time a picture is encoded with: its own, held strictly after the previous picture's so RTP timestamps
+/// never go back (a repeat is stamped with the time it is made).
+fn rising(captured: Duration, previous: Option<Duration>) -> Duration {
+    match previous {
+        Some(previous) if captured <= previous => previous + Duration::from_micros(1),
+        _ => captured,
+    }
 }
 
 fn run(
@@ -363,6 +376,7 @@ fn run(
     let mut initial_preview_sent = false;
     let mut keyframe_wait: Option<Instant> = None;
     let mut stats = ShareStats::new();
+    let mut last_at: Option<Duration> = None;
 
     while !state.stop.load(Ordering::Acquire) {
         let timeout = if keyframe_wait.is_some() {
@@ -387,7 +401,7 @@ fn run(
             }
             None => {
                 if let Some(enc) = encoder.as_mut() {
-                    drain_pending_outputs(state, enc, &mut video, &mut last_encoded)?;
+                    drain_pending_outputs(state, enc, &mut video, &mut last_encoded, &mut stats)?;
                 }
                 // A still desktop: repeat the last picture for a keyframe request or to keep the stream alive.
                 let wanted = state.keyframe.load(Ordering::Acquire);
@@ -450,7 +464,9 @@ fn run(
         )?;
         let force = state.keyframe.swap(false, Ordering::AcqRel);
         let encoding = Instant::now();
-        let output = encoder.encode(&yuv, chroma, force)?;
+        let at = rising(captured_at.saturating_duration_since(state.origin), last_at);
+        last_at = Some(at);
+        let output = encoder.encode_at(&yuv, chroma, force, at)?;
         stats.frame(
             encoding - converting,
             encoding.elapsed(),
@@ -477,7 +493,7 @@ fn run(
                 video(EncodedFrame {
                     data: output.data,
                     keyframe: output.keyframe,
-                    timestamp: rtp_ticks(captured_at.saturating_duration_since(state.origin)),
+                    timestamp: rtp_ticks(output.at),
                 });
             }
             None => {
@@ -486,7 +502,7 @@ fn run(
                 }
             }
         }
-        drain_pending_outputs(state, encoder, &mut video, &mut last_encoded)?;
+        drain_pending_outputs(state, encoder, &mut video, &mut last_encoded, &mut stats)?;
         stats.report(
             (frame_w, frame_h),
             (settings.width, settings.height),
@@ -556,6 +572,11 @@ impl ShareStats {
         self.bytes += bytes;
         self.convert += convert;
         self.encode += encode;
+    }
+
+    /// An output that came out after its own picture's encode call: its bytes count, it is not another picture.
+    fn drained(&mut self, bytes: usize) {
+        self.bytes += bytes;
     }
 
     fn report(&mut self, source: (u32, u32), sent: (u32, u32), backend: Backend, target: u32) {
@@ -682,6 +703,23 @@ mod tests {
                 take
             })
             .count()
+    }
+
+    #[test]
+    fn encode_times_are_the_capture_times_and_never_go_back() {
+        let ms = Duration::from_millis;
+        assert_eq!(rising(ms(10), None), ms(10));
+        // A gap in capture stays a gap: the timestamp follows the picture, not a frame counter.
+        assert_eq!(rising(ms(250), Some(ms(10))), ms(250));
+        // An equal or older reading is moved just past the previous one.
+        assert_eq!(
+            rising(ms(250), Some(ms(250))),
+            ms(250) + Duration::from_micros(1)
+        );
+        assert_eq!(
+            rising(ms(5), Some(ms(250))),
+            ms(250) + Duration::from_micros(1)
+        );
     }
 
     #[test]

@@ -16,7 +16,10 @@ use windows::{
     core::{IUnknown, Interface},
 };
 
-const INPUT_WAIT: Duration = Duration::from_millis(200);
+/// How long one picture waits for the transform to ask for input, in frame intervals: one, so a busy GPU (a
+/// foreground game after Alt-Tab) costs the picture it could not take instead of blocking the encode thread for 200 ms
+/// per picture as the earlier fixed wait did. Our own rule, not an official value.
+const INPUT_WAIT_INTERVALS: u32 = 1;
 const OUTPUT_WAIT: Duration = Duration::from_millis(25);
 const WAIT_POLL: Duration = Duration::from_millis(1);
 
@@ -79,8 +82,10 @@ pub(super) struct Encoder {
     codec: ICodecAPI,
     _activate: Activated,
     _runtime: Runtime,
-    frame: i64,
+    /// The last input sample time, in 100 ns units: times must rise strictly for the transform.
+    last_time: Option<i64>,
     duration: i64,
+    input_wait: Duration,
     need_input: usize,
     have_output: usize,
     provides_samples: bool,
@@ -253,8 +258,11 @@ impl Encoder {
                 codec,
                 _activate: activate,
                 _runtime: runtime,
-                frame: 0,
+                last_time: None,
                 duration: 10_000_000 / i64::from(config.fps),
+                input_wait: Duration::from_nanos(
+                    1_000_000_000 / u64::from(config.fps) * u64::from(INPUT_WAIT_INTERVALS),
+                ),
                 max_bytes: config.max_bytes,
                 max_buffer_bytes,
                 need_input: 0,
@@ -284,13 +292,20 @@ impl Encoder {
         }
     }
 
-    /// Encodes one tight NV12 picture, polling events without stalling indefinitely when CBR skips or delays output.
-    pub(super) fn encode(&mut self, nv12: &[u8], force_keyframe: bool) -> Result<Option<Output>> {
+    /// Encodes one tight NV12 picture captured `at` after the stream's origin, polling events without stalling
+    /// indefinitely when CBR skips or delays output. The sample carries the capture time, so rate control spends bits
+    /// by real elapsed time when capture misses frames, and each output can be paired back with its input.
+    pub(super) fn encode(
+        &mut self,
+        nv12: &[u8],
+        force_keyframe: bool,
+        at: Duration,
+    ) -> Result<Option<Output>> {
         if nv12.len() != self.size {
             return Err(Error::invalid("hardware encoder input has the wrong size"));
         }
         let want_keyframe = force_keyframe || self.force_next_keyframe;
-        if !self.wait_until(Instant::now() + INPUT_WAIT, |encoder| {
+        if !self.wait_until(Instant::now() + self.input_wait, |encoder| {
             encoder.need_input != 0
         })? {
             self.force_next_keyframe = want_keyframe;
@@ -336,7 +351,7 @@ impl Encoder {
                 .map_err(|e| failed("length", e))
                 .and_then(|()| {
                     slot.sample
-                        .SetSampleTime(self.frame * self.duration)
+                        .SetSampleTime(sample_time(self.last_time, at))
                         .map_err(|e| failed("sample time", e))
                 })
                 .and_then(|()| {
@@ -348,7 +363,7 @@ impl Encoder {
                 Self::recycle_sample(&mut self.input_pool, slot);
                 return Err(err);
             }
-            self.frame += 1;
+            self.last_time = Some(sample_time(self.last_time, at));
             let processed = self.transform.ProcessInput(0, &slot.sample, 0);
             Self::recycle_sample(&mut self.input_pool, slot);
             match processed {
@@ -556,13 +571,19 @@ impl Encoder {
                         SampleRead::Bytes(data) if data.is_empty() => Ok(OutputStep::NeedMoreInput),
                         SampleRead::Bytes(data) => {
                             let keyframe = h264::is_keyframe(&data);
+                            // The transform copies the input's time onto its output; without one, the newest input.
+                            let at = sample
+                                .GetSampleTime()
+                                .ok()
+                                .or(self.last_time)
+                                .map_or(Duration::ZERO, from_sample_time);
                             let data = prepend_sequence_header_if_needed(
                                 data,
                                 keyframe,
                                 &self.sequence_header,
                                 self.max_bytes,
                             );
-                            Ok(OutputStep::Ready(Output { data, keyframe }))
+                            Ok(OutputStep::Ready(Output { data, keyframe, at }))
                         }
                         SampleRead::Oversized => Ok(OutputStep::Oversized),
                     }
@@ -593,6 +614,19 @@ enum OutputStep {
 enum SampleRead {
     Bytes(Vec<u8>),
     Oversized,
+}
+
+/// The 100 ns sample time for a picture captured `at`, strictly after the previous one.
+fn sample_time(last: Option<i64>, at: Duration) -> i64 {
+    let time = i64::try_from(at.as_nanos() / 100).unwrap_or(i64::MAX);
+    match last {
+        Some(last) if time <= last => last.saturating_add(1),
+        _ => time,
+    }
+}
+
+fn from_sample_time(time: i64) -> Duration {
+    Duration::from_nanos(u64::try_from(time).unwrap_or(0).saturating_mul(100))
 }
 
 fn max_bitrate_headroom(bitrate: u32) -> u32 {
@@ -827,6 +861,19 @@ mod tests {
         assert!(output_buffer_size(&info, 1280 * 720 * 4).is_err());
         info.cbSize = u32::MAX;
         assert!(output_buffer_size(&info, 1280 * 720 * 4).is_err());
+    }
+
+    #[test]
+    fn sample_times_follow_capture_time_and_always_rise() {
+        let ms = Duration::from_millis;
+        assert_eq!(sample_time(None, ms(5)), 50_000);
+        // Missed capture frames show as a gap in sample time, not as one nominal interval.
+        assert_eq!(sample_time(Some(50_000), ms(105)), 1_050_000);
+        // A tie or an earlier clock reading never repeats or goes back.
+        assert_eq!(sample_time(Some(1_050_000), ms(105)), 1_050_001);
+        assert_eq!(sample_time(Some(1_050_000), ms(1)), 1_050_001);
+        assert_eq!(from_sample_time(1_050_000), ms(105));
+        assert_eq!(from_sample_time(-1), Duration::ZERO);
     }
 
     #[test]
