@@ -716,32 +716,43 @@ impl Root {
                     cx,
                 )
             }))
+            // Module 2323 `eW`: every pill button names itself in a tooltip below it ("Zoom In" / "Zoom Out",
+            // "Forward", "Save Image" / "Save Video", "Open in Browser", "More").
             .children((!item.is_video).then(|| {
-                self.lightbox_button(
-                    "lightbox-zoom",
-                    if zoomed { "lb_zoom_out" } else { "lb_zoom_in" },
-                    move |this, _, cx| this.lightbox_zoom(!zoomed, cx),
+                self.with_tip(
+                    "lightbox-zoom-tip",
+                    super::tooltip::Tip::text(
+                        dc_intl::t(if zoomed { "vOFof8" } else { "Kt4gZ6" }),
+                        super::tooltip::Side::Bottom,
+                    ),
+                    self.lightbox_button(
+                        "lightbox-zoom",
+                        if zoomed { "lb_zoom_out" } else { "lb_zoom_in" },
+                        move |this, _, cx| this.lightbox_zoom(!zoomed, cx),
+                        cx,
+                    ),
                     cx,
                 )
             }))
             .children((!open.plain).then(|| {
-                self.lightbox_button(
-                    "lightbox-forward",
-                    "lb_forward",
-                    move |this, window, cx| {
-                        this.open_forward(forward_message.clone(), window, cx);
-                    },
+                self.with_tip(
+                    "lightbox-forward-tip",
+                    super::tooltip::Tip::text(dc_intl::t("I3ltXO"), super::tooltip::Side::Bottom),
+                    self.lightbox_button(
+                        "lightbox-forward",
+                        "lb_forward",
+                        move |this, window, cx| {
+                            this.open_forward(forward_message.clone(), window, cx);
+                        },
+                        cx,
+                    ),
                     cx,
                 )
             }))
             .child(self.with_tip(
                 "lightbox-save-tip",
                 super::tooltip::Tip::text(
-                    dc_intl::tr(if item.is_video {
-                        "Save Video"
-                    } else {
-                        "Save Image"
-                    }),
+                    dc_intl::t(if item.is_video { "JVuuz3" } else { "S/xNKV" }),
                     super::tooltip::Side::Bottom,
                 ),
                 self.lightbox_button(
@@ -752,22 +763,32 @@ impl Root {
                 ),
                 cx,
             ))
-            .child(self.lightbox_button(
-                "lightbox-open",
-                "lb_open",
-                move |_, _, cx| cx.open_url(&open_url),
+            .child(self.with_tip(
+                "lightbox-open-tip",
+                super::tooltip::Tip::text(dc_intl::t("q5jLJB"), super::tooltip::Side::Bottom),
+                self.lightbox_button(
+                    "lightbox-open",
+                    "lb_open",
+                    move |_, _, cx| cx.open_url(&open_url),
+                    cx,
+                ),
                 cx,
             ))
-            .child(self.lightbox_button(
-                "lightbox-more",
-                "lb_more",
-                |this, _, cx| {
-                    if let Some(open) = this.lightbox.as_mut() {
-                        open.more = !open.more;
-                        open.more_at = None;
-                    }
-                    cx.notify();
-                },
+            .child(self.with_tip(
+                "lightbox-more-tip",
+                super::tooltip::Tip::text(dc_intl::t("UKOtz+"), super::tooltip::Side::Bottom),
+                self.lightbox_button(
+                    "lightbox-more",
+                    "lb_more",
+                    |this, _, cx| {
+                        if let Some(open) = this.lightbox.as_mut() {
+                            open.more = !open.more;
+                            open.more_at = None;
+                        }
+                        cx.notify();
+                    },
+                    cx,
+                ),
                 cx,
             ));
 
