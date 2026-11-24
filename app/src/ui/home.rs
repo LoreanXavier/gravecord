@@ -1,6 +1,6 @@
 //! Home: the DM sidebar, the friends panel and direct messages. Geometry is from `design/dom/home/friends-darker-cozy.json`.
 
-use super::tooltip::{Body, Tip};
+use super::tooltip::{Body, Side, Tip};
 use super::{Root, avatar_source, color, icon, motion};
 use crate::parity::Parity;
 use dc_state::{Id, PrivateChannel};
@@ -1063,16 +1063,23 @@ impl Root {
                                     .gap(px(4.))
                                     .child(self.dm_header_more(cx))
                                     .child(
-                                        // "Create DM": the same New Message picker as the Friends page's New Group DM.
-                                        div()
-                                            .id("dm-plus")
-                                            .size(px(24.))
-                                            .p(px(4.))
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.open_group_dm_picker(window, cx)
-                                            }))
-                                            .child(icon("dm_plus", 16., "--text-muted")),
+                                        self.with_tip(
+                                            "dm-plus",
+                                            // Module 830507 gives it the "Create Message" tooltip (`bA875g`), above.
+                                            Tip::text(dc_intl::t("bA875g"), Side::Top),
+                                            // "Create DM": the same New Message picker as the Friends page's New Group DM.
+                                            div()
+                                                .id("dm-plus")
+                                                .size(px(24.))
+                                                .p(px(4.))
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.tip = None;
+                                                    this.open_group_dm_picker(window, cx)
+                                                }))
+                                                .child(icon("dm_plus", 16., "--text-muted")),
+                                            cx,
+                                        ),
                                     ),
                             ),
                     )
