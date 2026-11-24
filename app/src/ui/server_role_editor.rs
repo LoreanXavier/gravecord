@@ -192,6 +192,26 @@ fn member_count_label(count: u64) -> String {
     format!("{shown}{unit}")
 }
 
+/// `x5` of module 989433: why a role is locked for the account, or nothing when it can edit it. A role ranking at or
+/// above the account's highest (`!isRoleHigher`) is locked; the account's own highest role says so (`PQylOR`), any
+/// other `UGIjx9`. The owner outranks every role.
+pub(super) fn role_lock_reason(
+    guild: &dc_state::Guild,
+    me: Id,
+    roles: &[Id],
+    role: Id,
+) -> Option<&'static str> {
+    if dc_state::permissions::role_is_higher(guild, me, roles, role) {
+        return None;
+    }
+    let highest = dc_state::permissions::highest_role(guild, roles);
+    Some(if highest == Some(role) {
+        dc_intl::t("PQylOR")
+    } else {
+        dc_intl::t("UGIjx9")
+    })
+}
+
 /// What `hZ` of module 989433 says over a managed role.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum ManagedNotice {
@@ -466,6 +486,9 @@ impl Root {
 
     /// A Role Style card was pressed (module 989433 `x_`, then 636042 `C5`).
     fn pick_role_style(&mut self, guild: Id, role: Id, to: RoleStyle, cx: &mut Context<Self>) {
+        if self.role_locked(guild, role).is_some() {
+            return;
+        }
         let enhanced = self.enhanced_role_colors(guild);
         let Some(mut draft) = self.draft(guild, role) else {
             return;
@@ -724,6 +747,10 @@ impl Root {
         change: impl FnOnce(&mut Draft),
         cx: &mut Context<Self>,
     ) {
+        // `En` passes `locked` to every section, which then takes no edits.
+        if self.role_locked(guild, role).is_some() {
+            return;
+        }
         let Some(mut draft) = self.draft(guild, role) else {
             return;
         };
@@ -969,6 +996,7 @@ impl Root {
             .map(|(index, role)| {
                 let id: Id = row_ids[index];
                 let draft = Draft::from_role(role);
+                let locked = self.role_locked(guild, id);
                 let count = counts[id.to_string()].as_u64().unwrap_or(0);
                 let group = SharedString::from(format!("server-role-row-{id}"));
                 // `roleRow_YEKbw3:before` / `:last-child:after`: a 1px line 32px and 8px in, at the row's top (and
@@ -1020,7 +1048,9 @@ impl Root {
                                 SharedString::from(format!("server-role-row-{id}")),
                                 |style| style.opacity(1.),
                             )
-                            .child(icon("role_drag", 16., "--interactive-text-default")),
+                            .when(locked.is_none(), |this| {
+                                this.child(icon("role_drag", 16., "--interactive-text-default"))
+                            }),
                     )
                     .child(
                         div()
@@ -1046,7 +1076,17 @@ impl Root {
                                     .font_weight(FontWeight(500.))
                                     .text_color(color("--text-strong"))
                                     .child(draft.name.clone()),
-                            ),
+                            )
+                            // `x6` (`lock_YEKbw3`): the 16px lock after the name, why in its tooltip.
+                            .children(locked.map(|reason| {
+                                self.with_tip(
+                                    SharedString::from(format!("server-role-lock-{id}")),
+                                    super::tooltip::Tip::text(reason, super::tooltip::Side::Top),
+                                    icon("access_lock", 16., "--text-muted"),
+                                    cx,
+                                )
+                                .ml(px(-4.))
+                            })),
                     )
                     .child(
                         div()
@@ -1074,9 +1114,14 @@ impl Root {
                             .justify_end()
                             .gap(px(8.))
                             .child(
+                                // A locked role is viewed, not edited (the eye, `HO/oXl`).
                                 Self::secondary_square(
                                     SharedString::from(format!("server-role-edit-{id}")),
-                                    "role_edit",
+                                    if locked.is_some() {
+                                        "clips_eye"
+                                    } else {
+                                        "role_edit"
+                                    },
                                 )
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.select_role(id, cx)),
@@ -1245,6 +1290,16 @@ impl Root {
                     .items_center()
                     .gap(px(8.))
                     .child(Self::role_dot(shown.color, 12.))
+                    // `x8`: the lock (`lock_7NrAL2`) between the dot and the name, why in its tooltip.
+                    .children(self.role_locked(guild, id).map(|reason| {
+                        self.with_tip(
+                            SharedString::from(format!("server-role-column-lock-{id}")),
+                            super::tooltip::Tip::text(reason, super::tooltip::Side::Top),
+                            icon("access_lock", 16., "--interactive-text-default"),
+                            cx,
+                        )
+                        .mr(px(-4.))
+                    }))
                     .child(
                         div()
                             .text_size(px(14.))
@@ -1461,6 +1516,13 @@ impl Root {
                     .child(div().pt(px(15.)).child(body)),
             )
             .into_any_element()
+    }
+
+    /// `x5` for the account in this server.
+    pub(super) fn role_locked(&self, guild: Id, role: Id) -> Option<&'static str> {
+        let known = self.stores.guild(guild)?;
+        let me = self.stores.me()?.id;
+        role_lock_reason(known, me, &known.my_roles, role)
     }
 
     /// `hZ`'s warning notice (`helpMessageContainer_9pNIZg` holding module 683071's `warning` notice: 12px in, the
@@ -1855,6 +1917,7 @@ impl Root {
         title: &'static str,
         note: Option<&'static str>,
         on: bool,
+        disabled: bool,
         cx: &mut Context<Self>,
         run: impl Fn(&mut Root, &mut Context<Root>) + 'static,
     ) -> AnyElement {
@@ -1890,12 +1953,20 @@ impl Root {
             .child(
                 div()
                     .id(id)
-                    .cursor_pointer()
-                    .child(super::create_channel::switch(on))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        run(this, cx);
-                        cx.notify();
-                    })),
+                    .when(disabled, |this| {
+                        this.child(super::create_channel::switch_dimmed(
+                            on,
+                            "--background-base-lower",
+                        ))
+                    })
+                    .when(!disabled, |this| {
+                        this.cursor_pointer()
+                            .child(super::create_channel::switch(on))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                run(this, cx);
+                                cx.notify();
+                            }))
+                    }),
             )
             .into_any_element()
     }
@@ -2426,7 +2497,8 @@ impl Root {
             .map(|(_, field, _)| field.clone());
         let enhanced = self.enhanced_role_colors(guild);
         let style = draft.style(enhanced);
-        // GAP: a locked or managed role (`g` of `xG`) does not disable the cards, swatches and stops.
+        // GAP: a locked or managed role (`g` of `xG`) does not dim the cards, swatches and stops; a locked one's
+        // edits are dropped by `edit_draft`.
         let (style_picker, colour_picker) = if everyone {
             (None, None)
         } else {
@@ -2467,6 +2539,7 @@ impl Root {
         });
         let hoist = draft.hoist;
         let mentionable = draft.mentionable;
+        let locked = self.role_locked(guild, role).is_some();
         div()
             .pt(px(17.))
             .flex()
@@ -2483,7 +2556,19 @@ impl Root {
                             .px(px(12.))
                             .flex()
                             .items_center()
-                            .child(div().w_full().children(field)),
+                            // A locked role's name is shown, not edited (`xG`'s `disabled`); GAP: the disabled
+                            // input's dimming is not ported.
+                            .when(locked, |this| {
+                                this.child(
+                                    div()
+                                        .w_full()
+                                        .text_size(px(crate::editor::FONT_SIZE))
+                                        .line_height(px(crate::editor::LINE_HEIGHT))
+                                        .text_color(color("--text-default"))
+                                        .child(draft.name.clone()),
+                                )
+                            })
+                            .when(!locked, |this| this.child(div().w_full().children(field))),
                     )
                     .child(div().my(px(24.)).h(px(1.)).bg(color("--border-subtle")))
                     .children(style_picker)
@@ -2509,7 +2594,7 @@ impl Root {
                     })
                     .children(holographic_note)
                     .child(div().mt(px(24.)).h(px(1.)).bg(color("--border-subtle")))
-                    .child(Self::toggle_row("server-role-hoist", "Display role members separately from online members", None, hoist, cx, move |this, cx| {
+                    .child(Self::toggle_row("server-role-hoist", "Display role members separately from online members", None, hoist, locked, cx, move |this, cx| {
                         this.edit_draft(guild, role, |draft| draft.hoist = !draft.hoist, cx)
                     }))
                     .child(Self::toggle_row(
@@ -2517,6 +2602,7 @@ impl Root {
                         "Allow anyone to @mention this role",
                         Some("Note: Members with the \"Mention @everyone, @here, and All Roles\" permission will always be able to ping this role."),
                         mentionable,
+                        locked,
                         cx,
                         move |this, cx| this.edit_draft(guild, role, |draft| draft.mentionable = !draft.mentionable, cx),
                     ))
@@ -2545,6 +2631,8 @@ impl Root {
             .text()
             .trim_start()
             .to_lowercase();
+        // `xZ`/`xJ` with `locked`: the switches and Clear permissions are disabled.
+        let locked = self.role_locked(guild, role).is_some();
         let mut list = div()
             .flex()
             .flex_col()
@@ -2580,12 +2668,16 @@ impl Root {
                         this.child(
                             div()
                                 .id("server-role-clear-permissions")
-                                .cursor_pointer()
+                                .when(!locked, |this| this.cursor_pointer())
                                 .text_size(px(14.))
                                 .line_height(px(18.))
                                 .font_weight(FontWeight(600.))
                                 .text_color(color("--text-link"))
-                                .opacity(if draft.permissions == 0 { 0.5 } else { 1. })
+                                .opacity(if draft.permissions == 0 || locked {
+                                    0.5
+                                } else {
+                                    1.
+                                })
                                 .child("Clear permissions")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.edit_draft(guild, role, |draft| draft.permissions = 0, cx)
@@ -2630,16 +2722,24 @@ impl Root {
                         .child(
                             div()
                                 .id(SharedString::from(format!("server-role-permission-{flag}")))
-                                .cursor_pointer()
-                                .child(super::create_channel::switch(on))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.edit_draft(
-                                        guild,
-                                        role,
-                                        |draft| draft.permissions ^= flag,
-                                        cx,
-                                    );
-                                })),
+                                .when(locked, |this| {
+                                    this.child(super::create_channel::switch_dimmed(
+                                        on,
+                                        "--background-base-lower",
+                                    ))
+                                })
+                                .when(!locked, |this| {
+                                    this.cursor_pointer()
+                                        .child(super::create_channel::switch(on))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.edit_draft(
+                                                guild,
+                                                role,
+                                                |draft| draft.permissions ^= flag,
+                                                cx,
+                                            );
+                                        }))
+                                }),
                         ),
                 );
             }
@@ -3025,7 +3125,8 @@ impl Root {
                 .stores
                 .guild(guild)
                 .and_then(|known| known.role_info.get(&role))
-                .is_some_and(|info| info.managed);
+                .is_some_and(|info| info.managed)
+            || self.role_locked(guild, role).is_some();
         let Some(state) = self
             .server_settings
             .as_ref()
@@ -3123,18 +3224,20 @@ impl Root {
                                 .line_height(px(18.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-muted"))
-                                .child(self.text_with_link(
-                                    "server-role-members-empty",
-                                    "No members were found. ",
-                                    "Add members to this role.",
-                                    "",
-                                    cx,
-                                    move |this, cx| {
-                                        if !members_locked {
+                                // `xB`: a locked list drops the Add members link (its hook renders nothing).
+                                .when(members_locked, |this| this.child("No members were found. "))
+                                .when(!members_locked, |this| {
+                                    this.child(self.text_with_link(
+                                        "server-role-members-empty",
+                                        "No members were found. ",
+                                        "Add members to this role.",
+                                        "",
+                                        cx,
+                                        move |this, cx| {
                                             this.open_add_members(cx);
-                                        }
-                                    },
-                                )),
+                                        },
+                                    ))
+                                }),
                         ),
                 )
             })
@@ -3212,6 +3315,38 @@ pub(super) fn gradient_stop_label(index: usize, count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roles_at_or_above_the_highest_are_locked_and_the_owner_has_none() {
+        let mut guild = dc_state::Guild {
+            id: 1,
+            owner_id: Some(100),
+            ..dc_state::Guild::default()
+        };
+        for (id, position) in [(10, 5), (11, 3), (12, 1)] {
+            guild.role_info.insert(
+                id,
+                dc_state::RoleInfo {
+                    position,
+                    ..dc_state::RoleInfo::default()
+                },
+            );
+        }
+        assert_eq!(
+            role_lock_reason(&guild, 5, &[11], 11),
+            Some(dc_intl::t("PQylOR"))
+        );
+        assert_eq!(
+            role_lock_reason(&guild, 5, &[11], 10),
+            Some(dc_intl::t("UGIjx9"))
+        );
+        assert_eq!(role_lock_reason(&guild, 5, &[11], 12), None);
+        assert_eq!(
+            role_lock_reason(&guild, 5, &[], 12),
+            Some(dc_intl::t("UGIjx9"))
+        );
+        assert_eq!(role_lock_reason(&guild, 100, &[], 10), None);
+    }
 
     #[test]
     fn member_counts_go_short_from_ten_thousand() {
