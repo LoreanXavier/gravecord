@@ -11169,10 +11169,20 @@ impl Root {
                     .mr(px(-2.))
                     .min_h(px(58.))
                     .rounded(px(8.))
-                    .bg(color("--chat-background-default"))
                     .border_1()
                     .border_color(color("--background-mod-subtle"))
                     .relative()
+                    // The fill is `scrollableContainer_2x8-Qn`'s, inside the border: the border blends over the
+                    // message row (frame channel/editing: 54,54,59 at the edge), not over the field.
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .rounded(px(7.))
+                            .bg(color("--chat-background-default")),
+                    )
                     .pl(px(15.))
                     // `buttons_2x8-Qn` of the edit box (frame channel/editing): the 32px Add Emoji button 12px from
                     // the right edge and the top; the text stops at it.
