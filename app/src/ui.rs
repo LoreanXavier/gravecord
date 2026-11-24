@@ -418,6 +418,7 @@ mod subscription_pause;
 mod suspended_safety_hub;
 mod tag_badges;
 mod tag_badges_extra;
+mod thread_embed;
 mod threads;
 mod tooltip;
 mod transfer_ownership;
@@ -10388,6 +10389,8 @@ impl Root {
                         .children(self.accessories(message, cx))
                         .children((!is_starter).then(|| self.reactions(message, cx)).flatten())
                         .children(self.ephemeral_notice(message, cx))
+                        // Module 679636: the thread the message started, after its reactions and notices.
+                        .children(self.thread_embed(message, compact, cx))
                         // Not in the pinned client: Translate+'s translation, the last of the accessories
                         // (`plugin_hooks/translate_plus.rs`).
                         .children(self.translate_plus_accessory(message, cx))

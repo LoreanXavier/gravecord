@@ -148,6 +148,33 @@ fn poll_result_title(message: &Message) -> String {
     cut_to(question, 50)
 }
 
+/// The words of a placeholder for `message` as plain text: the poll's question, the poll result's line, or the
+/// placeholder's own string.
+pub(super) fn placeholder_text(placeholder: Placeholder, message: &Message) -> String {
+    match placeholder {
+        Placeholder::PollQuestion => message
+            .extra
+            .poll
+            .as_ref()
+            .map(|poll| poll.question.clone())
+            .unwrap_or_default(),
+        Placeholder::PollResult => dc_intl::format(
+            "Vn97Ka",
+            &[
+                (
+                    "username",
+                    dc_intl::Arg::from(message.author.display_name()),
+                ),
+                (
+                    "title",
+                    dc_intl::Arg::from(poll_result_title(message).as_str()),
+                ),
+            ],
+        ),
+        other => other.text().to_owned(),
+    }
+}
+
 impl Placeholder {
     fn text(self) -> &'static str {
         match self {
