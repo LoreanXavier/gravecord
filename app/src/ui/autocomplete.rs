@@ -94,25 +94,33 @@ enum Line {
     Row(usize),
 }
 
+/// The section title of module 496533 (`_`): the plain title without a query, or the "matching" one with the query
+/// as the section types it (`getQuery`).
+fn title(with_query: &str, without: &str, query: &str, typed: &str) -> String {
+    if query.is_empty() {
+        dc_intl::t(without).to_owned()
+    } else {
+        dc_intl::format(with_query, &[("prefix", dc_intl::Arg::from(typed))])
+    }
+}
+
 fn lines(open: &Open) -> Vec<Line> {
     let query = &open.trigger.query;
-    let matching = |title: &str, sentinel: &str| {
-        if query.is_empty() {
-            title.to_owned()
-        } else {
-            format!(
-                "{} matching {sentinel}{query}",
-                title.replace("Channels", "channels")
-            )
-        }
-    };
+    let users = open
+        .entries
+        .iter()
+        .any(|entry| matches!(entry, Entry::User { .. }));
+    let globals = open
+        .entries
+        .iter()
+        .any(|entry| matches!(entry, Entry::Global(_)));
     let mut out = Vec::new();
     let mut last_group = None;
     for (index, entry) in open.entries.iter().enumerate() {
         let group = match entry {
             Entry::User { .. } => 0,
-            Entry::Role { .. } => 1,
-            Entry::Global(_) => 2,
+            Entry::Global(_) => 1,
+            Entry::Role { .. } => 2,
             Entry::Channel { hit, .. } if hit.kind == HitKind::Voice => 3,
             Entry::Channel { .. } => 4,
             Entry::Emoji { .. } => 5,
@@ -123,12 +131,20 @@ fn lines(open: &Open) -> Vec<Line> {
                 out.push(Line::Divider);
             }
             let heading = match group {
-                0 => Some(matching("Members", "@")),
-                1 => Some(matching("Roles", "@")),
-                3 => Some(matching("Voice Channels", "#!")),
-                4 => Some(matching("Text Channels", "#")),
-                5 => Some(format!("Emoji matching :{query}")),
-                6 => Some(format!("Stickers matching :{query}")),
+                // The mention section has one title (module 496533): Members, or Options when it lists no member but
+                // global mentions, or Roles when it lists only roles; a rule parts the three groups.
+                0..=2 if last_group.is_none() => Some(if users {
+                    title("rPNimn", "9Oq93m", query, &format!("@{query}"))
+                } else if globals {
+                    title("pg0anB", "+1H47t", query, &format!("@{query}"))
+                } else {
+                    title("MLiD1e", "LPJmL/", query, &format!("@{query}"))
+                }),
+                // A voice channel's query keeps the `!` it starts with out of the title.
+                3 => Some(title("rMUL3+", "CYnO4s", query, &format!("#!{query}"))),
+                4 => Some(title("UhnmJD", "nIfr0Y", query, &format!("#{query}"))),
+                5 => Some(title("ksAVYt", "sMOuuS", query, &format!(":{query}"))),
+                6 => Some(title("uferGG", "fT+Yjp", query, &format!(":{query}"))),
                 _ => None,
             };
             out.extend(heading.map(Line::Heading));
@@ -323,16 +339,21 @@ impl Root {
                 name,
             });
         }
-        if let Some(guild) = self.current_guild() {
-            for id in found.roles {
-                entries.push(Entry::Role {
-                    id,
-                    name: guild.roles.get(&id).cloned().unwrap_or_default(),
-                    color: guild.role_info.get(&id).map_or(0, |info| info.color),
-                });
-            }
-        }
-        let listed = entries.len() + found.globals.len();
+        let roles: Vec<Entry> = self
+            .current_guild()
+            .map(|guild| {
+                found
+                    .roles
+                    .iter()
+                    .map(|&id| Entry::Role {
+                        id,
+                        name: guild.roles.get(&id).cloned().unwrap_or_default(),
+                        color: guild.role_info.get(&id).map_or(0, |info| info.color),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let listed = entries.len() + roles.len() + found.globals.len();
         entries.extend(found.globals.into_iter().map(Entry::Global));
         // `@game` (while the games setting is on) and `@time` follow `@everyone` and `@here`.
         entries.extend(
@@ -344,6 +365,8 @@ impl Root {
             .into_iter()
             .map(Entry::Global),
         );
+        // Module 496533's mention `renderResults`: members, then the global mentions, then the roles.
+        entries.extend(roles);
         entries
     }
 
@@ -1187,6 +1210,42 @@ mod tests {
             .collect();
         assert_eq!(shape, ["title", "row", "row", "rule", "row", "row"]);
         assert!(matches!(&list[0], Line::Heading(text) if text == "Members"));
+    }
+
+    fn role(id: u64) -> Entry {
+        Entry::Role {
+            id,
+            name: String::new(),
+            color: 0,
+        }
+    }
+
+    #[test]
+    fn the_mention_section_has_one_title_and_rules_between_its_groups() {
+        let list = lines(&open(
+            vec![user(1), Entry::Global(Global::Everyone), role(3)],
+            "",
+        ));
+        let shape: Vec<&str> = list
+            .iter()
+            .map(|line| match line {
+                Line::Heading(_) => "title",
+                Line::Divider => "rule",
+                Line::Row(_) => "row",
+            })
+            .collect();
+        assert_eq!(shape, ["title", "row", "rule", "row", "rule", "row"]);
+        assert!(matches!(&list[0], Line::Heading(text) if text == "Members"));
+    }
+
+    #[test]
+    fn without_members_the_title_is_options_or_roles() {
+        let list = lines(&open(vec![Entry::Global(Global::Here), role(3)], "h"));
+        assert!(matches!(&list[0], Line::Heading(text) if text == "Options matching @h"));
+        let list = lines(&open(vec![role(3)], "mo"));
+        assert!(matches!(&list[0], Line::Heading(text) if text == "Roles matching @mo"));
+        let list = lines(&open(vec![role(3)], ""));
+        assert!(matches!(&list[0], Line::Heading(text) if text == "Roles"));
     }
 
     #[test]
