@@ -5,6 +5,8 @@ use dc_state::User;
 
 /// How long the pointer rests on a pill before the popout opens (`setTimeout(..., 500)` in module 30492).
 pub(super) const DELAY_MS: u64 = 500;
+/// The same for a super reaction's pill (`t?750:500`).
+pub(super) const BURST_DELAY_MS: u64 = 750;
 /// The most reactors the popout names (`take(3)`).
 pub(super) const NAMED: usize = 3;
 
@@ -33,22 +35,55 @@ pub(super) fn names(body: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// The sentence for `names` and the reaction's `count` (the `reactionTooltip*` strings): one to three names, then
-/// "and N other(s)" for everyone else. Nothing when no name is known.
-pub(super) fn text(label: &str, names: &[String], count: usize) -> Option<String> {
-    let rest = count.saturating_sub(names.len());
-    let n = rest;
-    Some(match (names, rest) {
-        ([], _) => return None,
-        ([a], 0) => dc_intl::t!("Oro30L", emojiName = label, a = a),
-        ([a], _) => dc_intl::t!("mXild1", emojiName = label, a = a, n = n),
-        ([a, b], 0) => dc_intl::t!("p+0jvt", emojiName = label, a = a, b = b),
-        ([a, b], _) => dc_intl::t!("UWGs2n", emojiName = label, a = a, b = b, n = n),
-        ([a, b, c, ..], 0) => dc_intl::t!("bbPMcR", emojiName = label, a = a, b = b, c = c),
-        ([a, b, c, ..], _) => {
+/// The sentence for `names` and the reaction's `count` (the `reactionTooltip*` strings, or their super reaction
+/// forms for a `burst` pill): one to three names, then "and N other(s)" for everyone else. Nothing when no name is
+/// known.
+pub(super) fn text(label: &str, names: &[String], count: usize, burst: bool) -> Option<String> {
+    let n = count.saturating_sub(names.len());
+    Some(match (names, n, burst) {
+        ([], _, _) => return None,
+        ([a], 0, false) => dc_intl::t!("Oro30L", emojiName = label, a = a),
+        ([a], _, false) => dc_intl::t!("mXild1", emojiName = label, a = a, n = n),
+        ([a, b], 0, false) => dc_intl::t!("p+0jvt", emojiName = label, a = a, b = b),
+        ([a, b], _, false) => dc_intl::t!("UWGs2n", emojiName = label, a = a, b = b, n = n),
+        ([a, b, c, ..], 0, false) => {
+            dc_intl::t!("bbPMcR", emojiName = label, a = a, b = b, c = c)
+        }
+        ([a, b, c, ..], _, false) => {
             dc_intl::t!("UnXdX/", emojiName = label, a = a, b = b, c = c, n = n)
         }
+        ([a], 0, true) => dc_intl::t!("z4q3+w", emojiName = label, a = a),
+        ([a], _, true) => dc_intl::t!("u/03eN", emojiName = label, a = a, n = n),
+        ([a, b], 0, true) => dc_intl::t!("R2HykW", emojiName = label, a = a, b = b),
+        ([a, b], _, true) => dc_intl::t!("T4EYUu", emojiName = label, a = a, b = b, n = n),
+        ([a, b, c, ..], 0, true) => dc_intl::t!("sNl6XR", emojiName = label, a = a, b = b, c = c),
+        ([a, b, c, ..], _, true) => {
+            dc_intl::t!("M8bwl+", emojiName = label, a = a, b = b, c = c, n = n)
+        }
     })
+}
+
+/// The line under a super reaction's popout (module 30492 `eT`): what the account did, or may do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BurstPrompt {
+    /// "You've sent this Super Reaction", with the Nitro mark for a subscriber.
+    Sent { premium: bool },
+    /// "Add Super Reaction", for a subscriber.
+    Add,
+    /// The Nitro upsell line, for everyone else.
+    Upsell,
+}
+
+impl BurstPrompt {
+    pub(super) fn of(me_burst: bool, premium: bool) -> Self {
+        if me_burst {
+            Self::Sent { premium }
+        } else if premium {
+            Self::Add
+        } else {
+            Self::Upsell
+        }
+    }
 }
 
 #[cfg(test)]
@@ -62,11 +97,11 @@ mod tests {
     #[test]
     fn one_name() {
         assert_eq!(
-            text(":joy:", &list(&["ada"]), 1).as_deref(),
+            text(":joy:", &list(&["ada"]), 1, false).as_deref(),
             Some(":joy: reacted by ada")
         );
         assert_eq!(
-            text(":joy:", &list(&["ada"]), 2).as_deref(),
+            text(":joy:", &list(&["ada"]), 2, false).as_deref(),
             Some(":joy: reacted by ada and 1 other")
         );
     }
@@ -74,26 +109,44 @@ mod tests {
     #[test]
     fn two_and_three_names() {
         assert_eq!(
-            text(":a:", &list(&["x", "y"]), 2).as_deref(),
+            text(":a:", &list(&["x", "y"]), 2, false).as_deref(),
             Some(":a: reacted by x and y")
         );
         assert_eq!(
-            text(":a:", &list(&["x", "y"]), 5).as_deref(),
+            text(":a:", &list(&["x", "y"]), 5, false).as_deref(),
             Some(":a: reacted by x, y, and 3 others")
         );
         assert_eq!(
-            text(":a:", &list(&["x", "y", "z"]), 3).as_deref(),
+            text(":a:", &list(&["x", "y", "z"]), 3, false).as_deref(),
             Some(":a: reacted by x, y, and z")
         );
         assert_eq!(
-            text(":a:", &list(&["x", "y", "z"]), 9).as_deref(),
+            text(":a:", &list(&["x", "y", "z"]), 9, false).as_deref(),
             Some(":a: reacted by x, y, z, and 6 others")
         );
     }
 
     #[test]
+    fn super_reactions_have_their_own_sentences() {
+        assert_eq!(
+            text(":a:", &list(&["x"]), 1, true).as_deref(),
+            Some(":a: Super reacted by x")
+        );
+        assert_eq!(
+            text(":a:", &list(&["x", "y"]), 4, true).as_deref(),
+            Some(":a: Super reacted by x, y, and 2 others")
+        );
+        assert_eq!(
+            BurstPrompt::of(true, false),
+            BurstPrompt::Sent { premium: false }
+        );
+        assert_eq!(BurstPrompt::of(false, true), BurstPrompt::Add);
+        assert_eq!(BurstPrompt::of(false, false), BurstPrompt::Upsell);
+    }
+
+    #[test]
     fn nobody_known_means_no_popout() {
-        assert_eq!(text(":a:", &[], 4), None);
+        assert_eq!(text(":a:", &[], 4, false), None);
     }
 
     #[test]

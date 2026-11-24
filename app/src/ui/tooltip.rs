@@ -69,9 +69,49 @@ pub(super) enum Body {
         fetch_key: String,
         label: String,
         count: usize,
+        /// A super reaction's pill: its sentences, and the line under them.
+        burst: Option<super::reaction_tip::BurstPrompt>,
     },
     /// Green confirmation tooltip (`tooltipGreen_3_v8qp`, modules 664343 & 206845): `--green-360` background and white text.
     Green(SharedString),
+}
+
+/// The line under a super reaction's popout (`burstReactionTooltipPrompt` and `burstReactionTooltipSpacer` of
+/// module 912842: 12px above, a `--border-subtle` rule and 8px; the Nitro mark is 24px with 5px after it, and the
+/// text keeps `reactionTooltipText`'s 12px start). The upsell's "Unlock with Nitro" button is not drawn.
+fn burst_prompt(prompt: super::reaction_tip::BurstPrompt) -> AnyElement {
+    use super::reaction_tip::BurstPrompt;
+    let (mark, text, indented) = match prompt {
+        BurstPrompt::Sent { premium } => (premium, dc_intl::t!("ZbNJXn"), true),
+        BurstPrompt::Add => (true, dc_intl::t!("kVfuVu"), true),
+        BurstPrompt::Upsell => (false, dc_intl::t!("W1bMkq"), false),
+    };
+    div()
+        .w_full()
+        .mt(px(12.))
+        .pt(px(8.))
+        .border_t_1()
+        .border_color(color("--border-subtle"))
+        .flex()
+        .items_center()
+        .text_size(px(14.))
+        .line_height(px(18.))
+        .font_weight(FontWeight(400.))
+        .when(mark, |row| {
+            row.child(div().mr(px(5.)).flex_none().child(icon(
+                "nitro_wheel",
+                24.,
+                "--text-default",
+            )))
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .when(indented, |text| text.ml(px(12.)))
+                .child(text),
+        )
+        .into_any_element()
 }
 
 #[derive(Clone)]
@@ -806,15 +846,35 @@ impl Root {
                 fetch_key,
                 label,
                 count,
+                burst,
             } => {
                 let names = super::reaction_tip::names(self.fetched.get(fetch_key)?);
-                let text = super::reaction_tip::text(label, &names, *count)?;
+                let text = super::reaction_tip::text(label, &names, *count, burst.is_some())?;
                 let image = self.images.get(emoji).cloned();
-                // `reactionTooltip_5l5ajC` and `reactionTooltipInner_5l5ajC`.
+                // `reactionTooltipInner_5l5ajC` (or `burstReactionTooltipMessage_5l5ajC`): the emoji and the sentence.
+                let message = div()
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .size(px(32.))
+                            .flex_none()
+                            .children(image.map(|image| gpui::img(image).size(px(32.)))),
+                    )
+                    .child(
+                        div()
+                            .ml(px(12.))
+                            .min_w(px(0.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(400.))
+                            .child(text),
+                    );
+                // `reactionTooltip_5l5ajC`.
                 div()
                     .flex()
+                    .flex_col()
                     .flex_none()
-                    .items_center()
                     .max_w(px(288.))
                     .p(px(16.))
                     .overflow_hidden()
@@ -839,21 +899,8 @@ impl Root {
                     .font_family(SANS)
                     .font_features(kerning())
                     .text_color(color("--text-default"))
-                    .child(
-                        div()
-                            .size(px(32.))
-                            .flex_none()
-                            .children(image.map(|image| gpui::img(image).size(px(32.)))),
-                    )
-                    .child(
-                        div()
-                            .ml(px(12.))
-                            .min_w(px(0.))
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight(400.))
-                            .child(text),
-                    )
+                    .child(message)
+                    .children(burst.map(burst_prompt))
                     .into_any_element()
             }
             Body::Guild(id) => {

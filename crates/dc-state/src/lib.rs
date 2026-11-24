@@ -1202,24 +1202,44 @@ impl Guild {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Reaction {
     /// The unicode emoji, or a custom emoji's name.
     pub name: String,
     pub emoji_id: Option<Id>,
+    /// Plain reactions (`count_details.normal`, as module 432005 reads the message).
     pub count: u64,
     pub me: bool,
+    /// Super reactions (`count_details.burst`).
+    pub burst_count: u64,
+    pub me_burst: bool,
+    /// The emoji's colours that tint its super reaction pill.
+    pub burst_colors: Vec<String>,
 }
 
 impl Reaction {
     fn from_value(value: &Value) -> Option<Self> {
+        let details = &value["count_details"];
+        let total = value["count"].as_u64().unwrap_or(1);
         Some(Self {
             name: text(&value["emoji"]["name"])?,
             emoji_id: id(&value["emoji"]["id"]),
-            count: value["count"].as_u64().unwrap_or(1),
+            count: details["normal"].as_u64().unwrap_or(total),
             me: value["me"].as_bool().unwrap_or(false),
+            burst_count: details["burst"].as_u64().unwrap_or(0),
+            me_burst: value["me_burst"].as_bool().unwrap_or(false),
+            burst_colors: burst_colors(&value["burst_colors"]),
         })
     }
+}
+
+fn burst_colors(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|color| color.as_str().map(str::to_owned))
+        .collect()
 }
 
 fn attachment_scan_versions() -> &'static std::sync::Mutex<HashMap<Id, i64>> {
@@ -4119,6 +4139,8 @@ impl Stores {
             return;
         };
         let emoji_id = id(&data["emoji"]["id"]);
+        // A super reaction (`burst`, or `type: 1`) counts apart from the plain ones (module 383233).
+        let burst = data["burst"].as_bool().unwrap_or(false) || data["type"].as_u64() == Some(1);
         let found = message
             .reactions
             .iter()
@@ -4126,22 +4148,42 @@ impl Stores {
         match (found, change > 0) {
             (Some(index), _) => {
                 let reaction = &mut message.reactions[index];
-                if mine && reaction.me == (change > 0) {
+                let (count, me) = if burst {
+                    (&mut reaction.burst_count, &mut reaction.me_burst)
+                } else {
+                    (&mut reaction.count, &mut reaction.me)
+                };
+                if mine && *me == (change > 0) {
                     return;
                 }
-                reaction.count = reaction.count.saturating_add_signed(change);
+                *count = count.saturating_add_signed(change);
                 if mine {
-                    reaction.me = change > 0;
+                    *me = change > 0;
                 }
-                if reaction.count == 0 {
+                if burst && reaction.burst_colors.is_empty() {
+                    reaction.burst_colors = burst_colors(&data["burst_colors"]);
+                }
+                if reaction.count == 0 && reaction.burst_count == 0 {
                     message.reactions.remove(index);
                 }
             }
-            (None, true) => message.reactions.push(Reaction {
-                name,
-                emoji_id,
-                count: 1,
-                me: mine,
+            (None, true) => message.reactions.push(if burst {
+                Reaction {
+                    name,
+                    emoji_id,
+                    burst_count: 1,
+                    me_burst: mine,
+                    burst_colors: burst_colors(&data["burst_colors"]),
+                    ..Reaction::default()
+                }
+            } else {
+                Reaction {
+                    name,
+                    emoji_id,
+                    count: 1,
+                    me: mine,
+                    ..Reaction::default()
+                }
             }),
             (None, false) => {}
         }
@@ -4180,7 +4222,7 @@ impl Stores {
                 if reaction.me {
                     reaction.count = reaction.count.saturating_sub(1);
                     reaction.me = false;
-                    if reaction.count == 0 {
+                    if reaction.count == 0 && reaction.burst_count == 0 {
                         message.reactions.remove(index);
                     }
                 }
@@ -4190,6 +4232,7 @@ impl Stores {
                 emoji_id,
                 count: 1,
                 me: true,
+                ..Reaction::default()
             }),
             (None, false) => {}
         }
@@ -6082,6 +6125,38 @@ mod tests {
         assert_eq!((reaction.count, reaction.me), (1, false));
         stores.dispatch("MESSAGE_REACTION_REMOVE", &reaction_event("11"));
         assert!(stores.messages[&23][0].reactions.is_empty());
+    }
+
+    #[test]
+    fn super_reactions_count_apart_from_plain_ones() {
+        let mut stores = Stores {
+            current_user: Some(User {
+                id: 10,
+                ..User::default()
+            }),
+            ..Stores::default()
+        };
+        let mut value = message("5", "x");
+        value["reactions"] = json!([{"emoji": {"name": "\u{1f44d}", "id": null}, "count": 5,
+            "count_details": {"normal": 2, "burst": 3}, "me": false, "me_burst": true,
+            "burst_colors": ["#ff0000", "#00ff00"]}]);
+        stores.dispatch("MESSAGE_CREATE", &value);
+        let reaction = &stores.messages[&23][0].reactions[0];
+        assert_eq!((reaction.count, reaction.burst_count), (2, 3));
+        assert!(reaction.me_burst && !reaction.me);
+        assert_eq!(reaction.burst_colors, ["#ff0000", "#00ff00"]);
+        let mut burst = reaction_event("11");
+        burst["burst"] = json!(true);
+        stores.dispatch("MESSAGE_REACTION_ADD", &burst);
+        stores.dispatch("MESSAGE_REACTION_ADD", &reaction_event("11"));
+        let reaction = &stores.messages[&23][0].reactions[0];
+        assert_eq!((reaction.count, reaction.burst_count), (3, 4));
+        // A super reaction alone keeps the row.
+        for user in ["11", "12", "13"] {
+            stores.dispatch("MESSAGE_REACTION_REMOVE", &reaction_event(user));
+        }
+        let reaction = &stores.messages[&23][0].reactions[0];
+        assert_eq!((reaction.count, reaction.burst_count), (0, 4));
     }
 
     #[test]

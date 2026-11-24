@@ -3205,6 +3205,7 @@ mod tests {
             emoji_id: None,
             count,
             me: false,
+            ..dc_state::Reaction::default()
         };
         let mut message = Message::from_value(&json!({"id":"1","channel_id":"2","content":"",
             "timestamp":"2026-01-01T00:00:00+00:00","author":{"id":"3","username":"a"}}))

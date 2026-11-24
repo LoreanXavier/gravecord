@@ -201,6 +201,7 @@ mod avatar_play;
 mod billing_address;
 mod boost_cancel;
 mod boost_page;
+mod burst_colors;
 pub(crate) mod cdn;
 mod channel_browser;
 mod channel_link;
@@ -610,6 +611,16 @@ fn reply_badge() -> gpui::Div {
                 .w(px(10.8))
                 .h(px(7.2)),
         )
+}
+
+/// A colour from its channels and an alpha.
+fn rgba_of([r, g, b]: [u8; 3], alpha: f32) -> gpui::Rgba {
+    gpui::Rgba {
+        r: f32::from(r) / 255.,
+        g: f32::from(g) / 255.,
+        b: f32::from(b) / 255.,
+        a: alpha,
+    }
 }
 
 fn icon(name: &str, size: f32, tint: &str) -> gpui::Svg {
@@ -9288,11 +9299,44 @@ impl Root {
         if !self.pref_on("chat_emoji_render_reactions", true) {
             return None;
         }
-        let pills: Vec<AnyElement> = message
+        // Module 367790 `T`: each emoji's super reactions, when it has any, then its plain ones, as pills of their own.
+        let combined: Vec<(&dc_state::Reaction, bool)> = message
             .reactions
             .iter()
+            .flat_map(|reaction| {
+                [
+                    (reaction.burst_count > 0).then_some((reaction, true)),
+                    (reaction.count > 0).then_some((reaction, false)),
+                ]
+            })
+            .flatten()
+            .collect();
+        let premium = self
+            .stores
+            .account
+            .premium_type
+            .is_some_and(|tier| tier > 0);
+        let pills: Vec<AnyElement> = combined
+            .into_iter()
             .enumerate()
-            .map(|(index, reaction)| {
+            .map(|(index, (reaction, burst))| {
+                // Module 815807 `IN`: the pill is the account's when it reacted in the pill's own kind.
+                let mine = if burst {
+                    reaction.me_burst
+                } else {
+                    reaction.me
+                };
+                let count = if burst {
+                    reaction.burst_count
+                } else {
+                    reaction.count
+                };
+                // Module 891734 `g` (a dark theme): the burst pill's fill, border and count colours.
+                let look = burst
+                    .then(|| {
+                        burst_colors::burst_look(&reaction.burst_colors, f64::from(saturation()))
+                    })
+                    .flatten();
                 let image = match reaction.emoji_id {
                     Some(id) => self.images.get(&format!("emoji-id:{id}")).cloned(),
                     None => self
@@ -9304,14 +9348,19 @@ impl Root {
                     message.channel_id,
                     message.id,
                     reaction_route_name(reaction),
-                    !reaction.me,
+                    !mine,
                 );
                 let group = SharedString::from(format!("reaction-{}-{index}", message.id));
-                // Who reacted: the first three, fetched once when the pointer first reaches the pill.
-                let fetch_key =
-                    format!("reactors3:{}:{}", message.id, reaction_route_name(reaction));
+                // Who reacted: the first three of the pill's kind, fetched once when the pointer first reaches it.
+                let kind = u8::from(burst);
+                let fetch_key = format!(
+                    "reactors3:{}:{}{}",
+                    message.id,
+                    reaction_route_name(reaction),
+                    if burst { ":burst" } else { "" }
+                );
                 let fetch_route = format!(
-                    "/channels/{}/messages/{}/reactions/{}?limit={}&type=0",
+                    "/channels/{}/messages/{}/reactions/{}?limit={}&type={kind}",
                     message.channel_id,
                     message.id,
                     reactions_modal::encode(&reaction_route_name(reaction)),
@@ -9325,11 +9374,17 @@ impl Root {
                             &reaction.name,
                             reaction.emoji_id.is_some(),
                         ),
-                        count: reaction.count as usize,
+                        count: count as usize,
+                        burst: burst.then(|| reaction_tip::BurstPrompt::of(mine, premium)),
                     },
                     Side::Top,
                 )
-                .after(reaction_tip::DELAY_MS)
+                // A super reaction's popout waits 750ms (`t?750:500`).
+                .after(if burst {
+                    reaction_tip::BURST_DELAY_MS
+                } else {
+                    reaction_tip::DELAY_MS
+                })
                 .spaced(8.);
                 let pill = div()
                     .id(group.clone())
@@ -9343,11 +9398,30 @@ impl Root {
                     .items_center()
                     .cursor_pointer()
                     .border_1()
-                    .when(reaction.me, |this| {
+                    // The burst pill's inline style: the fill at its opacity, the border in the fill's colour while
+                    // it is the account's, and the glow (`burstGlow`: `0 0 16px` of the accent at .35).
+                    .when_some(look, |this, look| {
+                        this.bg(rgba_of(look.background, look.opacity))
+                            .border_color(rgba_of(look.background, if mine { 1. } else { 0. }))
+                            .when(!mine, |this| {
+                                this.hover(|this| {
+                                    this.border_color(color("--reaction-border-hover"))
+                                })
+                                .active(|this| this.border_color(color("--reaction-border-active")))
+                            })
+                            .shadow(vec![gpui::BoxShadow {
+                                color: rgba_of(look.accent, 0.35).into(),
+                                offset: gpui::point(px(0.), px(0.)),
+                                blur_radius: px(16.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            }])
+                    })
+                    .when(look.is_none() && mine, |this| {
                         this.bg(color("--reaction-background-reacted-default"))
                             .border_color(color("--reaction-border-reacted-default"))
                     })
-                    .when(!reaction.me, |this| {
+                    .when(look.is_none() && !mine, |this| {
                         this.bg(color("--reaction-background-default"))
                             .border_color(gpui::transparent_black())
                             .hover(|this| {
@@ -9376,6 +9450,11 @@ impl Root {
                         if this.lurked_guild_of(channel).is_some() {
                             return;
                         }
+                        // `B&&!ei`: a super reaction pill opens the Nitro upsell for an account without Nitro (not
+                        // drawn here), and does nothing more.
+                        if burst && !premium {
+                            return;
+                        }
                         if add {
                             this.track_reaction(&emoji);
                         }
@@ -9386,7 +9465,7 @@ impl Root {
                                 emoji: emoji.clone(),
                                 add,
                                 location: "Message",
-                                burst: false,
+                                burst,
                             },
                             cx,
                         );
@@ -9405,17 +9484,19 @@ impl Root {
                             .text_size(px(16.))
                             .line_height(px(16.))
                             .font_weight(FontWeight(600.))
-                            .text_color(if reaction.me {
+                            .text_color(if mine {
                                 color("--reaction-text-reacted-default")
                             } else {
                                 color("--text-subtle")
                             })
-                            .when(!reaction.me, |this| {
+                            .when(!mine && look.is_none(), |this| {
                                 this.group_hover(group.clone(), |this| {
                                     this.text_color(color("--reaction-text-hover"))
                                 })
                             })
-                            .child(self.rolling_count(message.id, index, reaction.count)),
+                            // The burst count is drawn in the accent (`color: t`).
+                            .when_some(look, |this, look| this.text_color(rgba_of(look.accent, 1.)))
+                            .child(self.rolling_count(message.id, index, count)),
                     )
                     // Not in the pinned client: WhoReacted (`plugin_hooks/who_reacted.rs`).
                     .children(self.who_reacted(message, &reaction_route_name(reaction), cx));

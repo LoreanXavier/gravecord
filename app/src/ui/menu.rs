@@ -1486,7 +1486,8 @@ impl Root {
             location: op.location,
             burst: op.burst,
         });
-        if !crate::inert::on() && !crate::storage::is_capture_run() {
+        // The optimistic change counts plain reactions; a super reaction waits for the gateway's echo.
+        if !op.burst && !crate::inert::on() && !crate::storage::is_capture_run() {
             let (name, emoji_id) = parse_reaction_route(&op.emoji);
             self.stores
                 .apply_own_reaction(channel, message, name, emoji_id, op.add);

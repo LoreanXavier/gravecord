@@ -261,7 +261,7 @@ fn round3(value: f64) -> f64 {
 }
 
 /// chroma-js `luminance`.
-fn luminance([r, g, b]: [f64; 3]) -> f64 {
+pub(super) fn luminance([r, g, b]: [f64; 3]) -> f64 {
     let channel = |x: f64| {
         let x = x / 255.;
         if x <= 0.03928 {
@@ -274,13 +274,13 @@ fn luminance([r, g, b]: [f64; 3]) -> f64 {
 }
 
 /// chroma-js `contrast`.
-fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
+pub(super) fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
     let (la, lb) = (luminance(a), luminance(b));
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
 /// chroma-js `rgb2hsl`: hue in degrees, saturation and lightness 0 to 1.
-fn to_hsl([r, g, b]: [f64; 3]) -> [f64; 3] {
+pub(super) fn to_hsl([r, g, b]: [f64; 3]) -> [f64; 3] {
     let (r, g, b) = (r / 255., g / 255., b / 255.);
     let min = r.min(g).min(b);
     let max = r.max(g).max(b);
@@ -308,7 +308,7 @@ fn to_hsl([r, g, b]: [f64; 3]) -> [f64; 3] {
 }
 
 /// chroma-js `hsl2rgb` (no rounding).
-fn from_hsl([h, s, l]: [f64; 3]) -> [f64; 3] {
+pub(super) fn from_hsl([h, s, l]: [f64; 3]) -> [f64; 3] {
     if s == 0. || h.is_nan() {
         return [l * 255.; 3];
     }
