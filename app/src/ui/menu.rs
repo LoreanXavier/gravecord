@@ -16,6 +16,28 @@ const EDGE_MARGIN: f32 = 8.;
 const MORE_GAP: f32 = 8.;
 const MORE_EDGE: f32 = 12.;
 const MENU_WIDTH: f32 = 222.;
+/// `--custom-menu-viewport-padding` as the Menu of module 165862 sets it: the `.menu_M3qk4j` fallback max-height is
+/// `calc(100vh - var(--custom-menu-viewport-padding)*2)`.
+const MENU_VIEWPORT_PADDING: f32 = 48.;
+
+/// The hover bar menu's top and max-height for a More button at `button_top` (ReferencePositionLayer, module 623646).
+/// The layer measures the menu before its first layout sets `--reference-position-layer-max-height`, so a tall menu
+/// is measured at the CSS fallback cap. `nudgeTopAlignment` then lifts that measured height to keep 12px off the
+/// bottom, and `calculateMaxHeight` caps the menu at the room below its top less 12; the rest scrolls.
+fn more_menu_place(button_top: f32, viewport: f32, natural: f32) -> (f32, f32) {
+    let measured = natural.min(viewport - 2. * MENU_VIEWPORT_PADDING).ceil();
+    let top = if button_top < 0. {
+        0.
+    } else {
+        let overflow = button_top + measured - viewport + MORE_EDGE;
+        if overflow > 0. {
+            (button_top - overflow).max(MORE_EDGE)
+        } else {
+            button_top
+        }
+    };
+    (top, (viewport - top - MORE_EDGE).max(0.))
+}
 
 /// The official submenu's transparent horizontal padding is part of its hover area (165862 / M3qk4j).
 fn in_submenu(bounds: &gpui::Bounds<Pixels>, point: Point<Pixels>) -> bool {
@@ -1780,19 +1802,23 @@ impl Root {
             });
         }
         let pointer_anchor = matches!(open.anchor, Anchor::Pointer(_));
-        let (position, margin) = match open.anchor {
-            Anchor::Pointer(at) => (at, EDGE_MARGIN),
+        let viewport_height = f32::from(window.viewport_size().height);
+        let (position, margin, max_height) = match open.anchor {
+            Anchor::Pointer(at) => (
+                at,
+                EDGE_MARGIN,
+                (viewport_height - 2. * MENU_VIEWPORT_PADDING).max(120.),
+            ),
             Anchor::MoreButton(at) => {
-                let estimate = self.menu_height(open.own, open.message);
-                let bottom_room = f32::from(window.viewport_size().height) - MORE_EDGE;
-                let top = f32::from(at.y).min(bottom_room - estimate).max(MORE_EDGE);
+                let natural = self.menu_height(open.own, open.message);
+                let (top, max_height) = more_menu_place(f32::from(at.y), viewport_height, natural);
                 (
                     gpui::point(at.x - px(MORE_GAP + MENU_WIDTH), px(top)),
                     MORE_EDGE,
+                    max_height,
                 )
             }
         };
-        let max_height = (f32::from(window.viewport_size().height) - 96.).max(120.);
         let menu = deferred(
             anchored()
                 .position(position)
@@ -2367,6 +2393,20 @@ mod priority_tests {
     }
 
     use super::{Action, Item, message_items};
+
+    #[test]
+    fn more_menu_is_placed_from_its_first_capped_measure() {
+        use super::more_menu_place;
+        // design/dom/menus/message-more: a 633px menu is measured at the 624px fallback cap, so it opens at 84 and
+        // scrolls inside 624.
+        assert_eq!(more_menu_place(571., 720., 633.), (84., 624.));
+        // design/dom/menus/add-reaction-submenu: a 597px menu fits the cap and sits 12px off the bottom.
+        assert_eq!(more_menu_place(571., 720., 597.), (111., 597.));
+        // A short menu stays top-aligned with the button.
+        assert_eq!(more_menu_place(100., 720., 300.), (100., 608.));
+        // A short window caps the measure the same way.
+        assert_eq!(more_menu_place(250., 300., 633.), (84., 204.));
+    }
 
     #[test]
     fn submenu_hover_keeps_the_horizontal_crossing_area_only() {
