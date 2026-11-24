@@ -30,6 +30,8 @@ pub(super) struct AppIntegration {
     pub(super) bot_scope: bool,
     /// `getUserTag` of who added it.
     pub(super) user: Option<String>,
+    /// The application's description, shown on its page.
+    pub(super) description: Option<String>,
 }
 
 impl AppIntegration {
@@ -69,6 +71,10 @@ pub(super) fn app_integrations(list: &Value) -> Vec<AppIntegration> {
             app: app.to_owned(),
             name: application["name"].as_str().unwrap_or_default().to_owned(),
             icon: application["icon"].as_str().map(str::to_owned),
+            description: application["description"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned),
             bot: bot["id"].as_str().map(|_| {
                 let flags = bot["public_flags"].as_u64().unwrap_or(0);
                 (
@@ -194,7 +200,9 @@ impl Root {
         guild: Id,
         app: &AppIntegration,
         webhooks: usize,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
+        let app_id = app.app.clone();
         let picture = app
             .icon_url()
             .and_then(|url| self.images.get(&url).cloned());
@@ -278,6 +286,13 @@ impl Root {
             .bg(color("--card-background-default"))
             .border_color(color("--border-subtle"))
             .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(open) = this.server_settings.as_mut() {
+                    open.app_open = Some(app_id.clone());
+                    open.scroll.set_offset(gpui::point(px(0.), px(0.)));
+                }
+                cx.notify();
+            }))
             .flex()
             .items_center()
             .child(
@@ -361,6 +376,299 @@ impl Root {
             .into_any_element()
     }
 
+    /// The app's page behind Manage (`e3` of module 986057): the breadcrumb, the header (`ep` with `isHeader`: the 48px
+    /// icon, the name in `heading-xl/semibold`, "Added on" and "Added by" 40px apart), the description, the 32px
+    /// divider, the Bot section (its bot, or "This application does not have a bot in this server."), the Webhooks
+    /// section, another divider, then the Remove App row. Not drawn: the commands and their permission overrides
+    /// (`er`, it needs the app's command index), the bot's roles and permission lists (they need its member), and the
+    /// webhooks' editors.
+    pub(super) fn app_page(&self, guild: Id, app_id: &str, cx: &mut Context<Self>) -> AnyElement {
+        let Some(app) = self
+            .app_integration_list(guild)
+            .and_then(|apps| apps.into_iter().find(|app| app.app == app_id))
+        else {
+            return div().into_any_element();
+        };
+        let picture = app
+            .icon_url()
+            .and_then(|url| self.images.get(&url).cloned());
+        let added = app.added_ms().and_then(|ms| {
+            chrono::DateTime::from_timestamp_millis(ms).map(|at| {
+                at.with_timezone(&chrono::Local)
+                    .format("%b %-d, %Y")
+                    .to_string()
+            })
+        });
+        let mut details: Vec<(&'static str, String)> = Vec::new();
+        if let Some(date) = added {
+            details.push((
+                "oauth_entry_clock",
+                dc_intl::format(
+                    "gcdJ8J",
+                    &[(
+                        "timestamp",
+                        dc_intl::Arg::When {
+                            date: date.clone().into(),
+                            time: date.into(),
+                        },
+                    )],
+                ),
+            ));
+        }
+        if let Some(user) = &app.user {
+            details.push((
+                "app_page_user",
+                dc_intl::format("qE7oqs", &[("user", user.as_str().into())]),
+            ));
+        }
+        // `MANAGE_WEBHOOKS` and `MANAGE_GUILD`.
+        let can_manage_webhooks = self.my_permission(guild, None, 1 << 29);
+        let can_remove = self.my_permission(guild, None, super::server_members::MANAGE_GUILD);
+        let webhooks = app_webhooks(&app.app, self.stores.integrations.webhooks_for_guild(guild));
+        // `header_-KMphV`: 24px down, 16px under, the 24px icon 8px before `heading-sm/semibold`.
+        let section_header = |glyph: &'static str, title: &'static str| {
+            div()
+                .mt(px(24.))
+                .mb(px(16.))
+                .flex()
+                .items_center()
+                .child(icon(glyph, 24., "--interactive-text-default").mr(px(8.)))
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t(title)),
+                )
+        };
+        // `emptyCard_vPsX0I`: 36px 16px, centred `body-sm/normal` in `text-muted`.
+        let empty_card = |key: &'static str| {
+            div()
+                .py(px(36.))
+                .px(px(16.))
+                .rounded(px(8.))
+                .bg(color("--card-background-default"))
+                .flex()
+                .justify_center()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .text_color(color("--text-muted"))
+                .child(dc_intl::t(key))
+        };
+        let divider = || div().my(px(32.)).h(px(1.)).bg(color("--border-subtle"));
+        let bot_section = app.bot.as_ref().map(|(name, verified)| {
+            let body = if app.bot_scope {
+                // `ek`'s top row (`card_uhMkuK`): the 32px picture 8px before the bot's name and its tag.
+                let tag = if *verified { "xxcTGy" } else { "AOdOYr" };
+                div()
+                    .mb(px(16.))
+                    .py(px(20.))
+                    .px(px(16.))
+                    .rounded(px(8.))
+                    .bg(color("--card-background-default"))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .size(px(32.))
+                            .mr(px(8.))
+                            .flex_none()
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(color("--background-surface-high"))
+                            .children(picture.clone().map(|picture| img(picture).size(px(32.)))),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-strong"))
+                            .child(name.clone()),
+                    )
+                    .child(
+                        // GAP: the bot tag component (`eC.A`) is drawn as the list's small tag.
+                        div()
+                            .ml(px(4.))
+                            .px(px(4.))
+                            .rounded(px(4.))
+                            .bg(color("--control-brand-foreground"))
+                            .text_size(px(10.))
+                            .line_height(px(15.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t(tag).to_uppercase()),
+                    )
+                    .into_any_element()
+            } else {
+                empty_card("pfLnza").into_any_element()
+            };
+            div()
+                .mb(px(32.))
+                .child(section_header("oauth_entry_robot", "AOdOYr"))
+                .child(body)
+        });
+        let breadcrumb = div()
+            .mb(px(20.))
+            .flex()
+            .items_center()
+            .text_size(px(20.))
+            .line_height(px(24.))
+            .font_weight(FontWeight(600.))
+            .child(
+                div()
+                    .id("server-app-back")
+                    .cursor_pointer()
+                    .text_color(color("--text-default"))
+                    .child("Integrations")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.server_settings.as_mut() {
+                            open.app_open = None;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(div().w(px(18.)).flex().justify_center().child(icon(
+                "settings_chevron",
+                12.,
+                "--text-muted",
+            )))
+            .child(
+                div()
+                    .text_color(color("--text-strong"))
+                    .child(app.name.clone()),
+            );
+        let header = div()
+            .flex()
+            .gap(px(16.))
+            .when_some(app.icon_url(), |this, _| {
+                this.child(
+                    div()
+                        .size(px(48.))
+                        .flex_none()
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(color("--background-surface-high"))
+                        .children(picture.clone().map(|picture| img(picture).size(px(48.)))),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .child(
+                        div()
+                            .mb(px(8.))
+                            .text_size(px(24.))
+                            .line_height(px(32.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(app.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .children(details.into_iter().map(|(glyph, text)| {
+                                // `detailsWrapper__wphjE headerDetailsWrapper__wphjE`.
+                                div()
+                                    .mt(px(4.))
+                                    .mr(px(40.))
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        icon(glyph, 12., "--interactive-text-default").mr(px(4.)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .text_color(color("--text-default"))
+                                            .child(text),
+                                    )
+                            })),
+                    ),
+            );
+        let webhooks_body = if webhooks > 0 {
+            div()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .text_color(color("--text-default"))
+                .child(dc_intl::format(
+                    "6HqDfT",
+                    &[("count", (webhooks as f64).into())],
+                ))
+                .into_any_element()
+        } else {
+            empty_card(if can_manage_webhooks {
+                "ahPd2Y"
+            } else {
+                "axqYMl"
+            })
+            .into_any_element()
+        };
+        let remove = div()
+            .mb(px(32.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(16.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-default"))
+                    .child(dc_intl::t(if can_remove { "hdneL4" } else { "xRCMqx" })),
+            )
+            .child(
+                // `critical-primary`, `sm`. GAP: the confirmation it opens (`e8`) is not built yet.
+                div()
+                    .id("server-app-remove")
+                    .flex_none()
+                    .h(px(32.))
+                    .px(px(11.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--control-critical-primary-border-default"))
+                    .bg(color("--control-critical-primary-background-default"))
+                    .when(!can_remove, |this| this.opacity(0.5))
+                    .flex()
+                    .items_center()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--white"))
+                    .child(dc_intl::t("ebGf4m")),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .child(breadcrumb)
+            .child(header)
+            .children(app.description.clone().map(|text| {
+                // `headerDescription_vPsX0I`: 14px, 16px under the header.
+                div()
+                    .mt(px(16.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-default"))
+                    .child(text)
+            }))
+            .child(divider())
+            .children(bot_section)
+            .child(
+                div()
+                    .mb(px(32.))
+                    .child(section_header("integrations_webhook", "t9ZX/I"))
+                    .child(webhooks_body),
+            )
+            .child(divider())
+            .child(remove)
+            .into_any_element()
+    }
+
     /// `EVWFNr`'s card: the 256x72 picture 24px over the line (`emptyStateSearchImage_2S81sZ`), the line in
     /// `body-sm/normal` `text-muted` inside the 128px card.
     pub(super) fn app_search_empty(&self) -> AnyElement {
@@ -416,6 +724,7 @@ mod tests {
             Some("https://cdn.discordapp.com/app-icons/10/abc.png?size=48&keep_aspect_ratio=false")
         );
         assert_eq!(apps[1].bot, None);
+        assert_eq!(apps[0].description, None);
         assert!(app_matches(&apps[0], "hlp", false));
         assert!(!app_matches(&apps[0], "hlp", true));
         assert!(app_matches(&apps[0], "10", true));

@@ -296,6 +296,8 @@ pub(crate) struct ServerSettings {
     /// Bots and Apps' search box and what it holds.
     pub(super) apps_search: Option<(Entity<Editor>, gpui::Subscription)>,
     pub(super) apps_query: String,
+    /// The app whose page Manage opened.
+    pub(super) app_open: Option<String>,
     pub(super) community: Option<super::server_community::Wizard>,
     pub(super) overview: Option<super::server_community::Overview>,
     pub(super) boost: super::server_boost::BoostState,
@@ -479,6 +481,7 @@ impl Root {
             members_hscroll: Default::default(),
             apps_search: None,
             apps_query: String::new(),
+            app_open: None,
             community: None,
             overview: None,
             boost: Default::default(),
@@ -1289,6 +1292,8 @@ impl Root {
                                         return;
                                     };
                                     open.page = target;
+                                    // `t6` sets the section back to the overview when the page unmounts.
+                                    open.app_open = None;
                                     let guild = open.guild;
                                     this.request_server_page(guild, target, cx);
                                     cx.notify();
@@ -1335,6 +1340,10 @@ impl Root {
             Page::Invites => self.server_invites_page(open.guild, cx),
             Page::Integrations if open.webhooks.showing => {
                 self.server_webhooks_page(open.guild, cx)
+            }
+            Page::Integrations if open.app_open.is_some() => {
+                let app = open.app_open.clone().unwrap_or_default();
+                self.app_page(open.guild, &app, cx)
             }
             Page::Integrations => self.server_integrations_page(open.guild, cx),
             Page::AppDirectory => Self::server_page_title("App Directory"),

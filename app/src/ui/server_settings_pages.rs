@@ -496,7 +496,7 @@ impl Root {
                     .filter(|app| super::integration_apps::app_matches(app, &query, many))
                     .map(|app| {
                         let hooks = super::integration_apps::app_webhooks(&app.app, &webhooks);
-                        self.app_integration_card(guild, app, hooks)
+                        self.app_integration_card(guild, app, hooks, cx)
                     })
                     .collect();
                 let search = (apps.len() > 4)
