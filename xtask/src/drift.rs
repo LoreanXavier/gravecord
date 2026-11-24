@@ -1522,6 +1522,12 @@ impl FrameReport {
     }
 }
 
+fn mtime(path: &Path) -> std::time::SystemTime {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .unwrap_or(std::time::UNIX_EPOCH)
+}
+
 fn modified(path: &Path) -> String {
     let Ok(time) = fs::metadata(path).and_then(|meta| meta.modified()) else {
         return String::new();
@@ -1745,12 +1751,13 @@ fn analyze(repo: &Path, dirs: &[PathBuf], out: &Path) -> Result<String> {
             }
         }
     }
-    // The same screen from two folders: the newest frame wins.
+    // The same screen from two folders: a sweep frame (with its scene) beats an older one, else the later file wins.
+    let rank = |report: &FrameReport| (report.has_scene, mtime(&report.frame));
     let mut by_key: BTreeMap<String, FrameReport> = BTreeMap::new();
     for report in reports {
         let newer = by_key
             .get(&report.key)
-            .is_none_or(|old| old.modified <= report.modified);
+            .is_none_or(|old| rank(old) <= rank(&report));
         if newer {
             by_key.insert(report.key.clone(), report);
         }

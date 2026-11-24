@@ -6,7 +6,7 @@ use gpui::{ParentElement, Styled};
 #[cfg(feature = "capture")]
 mod registry {
     use gpui::{Bounds, Pixels};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
@@ -18,6 +18,9 @@ mod registry {
         /// Each probe in the order it was laid out, with the content mask it was drawn under (the visible part of
         /// its overflow-hidden ancestors), for `cargo xtask drift`'s structural checks.
         static PROBES: RefCell<Vec<Probe>> = const { RefCell::new(Vec::new()) };
+        /// Probes are collected only between `clear` and the capture that reads them (`write_scene`, `snapshot`):
+        /// every other frame of a long capture run (`--follow`, perf) would grow the list without end.
+        static ARMED: Cell<bool> = const { Cell::new(false) };
     }
 
     fn rect(bounds: Bounds<Pixels>) -> [f32; 4] {
@@ -32,12 +35,22 @@ mod registry {
     pub fn record(id: &str, bounds: Bounds<Pixels>, mask: Bounds<Pixels>) {
         let value = rect(bounds);
         BOUNDS.with(|map| map.borrow_mut().insert(id.to_owned(), value));
-        PROBES.with(|probes| probes.borrow_mut().push((id.to_owned(), value, rect(mask))));
+        if ARMED.with(Cell::get) {
+            PROBES.with(|probes| probes.borrow_mut().push((id.to_owned(), value, rect(mask))));
+        }
     }
 
+    /// Starts a capture: the bounds and probes of the next draw are collected.
     pub fn clear() {
         BOUNDS.with(|map| map.borrow_mut().clear());
         PROBES.with(|probes| probes.borrow_mut().clear());
+        ARMED.with(|armed| armed.set(true));
+    }
+
+    /// Ends a capture: probes are no longer collected and the list is freed.
+    fn disarm() {
+        ARMED.with(|armed| armed.set(false));
+        PROBES.with(|probes| *probes.borrow_mut() = Vec::new());
     }
 
     /// `<frame>.scene.json`: the window, every probe with its mask in layout order, and the painted quads with theirs
@@ -97,11 +110,13 @@ mod registry {
             );
         }
         body.push_str("\n  ]\n}\n");
+        disarm();
         let _ = std::fs::write(path, body);
     }
 
     /// Every recorded id with its bounds.
     pub fn snapshot() -> Vec<(String, [f32; 4])> {
+        disarm();
         BOUNDS.with(|map| {
             map.borrow()
                 .iter()
