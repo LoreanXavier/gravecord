@@ -530,6 +530,7 @@ impl Root {
                 .child(
                     div()
                         .flex_1()
+                        .min_w(px(0.))
                         .text_size(px(14.))
                         .line_height(px(18.))
                         .text_color(color("--text-default"))

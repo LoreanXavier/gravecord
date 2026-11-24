@@ -202,29 +202,45 @@ impl Root {
             .flex()
             .items_start()
             .child(
-                div()
-                    .id("profile-editor-select")
-                    .mt(px(4.))
-                    .h(px(32.))
-                    .pl(px(8.))
-                    .pr(px(4.))
-                    .rounded(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(color("--background-mod-subtle")))
-                    .children(leading)
-                    .child(text(name, 16., 20., 500., "--text-strong"))
-                    .child(icon("chevron_down", 18., "--text-strong"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(open) = this.profile_editor.as_mut() {
-                            open.select_open = !open.select_open;
-                        }
-                        cx.notify();
-                    })),
+                // `container_VrghH6`: `flex: 1; min-width: 0`.
+                div().flex_1().min_w(px(0.)).flex().child(
+                    div()
+                        .id("profile-editor-select")
+                        .mt(px(4.))
+                        .h(px(32.))
+                        .pl(px(8.))
+                        .pr(px(4.))
+                        .rounded(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(color("--background-mod-subtle")))
+                        // `selectButton_VrghH6`: `max-width: 100%` inside the `flex: 1; min-width: 0` container, with
+                        // the label clamped to one line (`lineClamp: 1`).
+                        .max_w_full()
+                        .min_w(px(80.))
+                        .children(leading)
+                        .child(div().flex_1().min_w(px(0.)).truncate().child(text(
+                            name,
+                            16.,
+                            20.,
+                            500.,
+                            "--text-strong",
+                        )))
+                        .child(
+                            div()
+                                .flex_none()
+                                .child(icon("chevron_down", 18., "--text-strong")),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(open) = this.profile_editor.as_mut() {
+                                open.select_open = !open.select_open;
+                            }
+                            cx.notify();
+                        })),
+                ),
             )
-            .child(div().flex_1())
             .child(
                 div()
                     .id("profile-editor-collapse")

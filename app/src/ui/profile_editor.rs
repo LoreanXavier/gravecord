@@ -1237,6 +1237,13 @@ impl Root {
             // `try-it-out`: "Reimagine your profile with Nitro" (module 536015), whose callers are the legacy
             // profile settings and the design system's playground.
             ["try-it-out"] => self.open_try_it_out_upsell(cx),
+            // `guild <id>`: the open editor switches to that server's profile, as its profile select does.
+            ["guild", id] => {
+                let Ok(id) = id.parse() else {
+                    return format!("profile-editor: bad guild id {id}");
+                };
+                self.profile_editor_select_guild(Some(id), cx);
+            }
             ["tab", which] => {
                 if let Some(open) = self.profile_editor.as_mut() {
                     open.tab = match *which {
