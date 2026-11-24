@@ -571,13 +571,11 @@ impl Root {
             .collect();
         let scroll = self.message_requests.scroll.clone();
         let title = if spam {
-            // `C79Edh`.
-            format!("Spam - {count}")
+            dc_intl::t!("C79Edh", count = count.to_string())
         } else if count > 0 {
-            // `rA4iWY`.
-            format!("Pending Requests \u{2014} {count}")
+            dc_intl::t!("rA4iWY", count = count.to_string())
         } else {
-            "Pending Requests".to_owned()
+            dc_intl::t("flPU6g").to_owned()
         };
         div()
             .id("mr-scroll")

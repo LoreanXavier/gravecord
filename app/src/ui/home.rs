@@ -1136,6 +1136,7 @@ impl Root {
                 })
                 .into_any_element();
         }
+        self.friends_fall_back_to_add(cx);
         let people = self.friends_people(window, cx);
         let wide = f32::from(window.viewport_size().width) > 1200.;
         div()

@@ -25,6 +25,18 @@ pub(super) const FRIEND_REQUEST_KEY: &str = "friend-request:";
 pub(super) const OPEN_DM_KEY: &str = "open-dm";
 const WUMPUS: &str = "https://discordapp.com/assets/25c27c1328c986f6.svg";
 
+/// `getRelationshipCounts` of the four kinds `Az` reads: friends, incoming and outgoing requests, and blocked.
+pub(super) fn no_relationships(
+    relationships: &std::collections::HashMap<dc_state::Id, u64>,
+) -> bool {
+    !relationships.values().any(|kind| {
+        matches!(
+            *kind,
+            RELATIONSHIP_FRIEND | RELATIONSHIP_INCOMING | RELATIONSHIP_OUTGOING | 2
+        )
+    })
+}
+
 // 396478 and friendsEmpty_Bb-Yop: the 440px note wrapper fills the remaining people column.
 fn friends_empty(note: &'static str) -> gpui::Div {
     friends_empty_with(note, None)
@@ -129,6 +141,25 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.select_friends_tab(tab, cx);
+        if tab == FriendsTab::Add
+            && let Some(form) = self.add_friend.as_ref()
+        {
+            window.focus(&form.name.read(cx).focus_handle(cx), cx);
+        }
+        cx.notify();
+    }
+
+    /// Module 596339 `Az`: with no friend, no request either way and nobody blocked, the page moves to Add Friend
+    /// (`transitionToSection(ADD_FRIEND)`); otherwise the chosen section stays, even when its tab is hidden.
+    pub(super) fn friends_fall_back_to_add(&mut self, cx: &mut Context<Self>) {
+        if self.friends_tab != FriendsTab::Add && no_relationships(&self.stores.relationships) {
+            self.select_friends_tab(FriendsTab::Add, cx);
+        }
+    }
+
+    /// The section change of `set_friends_tab`, without moving the focus.
+    fn select_friends_tab(&mut self, tab: FriendsTab, cx: &mut Context<Self>) {
         self.friends_tab = tab;
         if tab == FriendsTab::Add {
             self.request_image("friends-wumpus".to_owned(), WUMPUS.to_owned());
@@ -179,12 +210,6 @@ impl Root {
                 result: None,
             });
         }
-        if tab == FriendsTab::Add
-            && let Some(form) = self.add_friend.as_ref()
-        {
-            window.focus(&form.name.read(cx).focus_handle(cx), cx);
-        }
-        cx.notify();
     }
 
     fn people_search_field(&mut self, cx: &mut Context<Self>) -> Entity<Editor> {
@@ -449,8 +474,15 @@ impl Root {
                 (dc_intl::t!("rHRrhC", count = list.len().to_string()), list)
             }
             FriendsTab::Pending => {
+                // Module 596339 `m`: Received (incoming) first, then Sent, each under its own title.
                 let list = pending_people_rows(&self.stores, matches);
-                (dc_intl::t!("XIpar2", count = list.len().to_string()), list)
+                let (received, sent) = pending_section_counts(&list);
+                let title = if received > 0 {
+                    dc_intl::t!("g+3FIa", count = received.to_string())
+                } else {
+                    dc_intl::t!("npJsRl", count = sent.to_string())
+                };
+                (title, list)
             }
         }
     }
@@ -1287,7 +1319,31 @@ impl Root {
                             .flex_col()
                             .overflow_y_scroll()
                             .children(people.iter().enumerate().map(|(index, (user, kind))| {
-                                self.person_row(user, *kind, index == 0, cx)
+                                // The Sent section's title (`sectionTitle_wVFOQW`, `title_lBh9qJ`: 16px above
+                                // and below, 24px in) before its first row when Received comes first.
+                                let (received, sent) = pending_section_counts(&people);
+                                let sent_title = self.friends_tab == FriendsTab::Pending
+                                    && received > 0
+                                    && index == received;
+                                div()
+                                    .flex_none()
+                                    .when(sent_title, |rows| {
+                                        rows.child(
+                                            div()
+                                                .my(px(16.))
+                                                .ml(px(24.))
+                                                .mr(px(20.))
+                                                .text_size(px(14.))
+                                                .line_height(px(18.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-default"))
+                                                .child(dc_intl::t!(
+                                                    "npJsRl",
+                                                    count = sent.to_string()
+                                                )),
+                                        )
+                                    })
+                                    .child(self.person_row(user, *kind, index == 0, cx))
                             })),
                     )
             })
@@ -1484,8 +1540,23 @@ fn pending_people_rows(
         .filter_map(|(user, kind)| Some((stores.users.get(user)?.clone(), *kind)))
         .filter(|(user, _)| matches(user))
         .collect();
-    list.sort_by_key(|(user, _)| user.display_name().to_lowercase());
+    // Received first, then Sent; by name within each.
+    list.sort_by_key(|(user, kind)| {
+        (
+            *kind != RELATIONSHIP_INCOMING,
+            user.display_name().to_lowercase(),
+        )
+    });
     list
+}
+
+/// How many rows each Pending section holds: (Received, Sent).
+pub(super) fn pending_section_counts(list: &[(User, u64)]) -> (usize, usize) {
+    let received = list
+        .iter()
+        .filter(|(_, kind)| *kind == RELATIONSHIP_INCOMING)
+        .count();
+    (received, list.len() - received)
 }
 
 /// Returns `(key, url)` for `want_image` when `user`'s avatar is not yet in `images`.
@@ -1559,7 +1630,8 @@ mod action_tests {
             rows.iter()
                 .map(|(u, kind)| (u.id, *kind))
                 .collect::<Vec<_>>(),
-            vec![(102, RELATIONSHIP_OUTGOING), (101, RELATIONSHIP_INCOMING)]
+            // Received comes before Sent (module 596339 `m`).
+            vec![(101, RELATIONSHIP_INCOMING), (102, RELATIONSHIP_OUTGOING)]
         );
 
         let mut images = HashMap::new();
@@ -1572,5 +1644,52 @@ mod action_tests {
             );
             assert_eq!(missing_person_avatar(user, &images), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::{
+        RELATIONSHIP_FRIEND, RELATIONSHIP_INCOMING, RELATIONSHIP_OUTGOING, no_relationships,
+    };
+
+    #[test]
+    fn only_no_relationship_of_the_four_kinds_moves_to_add_friend() {
+        let mut map = std::collections::HashMap::new();
+        assert!(no_relationships(&map));
+        // An implicit relationship (5) does not count.
+        map.insert(1, 5);
+        assert!(no_relationships(&map));
+        for kind in [
+            RELATIONSHIP_FRIEND,
+            2,
+            RELATIONSHIP_INCOMING,
+            RELATIONSHIP_OUTGOING,
+        ] {
+            map.insert(2, kind);
+            assert!(!no_relationships(&map));
+        }
+    }
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use super::{RELATIONSHIP_INCOMING, RELATIONSHIP_OUTGOING, pending_section_counts};
+    use dc_state::User;
+
+    #[test]
+    fn pending_splits_into_received_and_sent() {
+        let user = |id| User {
+            id,
+            ..User::default()
+        };
+        let list = vec![
+            (user(1), RELATIONSHIP_INCOMING),
+            (user(2), RELATIONSHIP_INCOMING),
+            (user(3), RELATIONSHIP_OUTGOING),
+        ];
+        assert_eq!(pending_section_counts(&list), (2, 1));
+        assert_eq!(pending_section_counts(&list[2..]), (0, 1));
+        assert_eq!(dc_intl::t!("g+3FIa", count = "2"), "Received \u{2014} 2");
     }
 }
