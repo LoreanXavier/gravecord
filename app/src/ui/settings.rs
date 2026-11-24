@@ -2967,6 +2967,46 @@ pub(in crate::ui) fn auto_scrollbar(handle: ScrollHandle) -> impl IntoElement {
     .h_full()
 }
 
+/// Where a scroll bar's thumb starts along its gutter and how long it is: the viewport's share of the content, at
+/// least 40px, moved by the share scrolled.
+fn scroll_thumb(viewport: f32, max: f32, scrolled: f32) -> (f32, f32) {
+    let length = (viewport * viewport / (viewport + max)).max(40.);
+    let at = if max > 0. {
+        scrolled.clamp(0., max) / max
+    } else {
+        0.
+    };
+    ((viewport - length) * at, length)
+}
+
+/// `auto_tqapBM` across: a 16px gutter at the bottom whose thumb keeps 4px clear on every side, at least 40px long.
+pub(in crate::ui) fn auto_scrollbar_x(handle: ScrollHandle) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let max = handle.max_offset().x;
+            if max <= px(0.) {
+                return;
+            }
+            let (start, length) = scroll_thumb(
+                f32::from(bounds.size.width),
+                f32::from(max),
+                -f32::from(handle.offset().x),
+            );
+            let area = Bounds::new(
+                point(bounds.left() + px(start + 4.), bounds.bottom() - px(12.)),
+                size(px(length - 8.), px(8.)),
+            );
+            window.paint_quad(fill(area, color("--scrollbar-auto-thumb")).corner_radii(px(4.)));
+        },
+    )
+    .absolute()
+    .bottom_0()
+    .left_0()
+    .h(px(16.))
+    .w_full()
+}
+
 /// `Nx` in the settings bundle: all but the last four characters become stars.
 fn mask_phone(phone: &str) -> String {
     let count = phone.chars().count();
@@ -2976,7 +3016,17 @@ fn mask_phone(phone: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{age_gated_article, devices, mask_email, mask_phone, run_ranges};
+    use super::{age_gated_article, devices, mask_email, mask_phone, run_ranges, scroll_thumb};
+
+    /// The Members table's sideways bar: 844 of 1000 shows 712 of thumb, at the start and at the end.
+    #[test]
+    fn a_scroll_thumb_is_the_viewports_share() {
+        let (start, length) = scroll_thumb(844., 156., 0.);
+        assert!((length - 712.26).abs() < 0.1 && start == 0.);
+        let (start, _) = scroll_thumb(844., 156., 156.);
+        assert!((start - (844. - 712.26)).abs() < 0.1);
+        assert_eq!(scroll_thumb(100., 10_000., 0.).1, 40.);
+    }
 
     /// The subnav thumb (module 276530's `{mass: .1, friction: 20, tension: 300}`) glides one 36px row: a third of
     /// the way in 30 ms, never overshoots (the spring is overdamped), and is within half a pixel by 300 ms.

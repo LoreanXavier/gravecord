@@ -410,7 +410,14 @@ impl Root {
     /// The members table's state: the search box and the order, shared by the settings page and the Members view.
     fn new_members_state(guild: Id, cx: &mut Context<Self>) -> MembersState {
         let search = cx.new(|cx| {
-            let mut editor = Editor::new(super::editor_style(), cx);
+            // `body-sm/normal` in the small search bar.
+            let mut style = super::editor_style();
+            style.size = 14.;
+            style.line_height = 18.;
+            style.text = super::hsla("--input-text-default");
+            style.caret = super::hsla("--input-text-default");
+            style.placeholder = super::hsla("--input-placeholder-text-default");
+            let mut editor = Editor::new(style, cx);
             editor.set_placeholder("Search by username or id".to_owned());
             editor
         });
@@ -978,12 +985,13 @@ impl Root {
                     .into_any_element()
             })
             .collect();
+        // `contentColumnDefault_jnk11m` at 1000: 40px in on the left only (`header_mg3aTC` and `tableContainer_mg3aTC`
+        // are 960 wide from there).
         div()
             .min_w(px(1000.))
             .w_full()
             .flex_none()
             .pl(px(40.))
-            .pr(px(16.))
             .pt(px(60.))
             .pb(px(60.))
             .flex()
@@ -1054,12 +1062,20 @@ impl Root {
                                             .border_1()
                                             .border_color(color("--input-border-default"))
                                             .bg(color("--input-background-default"))
-                                            .pl(px(8.))
-                                            .pr(px(8.))
+                                            // `sm_0PLWhS`: the 22px icon box 4px in (11px glass), the input 4px after it.
+                                            .pl(px(4.))
                                             .flex()
                                             .items_center()
-                                            .gap(px(8.))
-                                            .child(icon("picker_search", 14., "--input-text-default"))
+                                            .gap(px(4.))
+                                            .child(
+                                                div()
+                                                    .size(px(22.))
+                                                    .flex_none()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(icon("picker_search", 11., "--input-text-default")),
+                                            )
                                             .child(div().flex_1().min_w(px(0.)).child(state.search.clone())),
                                     )
                                     .child(self.members_sort_button(cx))
@@ -1072,8 +1088,11 @@ impl Root {
                                     .px(px(8.))
                                     .pb(px(8.))
                                     .child(
+                                        // `tableHeaderCellContainer_JHplLf`: 8px above and 16px below the cells.
                                         div()
                                             .h(px(60.))
+                                            .pt(px(8.))
+                                            .pb(px(16.))
                                             .flex()
                                             .items_center()
                                             .child(

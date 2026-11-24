@@ -324,6 +324,8 @@ pub(crate) struct RolesState {
     pub(super) confirm_delete: Option<Id>,
     /// The role being duplicated, waiting for its copy to be created.
     duplicating: Option<Value>,
+    /// `a` of `E_` (module 989433): the list has been shown, and stays once the last role is gone.
+    pub(super) listed: std::cell::Cell<bool>,
     /// "Add members": its search field and the members ticked so far.
     pub(super) adding: Option<(Entity<Editor>, Vec<Id>, Subscription)>,
     /// What each role's styles held last (store 396816 `styleColors`), seeded when a style first changes.
@@ -555,6 +557,7 @@ impl Root {
                 menu_anchor: "server-role-menu".into(),
                 confirm_delete: None,
                 duplicating: None,
+                listed: std::cell::Cell::new(false),
                 adding: None,
                 styles: HashMap::new(),
                 picking: None,
@@ -599,7 +602,7 @@ impl Root {
 
     /// The server's roles, highest first. Store 396816 lists `getSortedRoles` of the role store (module 317525),
     /// which READY and the role events fill; the fetched list, when there is one, carries the edits saved since.
-    fn roles_of(&self, guild: Id) -> Vec<Value> {
+    pub(super) fn roles_of(&self, guild: Id) -> Vec<Value> {
         let fetched = self
             .fetched
             .get(&format!("{ROLES_PREFIX}{guild}"))

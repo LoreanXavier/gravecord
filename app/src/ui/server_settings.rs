@@ -291,6 +291,8 @@ pub(crate) struct ServerSettings {
     pub(super) welcome: super::server_welcome::WelcomeState,
     pub(super) landing: super::server_landing::LandingState,
     pub(super) scroll: gpui::ScrollHandle,
+    /// Members' `settingsHorizontalScroller_mg3aTC`.
+    pub(super) members_hscroll: gpui::ScrollHandle,
     pub(super) community: Option<super::server_community::Wizard>,
     pub(super) overview: Option<super::server_community::Overview>,
     pub(super) boost: super::server_boost::BoostState,
@@ -471,6 +473,7 @@ impl Root {
             welcome: Default::default(),
             landing: Default::default(),
             scroll: Default::default(),
+            members_hscroll: Default::default(),
             community: None,
             overview: None,
             boost: Default::default(),
@@ -1597,20 +1600,33 @@ impl Root {
         // The role editor fills the panel itself (`page_cKeB2a`): its role column and its own scroller.
         let raw = page == Page::Roles && open.role.is_some();
         let body: AnyElement = if page == Page::Members {
-            // `settingsHorizontalScroll`: the table is wider than its 844px window.
+            // `settingsVerticalScroller_mg3aTC` holding `settingsHorizontalScroller_mg3aTC`: the 1000px column scrolls
+            // sideways in an 844px window whose 16px `auto_tqapBM` gutter sits under the table.
             div()
+                .id("server-members-scroller")
                 .size_full()
                 .pt(px(32.))
+                .overflow_y_scroll()
+                .track_scroll(&open.scroll)
                 .child(
                     div()
-                        .id("server-members-scroller")
-                        .h_full()
+                        .relative()
                         .w_full()
                         .max_w(px(844.))
-                        .overflow_scroll()
-                        .flex()
-                        .items_start()
-                        .child(content),
+                        .pb(px(16.))
+                        .child(
+                            div()
+                                .id("server-members-hscroller")
+                                .w_full()
+                                .overflow_x_scroll()
+                                .track_scroll(&open.members_hscroll)
+                                .flex()
+                                .items_start()
+                                .child(content),
+                        )
+                        .child(super::settings::auto_scrollbar_x(
+                            open.members_hscroll.clone(),
+                        )),
                 )
                 .into_any_element()
         } else if raw {

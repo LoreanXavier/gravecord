@@ -67,13 +67,24 @@ impl Root {
         if let Some(role) = self.server_settings.as_ref().and_then(|open| open.role) {
             return self.server_role_editor(guild, role, cx);
         }
-        let roles = self
-            .stores
-            .guilds
+        // `E_`: the list once a role other than @everyone (`Oy` of module 34457) is there, and from then on; the
+        // same roles the list shows.
+        let others = self
+            .roles_of(guild)
             .iter()
-            .find(|known| known.id == guild)
-            .map_or(0, |known| known.roles.len());
-        if roles > 1 {
+            .filter(|role| role["id"].as_str() != Some(guild.to_string().as_str()))
+            .count();
+        let listed = self
+            .server_settings
+            .as_ref()
+            .and_then(|open| open.roles.as_ref())
+            .map(|state| &state.listed);
+        if others > 0
+            && let Some(listed) = listed
+        {
+            listed.set(true);
+        }
+        if role_list_shown(others, listed.is_some_and(|listed| listed.get())) {
             return self.server_roles_list(guild, cx);
         }
         self.server_roles_empty(guild, cx)
@@ -213,5 +224,22 @@ impl Root {
                 this.select_role(guild, cx);
             }))
             .into_any_element()
+    }
+}
+
+/// `E_` of module 989433: the list once a role besides @everyone exists, and from then on (`a` never turns back).
+fn role_list_shown(others: usize, listed_before: bool) -> bool {
+    others > 0 || listed_before
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_list_stays_once_it_was_shown() {
+        assert!(!role_list_shown(0, false));
+        assert!(role_list_shown(1, false));
+        assert!(role_list_shown(0, true));
     }
 }
