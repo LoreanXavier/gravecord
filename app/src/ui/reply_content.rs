@@ -139,10 +139,7 @@ impl Root {
     /// The facts of `V` for a referenced message, with the relationship store's `isBlockedForMessage` and
     /// `isIgnoredForMessage` (module 994500: the author, or the user who ran its command).
     pub(super) fn reply_facts(&self, message: &Message) -> ReplyFacts {
-        let interaction_user = message.extra.interaction.as_ref().map(|(_, user)| user.id);
-        let people = std::iter::once(message.author.id).chain(interaction_user);
-        let blocked = people.clone().any(|user| self.is_blocked(user));
-        let ignored = people.into_iter().any(|user| self.stores.is_ignored(user));
+        let (blocked, ignored) = self.hidden_for_message(message);
         let snapshot = message.forwarded.as_deref();
         let flags = snapshot.map_or(message.flags, |forward| forward.flags);
         let files = snapshot.map_or(

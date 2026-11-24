@@ -92,6 +92,16 @@ impl Root {
         self.stores.relationships.get(&user) == Some(&RELATIONSHIP_BLOCKED)
     }
 
+    /// RelationshipStore `isBlockedForMessage` and `isIgnoredForMessage` (module 994500): the author, or the user who
+    /// ran the message's command, is blocked, or else ignored.
+    pub(super) fn hidden_for_message(&self, message: &dc_state::Message) -> (bool, bool) {
+        let interaction_user = message.extra.interaction.as_ref().map(|(_, user)| user.id);
+        let people = std::iter::once(message.author.id).chain(interaction_user);
+        let blocked = people.clone().any(|user| self.is_blocked(user));
+        let ignored = people.into_iter().any(|user| self.stores.is_ignored(user));
+        (blocked, ignored)
+    }
+
     /// Module 694318 `s`: the author carries the SPAMMER flag (`1 << 20`).
     fn is_likely_spammer(&self, user: &dc_state::User) -> bool {
         self.stores

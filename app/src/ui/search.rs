@@ -36,6 +36,22 @@ pub(crate) struct Search {
     pub jump: Option<super::search_pager::Jump>,
     /// The results scroller, back at the top for each page.
     pub scroll: gpui::ScrollHandle,
+    /// SearchQueryStore `showBlockedResults`: the results of blocked and ignored people are shown too.
+    pub show_blocked: bool,
+}
+
+/// The line under the results that hides or shows those of blocked and ignored people (module 36544): what is hidden
+/// while they are, and what to hide while they are shown.
+pub(super) fn blocked_results_text(blocked: u64, ignored: u64, shown: bool) -> String {
+    let both = blocked + ignored;
+    match (shown, blocked > 0, ignored > 0) {
+        (true, true, true) => dc_intl::t!("OvJs9w", count = both),
+        (true, true, false) => dc_intl::t!("n/1QFS", count = blocked),
+        (true, false, _) => dc_intl::t!("ypezTA", count = ignored),
+        (false, true, true) => dc_intl::t!("EJHRcV", count = both),
+        (false, true, false) => dc_intl::t!("HTE8JP", count = blocked),
+        (false, false, _) => dc_intl::t!("e7f8r9", count = ignored),
+    }
 }
 
 /// The count of an answer, either search's.
@@ -253,6 +269,7 @@ impl Root {
             carried_total: None,
             jump: None,
             scroll: gpui::ScrollHandle::new(),
+            show_blocked: false,
         });
         field
     }
@@ -281,6 +298,8 @@ impl Root {
             search.field.update(cx, |editor, _| editor.set_text(""));
             search.shown = None;
             search.focused = false;
+            // `cleanUpSearchState`: the choice to show blocked results goes with the search.
+            search.show_blocked = false;
         }
         cx.notify();
     }
@@ -695,6 +714,44 @@ impl Root {
             .into_any_element()
     }
 
+    /// `resultsBlocked_3Zk3yP` (stylesheet 1b45d33a96dd1b9c): `--background-mod-normal` with a 1px
+    /// `--background-base-lowest` border, 3px corners, 6px by 18px, 14px `--text-muted` (`--text-default` under the
+    /// pointer), after the 32px `resultsBlockedImage_3Zk3yP` 20px before the text. A press shows or hides those results
+    /// (`SEARCH_SET_SHOW_BLOCKED_RESULTS`) and the list scrolls to its end. The image (`abbc14555963e723.svg` in a dark
+    /// theme) is not in the snapshot: its place is kept empty.
+    fn blocked_results_line(
+        &self,
+        blocked: u64,
+        ignored: u64,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("search-results-blocked")
+            .flex()
+            .items_center()
+            .px(px(18.))
+            .py(px(6.))
+            .rounded(px(3.))
+            .border_1()
+            .border_color(color("--background-base-lowest"))
+            .bg(color("--background-mod-normal"))
+            .text_size(px(14.))
+            .text_color(color("--text-muted"))
+            .cursor_pointer()
+            .hover(|style| style.text_color(color("--text-default")))
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(search) = this.search.as_mut() {
+                    search.show_blocked = !search.show_blocked;
+                    search.scroll.scroll_to_bottom();
+                }
+                cx.notify();
+            }))
+            .child(div().size(px(32.)).flex_none().mr(px(20.)))
+            .child(blocked_results_text(blocked, ignored, shown))
+            .into_any_element()
+    }
+
     /// `searchResultsWrap_QHVbp3`: the count, Filters and Sort, then results grouped by channel.
     pub(super) fn search_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let search = self.search.as_ref()?;
@@ -723,6 +780,21 @@ impl Root {
             .flatten()
             .filter_map(|group| group.as_array().and_then(|group| group.first()))
             .filter_map(Message::from_value)
+            .collect();
+        // Module 956972: how many results are blocked (or else ignored), and module 36544 leaves them out until the
+        // line under the results shows them.
+        let (mut blocked, mut ignored) = (0u64, 0u64);
+        let results: Vec<Message> = results
+            .into_iter()
+            .filter(|message| {
+                let (is_blocked, is_ignored) = self.hidden_for_message(message);
+                if is_blocked {
+                    blocked += 1;
+                } else if is_ignored {
+                    ignored += 1;
+                }
+                search.show_blocked || !(is_blocked || is_ignored)
+            })
             .collect();
         let guild = self.current_guild();
         let channel_name = |id: Id| -> (String, bool, String) {
@@ -929,7 +1001,10 @@ impl Root {
                         .pt(px(16.))
                         // `w && !s.isSearching`: the 400-page warning over the results.
                         .when(page_warning, |this| this.child(self.search_page_warning()))
-                        .children(groups),
+                        .children(groups)
+                        .children((blocked > 0 || ignored > 0).then(|| {
+                            self.blocked_results_line(blocked, ignored, search.show_blocked, cx)
+                        })),
                 )
                 .children(self.search_pager(pager_total, search.offset, cx))
                 .into_any_element(),
@@ -939,7 +1014,29 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode, encode, operators, plain_words, results_body, tabs_payload};
+    use super::{
+        blocked_results_text, decode, encode, operators, plain_words, results_body, tabs_payload,
+    };
+
+    #[test]
+    fn the_blocked_results_line_names_what_it_hides_or_shows() {
+        assert_eq!(
+            blocked_results_text(2, 0, false),
+            "We\u{2019}ve hidden 2 results from users you\u{2019}ve blocked."
+        );
+        assert_eq!(
+            blocked_results_text(1, 2, false),
+            "We\u{2019}ve hidden 3 messages from users you\u{2019}ve blocked and ignored."
+        );
+        assert_eq!(
+            blocked_results_text(0, 1, true),
+            "Hide 1 message from ignored users"
+        );
+        assert_eq!(
+            blocked_results_text(4, 0, true),
+            "Hide 4 messages from blocked users"
+        );
+    }
     use serde_json::json;
 
     #[test]
