@@ -574,7 +574,10 @@ impl Root {
             .into_any_element()
     }
 
-    fn primary_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
+    pub(super) fn primary_button(
+        id: &'static str,
+        label: &'static str,
+    ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
             .h(px(40.))

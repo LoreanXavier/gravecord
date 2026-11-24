@@ -261,8 +261,10 @@ pub(crate) struct ServerSettings {
     pub(super) games_shown_query: Option<String>,
     /// The profile as fetched (or last saved): Reset goes back to it, and the notice shows while the page differs.
     saved: Values,
-    /// The profile has arrived; until then the page is empty, as the official one shows its spinner.
+    /// The profile has arrived; until then the page shows `I7`'s spinner (module 989433).
     loaded: bool,
+    /// The profile could not be fetched: the page is `IJ`'s Something went wrong with Retry.
+    profile_failed: bool,
     /// Delete Server's name field while it is open, and whether the typed name was wrong.
     pub(super) delete_name: Option<(Entity<Editor>, Subscription)>,
     delete_wrong: bool,
@@ -449,6 +451,7 @@ impl Root {
             games_shown_query: None,
             saved: Values::default(),
             loaded: false,
+            profile_failed: false,
             delete_name: None,
             delete_wrong: false,
             bans: None,
@@ -506,6 +509,12 @@ impl Root {
             }
             report["body"].clone()
         } else if key == format!("{PROFILE_KEY}{}", open.guild) {
+            // `I7`: a fetch that ended without a profile shows `IJ` instead of the page.
+            if crate::net::is_fetch_failure(&self.fetched[key]) {
+                open.profile_failed = !open.loaded;
+                cx.notify();
+                return;
+            }
             self.fetched[key].clone()
         } else {
             return;
@@ -538,6 +547,57 @@ impl Root {
         self.request_games(&picked);
         self.request_game_images();
         cx.notify();
+    }
+
+    /// `IJ` of module 989433 (`container_uLs_pG`: a centred column 16px apart, 80px 40px in): "Something went wrong"
+    /// (`heading-xl/semibold`) over "We couldn't load the profile for this server." (`body-md/normal`), then Retry,
+    /// which fetches the profile again (`forceFetchGuildProfile`).
+    fn server_profile_error(cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .w_full()
+            .py(px(80.))
+            .px(px(40.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(16.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(24.))
+                            .line_height(px(32.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("/n9BoR")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::t("DwKFKd")),
+                    ),
+            )
+            .child(
+                Self::primary_button("server-profile-retry", dc_intl::t("w3ND8L")).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.server_settings.as_mut() {
+                            open.profile_failed = false;
+                            let guild = open.guild;
+                            let _ = this.requests.send(Request::Fetch {
+                                key: format!("{PROFILE_KEY}{guild}"),
+                                route: format!("/guilds/{guild}/profile"),
+                            });
+                        }
+                        cx.notify();
+                    }),
+                ),
+            )
+            .into_any_element()
     }
 
     /// The icon's file input, then the cropper with `GUILD_ICON` (module 989433, module 142630).
@@ -651,8 +711,19 @@ impl Root {
     }
 
     fn server_profile_page(&self, open: &ServerSettings, cx: &mut Context<Self>) -> AnyElement {
+        if open.profile_failed {
+            return Self::server_profile_error(cx);
+        }
         if !open.loaded {
-            return div().w(px(415.)).into_any_element();
+            // `spinner_mL61Cw`: the spinner centred in a 400px band across the page.
+            return div()
+                .w_full()
+                .h(px(400.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(super::login::wandering_cubes())
+                .into_any_element();
         }
         // `divider_mL61Cw`: 40px either side, `--border-normal`'s 0.44 alpha.
         let divider = || {
@@ -1306,7 +1377,8 @@ impl Root {
         } else {
             32.
         };
-        let preview = (page == Page::Profile).then(|| {
+        let bare = page == Page::Profile && !open.loaded;
+        let preview = (page == Page::Profile && open.loaded).then(|| {
             let name = open.name.read(cx).text().to_owned();
             let body = self.server_preview_body(cx);
             div().w(px(300.)).flex_none().children(self.invite_preview(
@@ -1561,9 +1633,12 @@ impl Root {
                 .child(
                     div()
                         .w_full()
-                        .pt(px(60.))
-                        .px(px(40.))
-                        .pb(px(if page == Page::Landing { 128. } else { 100. }))
+                        // `I7` puts its spinner and `IJ` in place of `content_mL61Cw` and its padding.
+                        .when(!bare, |this| {
+                            this.pt(px(60.))
+                                .px(px(40.))
+                                .pb(px(if page == Page::Landing { 128. } else { 100. }))
+                        })
                         .flex()
                         .gap(px(40.))
                         // `contentColumn_jnk11m`: 660 inside its padding, except beside the card.

@@ -15,6 +15,8 @@ fn reads_own_failure(key: &str) -> bool {
         || key.starts_with("oauth-token:")
         || key.starts_with(super::activity_shelf::SHELF_PREFIX)
         || key == "content-inventory:feed"
+        // Server Profile shows `IJ` (module 989433) for a profile that would not load.
+        || key.starts_with(super::server_settings::PROFILE_KEY)
 }
 
 /// When `failures` holds `key` from at least `RETRY_AFTER` ago, forgets it and says the key may be fetched again.
@@ -65,6 +67,12 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_server_profile_reads_its_own_failure() {
+        assert!(reads_own_failure("guild-profile:1"));
+        assert!(!reads_own_failure("guild-members-search:1"));
+    }
 
     #[test]
     fn a_failed_key_is_retried_once_after_the_wait_and_not_before() {
