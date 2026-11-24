@@ -276,7 +276,8 @@ impl Root {
         };
         let panel: AnyElement = match menu.kind {
             FileMenuKind::More => {
-                let wrapped = self.file_wrap.contains(&id);
+                // `useState(!0)`: Wrap Text starts on.
+                let wrapped = !self.file_unwrapped.contains(&id);
                 let download = attachment.clone();
                 div()
                     .min_w(px(144.))
@@ -309,8 +310,8 @@ impl Root {
                     .child(
                         checkbox_row("file-wrap", "Wrap Text".into(), wrapped).on_click(
                             cx.listener(move |this, _, _, cx| {
-                                if !this.file_wrap.remove(&id) {
-                                    this.file_wrap.insert(id);
+                                if !this.file_unwrapped.remove(&id) {
+                                    this.file_unwrapped.insert(id);
                                 }
                                 cx.notify();
                             }),
@@ -452,7 +453,12 @@ impl Root {
             .cloned()
             .unwrap_or_default();
         let language = self.file_language.get(&attachment.id).map(String::as_str);
-        let wrap = self.file_wrap.contains(&attachment.id);
+        let wrap = !self.file_unwrapped.contains(&attachment.id);
+        // `e_` keeps the card's Render Markdown: a Markdown file opens drawn as Markdown.
+        let markdown = super::files::renders_markdown(
+            &super::files::file_language(language, &attachment.filename),
+            !self.file_markdown_off.contains(&attachment.id),
+        );
         let pose = crate::ui::motion::modal_pose("file-expanded");
         Some(
             deferred(
@@ -491,7 +497,12 @@ impl Root {
                                     .text_size(px(14.))
                                     .line_height(px(16.))
                                     .when(!wrap, |this| this.whitespace_nowrap())
-                                    .children(super::code_lines(language, &text)),
+                                    .when(markdown, |this| {
+                                        this.child(self.markdown_preview(attachment, &text, None))
+                                    })
+                                    .when(!markdown, |this| {
+                                        this.children(super::code_lines(language, &text))
+                                    }),
                             )
                             .child(
                                 div()

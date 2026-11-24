@@ -1073,7 +1073,8 @@ pub struct Root {
     /// The account's date-of-birth state and the age gate dialogs (`birthday.rs`).
     birthday: birthday::State,
     file_menu: Option<file_actions::FileMenu>,
-    file_wrap: HashSet<Id>,
+    /// Text files whose Wrap Text was turned off (module 383055 starts every preview wrapped).
+    file_unwrapped: HashSet<Id>,
     /// Text files whose Render Markdown was turned off (module 383055 keeps it on at first).
     file_markdown_off: HashSet<Id>,
     file_language: HashMap<Id, String>,
@@ -1746,7 +1747,7 @@ impl Root {
             add_server: None,
             birthday: birthday::State::default(),
             file_menu: None,
-            file_wrap: HashSet::new(),
+            file_unwrapped: HashSet::new(),
             file_markdown_off: HashSet::new(),
             file_language: HashMap::new(),
             file_expanded: None,

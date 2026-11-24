@@ -110,7 +110,7 @@ impl Root {
     /// then the notice of what is not shown (`markdownEllipsis_KFT5TX`, body-sm in `--text-subtle`, 16px in, 8px
     /// under). The text is read by the message parser, not markdown-it: tables, soft line breaks and link
     /// references are not drawn as the official preview draws them.
-    fn markdown_preview(
+    pub(super) fn markdown_preview(
         &self,
         attachment: &Attachment,
         text: &str,
@@ -149,7 +149,7 @@ impl Root {
             .unwrap_or_default();
         let shown: Vec<&str> = text.lines().take(COLLAPSED_LINES).collect();
         let language = self.file_language.get(&attachment.id).cloned();
-        let wrap = self.file_wrap.contains(&attachment.id);
+        let wrap = !self.file_unwrapped.contains(&attachment.id);
         let shown_text = shown.join("\n");
         let markdown = renders_markdown(
             &file_language(language.as_deref(), &attachment.filename),
