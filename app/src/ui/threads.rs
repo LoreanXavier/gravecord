@@ -1641,10 +1641,21 @@ impl Root {
                 .rounded_tl(px(12.))
                 .border_t_1()
                 .border_l_1()
-                .border_color(color("--border-subtle"))
-                .bg(color("--background-base-lower"))
+                // `container_FrbQJp`: the same border colour as the chat column's and the channel list's, over the
+                // page behind it (the capture's border pixels are the colour over the page, not over the panel).
+                .border_color(color("--background-mod-subtle"))
+                .relative()
                 .flex()
                 .flex_col()
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .rounded_tl(px(11.))
+                        .bg(color("--background-base-lower")),
+                )
                 .child(
                     div()
                         .h(px(49.))

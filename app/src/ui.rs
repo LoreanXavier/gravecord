@@ -18,8 +18,8 @@ use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font,
     FontFeatures, FontStyle, FontWeight, Hsla, Image, ImageFormat, IntoElement, KeyDownEvent,
     ListAlignment, ListState, MouseButton, MouseDownEvent, Pixels, Render, Rgba, SharedString,
-    StyledText, TextRun, WeakEntity, Window, WindowControlArea, div, font, img, list, prelude::*,
-    px, rgba, svg,
+    StyledText, TextRun, WeakEntity, Window, WindowControlArea, canvas, div, font, img, list,
+    prelude::*, px, rgba, svg,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -11459,6 +11459,19 @@ impl Root {
             }
         }));
         let docked = self.voice_chat_docked();
+        // Module 989161 observes the text area's border box and drops the GIF and sticker buttons at 450 or narrower,
+        // and always in a DM with a bot (module 177640).
+        let bot_dm = self
+            .current_dm()
+            .filter(|channel| channel.kind == 1)
+            .and_then(|channel| self.stores.dm_recipient(channel))
+            .is_some_and(|user| user.bot);
+        let measured = self
+            .tip_anchors
+            .borrow()
+            .get("composer-box")
+            .map(|bounds| f32::from(bounds.size.width) + 2.);
+        let condensed = composer_buttons_condensed(bot_dm, measured);
         // Module 307069 (`ChannelPremiumGiftButton`): gift button opens the gift purchase modal
         // (`openGiftModal`, module 194509, location "gift-button"), with generic/Nitro tooltip
         // (`TW4JV0` / `sWtWDX` / `Z1RnTk`) and mutually exclusive coachmark dismissal on click.
@@ -11610,7 +11623,7 @@ impl Root {
                     .parity_with_border("composer", 1.)
                     .relative()
                     .children(settings::client_theme::cover(8.))
-                    .child(self.anchor_probe("composer-box"))
+                    .child(self.composer_box_probe())
                     .children(self.autocomplete_popup(cx))
                     .children(self.slash_popup(cx))
                     .children(self.option_popup(cx))
@@ -11736,10 +11749,9 @@ impl Root {
                                     })
                                     .children(preview_button)
                                     .children(silent_button)
-                                    .when(!docked, |this| {
-                                        this.child(gift_button)
-                                            .child(gif_button)
-                                            .child(sticker_button)
+                                    .when(!docked, |this| this.child(gift_button))
+                                    .when(!docked && !condensed, |this| {
+                                        this.child(gif_button).child(sticker_button)
                                     })
                                     .child(emoji_button)
                                     .child(apps_button)
@@ -11748,6 +11760,40 @@ impl Root {
                             .into_any_element(),
                     }),
             )
+    }
+}
+
+/// `ChannelTextAreaContainer` (module 989161) shows every button while the text area's border box is wider than 450
+/// (`useResizeObserver`'s `borderBoxSize`); at 450 or less the buttons condense and GIF and sticker go. Before the
+/// first measure every button shows. A DM with a bot (module 177640) is always condensed.
+fn composer_buttons_condensed(bot_dm: bool, border_box_width: Option<f32>) -> bool {
+    bot_dm || border_box_width.is_some_and(|width| width <= 450.)
+}
+
+impl Root {
+    /// The composer box's `composer-box` anchor, inside its 1px border. Like the official resize observer it redraws
+    /// once more when the measured width crosses the condensing width.
+    fn composer_box_probe(&self) -> impl IntoElement {
+        let anchors = self.tip_anchors.clone();
+        canvas(
+            move |bounds, window, _| {
+                let condensed = |bounds: &Bounds<Pixels>| {
+                    composer_buttons_condensed(false, Some(f32::from(bounds.size.width) + 2.))
+                };
+                let before = anchors.borrow().get("composer-box").is_some_and(condensed);
+                anchors
+                    .borrow_mut()
+                    .insert(SharedString::new_static("composer-box"), bounds);
+                if before != condensed(&bounds) {
+                    regions::notify_root_next_frame(window);
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
     }
 }
 
@@ -12387,8 +12433,9 @@ impl Render for Root {
                 0.
             }
         } else if self.new_thread.is_some() {
-            // The New Thread panel replaces the member list: 480 wide, its 1px border and 8px of gap.
-            480.
+            // The New Thread panel replaces the member list: 480 wide after the 8px resize handle and the chat
+            // column's own 1px right border.
+            480. + 8. + 1.
         } else if self.current_dm().is_some() {
             self.dm_profile_width(self.viewport.0)
         } else if self.show_members && self.guild.is_some() {
@@ -13901,7 +13948,15 @@ impl Render for Root {
                                         .flex_1()
                                         .min_w(px(0.))
                                         .h_full()
-                                        .pt(px(1.))
+                                        // `.chat_z_gUBg`: a 1px top border.
+                                        .border_t_1()
+                                        .border_color(color("--background-mod-subtle"))
+                                        // `.chat_z_gUBg.threadSidebarOpen_z_gUBg`: a 1px right border with a 12px
+                                        // top-right corner, then the thread sidebar's 8px resize handle
+                                        // (`resizeHandle_FrbQJp`) before the panel.
+                                        .when(self.new_thread.is_some(), |chat| {
+                                            chat.border_r_1().rounded_tr(px(12.)).mr(px(8.))
+                                        })
                                         .overflow_hidden()
                                         .child(match self.dm_call_area(window, cx) {
                                             // The header moves into the call area while a call shows (module 540462
@@ -15007,6 +15062,21 @@ impl Root {
 mod tests {
     use super::{block_gaps, relative_time};
     use dc_markdown::parse;
+
+    #[test]
+    fn composer_condenses_at_450_and_narrower() {
+        use super::composer_buttons_condensed;
+        // design/dom/channel/new-thread: the 400px text area beside the thread panel loses GIF and sticker.
+        assert!(composer_buttons_condensed(false, Some(400.)));
+        assert!(composer_buttons_condensed(false, Some(450.)));
+        assert!(!composer_buttons_condensed(false, Some(451.)));
+        // A wide chat keeps every button, and so does a composer not measured yet.
+        assert!(!composer_buttons_condensed(false, Some(874.)));
+        assert!(!composer_buttons_condensed(false, None));
+        // A DM with a bot condenses at any width.
+        assert!(composer_buttons_condensed(true, Some(874.)));
+        assert!(composer_buttons_condensed(true, None));
+    }
 
     #[test]
     fn gift_coachmark_307069_intl_keys_resolve() {

@@ -92,6 +92,14 @@ pub(crate) fn notify_all(cx: &mut App) {
     }
 }
 
+/// Redraws the main view, and with it every region, on the next frame: for a measure taken while painting that
+/// changes what the regions build.
+pub(crate) fn notify_root_next_frame(window: &mut Window) {
+    if let Some(root) = IDS.with(|ids| ids.borrow().0) {
+        window.on_next_frame(move |_, cx| cx.notify(root));
+    }
+}
+
 /// Called where something animated is built (a playing sticker, a GIF tile): the view being built now is where it
 /// is drawn, and the next wake of its timer redraws that view.
 pub(crate) fn note_drawn() {
