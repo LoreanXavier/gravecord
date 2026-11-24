@@ -429,6 +429,7 @@ mod upload_error;
 mod upload_progress;
 mod uploads;
 mod user_activity_card;
+mod verification_gate;
 mod verify_email;
 mod video_player;
 mod video_stats;
@@ -13948,6 +13949,11 @@ impl Render for Root {
                                                         }
                                                         None if self.follow_blocker_applies() => {
                                                             self.follow_composer(cx)
+                                                        }
+                                                        None if let Some(gate) =
+                                                            self.verification_gate() =>
+                                                        {
+                                                            self.verification_composer(gate, cx)
                                                         }
                                                         None => self
                                                             .regions

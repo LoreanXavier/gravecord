@@ -619,6 +619,11 @@ pub async fn run(
             }
             // Capture only: `invite-error <code>`: an invite card's Join answered with that abort code.
             // Capture only: the header invite as an account without Create Invite sees it (module 132610).
+            // Capture only: the open server under a verification level (`ui/verification_gate.rs`).
+            ["verification", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_verification(rest, cx));
+                let _ = writeln!(output, "verification: {line}");
+            }
             ["invite-permission"] => {
                 root.update(cx, |root, cx| root.script_invite_permission(cx));
                 let _ = writeln!(output, "invite-permission: shown");
