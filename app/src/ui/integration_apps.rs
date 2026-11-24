@@ -312,7 +312,10 @@ impl Root {
                                 .rounded_full()
                                 .overflow_hidden()
                                 .bg(color("--background-surface-high"))
-                                .children(picture.map(|picture| img(picture).size(px(48.)))),
+                                .children(
+                                    picture
+                                        .map(|picture| img(picture).size(px(48.)).rounded_full()),
+                                ),
                         )
                     })
                     .child(
@@ -477,7 +480,11 @@ impl Root {
                             .rounded_full()
                             .overflow_hidden()
                             .bg(color("--background-surface-high"))
-                            .children(picture.clone().map(|picture| img(picture).size(px(32.)))),
+                            .children(
+                                picture
+                                    .clone()
+                                    .map(|picture| img(picture).size(px(32.)).rounded_full()),
+                            ),
                     )
                     .child(
                         div()
@@ -549,7 +556,11 @@ impl Root {
                         .rounded_full()
                         .overflow_hidden()
                         .bg(color("--background-surface-high"))
-                        .children(picture.clone().map(|picture| img(picture).size(px(48.)))),
+                        .children(
+                            picture
+                                .clone()
+                                .map(|picture| img(picture).size(px(48.)).rounded_full()),
+                        ),
                 )
             })
             .child(

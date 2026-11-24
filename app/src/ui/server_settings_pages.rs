@@ -582,9 +582,36 @@ impl Root {
                 "integrations_followed",
                 "Channels Followed",
                 plural(followed, "channel"),
-                small_button("server-integrations-followed", "Learn More", 93.2656)
-                    .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://support.discord.com/hc/en-us/articles/360028384531")))
-                    .into_any_element(),
+                // `t0`: with followed channels the card's chevron opens their page, else Learn More opens the article.
+                if followed > 0 {
+                    div()
+                        .id("server-integrations-followed")
+                        .cursor_pointer()
+                        .child(icon("roles_arrow", 24., "--interactive-text-default"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(open) = this.server_settings.as_mut() {
+                                open.followed_open = true;
+                                open.scroll.set_offset(gpui::point(px(0.), px(0.)));
+                            }
+                            let urls: Vec<String> = this
+                                .stores
+                                .integrations
+                                .webhooks_for_guild(guild)
+                                .iter()
+                                .filter(|hook| hook["type"].as_u64() == Some(2))
+                                .map(followed_avatar)
+                                .collect();
+                            for url in urls {
+                                this.request_image(url.clone(), url);
+                            }
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                } else {
+                    small_button("server-integrations-followed", "Learn More", 93.2656)
+                        .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://support.discord.com/hc/en-us/articles/360028384531")))
+                        .into_any_element()
+                },
             ))
             .child(divider())
             .child(
@@ -626,6 +653,213 @@ impl Root {
                     )
                     .into_any_element()
             }))
+            .into_any_element()
+    }
+
+    /// Channels Followed (`tA` of module 986057): the breadcrumb, `5u+aV1` with its Learn more link, the divider, then
+    /// one card per followed channel (`eH`: `header_mWF9-i` 20px 16px, the webhook's 48px avatar, its name, the
+    /// announcement channel and "from {server}", the expand chevron), or "You're not following any channels" with
+    /// Learn More. Not drawn: the expanded editor (its channel select and Unfollow).
+    pub(super) fn followed_channels_page(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
+        let hooks: Vec<Value> = self
+            .stores
+            .integrations
+            .webhooks_for_guild(guild)
+            .iter()
+            .filter(|hook| hook["type"].as_u64() == Some(2))
+            .cloned()
+            .collect();
+        let breadcrumb = div()
+            .mb(px(20.))
+            .flex()
+            .items_center()
+            .text_size(px(20.))
+            .line_height(px(24.))
+            .font_weight(FontWeight(600.))
+            .child(
+                div()
+                    .id("server-followed-back")
+                    .cursor_pointer()
+                    .text_color(color("--text-default"))
+                    .child("Integrations")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.server_settings.as_mut() {
+                            open.followed_open = false;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(div().w(px(18.)).flex().justify_center().child(icon(
+                "settings_chevron",
+                12.,
+                "--text-muted",
+            )))
+            .child(
+                div()
+                    .text_color(color("--text-strong"))
+                    .child(dc_intl::t("OrV60r")),
+            );
+        let runs = dc_intl::format_runs("5u+aV1", &[]);
+        let (mut before, mut link) = (String::new(), String::new());
+        for (text, tag) in runs {
+            if tag.is_some() {
+                link.push_str(&text);
+            } else {
+                before.push_str(&text);
+            }
+        }
+        let intro = div()
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .text_color(color("--text-default"))
+            .child(
+                self.text_with_link("server-followed-help", &before, &link, "", cx, |_, cx| {
+                    cx.open_url("https://support.discord.com/hc/en-us/articles/360028384531")
+                }),
+            );
+        let rows: Vec<AnyElement> =
+            hooks
+                .iter()
+                .map(|hook| {
+                    let id = hook["id"].as_str().unwrap_or_default().to_owned();
+                    let avatar = followed_avatar(hook);
+                    let picture = self.images.get(&avatar).cloned();
+                    let channel = hook["source_channel"]["name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let source = hook["source_guild"]["name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let from = dc_intl::format_runs("H/jJ6R", &[])
+                        .into_iter()
+                        .map(|(text, _)| text)
+                        .collect::<String>();
+                    div()
+                        .id(SharedString::from(format!("followed-{id}")))
+                        .mb(px(16.))
+                        .py(px(20.))
+                        .px(px(16.))
+                        .rounded(px(8.))
+                        .bg(color("--card-background-default"))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(16.))
+                                .child(
+                                    div()
+                                        .size(px(48.))
+                                        .flex_none()
+                                        .rounded_full()
+                                        .overflow_hidden()
+                                        .bg(color("--background-surface-high"))
+                                        .children(picture.map(|picture| {
+                                            img(picture).size(px(48.)).rounded_full()
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .text_size(px(16.))
+                                                .line_height(px(20.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-strong"))
+                                                .child(
+                                                    hook["name"]
+                                                        .as_str()
+                                                        .unwrap_or_default()
+                                                        .to_owned(),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .mt(px(4.))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.))
+                                                .text_size(px(12.))
+                                                .line_height(px(16.))
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .child(
+                                                            icon(
+                                                                "announcement_channel",
+                                                                12.,
+                                                                "--interactive-text-default",
+                                                            )
+                                                            .mr(px(4.)),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_color(color("--text-default"))
+                                                                .child(channel),
+                                                        ),
+                                                )
+                                                // `guildSource_mWF9-i` (muted, 8px either side) around `sourceName_mWF9-i`.
+                                                .child(
+                                                    div()
+                                                        .mx(px(8.))
+                                                        .flex()
+                                                        .items_center()
+                                                        .text_color(color("--text-muted"))
+                                                        .child(from.trim_end().to_owned())
+                                                        .child(
+                                                            div()
+                                                                .ml(px(4.))
+                                                                .mr(px(8.))
+                                                                .text_color(color("--text-default"))
+                                                                .child(source),
+                                                        ),
+                                                ),
+                                        ),
+                                ),
+                        )
+                        .child(icon("chevron_down", 24., "--interactive-text-default"))
+                        .into_any_element()
+                })
+                .collect();
+        let empty = rows.is_empty().then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("gzuVH0")),
+                )
+                .child(div().mt(px(16.)).child(
+                    Self::primary_button("server-followed-learn", dc_intl::t("ZwSt+T")).on_click(
+                        cx.listener(|_, _, _, cx| {
+                            cx.open_url(
+                                "https://support.discord.com/hc/en-us/articles/360028384531",
+                            )
+                        }),
+                    ),
+                ))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .child(breadcrumb)
+            .child(intro)
+            .child(div().my(px(32.)).h(px(1.)).bg(color("--border-subtle")))
+            .children(rows)
+            .children(empty)
             .into_any_element()
     }
 
@@ -1474,9 +1708,30 @@ impl Root {
     }
 }
 
+/// `eJ` of module 986057: the webhook's avatar, or the default one (`discriminator: "0000"`).
+fn followed_avatar(hook: &Value) -> String {
+    let id = hook["id"].as_str().unwrap_or_default();
+    match hook["avatar"].as_str() {
+        Some(hash) => format!("https://cdn.discordapp.com/avatars/{id}/{hash}.webp?size=80"),
+        None => "https://cdn.discordapp.com/embed/avatars/0.png".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_followed_channel_webhook_without_avatar_gets_the_default() {
+        assert_eq!(
+            followed_avatar(&serde_json::json!({"id": "5"})),
+            "https://cdn.discordapp.com/embed/avatars/0.png"
+        );
+        assert_eq!(
+            followed_avatar(&serde_json::json!({"id": "5", "avatar": "ab"})),
+            "https://cdn.discordapp.com/avatars/5/ab.webp?size=80"
+        );
+    }
 
     /// `er` of module 422542: only the roles the server still has, in the invite's order, with their colours.
     #[test]

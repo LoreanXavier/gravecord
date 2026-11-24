@@ -298,6 +298,8 @@ pub(crate) struct ServerSettings {
     pub(super) apps_query: String,
     /// The app whose page Manage opened.
     pub(super) app_open: Option<String>,
+    /// Channels Followed's own page is open (`CHANNEL_FOLLOWING`).
+    pub(super) followed_open: bool,
     pub(super) community: Option<super::server_community::Wizard>,
     pub(super) overview: Option<super::server_community::Overview>,
     pub(super) boost: super::server_boost::BoostState,
@@ -482,6 +484,7 @@ impl Root {
             apps_search: None,
             apps_query: String::new(),
             app_open: None,
+            followed_open: false,
             community: None,
             overview: None,
             boost: Default::default(),
@@ -1294,6 +1297,7 @@ impl Root {
                                     open.page = target;
                                     // `t6` sets the section back to the overview when the page unmounts.
                                     open.app_open = None;
+                                    open.followed_open = false;
                                     let guild = open.guild;
                                     this.request_server_page(guild, target, cx);
                                     cx.notify();
@@ -1341,6 +1345,7 @@ impl Root {
             Page::Integrations if open.webhooks.showing => {
                 self.server_webhooks_page(open.guild, cx)
             }
+            Page::Integrations if open.followed_open => self.followed_channels_page(open.guild, cx),
             Page::Integrations if open.app_open.is_some() => {
                 let app = open.app_open.clone().unwrap_or_default();
                 self.app_page(open.guild, &app, cx)
