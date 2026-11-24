@@ -5474,8 +5474,11 @@ impl Root {
             .cloned();
         let facts = self.reply_facts(referenced);
         let line = reply_content::reply_line(facts);
-        // Module 448368 `R`: compact, or an author blocked for the message, draws the arrow badge for the avatar.
+        // Module 448368 `R`: compact, or an author blocked for the message, draws the arrow badge for the avatar; a
+        // poll result draws the 20px polls icon (`repliedTextContentLeadingIcon_2i8Bfm`, 4px before the text) and no
+        // name (`k`).
         let badge = compact || facts.blocked;
+        let poll_result = line.placeholder == Some(reply_content::Placeholder::PollResult);
         // `.repliedMessageClickableSpine:hover` and `.repliedTextPreview.clickable:hover` (738015): over either one
         // the spine turns `--interactive-text-default` (`transition: border 50ms`) and the text `--text-strong`.
         let spine_key = motion::key(&("reply-spine", referenced.id));
@@ -5513,25 +5516,34 @@ impl Root {
             )
             .child(if badge {
                 reply_badge()
+            } else if poll_result {
+                div()
+                    .flex_none()
+                    .child(icon("system_polls", 20., "--interactive-icon-default"))
             } else {
                 div()
                     .size(px(16.))
                     .flex_none()
                     .children(avatar.map(|image| img(image).size(px(16.)).rounded_full()))
             })
-            .child(
-                div()
-                    .ml(px(4.))
-                    .flex_none()
-                    .opacity(0.64)
-                    .font_weight(FontWeight(500.))
-                    .text_color(self.guild_author_color(referenced.author.id, "--text-strong"))
-                    .flex()
-                    .when(mention, |name| name.child("@"))
-                    .child(
-                        self.author_name(format!("reply-{}", referenced.id), &referenced.author),
-                    ),
-            )
+            .when(!poll_result, |row| {
+                row.child(
+                    div()
+                        .ml(px(4.))
+                        .flex_none()
+                        .opacity(0.64)
+                        .font_weight(FontWeight(500.))
+                        .text_color(self.guild_author_color(referenced.author.id, "--text-strong"))
+                        .flex()
+                        .when(mention, |name| name.child("@"))
+                        .child(
+                            self.author_name(
+                                format!("reply-{}", referenced.id),
+                                &referenced.author,
+                            ),
+                        ),
+                )
+            })
             .child(
                 div()
                     .ml(px(4.))

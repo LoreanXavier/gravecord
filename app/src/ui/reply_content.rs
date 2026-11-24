@@ -30,6 +30,8 @@ pub(super) enum Placeholder {
     Voice,
     /// `Xxat6S` "Click to see message".
     Components,
+    /// A poll result: `Vn97Ka` "{username}'s poll **{title}** has closed" (module 969632 `Il`).
+    PollResult,
     /// `6hGo0c` "Click to see attachment".
     Attachment,
 }
@@ -88,8 +90,7 @@ pub(super) fn reply_line(facts: ReplyFacts) -> ReplyLine {
         placeholder = if facts.poll {
             Some(Placeholder::PollQuestion)
         } else if result {
-            // `O.Il(h)`: the poll result's own summary, left to the poll result line.
-            None
+            Some(Placeholder::PollResult)
         } else if facts.sticker {
             Some(Placeholder::Sticker)
         } else if facts.command {
@@ -119,13 +120,41 @@ pub(super) fn reply_line(facts: ReplyFacts) -> ReplyLine {
     }
 }
 
+/// `poll_question_text` of a poll result, cut as module 23339 `EJ(text, 50)` cuts it: past 50 characters, the
+/// first 49 without trailing spaces and dots, then an ellipsis.
+pub(super) fn cut_to(text: &str, limit: usize) -> String {
+    if text.encode_utf16().count() <= limit {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(limit - 1).collect();
+    format!(
+        "{}\u{2026}",
+        kept.trim_end_matches(|c: char| c.is_whitespace() || c == '.')
+    )
+}
+
+fn poll_result_title(message: &Message) -> String {
+    let question = message
+        .embeds
+        .first()
+        .and_then(|embed| {
+            embed
+                .fields
+                .iter()
+                .find(|field| field.name == "poll_question_text")
+        })
+        .map(|field| field.value.as_str())
+        .unwrap_or("");
+    cut_to(question, 50)
+}
+
 impl Placeholder {
     fn text(self) -> &'static str {
         match self {
             Self::Blocked => dc_intl::t!("XAkOo2"),
             Self::Ignored => dc_intl::t!("G7p6v/"),
             Self::Pinned => dc_intl::t!("sCfDDl"),
-            Self::PollQuestion => "",
+            Self::PollQuestion | Self::PollResult => "",
             Self::Sticker => dc_intl::t!("kHdYCW"),
             Self::Command => dc_intl::t!("E+6SSY"),
             Self::Voice => dc_intl::t!("XC3A52"),
@@ -176,6 +205,36 @@ impl Root {
             "--text-default"
         };
         let text: AnyElement = match line.placeholder {
+            Some(Placeholder::PollResult) => {
+                let runs = dc_intl::format_runs(
+                    "Vn97Ka",
+                    &[
+                        (
+                            "username",
+                            dc_intl::Arg::from(self.guild_display_name(&message.author).as_str()),
+                        ),
+                        (
+                            "title",
+                            dc_intl::Arg::from(poll_result_title(message).as_str()),
+                        ),
+                    ],
+                );
+                div()
+                    .flex()
+                    .pr(px(2.))
+                    .italic()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .children(runs.into_iter().map(|(text, tag)| {
+                        div()
+                            .flex_none()
+                            .when(tag.as_deref() == Some("$b"), |run| {
+                                run.font_weight(FontWeight(700.))
+                            })
+                            .child(text)
+                    }))
+                    .into_any_element()
+            }
             None => self
                 .preview_text(&first_spans(&message.content), strong)
                 .into_any_element(),
@@ -373,7 +432,15 @@ mod tests {
             files: true,
             ..facts()
         });
-        assert_eq!(line, ReplyLine::default());
+        assert_eq!(line.placeholder, Some(Placeholder::PollResult));
+        assert_eq!(line.trailing, None);
+    }
+
+    #[test]
+    fn titles_are_cut_at_fifty() {
+        assert_eq!(cut_to("short", 50), "short");
+        let long = format!("{}. more", "a".repeat(47));
+        assert_eq!(cut_to(&long, 50), format!("{}\u{2026}", "a".repeat(47)));
     }
 
     #[test]

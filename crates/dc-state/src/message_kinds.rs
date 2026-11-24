@@ -832,9 +832,13 @@ pub fn system_line(message: &Message, context: &LineContext) -> Option<Line> {
                 .find(|field| field.name == "poll_question_text")?
                 .value
                 .clone();
-            // The title is cut to 50 characters by `EJ`.
-            let title: String = if question.chars().count() > 50 {
-                question.chars().take(50).collect::<String>() + "…"
+            // The title is cut to 50 characters by `EJ` (module 23339): the first 49 without trailing spaces and
+            // dots, then an ellipsis.
+            let title: String = if question.encode_utf16().count() > 50 {
+                let kept: String = question.chars().take(49).collect();
+                kept.trim_end_matches(|c: char| c.is_whitespace() || c == '.')
+                    .to_owned()
+                    + "…"
             } else {
                 question
             };
