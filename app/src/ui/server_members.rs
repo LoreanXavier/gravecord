@@ -8,8 +8,10 @@
 //! The Join Method column's filter opens module 311567's `members-table-join-method-menu`: invite code search, All,
 //! the server's invites and the Other Join Methods view, which narrow the search by `source_invite_code` /
 //! `join_source_type` (module 406318's search state, sent by module 636496).
-//! Not drawn yet: the other column filters, Add Roles, Open Mod View and More Options.
+//! Member Since, Joined Discord, Roles and Signals open their menus of module 920360 (`member_filters.rs`).
+//! Not drawn yet: Add Roles, Open Mod View and More Options.
 
+use super::member_filters::FilterMenu;
 use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, avatar_source, color, icon};
 use crate::editor::{Editor, EditorEvent};
@@ -26,7 +28,7 @@ pub(super) const MEMBERS_PREFIX: &str = "guild-members-search:";
 /// `GET /guilds/{id}/invites` for the join-method menu's invite rows.
 const INVITES_PREFIX: &str = "guild-members-search:invites:";
 /// `MANAGE_GUILD`: module 920360 only gives the column headers their filters with it.
-const MANAGE_GUILD: u64 = 1 << 5;
+pub(super) const MANAGE_GUILD: u64 = 1 << 5;
 /// `P` of module 311567: the Other Join Methods view, in its order (Integration and Server Invite are not listed).
 const OTHER_JOIN_TYPES: [u64; 6] = [3, 6, 1, 4, 7, 8];
 /// The anchor of the Join Method header, under which the menu opens.
@@ -87,13 +89,13 @@ pub(crate) struct MembersState {
     last_body: Value,
     /// The server's features, for the switch; `None` until read.
     features: Option<Vec<String>>,
-    sort: u64,
+    pub(super) sort: u64,
     sort_open: bool,
     prune: Option<Prune>,
     /// Module 406318's `selectedSourceInviteCode` / `selectedJoinSourceType`.
     join: JoinFilter,
     /// The join-method menu is open, and on its Other Join Methods view (`h` of module 311567).
-    join_open: bool,
+    pub(super) join_open: bool,
     join_other: bool,
     /// Keyboard focus state for `members-table-join-method-menu` (`165862` menu navigation).
     join_focus_idx: Option<usize>,
@@ -117,6 +119,9 @@ pub(crate) struct MembersState {
     /// Capture-harness override allowing the bulk action bar to preview even on read-only fixtures.
     #[allow(dead_code)]
     pub(super) bulk_demo_override: bool,
+    /// Module 406318's date, role and safety filters, and the column menu open over the table.
+    pub(super) filters: super::member_filters::Filters,
+    pub(super) filter_menu: Option<super::member_filters::MenuState>,
     _events: Subscription,
     _join_events: Subscription,
 }
@@ -302,7 +307,13 @@ pub(super) fn from_now(seconds: i64) -> String {
 
 /// Module 636496's query: the words as usernames, numeric ids as user ids; one character is no query yet. The join
 /// filter adds `source_invite_code` and `join_source_type`, each as a one-value `or_query`.
-fn search_body(query: &str, sort: u64, join: &JoinFilter) -> Value {
+fn search_body(
+    query: &str,
+    sort: u64,
+    join: &JoinFilter,
+    filters: &super::member_filters::Filters,
+    now_ms: i64,
+) -> Value {
     let mut and_query = serde_json::Map::new();
     if query.chars().count() > 1 {
         let (words, ids) = super::server_settings_pages::split_query(query);
@@ -313,6 +324,8 @@ fn search_body(query: &str, sort: u64, join: &JoinFilter) -> Value {
             and_query.insert("user_id".into(), serde_json::json!({"or_query": ids}));
         }
     }
+    let mut or_query = serde_json::Map::new();
+    filters.apply(&mut and_query, &mut or_query, now_ms);
     if let Some(code) = &join.code {
         and_query.insert(
             "source_invite_code".into(),
@@ -325,7 +338,7 @@ fn search_body(query: &str, sort: u64, join: &JoinFilter) -> Value {
             serde_json::json!({"or_query": [kind]}),
         );
     }
-    serde_json::json!({"or_query": {}, "and_query": and_query, "limit": PAGE_SIZE, "sort": sort})
+    serde_json::json!({"or_query": or_query, "and_query": and_query, "limit": PAGE_SIZE, "sort": sort})
 }
 
 impl Root {
@@ -342,6 +355,9 @@ impl Root {
                 return true;
             }
             state.prune = None;
+            return true;
+        }
+        if state.filter_menu.take().is_some() {
             return true;
         }
         if std::mem::take(&mut state.join_open) {
@@ -423,6 +439,8 @@ impl Root {
             selected_user_ids: HashSet::new(),
             bulk_ban: None,
             bulk_demo_override: false,
+            filters: Default::default(),
+            filter_menu: None,
             _events: events,
             _join_events: join_events,
         }
@@ -440,7 +458,7 @@ impl Root {
         }
     }
 
-    fn members_state_mut(&mut self) -> Option<&mut MembersState> {
+    pub(super) fn members_state_mut(&mut self) -> Option<&mut MembersState> {
         if self
             .server_settings
             .as_ref()
@@ -455,7 +473,7 @@ impl Root {
     }
 
     /// The server whose table that is.
-    fn members_guild(&self) -> Option<Id> {
+    pub(super) fn members_guild(&self) -> Option<Id> {
         match self.server_settings.as_ref() {
             Some(open) if open.members.is_some() => Some(open.guild),
             _ => self.member_view.as_ref().map(|view| view.guild),
@@ -489,12 +507,19 @@ impl Root {
     }
 
     fn search_members(&mut self, guild: Id, query: &str) {
-        let (sort, join, page_size) = self
-            .members_state()
-            .map_or((1, JoinFilter::default(), PAGE_SIZES[0]), |state| {
-                (state.sort, state.join.clone(), state.page_size)
-            });
-        let mut body = search_body(query, sort, &join);
+        let (sort, join, page_size, filters) = self.members_state().map_or_else(
+            || (1, JoinFilter::default(), PAGE_SIZES[0], Default::default()),
+            |state| {
+                (
+                    state.sort,
+                    state.join.clone(),
+                    state.page_size,
+                    state.filters.clone(),
+                )
+            },
+        );
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut body = search_body(query, sort, &join, &filters, now);
         // Module 636496: chunk size = `Math.max(5 * pageSize, 250)`.
         body["limit"] = serde_json::json!((page_size.saturating_mul(5)).max(PAGE_SIZE));
         if let Some(state) = self.members_state_mut() {
@@ -512,7 +537,7 @@ impl Root {
 
     /// The search again with the table's current text, after the join filter changed (`MEMBER_SAFETY_SEARCH_STATE_UPDATE`
     /// sends module 636496's request at once).
-    fn research_members(&mut self, guild: Id, cx: &App) {
+    pub(super) fn research_members(&mut self, guild: Id, cx: &App) {
         let query = self
             .members_state()
             .map(|state| state.search.read(cx).text().to_owned())
@@ -541,6 +566,7 @@ impl Root {
             return;
         }
         state.join_open = true;
+        state.filter_menu = None;
         state.join_other = false;
         let code = state.join.code.clone().unwrap_or_default();
         let editor = state.join_search.clone();
@@ -1040,11 +1066,11 @@ impl Root {
                                                 ),
                                             )
                                             .child(column(195.).child(head("Name")))
-                                            .child(column(100.).child(head("Member Since")))
-                                            .child(column(100.).child(head("Joined Discord")))
+                                            .child(column(100.).child(self.members_filter_header(guild, FilterMenu::Joined, "xcKP1P", cx)))
+                                            .child(column(100.).child(self.members_filter_header(guild, FilterMenu::Account, "sPph4O", cx)))
                                             .child(column(100.).child(self.members_join_header(guild, cx)))
-                                            .child(column(190.).child(head("Roles")))
-                                            .child(column(100.).child(head("Signals"))),
+                                            .child(column(190.).child(self.members_filter_header(guild, FilterMenu::Roles, "2SZsWX", cx)))
+                                            .child(column(100.).child(self.members_filter_header(guild, FilterMenu::Signals, "7V3759", cx))),
                                     )
                                     .when(indexing, |this| {
                                         this.child(
@@ -2636,26 +2662,62 @@ impl Root {
 mod tests {
     use super::*;
 
+    /// The column filters join the text and the join method in one body: flags under `or_query`, the rest under
+    /// `and_query`, the account age merged into the id search.
+    #[test]
+    fn column_filters_join_the_search_body() {
+        let filters = super::super::member_filters::Filters {
+            roles: vec![7],
+            quarantined: true,
+            account: super::super::member_filters::DateFilter {
+                option: 3,
+                after: Some(1_420_070_400_000 + 2),
+                before: None,
+            },
+            ..Default::default()
+        };
+        let body = search_body(
+            "903573240566399026",
+            1,
+            &JoinFilter::invite("abc"),
+            &filters,
+            50,
+        );
+        assert_eq!(
+            body["or_query"],
+            serde_json::json!({"safety_signals": {"automod_quarantined_username": true}})
+        );
+        assert_eq!(
+            body["and_query"],
+            serde_json::json!({
+                "user_id": {"or_query": ["903573240566399026"], "range": {"gte": (2u64 << 22).to_string()}},
+                "role_ids": {"and_query": ["7"]},
+                "source_invite_code": {"or_query": ["abc"]},
+            })
+        );
+    }
+
     #[test]
     fn searches_build_module_636496s_query() {
         assert_eq!(from_now(12 * 3600), "12 hrs ago");
         assert_eq!(from_now(3 * 365 * 86400), "3 years ago");
         let none = JoinFilter::default();
-        assert_eq!(search_body("", 1, &none)["sort"], 1);
+        assert_eq!(search_body("", 1, &none, &Default::default(), 0)["sort"], 1);
         assert_eq!(
-            search_body("", 1, &none)["and_query"],
+            search_body("", 1, &none, &Default::default(), 0)["and_query"],
             serde_json::json!({})
         );
         assert_eq!(
-            search_body("a", 1, &none)["and_query"],
+            search_body("a", 1, &none, &Default::default(), 0)["and_query"],
             serde_json::json!({})
         );
         assert_eq!(
-            search_body("ono", 1, &none)["and_query"]["usernames"]["or_query"],
+            search_body("ono", 1, &none, &Default::default(), 0)["and_query"]["usernames"]["or_query"],
             serde_json::json!(["ono"])
         );
         assert_eq!(
-            search_body("903573240566399026", 1, &none)["and_query"]["user_id"]["or_query"],
+            search_body("903573240566399026", 1, &none, &Default::default(), 0)["and_query"]["user_id"]
+                ["or_query"],
             serde_json::json!(["903573240566399026"])
         );
     }
@@ -2665,17 +2727,17 @@ mod tests {
         use serde_json::json;
         let code = JoinFilter::invite(" abc ");
         assert_eq!(
-            search_body("", 1, &code)["and_query"],
+            search_body("", 1, &code, &Default::default(), 0)["and_query"],
             json!({"source_invite_code": {"or_query": ["abc"]}})
         );
         let kind = JoinFilter::default().pick(Some(3));
         assert_eq!(
-            search_body("ono", 2, &kind)["and_query"],
+            search_body("ono", 2, &kind, &Default::default(), 0)["and_query"],
             json!({"usernames": {"or_query": ["ono"]}, "join_source_type": {"or_query": [3]}})
         );
         // While typing, the raw text goes out, an empty box as `""`.
         assert_eq!(
-            search_body("", 1, &JoinFilter::typed(""))["and_query"],
+            search_body("", 1, &JoinFilter::typed(""), &Default::default(), 0)["and_query"],
             json!({"source_invite_code": {"or_query": [""]}})
         );
     }

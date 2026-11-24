@@ -235,6 +235,7 @@ mod jump;
 mod launcher_home;
 mod media_image;
 mod member_avatars;
+mod member_filters;
 mod member_onboarding;
 pub(crate) mod memory_trim;
 mod menu;
@@ -13709,6 +13710,7 @@ impl Render for Root {
             .children(self.template_delete_modal(cx))
             .children(self.members_sort_layer(cx))
             .children(self.members_join_layer(window, cx))
+            .children(self.members_filter_layer(window, cx))
             .children(self.members_prune_modal(cx))
             .children(self.engagement_select_layer(window, cx))
             .children(self.sound_dialog_modal(cx))
