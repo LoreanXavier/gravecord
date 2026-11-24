@@ -86,12 +86,80 @@ impl BurstPrompt {
     }
 }
 
+/// The text the reaction's emoji shows when it has no picture (module 565645): a unicode emoji the client has no file
+/// for is drawn as text (`emoji emoji-text`, its name), and a picture that failed to load leaves its `alt` (the
+/// emoji's name) in the box, as a broken image does. While a picture is on its way the box stays empty.
+pub(super) fn emoji_text_fallback(
+    name: &str,
+    custom: bool,
+    has_file: bool,
+    failed: bool,
+) -> Option<&str> {
+    ((!custom && !has_file) || failed).then_some(name)
+}
+
+impl super::Root {
+    /// A reaction pill's 20px emoji (`.reaction .emoji`), or its text when the picture is missing (`.emoji-text`:
+    /// 20px, `--text-default`, clipped to the box).
+    pub(super) fn reaction_emoji(
+        &self,
+        reaction: &dc_state::Reaction,
+        image: Option<std::sync::Arc<gpui::Image>>,
+    ) -> gpui::AnyElement {
+        use gpui::{IntoElement, ParentElement, Styled, div, img, px};
+        let key = match reaction.emoji_id {
+            Some(id) => format!("emoji-id:{id}"),
+            None => format!("emoji:{}", reaction.name),
+        };
+        let custom = reaction.emoji_id.is_some();
+        let fallback = image
+            .is_none()
+            .then(|| {
+                emoji_text_fallback(
+                    &reaction.name,
+                    custom,
+                    custom || dc_tokens::emoji_file(&reaction.name).is_some(),
+                    self.images.retries.failures(&key) > 0,
+                )
+            })
+            .flatten();
+        div()
+            .size(px(20.))
+            .flex_none()
+            .overflow_hidden()
+            .children(image.map(|image| img(image).size(px(20.))))
+            .children(fallback.map(|text| {
+                div()
+                    .text_size(px(20.))
+                    .line_height(px(20.))
+                    .whitespace_nowrap()
+                    .text_color(super::color("--text-default"))
+                    .child(text.to_owned())
+            }))
+            .into_any_element()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn list(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_missing_emoji_picture_leaves_its_name() {
+        // A unicode emoji without a file is text from the start.
+        assert_eq!(emoji_text_fallback("x", false, false, false), Some("x"));
+        // A picture on its way leaves the box empty; a failed one shows its alt.
+        assert_eq!(emoji_text_fallback("\u{1f499}", false, true, false), None);
+        assert_eq!(
+            emoji_text_fallback("\u{1f499}", false, true, true),
+            Some("\u{1f499}")
+        );
+        assert_eq!(emoji_text_fallback("blob", true, true, true), Some("blob"));
+        assert_eq!(emoji_text_fallback("blob", true, true, false), None);
     }
 
     #[test]

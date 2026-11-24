@@ -9483,11 +9483,7 @@ impl Root {
                             cx,
                         );
                     }))
-                    .child(
-                        div()
-                            .size(px(20.))
-                            .children(image.map(|image| img(image).size(px(20.)))),
-                    )
+                    .child(self.reaction_emoji(reaction, image))
                     .child(
                         div()
                             .ml(px(6.))
