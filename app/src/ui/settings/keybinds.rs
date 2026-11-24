@@ -1312,8 +1312,10 @@ impl Root {
         order.extend(pick_remove(&mut all, dc_intl::tr("Chat")));
         order.extend(pick_remove(&mut all, dc_intl::tr("Voice and Video")));
         order.extend(pick_remove(&mut all, dc_intl::tr("Miscellaneous")));
+        // `baseSettingWrapper_4Z2WJy`: 8px above and below the groups (`system-darker-cozy`: 929..4580 around
+        // 937..4572).
         let mut page = div()
-            .pt(px(9.))
+            .py(px(8.))
             .flex()
             .flex_col()
             .gap(px(48.))
