@@ -2,6 +2,7 @@ mod asar;
 mod audit;
 mod client;
 mod coverage;
+mod drift;
 mod gaps;
 mod headless;
 mod layout;
@@ -35,6 +36,7 @@ fn main() -> Result<()> {
         ["gaps"] => gaps::run(&repo_root()),
         ["report"] => report::run(&repo_root()),
         ["parity", rest @ ..] => parity::run(&repo_root(), rest),
+        ["drift", rest @ ..] => drift::run(&repo_root(), rest),
         ["package"] => package::run(&repo_root(), false),
         ["package", "--channel", "nightly"] => package::run(&repo_root(), true),
         ["perf", rest @ ..] => perf::run(&repo_root(), rest),

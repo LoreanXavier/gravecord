@@ -704,6 +704,7 @@ fn write_capture(cx: &mut App, window: gpui::AnyWindowHandle, path: &Path) {
         ui::regions::prepare_hand_draw(window, cx);
         window.draw(cx).clear(cx);
         parity::write(&path.with_extension("layout.json"));
+        parity::write_scene(&path.with_extension("scene.json"), window);
         window.render_to_image()
     });
     match result {

@@ -13,7 +13,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 /// A channel differing by this much counts as different. Below it is antialiasing noise.
-const CHANNEL_TOLERANCE: u8 = 24;
+pub(crate) const CHANNEL_TOLERANCE: u8 = 24;
 const RENDER_TIMEOUT: Duration = Duration::from_secs(60);
 
 struct Region {
@@ -76,7 +76,7 @@ const REGIONS: [Region; 7] = [
     },
 ];
 
-fn differs(a: &Rgba<u8>, b: &Rgba<u8>) -> bool {
+pub(crate) fn differs(a: &Rgba<u8>, b: &Rgba<u8>) -> bool {
     (0..3).any(|channel| a[channel].abs_diff(b[channel]) > CHANNEL_TOLERANCE)
 }
 
@@ -113,7 +113,7 @@ fn is_run_copy(name: &str) -> bool {
 /// Each run starts its own copy of the built app, beside it. A running app holds its file, so an app that is still
 /// running, or stuck, would otherwise stop the next build from replacing `gravecord.exe` for every other run. Copies
 /// of finished runs are removed here; one that is still running cannot be, and is left for a later run.
-fn run_copy(built: &Path) -> Result<PathBuf> {
+pub(crate) fn run_copy(built: &Path) -> Result<PathBuf> {
     let dir = built.parent().context("the built app has no folder")?;
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -145,7 +145,7 @@ fn run_copy(built: &Path) -> Result<PathBuf> {
 
 /// Where Cargo puts its output: `CARGO_TARGET_DIR` when set (a second build directory lets two runs build at the
 /// same time), else `target` in the repository.
-fn target_dir(repo: &Path) -> PathBuf {
+pub(crate) fn target_dir(repo: &Path) -> PathBuf {
     match std::env::var_os("CARGO_TARGET_DIR") {
         Some(dir) if !dir.is_empty() => {
             let dir = PathBuf::from(dir);
@@ -280,7 +280,7 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
 
 /// The most specific layout map for a variant: `friends-tab-add.json` for `tab-add-friend-darker-cozy` when it
 /// exists, else `friends-tab.json`, else `friends.json`. Longer prefixes of the variant's segments win.
-fn map_for(maps: &Path, screen: &str, variant: &str) -> PathBuf {
+pub(crate) fn map_for(maps: &Path, screen: &str, variant: &str) -> PathBuf {
     let segments: Vec<&str> = variant.split('-').collect();
     (1..=segments.len())
         .rev()

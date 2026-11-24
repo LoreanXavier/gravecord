@@ -123,6 +123,33 @@ fn differs(a: &[f64; 4], b: &[f64; 4]) -> bool {
     a.iter().zip(b).any(|(a, b)| (a - b).abs() > EPSILON)
 }
 
+/// The official box of every id of a map (none when its class is not in the dump), for `cargo xtask drift`.
+pub fn official_boxes(dom_path: &Path, map_path: &Path) -> Result<Vec<(String, Option<[f64; 4]>)>> {
+    let dump: Value = serde_json::from_slice(&fs::read(dom_path).context("reading the DOM dump")?)?;
+    let map: Value =
+        serde_json::from_slice(&fs::read(map_path).context("reading the parity map")?)?;
+    let dom = Dom {
+        strings: dump["snapshot"]["strings"]
+            .as_array()
+            .context("no strings")?,
+        document: &dump["snapshot"]["documents"][0],
+    };
+    let entries = map.as_object().context("map is not an object")?;
+    Ok(entries
+        .iter()
+        .map(|(id, target)| {
+            let official = dom.find(
+                target["class"].as_str().unwrap_or_default(),
+                target["tag"].as_str(),
+                target["ancestor"].as_str(),
+                target["ancestor_id"].as_str(),
+                target["attribute"].as_str().zip(target["value"].as_str()),
+            );
+            (id.clone(), official)
+        })
+        .collect())
+}
+
 pub fn compare(
     dom_path: &Path,
     map_path: &Path,

@@ -133,7 +133,7 @@ fn target_dir(repo: &Path) -> PathBuf {
     std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| repo.join("target"), PathBuf::from)
 }
 
-fn running(pid: u32) -> bool {
+pub(crate) fn running(pid: u32) -> bool {
     Command::new("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/NH"])
         .output()
