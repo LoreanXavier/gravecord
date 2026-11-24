@@ -406,12 +406,20 @@ impl Root {
             .find(|(seconds, _)| *seconds == now.afk_timeout)
             .map_or("", |(_, label)| label)
             .to_owned();
+        // `pk`: All Messages says why big servers stay quiet on phones (`L+P4t2`, 2500 members or more).
+        let member_count = self
+            .stores
+            .member_counts
+            .get_member_count(guild)
+            .unwrap_or(0);
+        let all_note = all_messages_note(member_count);
         let radio_row =
             |id: &'static str, label: &'static str, value: u64, cx: &mut Context<Self>| {
                 let picked = now.default_notifications == value;
+                let note = (value == 0).then_some(all_note).flatten();
                 div()
                     .id(id)
-                    .h(px(36.))
+                    .min_h(px(36.))
                     .cursor_pointer()
                     .flex()
                     .items_center()
@@ -419,11 +427,23 @@ impl Root {
                     .child(super::create_channel::radio(picked))
                     .child(
                         div()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-default"))
-                            .child(label),
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-default"))
+                                    .child(label),
+                            )
+                            .children(note.map(|note| {
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(note)
+                            })),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.engagement_edit(|values| values.default_notifications = value, cx)
@@ -857,5 +877,21 @@ mod tests {
             now.guild_body(&saved)["features"],
             serde_json::json!(["A", FEED_OFF])
         );
+    }
+}
+
+/// `pk` of module 989433: the All Messages option's description for a server of 2500 members or more.
+fn all_messages_note(member_count: u64) -> Option<&'static str> {
+    (member_count >= 2500).then(|| dc_intl::t("L+P4t2"))
+}
+
+#[cfg(test)]
+mod note_tests {
+    use super::*;
+
+    #[test]
+    fn big_servers_get_the_all_messages_note() {
+        assert_eq!(all_messages_note(2499), None);
+        assert!(all_messages_note(2500).is_some());
     }
 }

@@ -15,6 +15,8 @@ pub(super) const ROLE_CREATED_PREFIX: &str = "guild-role-created:";
 impl Root {
     pub(super) fn request_roles_page(&mut self) {
         self.request_image(ROLES_ART.to_owned(), ROLES_ART.to_owned());
+        let art = super::server_role_editor::NO_PERMISSIONS_ART;
+        self.request_image(art.to_owned(), art.to_owned());
     }
 
     /// `createRole` with no name or colour given.

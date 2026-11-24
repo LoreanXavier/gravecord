@@ -20,6 +20,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 pub(super) const ROLES_PREFIX: &str = "guild-roles:";
+/// `image_H8y-o7` under `images-dark`: the permission search's empty picture.
+pub(super) const NO_PERMISSIONS_ART: &str = "https://discord.com/assets/ab743e418ef21ecc.svg";
 const COUNTS_PREFIX: &str = "guild-roles:counts:";
 const SAVED_PREFIX: &str = "guild-roles:saved:";
 const MEMBER_IDS_PREFIX: &str = "guild-roles:members:";
@@ -2462,6 +2464,36 @@ impl Root {
             }
         }
         let _ = ADMINISTRATOR;
+        // `xZ` with no section left: the 85px picture 16px over "No permissions found" (`noResultsContainer_kyu-6S`).
+        let any = GUILD.iter().any(|section| {
+            section.permissions.iter().any(|permission| {
+                permission.title.to_lowercase().contains(&query)
+                    || permission.description.to_lowercase().contains(&query)
+            })
+        });
+        if !any {
+            let art = self.images.get(NO_PERMISSIONS_ART).cloned();
+            list = list.child(
+                div()
+                    .mt(px(32.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        div()
+                            .size(px(85.))
+                            .mb(px(16.))
+                            .children(art.map(|art| gpui::img(art).size(px(85.)))),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::t("DEBGqA")),
+                    ),
+            );
+        }
         list.into_any_element()
     }
 
