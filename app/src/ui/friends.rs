@@ -27,6 +27,11 @@ const WUMPUS: &str = "https://discordapp.com/assets/25c27c1328c986f6.svg";
 
 // 396478 and friendsEmpty_Bb-Yop: the 440px note wrapper fills the remaining people column.
 fn friends_empty(note: &'static str) -> gpui::Div {
+    friends_empty_with(note, None)
+}
+
+/// The same, with what follows the note (All's Add Friend button).
+fn friends_empty_with(note: &'static str, after: Option<AnyElement>) -> gpui::Div {
     div()
         .parity("friends-empty")
         .flex_1()
@@ -56,7 +61,8 @@ fn friends_empty(note: &'static str) -> gpui::Div {
                             .text_center()
                             .child(note),
                     ),
-                ),
+                )
+                .children(after),
         )
 }
 
@@ -1135,17 +1141,39 @@ impl Root {
             .is_some_and(|search| !search.query.is_empty());
         // 596339 returns the empty state before the search/list when the unfiltered section is empty.
         if people.is_empty() && !searching {
+            // `Al` of module 596339: each section's note, and All's Add Friend button 20px under it.
             let note = match self.friends_tab {
-                FriendsTab::Online => Some(dc_intl::tr(
-                    "There are no friends online at this time. Check back later!",
-                )),
-                FriendsTab::Pending => Some(dc_intl::tr(
-                    "There are no pending friend requests. Click “Add Friend” to send friend requests.",
-                )),
-                _ => None,
+                FriendsTab::Online => Some(dc_intl::t("v7HbiQ")),
+                FriendsTab::Pending => Some(dc_intl::t("aCYQ+P")),
+                FriendsTab::All => Some(dc_intl::t("Y4vMY8")),
+                FriendsTab::Add => None,
             };
             if let Some(note) = note {
-                return friends_empty(note).into_any_element();
+                let all = self.friends_tab == FriendsTab::All;
+                let add = all.then(|| {
+                    // `button_Bb-Yop`: 20px under the note.
+                    div()
+                        .id("friends-empty-add")
+                        .mt(px(20.))
+                        .h(px(40.))
+                        .px(px(15.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--control-primary-border-default"))
+                        .bg(color("--control-primary-background-default"))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--control-primary-text-default"))
+                        .child(dc_intl::t("w5uwoI"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.set_friends_tab(FriendsTab::Add, window, cx);
+                        }))
+                        .into_any_element()
+                });
+                return friends_empty_with(note, add).into_any_element();
             }
         }
         let no_results = searching && people.is_empty();
