@@ -1483,11 +1483,37 @@ impl Root {
         &self,
         user: Id,
         guild: Option<Id>,
-        me: bool,
         palette: &super::dm_profile::Palette,
-        window: &mut Window,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        self.status_bubble_at(
+            user,
+            guild,
+            palette,
+            ("full-profile-status-bubble", 172., 132.),
+            window,
+            cx,
+        )
+    }
+
+    /// The custom status bubble (`outer_rmCN9_`, at most 181px, its two thought dots trailing to the avatar) at
+    /// `(left, top)` of the card, measured as `parity`: someone else's status, or this account's own (with "Add
+    /// Status" when it has none) that opens the custom status editor.
+    pub(super) fn status_bubble_at(
+        &self,
+        user: Id,
+        guild: Option<Id>,
+        palette: &super::dm_profile::Palette,
+        (parity, left, top): (&'static str, f32, f32),
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let me = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|current| current.id == user);
         let light_theme = palette.theme.is_some_and(|t| t.light());
         let strong: Hsla = palette.token("--text-strong").into();
         let default: Hsla = palette.token("--text-default").into();
@@ -1687,10 +1713,10 @@ impl Root {
         };
         Some(
             div()
-                .parity("full-profile-status-bubble")
+                .parity(parity)
                 .absolute()
-                .top(px(132.))
-                .left(px(172.))
+                .top(px(top))
+                .left(px(left))
                 .max_w(px(181.))
                 .min_w(px(42.))
                 .child(small_dot)
@@ -2979,8 +3005,7 @@ impl Root {
             })
             .flatten();
         let banner_img = self.profile_banner_image_in(id, open_guild);
-        let status_bubble =
-            self.full_profile_status_bubble(id, open_guild, me, &palette, window, cx);
+        let status_bubble = self.full_profile_status_bubble(id, open_guild, &palette, window, cx);
         // Not in the pinned client: ShowConnections with `showOnModal` puts its compact icons in place of the
         // connection cards (`plugin_hooks/show_connections.rs`).
         let connections = self

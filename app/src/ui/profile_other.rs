@@ -411,6 +411,16 @@ impl Root {
                             ),
                     ),
             )
+            // The custom status bubble beside the avatar, placed against it as this account's popout places its own
+            // (`outer_rmCN9_` 95px right of and 43px below the avatar's ring).
+            .children(self.status_bubble_at(
+                id,
+                self.guild,
+                &palette,
+                ("popout-status-bubble", 8. + 95., 53. + 43.),
+                window,
+                cx,
+            ))
             .into_any_element();
         // The buttons on the banner sit on the top layer, above the profile effect (z-index 3 against its 2), so they
         // are drawn after it as children of the card body: 32px down when the private heading precedes the header.
