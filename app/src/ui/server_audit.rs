@@ -2,8 +2,9 @@
 //! 411153; formatter module 898472, generated into `audit_spec.rs`; icons and details module 438407).
 //!
 //! `GET /guilds/{id}/audit-logs` lists 50 entries at a time, by user and by action when filtered. Close entries of one
-//! kind merge into one row (`P`), and a row with changes to show expands to a numbered list. Not drawn: onboarding and
-//! home settings' own change lists, avatars' and names' context menus, and the labels of AutoMod's enums.
+//! kind merge into one row (`P`), and a row with changes to show expands to a numbered list, with module 438407's own
+//! lists under onboarding answers and Server Guide changes. Not drawn: avatars' and names' context menus, and the
+//! labels of AutoMod's enums.
 //! Measured in `design/dom/settings/guild-audit-darker-cozy.json`, `-actions-`, `-users-`, `-expanded-`.
 
 use super::audit_spec::{
@@ -1584,6 +1585,9 @@ impl Root {
             } else {
                 Vec::new()
             };
+            let sub = self
+                .audit_sub_items(guild, entry, change)
+                .map(|(onboarding, items)| self.audit_sub_list(entry, onboarding, items));
             column = column.child(
                 div()
                     .mt(px(8.))
@@ -1616,7 +1620,8 @@ impl Root {
                                     .line_height(px(16.))
                                     .text_color(color("--text-default"))
                                     .child(line)
-                            })),
+                            }))
+                            .children(sub),
                     ),
             );
         }
@@ -2243,10 +2248,456 @@ impl Root {
     }
 }
 
+/// A message of module 438407's own change lists and its arguments.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SubLine {
+    id: &'static str,
+    args: Vec<(&'static str, String)>,
+}
+
+impl SubLine {
+    fn new(id: &'static str, args: Vec<(&'static str, String)>) -> Self {
+        Self { id, args }
+    }
+
+    /// `intl.format` with `$b` as the strong parts.
+    fn spans(&self) -> Vec<Span> {
+        let args: Vec<(&str, dc_intl::Arg<'_>)> = self
+            .args
+            .iter()
+            .map(|(name, value)| (*name, value.as_str().into()))
+            .collect();
+        dc_intl::format_runs(self.id, &args)
+            .into_iter()
+            .map(|(text, tag)| {
+                if tag.as_deref() == Some("$b") {
+                    Span::Strong(text)
+                } else {
+                    Span::Plain(text)
+                }
+            })
+            .collect()
+    }
+}
+
+/// One `li` of an onboarding question's or the Server Guide's change list: the kind's icon (none for the welcome
+/// message), its title line, and the lines under it (`onboardingChangeLogItemChanges`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SubItem {
+    icon: Option<Kind>,
+    title: SubLine,
+    lines: Vec<SubLine>,
+}
+
+/// `keyBy(list, field)` in the list's order (snowflakes are not array indexes, so `Object.keys` keeps insertion).
+fn keyed<'a>(list: &'a Value, field: &str) -> Vec<(String, &'a Value)> {
+    let mut out: Vec<(String, &Value)> = Vec::new();
+    for item in list.as_array().into_iter().flatten() {
+        let key = value_text(&item[field]);
+        match out.iter_mut().find(|(known, _)| *known == key) {
+            Some(slot) => slot.1 = item,
+            None => out.push((key, item)),
+        }
+    }
+    out
+}
+
+/// `_.difference(a, b)`.
+fn difference(a: &[String], b: &[String]) -> Vec<String> {
+    a.iter().filter(|item| !b.contains(item)).cloned().collect()
+}
+
+/// The ids of a list field, named, without the ones the server no longer has (`map(i).filter(Vq)`).
+fn named_ids(item: &Value, field: &str, name: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+    item[field]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|id| name(&value_text(id)))
+        .collect()
+}
+
+/// An onboarding question's `options` change (module 438407): answers created with their roles and channels, answers
+/// deleted, then answers updated with what they gained and lost. `role` and `channel` name an id as `@role` and
+/// `#channel`, or give nothing for one the server no longer has.
+pub(crate) fn prompt_option_items(
+    old: &Value,
+    new: &Value,
+    role: &dyn Fn(&str) -> Option<String>,
+    channel: &dyn Fn(&str) -> Option<String>,
+) -> Vec<SubItem> {
+    let before = keyed(old, "id");
+    let after = keyed(new, "id");
+    let has = |list: &[(String, &Value)], key: &str| list.iter().any(|(known, _)| known == key);
+    let mut items = Vec::new();
+    for (_, option) in after.iter().filter(|(key, _)| !has(&before, key)) {
+        let roles = named_ids(option, "role_ids", role);
+        let channels = named_ids(option, "channel_ids", channel);
+        let mut lines = Vec::new();
+        if !roles.is_empty() {
+            lines.push(SubLine::new("gt/5z1", vec![("roles", roles.join(", "))]));
+        }
+        if !channels.is_empty() {
+            lines.push(SubLine::new(
+                "4q006W",
+                vec![("channels", channels.join(", "))],
+            ));
+        }
+        items.push(SubItem {
+            icon: Some(Kind::Create),
+            title: SubLine::new("CZ1tyo", vec![("title", value_text(&option["title"]))]),
+            lines,
+        });
+    }
+    for (_, option) in before.iter().filter(|(key, _)| !has(&after, key)) {
+        items.push(SubItem {
+            icon: Some(Kind::Delete),
+            title: SubLine::new("m3dt+K", vec![("title", value_text(&option["title"]))]),
+            lines: Vec::new(),
+        });
+    }
+    for (key, now) in &after {
+        let Some((_, was)) = before.iter().find(|(known, _)| known == key) else {
+            continue;
+        };
+        let old_roles = named_ids(was, "role_ids", role);
+        let old_channels = named_ids(was, "channel_ids", channel);
+        let new_roles = named_ids(now, "role_ids", role);
+        let new_channels = named_ids(now, "channel_ids", channel);
+        let mut lines = Vec::new();
+        for (id, name, list) in [
+            ("R+km+d", "roles", difference(&new_roles, &old_roles)),
+            ("xIVRoU", "roles", difference(&old_roles, &new_roles)),
+            (
+                "iYowX4",
+                "channels",
+                difference(&new_channels, &old_channels),
+            ),
+            (
+                "JLdJpL",
+                "channels",
+                difference(&old_channels, &new_channels),
+            ),
+        ] {
+            if !list.is_empty() {
+                lines.push(SubLine::new(id, vec![(name, list.join(", "))]));
+            }
+        }
+        for field in ["title", "description"] {
+            if was[field] != now[field] {
+                lines.push(SubLine::new(
+                    "0698za",
+                    vec![
+                        ("key", field.to_owned()),
+                        ("oldValue", value_text(&was[field])),
+                        ("newValue", value_text(&now[field])),
+                    ],
+                ));
+            }
+        }
+        if lines.is_empty() {
+            continue;
+        }
+        items.push(SubItem {
+            icon: Some(Kind::Update),
+            title: SubLine::new("WZO+ia", vec![("title", value_text(&now["title"]))]),
+            lines,
+        });
+    }
+    items
+}
+
+/// A Server Guide change (module 438407 for `HOME_SETTINGS_CREATE` and `_UPDATE`): the welcome message's author and
+/// text, or the To Dos and resources added and removed, by channel. `user` gives a known user's id and username.
+pub(crate) fn home_settings_items(
+    key: &str,
+    old: &Value,
+    new: &Value,
+    user: &dyn Fn(&str) -> Option<(String, String)>,
+) -> Vec<SubItem> {
+    let none = || dc_intl::t("PoWNfe").to_owned();
+    match key {
+        "welcome_message" => {
+            let author = |value: &Value| value["author_ids"][0].as_str().and_then(user);
+            let (was, now) = (author(old), author(new));
+            let mut items = Vec::new();
+            if was.as_ref().map(|(id, _)| id) != now.as_ref().map(|(id, _)| id) {
+                items.push(SubItem {
+                    icon: None,
+                    title: SubLine::new(
+                        "PrOzA+",
+                        vec![
+                            ("oldUser", was.map_or_else(none, |(_, name)| name)),
+                            ("newUser", now.map_or_else(none, |(_, name)| name)),
+                        ],
+                    ),
+                    lines: Vec::new(),
+                });
+            }
+            if old["message"] != new["message"] {
+                items.push(SubItem {
+                    icon: None,
+                    title: SubLine::new(
+                        "oB7rBb",
+                        vec![
+                            (
+                                "oldMessage",
+                                old["message"].as_str().map_or_else(none, str::to_owned),
+                            ),
+                            ("newMessage", value_text(&new["message"])),
+                        ],
+                    ),
+                    lines: Vec::new(),
+                });
+            }
+            items
+        }
+        "new_member_actions" | "resource_channels" => {
+            let (added, removed) = if key == "new_member_actions" {
+                ("oFSu66", "GssWar")
+            } else {
+                ("HlGndE", "7pysg6")
+            };
+            let channels = |list: &Value| -> Vec<String> {
+                list.as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|item| value_text(&item["channel_id"]))
+                    .collect()
+            };
+            let (before, after) = (channels(old), channels(new));
+            let gained = difference(&after, &before);
+            let lost = difference(&before, &after);
+            let titled = |list: &Value, keep: &[String], id: &'static str, kind: Kind| {
+                list.as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|item| keep.contains(&value_text(&item["channel_id"])))
+                    .map(|item| SubItem {
+                        icon: Some(kind),
+                        title: SubLine::new(id, vec![("name", value_text(&item["title"]))]),
+                        lines: Vec::new(),
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut items = titled(new, &gained, added, Kind::Create);
+            items.extend(titled(old, &lost, removed, Kind::Delete));
+            items
+        }
+        _ => Vec::new(),
+    }
+}
+
+impl Root {
+    /// Module 438407's own list under an onboarding question's options or a Server Guide change, when the change has
+    /// one; `true` with it for the onboarding list.
+    fn audit_sub_items(
+        &self,
+        guild: Id,
+        entry: &Entry,
+        change: &Change,
+    ) -> Option<(bool, Vec<SubItem>)> {
+        use action::*;
+        if matches!(
+            entry.action,
+            ONBOARDING_PROMPT_UPDATE | ONBOARDING_PROMPT_CREATE
+        ) && change.key == "options"
+        {
+            let known = self.stores.guild(guild);
+            let role = |id: &str| {
+                let id = id.parse::<Id>().ok()?;
+                known?.roles.get(&id).map(|name| format!("@{name}"))
+            };
+            let channel = |id: &str| {
+                let id = id.parse::<Id>().ok()?;
+                known?
+                    .channels
+                    .iter()
+                    .find(|channel| channel.id == id)
+                    .map(|channel| format!("#{}", channel.name))
+            };
+            return Some((
+                true,
+                prompt_option_items(&change.old, &change.new, &role, &channel),
+            ));
+        }
+        if matches!(entry.action, HOME_SETTINGS_CREATE | HOME_SETTINGS_UPDATE) {
+            let user = |id: &str| {
+                self.audit_user(id)
+                    .map(|user| (user.id.to_string(), user.username))
+            };
+            return Some((
+                false,
+                home_settings_items(&change.key, &change.old, &change.new, &user),
+            ));
+        }
+        None
+    }
+
+    /// The list as module 438407 draws it: `onboardingChangeLogContainer` (a column 8px apart, 12px above and below)
+    /// for a question's answers, a plain list for the Server Guide. A title row is `onboardingChangeLogItemTitle`
+    /// (the icon and the line 8px apart, at the bottom), the lines under it `onboardingChangeLogItemChanges` (40px in);
+    /// every line is `body-md/normal` (16/20).
+    fn audit_sub_list(&self, entry: &Entry, onboarding: bool, items: Vec<SubItem>) -> AnyElement {
+        let target = target_type(entry.action);
+        let line = |line: &SubLine| {
+            div()
+                .line_height(px(20.))
+                .child(Self::audit_spans(line.spans(), 16.))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .when(onboarding, |list| list.gap(px(8.)).my(px(12.)))
+            .children(items.into_iter().map(|item| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .items_end()
+                            .gap(px(8.))
+                            .children(
+                                item.icon
+                                    .map(|kind| self.audit_icon(entry.action, target, kind)),
+                            )
+                            .child(line(&item.title)),
+                    )
+                    .when(!item.lines.is_empty(), |li| {
+                        li.child(
+                            div()
+                                .ml(px(40.))
+                                .overflow_hidden()
+                                .children(item.lines.iter().map(line)),
+                        )
+                    })
+            }))
+            .into_any_element()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn line(id: &'static str, args: &[(&'static str, &str)]) -> SubLine {
+        SubLine::new(
+            id,
+            args.iter()
+                .map(|(name, value)| (*name, (*value).to_owned()))
+                .collect(),
+        )
+    }
+
+    /// Module 438407: created answers with their roles and channels, deleted answers, then updated answers with
+    /// what changed; ids the server no longer has drop out, and an answer with nothing to say is left out.
+    #[test]
+    fn onboarding_answers_list_what_changed() {
+        let role = |id: &str| (id != "99").then(|| format!("@r{id}"));
+        let channel = |id: &str| Some(format!("#c{id}"));
+        let old = json!([
+            {"id": "10", "title": "Gone", "role_ids": [], "channel_ids": []},
+            {"id": "11", "title": "Same", "description": "d", "role_ids": ["1"], "channel_ids": ["5"]},
+            {"id": "12", "title": "Old", "description": "d", "role_ids": ["1", "2"], "channel_ids": ["5"]},
+        ]);
+        let new = json!([
+            {"id": "11", "title": "Same", "description": "d", "role_ids": ["1"], "channel_ids": ["5"]},
+            {"id": "12", "title": "New", "description": "d", "role_ids": ["2", "3", "99"], "channel_ids": []},
+            {"id": "13", "title": "Fresh", "role_ids": ["3", "99"], "channel_ids": ["6", "7"]},
+        ]);
+        let items = prompt_option_items(&old, &new, &role, &channel);
+        assert_eq!(
+            items,
+            vec![
+                SubItem {
+                    icon: Some(Kind::Create),
+                    title: line("CZ1tyo", &[("title", "Fresh")]),
+                    lines: vec![
+                        line("gt/5z1", &[("roles", "@r3")]),
+                        line("4q006W", &[("channels", "#c6, #c7")]),
+                    ],
+                },
+                SubItem {
+                    icon: Some(Kind::Delete),
+                    title: line("m3dt+K", &[("title", "Gone")]),
+                    lines: vec![],
+                },
+                SubItem {
+                    icon: Some(Kind::Update),
+                    title: line("WZO+ia", &[("title", "New")]),
+                    lines: vec![
+                        line("R+km+d", &[("roles", "@r3")]),
+                        line("xIVRoU", &[("roles", "@r1")]),
+                        line("JLdJpL", &[("channels", "#c5")]),
+                        line(
+                            "0698za",
+                            &[("key", "title"), ("oldValue", "Old"), ("newValue", "New")]
+                        ),
+                    ],
+                },
+            ]
+        );
+    }
+
+    /// Module 438407 for the Server Guide: the welcome message's author and text, To Dos and resources by channel.
+    #[test]
+    fn server_guide_changes_list_by_channel_and_author() {
+        let user = |id: &str| (id == "1").then(|| ("1".to_owned(), "ann".to_owned()));
+        let none = dc_intl::t("PoWNfe");
+        let items = home_settings_items(
+            "welcome_message",
+            &Value::Null,
+            &json!({"author_ids": ["1"], "message": "hi"}),
+            &user,
+        );
+        assert_eq!(
+            items,
+            vec![
+                SubItem {
+                    icon: None,
+                    title: line("PrOzA+", &[("oldUser", none), ("newUser", "ann")]),
+                    lines: vec![],
+                },
+                SubItem {
+                    icon: None,
+                    title: line("oB7rBb", &[("oldMessage", none), ("newMessage", "hi")]),
+                    lines: vec![],
+                },
+            ]
+        );
+        let same = json!({"author_ids": ["1"], "message": "hi"});
+        assert!(home_settings_items("welcome_message", &same, &same, &user).is_empty());
+        let items = home_settings_items(
+            "resource_channels",
+            &json!([{"channel_id": "5", "title": "Rules"}, {"channel_id": "6", "title": "FAQ"}]),
+            &json!([{"channel_id": "6", "title": "FAQ"}, {"channel_id": "7", "title": "Links"}]),
+            &user,
+        );
+        assert_eq!(
+            items,
+            vec![
+                SubItem {
+                    icon: Some(Kind::Create),
+                    title: line("HlGndE", &[("name", "Links")]),
+                    lines: vec![],
+                },
+                SubItem {
+                    icon: Some(Kind::Delete),
+                    title: line("7pysg6", &[("name", "Rules")]),
+                    lines: vec![],
+                },
+            ]
+        );
+        let todo = home_settings_items(
+            "new_member_actions",
+            &json!([]),
+            &json!([{"channel_id": "8", "title": "Say hi"}]),
+            &user,
+        );
+        assert_eq!(todo[0].title, line("oFSu66", &[("name", "Say hi")]));
+    }
 
     #[test]
     fn messages_are_sorted_for_their_lookup() {
