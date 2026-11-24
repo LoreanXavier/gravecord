@@ -240,6 +240,8 @@ impl Root {
             Page::Onboarding => self.request_onboarding_page(guild, cx),
             Page::Integrations => {
                 self.request_image(NO_APPS_ART.to_owned(), NO_APPS_ART.to_owned());
+                self.request_app_integrations(guild);
+                self.ensure_app_search(cx);
                 let _ = self.requests.send(Request::Fetch {
                     key: format!("{WEBHOOKS_PREFIX}{guild}"),
                     route: format!("/guilds/{guild}/webhooks"),
@@ -480,6 +482,58 @@ impl Root {
             };
         let divider = || div().my(px(32.)).h(px(1.)).bg(color("--border-subtle"));
         let art = self.images.get(NO_APPS_ART).cloned();
+        // `t0`'s `eN`: the apps' cards (the search over more than four), or "No installed apps matched your search."
+        // when the search leaves none; with no apps at all, the empty state below.
+        let apps_section: Option<AnyElement> = self
+            .app_integration_list(guild)
+            .filter(|apps| !apps.is_empty())
+            .map(|apps| {
+                let open = self.server_settings.as_ref();
+                let query = open.map(|open| open.apps_query.clone()).unwrap_or_default();
+                let many = apps.len() > 100;
+                let cards: Vec<AnyElement> = apps
+                    .iter()
+                    .filter(|app| super::integration_apps::app_matches(app, &query, many))
+                    .map(|app| {
+                        let hooks = super::integration_apps::app_webhooks(&app.app, &webhooks);
+                        self.app_integration_card(guild, app, hooks)
+                    })
+                    .collect();
+                let search = (apps.len() > 4)
+                    .then(|| open.and_then(|open| open.apps_search.as_ref()))
+                    .flatten()
+                    .map(|(editor, _)| {
+                        // `md_0PLWhS`: 40 tall, the 30px icon box 4px in.
+                        div()
+                            .mb(px(16.))
+                            .h(px(40.))
+                            .pl(px(4.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--input-border-default"))
+                            .bg(color("--input-background-default"))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .size(px(30.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("picker_search", 16., "--input-text-default")),
+                            )
+                            .child(div().flex_1().min_w(px(0.)).child(editor.clone()))
+                    });
+                let empty = cards.is_empty();
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(search)
+                    .children(cards)
+                    .when(empty, |this| this.child(self.app_search_empty()))
+                    .into_any_element()
+            });
         div()
             .flex()
             .flex_col()
@@ -542,7 +596,7 @@ impl Root {
                     .text_color(color("--text-strong"))
                     .child("Bots and Apps"),
             )
-            .child(
+            .child(apps_section.unwrap_or_else(|| {
                 div()
                     .pt(px(32.))
                     .pb(px(32.))
@@ -569,8 +623,9 @@ impl Root {
                             cx,
                             move |_, cx| cx.open_url(&format!("https://discord.com/application-directory?guild_id={guild}")),
                         )),
-                    ),
-            )
+                    )
+                    .into_any_element()
+            }))
             .into_any_element()
     }
 

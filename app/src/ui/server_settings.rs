@@ -293,6 +293,9 @@ pub(crate) struct ServerSettings {
     pub(super) scroll: gpui::ScrollHandle,
     /// Members' `settingsHorizontalScroller_mg3aTC`.
     pub(super) members_hscroll: gpui::ScrollHandle,
+    /// Bots and Apps' search box and what it holds.
+    pub(super) apps_search: Option<(Entity<Editor>, gpui::Subscription)>,
+    pub(super) apps_query: String,
     pub(super) community: Option<super::server_community::Wizard>,
     pub(super) overview: Option<super::server_community::Overview>,
     pub(super) boost: super::server_boost::BoostState,
@@ -474,6 +477,8 @@ impl Root {
             landing: Default::default(),
             scroll: Default::default(),
             members_hscroll: Default::default(),
+            apps_search: None,
+            apps_query: String::new(),
             community: None,
             overview: None,
             boost: Default::default(),

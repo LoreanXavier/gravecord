@@ -140,6 +140,7 @@ mod interaction_flow;
 mod interaction_modal;
 mod inventory_feed;
 mod inventory_popout;
+mod integration_apps;
 mod invite;
 mod invite_embed;
 mod join_request_page;
@@ -3329,6 +3330,10 @@ impl Root {
                 if key.starts_with(server_games::GAMES_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.games_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(integration_apps::INTEGRATIONS_PREFIX) {
+                    self.app_integrations_fetched(&key, body, cx);
                     return;
                 }
                 if key.starts_with(server_settings::PROFILE_KEY) {
