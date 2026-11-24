@@ -164,6 +164,23 @@ fn runtime_gif_url(src: &str) -> String {
 }
 
 /// Two 230px columns: each GIF goes under the shorter one, scaled to the column width, 12px apart.
+/// Module 884037 `render`: the line in place of an empty list, by view. Favorites with nothing matching the search
+/// read `ZH4o6l`; a search answered with nothing reads `5dX4UM`; Trending, or a search still on its way, shows none.
+pub(crate) fn no_results_key(
+    empty: bool,
+    view: Option<&GifView>,
+    answered: impl Fn(&str) -> bool,
+) -> Option<&'static str> {
+    if !empty {
+        return None;
+    }
+    match view? {
+        GifView::Favorites => Some("ZH4o6l"),
+        GifView::Search(query) if answered(query) => Some("5dX4UM"),
+        _ => None,
+    }
+}
+
 pub(crate) fn masonry(gifs: &[Gif]) -> Vec<(usize, f32, f32)> {
     let mut columns = [0f32; 2];
     gifs.iter()
@@ -936,6 +953,22 @@ impl Root {
             .into_any_element()
     }
 
+    /// Module 537652 in `noResults_H8nOze` (the full height): the line centred, 14px medium, `--primary-400` in a
+    /// dark theme (`wrapper_fGpd5-`).
+    fn gifs_no_results(key: &'static str) -> AnyElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .text_size(px(14.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--primary-400"))
+            .child(dc_intl::t(key))
+            .into_any_element()
+    }
+
     /// `emptyHints_H8nOze`: three 160.7px cells, each a 148.7 x 160 card with 20px padding and 6px around it.
     fn favorites_hints() -> AnyElement {
         let card = |text: &'static str, star: bool| {
@@ -998,6 +1031,16 @@ impl Root {
             )
         {
             return Self::favorites_hints();
+        }
+        // Module 884037 `render`: no results in Favorites ("No favorite GIFs match your search."), or a search whose
+        // answer for this very query came back empty ("No GIFs match your search."); Trending shows nothing.
+        let view = self.gifs.as_ref().map(|gifs| gifs.view.clone());
+        let answered = |query: &str| {
+            self.fetched
+                .contains_key(&format!("{SEARCH_PREFIX}{query}"))
+        };
+        if let Some(key) = no_results_key(list.is_empty(), view.as_ref(), answered) {
+            return Self::gifs_no_results(key);
         }
         let tiles: Vec<AnyElement> = list
             .iter()
@@ -1255,6 +1298,26 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_lists_say_why() {
+        let search = GifView::Search("cat".to_owned());
+        assert_eq!(
+            no_results_key(true, Some(&GifView::Favorites), |_| false),
+            Some("ZH4o6l")
+        );
+        assert_eq!(
+            no_results_key(true, Some(&search), |_| true),
+            Some("5dX4UM")
+        );
+        assert_eq!(no_results_key(true, Some(&search), |_| false), None);
+        assert_eq!(
+            no_results_key(true, Some(&GifView::Trending), |_| true),
+            None
+        );
+        assert_eq!(no_results_key(false, Some(&search), |_| true), None);
+        assert_eq!(dc_intl::t("5dX4UM"), "No GIFs match your search.");
+    }
 
     /// Module 649529: the query loses `-`, `_` and spaces, the address `-` and `_`, both lower-cased.
     #[test]
