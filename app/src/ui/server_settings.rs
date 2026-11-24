@@ -300,6 +300,11 @@ pub(crate) struct ServerSettings {
     pub(super) app_open: Option<String>,
     /// Channels Followed's own page is open (`CHANNEL_FOLLOWING`).
     pub(super) followed_open: bool,
+    /// Remove App's confirmation, for this integration and app name.
+    pub(super) app_remove: Option<(String, String)>,
+    /// The followed channel card that is open, and the one Unfollow asks about.
+    pub(super) followed_expanded: Option<String>,
+    pub(super) followed_unfollow: Option<(String, String)>,
     pub(super) community: Option<super::server_community::Wizard>,
     pub(super) overview: Option<super::server_community::Overview>,
     pub(super) boost: super::server_boost::BoostState,
@@ -485,6 +490,9 @@ impl Root {
             apps_query: String::new(),
             app_open: None,
             followed_open: false,
+            app_remove: None,
+            followed_expanded: None,
+            followed_unfollow: None,
             community: None,
             overview: None,
             boost: Default::default(),

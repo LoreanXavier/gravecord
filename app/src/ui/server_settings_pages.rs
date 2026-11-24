@@ -659,7 +659,7 @@ impl Root {
     /// Channels Followed (`tA` of module 986057): the breadcrumb, `5u+aV1` with its Learn more link, the divider, then
     /// one card per followed channel (`eH`: `header_mWF9-i` 20px 16px, the webhook's 48px avatar, its name, the
     /// announcement channel and "from {server}", the expand chevron), or "You're not following any channels" with
-    /// Learn More. Not drawn: the expanded editor (its channel select and Unfollow).
+    /// Learn More. A card opens to its name, its channel and Unfollow.
     pub(super) fn followed_channels_page(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
         let hooks: Vec<Value> = self
             .stores
@@ -717,32 +717,60 @@ impl Root {
                     cx.open_url("https://support.discord.com/hc/en-us/articles/360028384531")
                 }),
             );
-        let rows: Vec<AnyElement> =
-            hooks
-                .iter()
-                .map(|hook| {
-                    let id = hook["id"].as_str().unwrap_or_default().to_owned();
-                    let avatar = followed_avatar(hook);
-                    let picture = self.images.get(&avatar).cloned();
-                    let channel = hook["source_channel"]["name"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned();
-                    let source = hook["source_guild"]["name"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned();
-                    let from = dc_intl::format_runs("H/jJ6R", &[])
-                        .into_iter()
-                        .map(|(text, _)| text)
-                        .collect::<String>();
+        let rows: Vec<AnyElement> = hooks
+            .iter()
+            .map(|hook| {
+                let id = hook["id"].as_str().unwrap_or_default().to_owned();
+                let avatar = followed_avatar(hook);
+                let picture = self.images.get(&avatar).cloned();
+                let channel = hook["source_channel"]["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                let source = hook["source_guild"]["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                let from = dc_intl::format_runs("H/jJ6R", &[])
+                    .into_iter()
+                    .map(|(text, _)| text)
+                    .collect::<String>();
+                let expanded = self
+                    .server_settings
+                    .as_ref()
+                    .and_then(|open| open.followed_expanded.as_deref())
+                    == Some(id.as_str());
+                let name = hook["name"].as_str().unwrap_or_default().to_owned();
+                let posted_in = hook["channel_id"]
+                    .as_str()
+                    .and_then(|channel| channel.parse::<Id>().ok())
+                    .and_then(|channel| {
+                        self.stores.guild(guild).and_then(|known| {
+                            known
+                                .channels
+                                .iter()
+                                .find(|c| c.id == channel)
+                                .map(|c| c.name.clone())
+                        })
+                    })
+                    .unwrap_or_default();
+                let toggle = id.clone();
+                let header =
                     div()
                         .id(SharedString::from(format!("followed-{id}")))
-                        .mb(px(16.))
                         .py(px(20.))
                         .px(px(16.))
-                        .rounded(px(8.))
-                        .bg(color("--card-background-default"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(open) = this.server_settings.as_mut() {
+                                open.followed_expanded =
+                                    if open.followed_expanded.as_deref() == Some(toggle.as_str()) {
+                                        None
+                                    } else {
+                                        Some(toggle.clone())
+                                    };
+                            }
+                            cx.notify();
+                        }))
                         .cursor_pointer()
                         .flex()
                         .items_center()
@@ -825,10 +853,117 @@ impl Root {
                                         ),
                                 ),
                         )
-                        .child(icon("chevron_down", 24., "--interactive-text-default"))
-                        .into_any_element()
-                })
-                .collect();
+                        // `eG`: the chevron turns over while the card is open.
+                        .child(
+                            icon("chevron_down", 24., "--interactive-text-default").when(
+                                expanded,
+                                |icon| {
+                                    icon.with_transformation(gpui::Transformation::rotate(
+                                        gpui::percentage(0.5),
+                                    ))
+                                },
+                            ),
+                        );
+                // `body_mWF9-i` (0 16px 24px): the 24px-under divider, Announcement Name and Post To 16px apart,
+                // the divider, then Unfollow. GAP: the two fields show the webhook's values; editing them is not
+                // built.
+                let body = expanded.then(|| {
+                    let unfollow = (id.clone(), name.clone());
+                    let field = |label: &'static str, value: String, select: bool| {
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .mb(px(8.))
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t(label)),
+                            )
+                            .child(
+                                div()
+                                    .h(px(40.))
+                                    .px(px(12.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color("--input-border-default"))
+                                    .bg(color("--input-background-default"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-default"))
+                                    .child(value)
+                                    .when(select, |this| {
+                                        this.child(icon("chevron_down", 16., "--icon-subtle"))
+                                    }),
+                            )
+                    };
+                    div()
+                        .px(px(16.))
+                        .pb(px(24.))
+                        .child(div().mb(px(24.)).h(px(1.)).bg(color("--border-subtle")))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(24.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(px(16.))
+                                        .child(field("I1o5gV", name.clone(), false))
+                                        .child(field("4TuWfc", format!("#{posted_in}"), true)),
+                                )
+                                .child(div().h(px(1.)).bg(color("--border-subtle")))
+                                .child(
+                                    div().flex().child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "followed-unfollow-{id}"
+                                            )))
+                                            .h(px(32.))
+                                            .px(px(11.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color(
+                                                "--control-critical-secondary-border-default",
+                                            ))
+                                            .bg(color(
+                                                "--control-critical-secondary-background-default",
+                                            ))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .line_height(px(18.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color(
+                                                "--control-critical-secondary-text-default",
+                                            ))
+                                            .child(dc_intl::t("CMy0Cj"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(open) = this.server_settings.as_mut() {
+                                                    open.followed_unfollow = Some(unfollow.clone());
+                                                }
+                                                cx.notify();
+                                            })),
+                                    ),
+                                ),
+                        )
+                });
+                div()
+                    .mb(px(16.))
+                    .rounded(px(8.))
+                    .bg(color("--card-background-default"))
+                    .child(header)
+                    .children(body)
+                    .into_any_element()
+            })
+            .collect();
         let empty = rows.is_empty().then(|| {
             div()
                 .flex()
@@ -861,6 +996,50 @@ impl Root {
             .children(rows)
             .children(empty)
             .into_any_element()
+    }
+
+    /// Unfollow's confirmation (`eR.A` in `eH`): "Unfollow {name}", why, Cancel and Unfollow. Unfollow is
+    /// `DELETE /webhooks/{id}`, a `Request::Rest` that inert mode refuses like every other write.
+    pub(super) fn unfollow_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.server_settings.as_ref()?;
+        let (hook, name) = open.followed_unfollow.clone()?;
+        let close = |this: &mut Root| {
+            if let Some(open) = this.server_settings.as_mut() {
+                open.followed_unfollow = None;
+            }
+        };
+        Some(super::modal::render(
+            super::modal::Spec {
+                id: "unfollow-dialog",
+                title: dc_intl::format("gBKqZ0", &[("name", name.as_str().into())]).into(),
+                subtitle: Some(div().child(dc_intl::t("zO9jrD")).into_any_element()),
+                body: None,
+                buttons: vec![
+                    super::modal::button(
+                        "unfollow-cancel",
+                        "Cancel",
+                        super::modal::Tone::Secondary,
+                        move |this, _, _| close(this),
+                    ),
+                    super::modal::button(
+                        "unfollow-confirm",
+                        dc_intl::t("CMy0Cj"),
+                        super::modal::Tone::Critical,
+                        move |this, _, _| {
+                            let _ = this.requests.send(Request::Rest {
+                                key: None,
+                                method: reqwest::Method::DELETE,
+                                route: format!("/webhooks/{hook}"),
+                                body: None,
+                            });
+                            close(this);
+                        },
+                    ),
+                ],
+                close: Box::new(move |this, _, _| close(this)),
+            },
+            cx,
+        ))
     }
 
     pub(super) fn primary_button(

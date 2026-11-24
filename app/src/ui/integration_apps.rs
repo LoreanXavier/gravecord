@@ -634,7 +634,7 @@ impl Root {
                     .child(dc_intl::t(if can_remove { "hdneL4" } else { "xRCMqx" })),
             )
             .child(
-                // `critical-primary`, `sm`. GAP: the confirmation it opens (`e8`) is not built yet.
+                // `critical-primary`, `sm`: opens `e8`'s confirmation.
                 div()
                     .id("server-app-remove")
                     .flex_none()
@@ -645,13 +645,27 @@ impl Root {
                     .border_color(color("--control-critical-primary-border-default"))
                     .bg(color("--control-critical-primary-background-default"))
                     .when(!can_remove, |this| this.opacity(0.5))
+                    .when(can_remove, |this| this.cursor_pointer())
                     .flex()
                     .items_center()
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--white"))
-                    .child(dc_intl::t("ebGf4m")),
+                    .child(dc_intl::t("ebGf4m"))
+                    .on_click({
+                        let integration = app.integration.clone();
+                        let name = app.name.clone();
+                        cx.listener(move |this, _, _, cx| {
+                            if !can_remove {
+                                return;
+                            }
+                            if let Some(open) = this.server_settings.as_mut() {
+                                open.app_remove = Some((integration.clone(), name.clone()));
+                            }
+                            cx.notify();
+                        })
+                    }),
             );
         div()
             .flex()
@@ -680,6 +694,59 @@ impl Root {
             .into_any_element()
     }
 
+    /// `e8` of module 986057 for an app without a subscription listing: module 732159's confirmation ("Remove
+    /// {app}", "Are you sure you want to remove **{app}**?", Cancel and the `critical-primary` Remove App). Remove App
+    /// is `disableIntegration`, `DELETE /guilds/{id}/integrations/{integration}`, a `Request::Rest` that inert mode
+    /// refuses like every other write.
+    pub(super) fn app_remove_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.server_settings.as_ref()?;
+        let (integration, name) = open.app_remove.clone()?;
+        let guild = open.guild;
+        let close = |this: &mut Root| {
+            if let Some(open) = this.server_settings.as_mut() {
+                open.app_remove = None;
+            }
+        };
+        let runs = dc_intl::format_runs("FGE8ya", &[("applicationName", name.as_str().into())]);
+        let subtitle = div()
+            .flex()
+            .flex_wrap()
+            .children(runs.into_iter().map(|(text, tag)| {
+                div()
+                    .when(tag.is_some(), |this| this.font_weight(FontWeight(600.)))
+                    .child(text.replace(' ', "\u{a0}"))
+            }))
+            .into_any_element();
+        Some(super::modal::render(
+            super::modal::Spec {
+                id: "app-remove-dialog",
+                title: dc_intl::format("rL9d/1", &[("applicationName", name.as_str().into())])
+                    .into(),
+                subtitle: Some(subtitle),
+                body: None,
+                buttons: vec![
+                    super::modal::button(
+                        "app-remove-cancel",
+                        "Cancel",
+                        super::modal::Tone::Secondary,
+                        move |this, _, _| close(this),
+                    ),
+                    super::modal::button(
+                        "app-remove-confirm",
+                        dc_intl::t("ebGf4m"),
+                        super::modal::Tone::Critical,
+                        move |this, _, _| {
+                            let _ = this.requests.send(remove_app_request(guild, &integration));
+                            close(this);
+                        },
+                    ),
+                ],
+                close: Box::new(move |this, _, _| close(this)),
+            },
+            cx,
+        ))
+    }
+
     /// `EVWFNr`'s card: the 256x72 picture 24px over the line (`emptyStateSearchImage_2S81sZ`), the line in
     /// `body-sm/normal` `text-muted` inside the 128px card.
     pub(super) fn app_search_empty(&self) -> AnyElement {
@@ -705,6 +772,16 @@ impl Root {
                     .child(dc_intl::t("EVWFNr")),
             )
             .into_any_element()
+    }
+}
+
+/// `disableIntegration` (module 727419): the app leaves the server. A write, so inert mode refuses it.
+pub(super) fn remove_app_request(guild: Id, integration: &str) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: None,
+        method: reqwest::Method::DELETE,
+        route: format!("/guilds/{guild}/integrations/{integration}"),
+        body: None,
     }
 }
 
@@ -736,6 +813,10 @@ mod tests {
         );
         assert_eq!(apps[1].bot, None);
         assert_eq!(apps[0].description, None);
+        assert!(matches!(
+            remove_app_request(1, "2").inert(),
+            crate::net::Inert::Deny
+        ));
         assert!(app_matches(&apps[0], "hlp", false));
         assert!(!app_matches(&apps[0], "hlp", true));
         assert!(app_matches(&apps[0], "10", true));

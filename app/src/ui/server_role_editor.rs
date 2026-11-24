@@ -3017,6 +3017,15 @@ impl Root {
         members: &[dc_state::User],
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // `g` of `xz`: a managed role's members are given by what manages it.
+        let members_locked = self
+            .role_value(guild, role)
+            .is_some_and(|value| value["managed"] == true)
+            || self
+                .stores
+                .guild(guild)
+                .and_then(|known| known.role_info.get(&role))
+                .is_some_and(|info| info.managed);
         let Some(state) = self
             .server_settings
             .as_ref()
@@ -3043,7 +3052,9 @@ impl Root {
                             .border_1()
                             .border_color(color("--control-primary-border-default"))
                             .bg(color("--control-primary-background-default"))
-                            .cursor_pointer()
+                            // `xz`'s `g` (`managed || locked`): the button is disabled.
+                            .when(!members_locked, |this| this.cursor_pointer())
+                            .when(members_locked, |this| this.opacity(0.5))
                             .flex()
                             .items_center()
                             .text_size(px(14.))
@@ -3052,6 +3063,9 @@ impl Root {
                             .text_color(color("--white"))
                             .child("Add Members")
                             .on_click(cx.listener(move |this, _, window, cx| {
+                                if members_locked {
+                                    return;
+                                }
                                 if let Some(field) = this.open_add_members(cx) {
                                     let handle = gpui::Focusable::focus_handle(field.read(cx), cx);
                                     window.focus(&handle, cx);
@@ -3116,7 +3130,9 @@ impl Root {
                                     "",
                                     cx,
                                     move |this, cx| {
-                                        this.open_add_members(cx);
+                                        if !members_locked {
+                                            this.open_add_members(cx);
+                                        }
                                     },
                                 )),
                         ),
@@ -3159,13 +3175,18 @@ impl Root {
                         div()
                             .id(SharedString::from(format!("server-role-remove-{id}")))
                             .mr(px(8.))
-                            .cursor_pointer()
+                            // `xF`: a locked list's remove does nothing.
+                            .when(!members_locked, |this| this.cursor_pointer())
+                            .when(members_locked, |this| this.opacity(0.5))
                             .child(icon(
                                 "role_member_remove",
                                 16.,
                                 "--interactive-text-default",
                             ))
                             .on_click(cx.listener(move |this, _, _, cx| {
+                                if members_locked {
+                                    return;
+                                }
                                 // Module 727419: a member's roles are replaced whole, so read them first.
                                 let _ = this.requests.send(Request::Fetch {
                                     key: format!("{STRIP_PREFIX}{guild}:{role}:{id}"),

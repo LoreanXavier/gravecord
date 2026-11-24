@@ -13729,6 +13729,8 @@ impl Render for Root {
             .children(self.delete_server_modal(cx))
             .children(self.server_games_dropdown(window, cx))
             .children(self.ban_dialog(cx))
+            .children(self.app_remove_dialog(cx))
+            .children(self.unfollow_dialog(cx))
             .children(self.role_menu_layer(cx))
             .children(self.view_as_role_picker(cx))
             .children(self.role_delete_modal(cx))
