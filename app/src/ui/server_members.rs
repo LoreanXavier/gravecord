@@ -268,6 +268,43 @@ fn join_label(kind: u64, text: String) -> gpui::Div {
         .child(text)
 }
 
+/// `R` of module 920360 (`noResultsContainer_ZMTSV1`: a centred column 16px apart, at least 300 tall, 36px in): the
+/// empty search's picture (module 636670, 188x90) over "No members match these search results.", or the indexing line
+/// alone; `body-md/normal` in `text-muted`.
+pub(super) fn no_results_of(report: Option<&Value>, empty: bool) -> Option<AnyElement> {
+    let report = report?;
+    if report["status"] == 202 {
+        Some(no_results(false))
+    } else if report["ok"] == true && empty {
+        Some(no_results(true))
+    } else {
+        None
+    }
+}
+
+fn no_results(empty: bool) -> AnyElement {
+    div()
+        .w_full()
+        .min_h(px(300.))
+        .p(px(36.))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(16.))
+        .when(empty, |this| {
+            this.child(img("icons/members_no_results.svg").w(px(188.)).h(px(90.)))
+        })
+        .child(
+            div()
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .text_color(color("--text-muted"))
+                .child(dc_intl::t(if empty { "wdyR52" } else { "AXPbZr" })),
+        )
+        .into_any_element()
+}
+
 /// The Prune Members dialog.
 struct Prune {
     days: u64,
@@ -752,9 +789,12 @@ impl Root {
         };
         let report = self.fetched.get(&format!("{MEMBERS_PREFIX}{guild}"));
         let indexing = report.is_none_or(|report| report["status"] == 202);
+        // `R` of module 920360 in the table body: `SUCCESS_STILL_INDEXING` says the server is being indexed,
+        // `SUCCESS_EMPTY` (a search that found nobody) shows the picture over its line.
         let members: Vec<Value> = report
             .and_then(|report| report["body"]["members"].as_array().cloned())
             .unwrap_or_default();
+        let no_results = no_results_of(report, members.is_empty());
         let total = report
             .and_then(|report| report["body"]["total_result_count"].as_u64())
             .unwrap_or(members.len() as u64);
@@ -1072,19 +1112,7 @@ impl Root {
                                             .child(column(190.).child(self.members_filter_header(guild, FilterMenu::Roles, "2SZsWX", cx)))
                                             .child(column(100.).child(self.members_filter_header(guild, FilterMenu::Signals, "7V3759", cx))),
                                     )
-                                    .when(indexing, |this| {
-                                        this.child(
-                                            div()
-                                                .h(px(240.))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .text_size(px(16.))
-                                                .line_height(px(20.))
-                                                .text_color(color("--text-muted"))
-                                                .child("Before searching, we need to index this server. Give us a bit."),
-                                        )
-                                    })
+                                    .children(no_results)
                                     .children(rows),
                             )
                             .when(!indexing, |this| {
@@ -2661,6 +2689,20 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `R` of module 920360 only for a still-indexing reply or a successful empty one; nothing while loading or after
+    /// an error.
+    #[test]
+    fn the_empty_state_follows_the_search_state() {
+        let ok = serde_json::json!({"ok": true, "status": 200});
+        let indexing = serde_json::json!({"ok": true, "status": 202});
+        let failed = serde_json::json!({"ok": false, "status": 500});
+        assert!(no_results_of(None, true).is_none());
+        assert!(no_results_of(Some(&ok), true).is_some());
+        assert!(no_results_of(Some(&ok), false).is_none());
+        assert!(no_results_of(Some(&indexing), false).is_some());
+        assert!(no_results_of(Some(&failed), true).is_none());
+    }
 
     /// The column filters join the text and the join method in one body: flags under `or_query`, the rest under
     /// `and_query`, the account age merged into the id search.

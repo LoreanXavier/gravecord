@@ -7,9 +7,11 @@
 //! Kick, Timeout, Manage Roles or Manage Nicknames) on a Community server, or on one whose Members row the settings
 //! page switched on (`ENABLED_MODERATION_EXPERIENCE_FOR_NON_COMMUNITY`).
 //!
-//! Not drawn: the join-request tabs of a server with manual approval, the column filters' popouts, the row's
-//! Add Roles, the Signals flags and the Mod View sidebar.
+//! The column headers open the settings table's filter menus (`member_filters.rs`), and an empty or still-indexing
+//! search shows module 920360's `R`.
+//! Not drawn: the join-request tabs of a server with manual approval, the row's Add Roles and the Mod View sidebar.
 
+use super::member_filters::FilterMenu;
 use super::server_members::{MEMBERS_PREFIX, from_now};
 use super::{Root, avatar_source, color, icon};
 use crate::parity::Parity;
@@ -542,26 +544,43 @@ impl Root {
                                         })),
                                 ),
                             )
-                            .child(div().w(px(177.4)).flex_none().px(px(8.)).child(head("Name", false)))
-                            .child(column(93.7).child(head("Member Since", true)))
-                            .child(column(92.9).child(head("Joined Discord", true)))
+                            .child(
+                                div()
+                                    .w(px(177.4))
+                                    .flex_none()
+                                    .px(px(8.))
+                                    .child(head("Name", false)),
+                            )
+                            .child(column(93.7).child(self.members_filter_header(
+                                guild,
+                                FilterMenu::Joined,
+                                "xcKP1P",
+                                cx,
+                            )))
+                            .child(column(92.9).child(self.members_filter_header(
+                                guild,
+                                FilterMenu::Account,
+                                "sPph4O",
+                                cx,
+                            )))
                             .child(column(94.3).child(self.members_join_header(guild, cx)))
-                            .child(column(169.5).child(head("Roles", true)))
-                            .child(column(92.4).child(head("Signals", true))),
+                            .child(column(169.5).child(self.members_filter_header(
+                                guild,
+                                FilterMenu::Roles,
+                                "2SZsWX",
+                                cx,
+                            )))
+                            .child(column(92.4).child(self.members_filter_header(
+                                guild,
+                                FilterMenu::Signals,
+                                "7V3759",
+                                cx,
+                            ))),
                     )
-                    .when(indexing, |this| {
-                        this.child(
-                            div()
-                                .h(px(240.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(16.))
-                                .line_height(px(20.))
-                                .text_color(color("--text-muted"))
-                                .child("Before searching, we need to index this server. Give us a bit."),
-                        )
-                    })
+                    .children(super::server_members::no_results_of(
+                        report,
+                        members.is_empty(),
+                    ))
                     .children(rows),
             )
             .when(!indexing, |this| {
