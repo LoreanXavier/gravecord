@@ -2132,8 +2132,9 @@ impl Root {
             .justify_center()
             .gap(px(24.))
             .child(
+                // `textContainer_jFcvcH`: `max-width: 320px`, so a narrower board wraps it instead of cutting it.
                 div()
-                    .w(px(320.))
+                    .w(px(320_f32.min(board_width)))
                     .flex()
                     .flex_col()
                     .items_center()
@@ -2152,9 +2153,7 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .text_color(palette.token("--text-default"))
-                            .child(dc_intl::tr(
-                                "Choose from our library of Widgets to share more about yourself and your interests",
-                            )),
+                            .child(dc_intl::t!("O9SQ1c")),
                     ),
             )
             .child(
