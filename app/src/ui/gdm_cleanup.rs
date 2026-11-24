@@ -15,6 +15,7 @@
 //! GAP: the group icon is the channel's own picture or default (module 598104 draws a two-avatar facepile for an
 //! iconless group), and the screen reader announcements are not made.
 
+use super::tooltip::{Side, Tip};
 use super::{Root, color, icon};
 use crate::net::Request;
 use dc_state::Id;
@@ -488,7 +489,8 @@ impl Root {
             .open
             .as_ref()
             .is_some_and(|open| open.target == super::context_menu::Target::DmListMore);
-        div()
+        // Module 830507 (`j`): the button carries the "More" tooltip (`FCwJId`), above.
+        let button = div()
             .id("dm-more")
             .relative()
             .when(!expanded, |button| {
@@ -502,6 +504,7 @@ impl Root {
             .cursor_pointer()
             .child(icon("clips_more", 16., "--text-muted"))
             .on_click(cx.listener(|this, _, _, cx| {
+                this.tip = None;
                 let anchor = this.tip_anchors.borrow().get("dm-more").copied();
                 if let Some(anchor) = anchor {
                     // `position: "bottom", align: "left", spacing: 8`.
@@ -511,8 +514,14 @@ impl Root {
                         cx,
                     );
                 }
-            }))
-            .into_any_element()
+            }));
+        self.with_tip(
+            "dm-more-tip",
+            Tip::text(dc_intl::t("FCwJId"), Side::Top),
+            button,
+            cx,
+        )
+        .into_any_element()
     }
 }
 
