@@ -1635,10 +1635,10 @@ impl Root {
             .max_h(px(max_h))
             .rounded(px(8.))
             .overflow_hidden()
-            .border_1()
-            .border_color(color("--border-subtle"))
-            .bg(color("--background-surface-higher"))
-            .shadow(vec![super::shadow_high()])
+            // `container_uTMZTY`: `--background-surface-high`, and its edge is `--shadow-border`, a 1px ring outside
+            // the 560px box, with `--shadow-high` under it.
+            .bg(color("--background-surface-high"))
+            .shadow(vec![super::shadow_border(), super::shadow_high()])
             .flex()
             .flex_col()
             .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
