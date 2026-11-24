@@ -785,6 +785,8 @@ pub struct RoleInfo {
     /// The role's colour as `0xRRGGBB`; 0 is none.
     pub color: u32,
     pub mentionable: bool,
+    /// `hoist`: the role's members are listed apart (Display role members separately).
+    pub hoist: bool,
     pub guild_connection: bool,
     /// An integration's or bot's role (`managed`): never given or taken from a person by hand (module 180798).
     pub managed: bool,
@@ -811,6 +813,7 @@ impl RoleInfo {
             position: role["position"].as_i64().unwrap_or(0),
             color: role["color"].as_u64().unwrap_or(0) as u32,
             mentionable: role["mentionable"].as_bool().unwrap_or(false),
+            hoist: role["hoist"].as_bool().unwrap_or(false),
             guild_connection: role["tags"].get("guild_connections").is_some(),
             managed: role["managed"].as_bool().unwrap_or(false),
             secondary_color: colors["secondary_color"].as_u64().map(|c| c as u32),

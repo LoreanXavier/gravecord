@@ -166,6 +166,47 @@ pub(super) struct Draft {
     pub permissions: u64,
 }
 
+/// `AT` of module 7864 for the list: highest position first, then the lower id.
+fn sort_roles(roles: &mut [Value]) {
+    let id = |role: &Value| {
+        role["id"]
+            .as_str()
+            .and_then(|id| id.parse::<Id>().ok())
+            .unwrap_or(0)
+    };
+    roles.sort_by(|a, b| {
+        let position = |role: &Value| role["position"].as_i64().unwrap_or(0);
+        position(b).cmp(&position(a)).then(id(a).cmp(&id(b)))
+    });
+}
+
+/// The role store's roles as the API spells a role: the fields the list and the editor read.
+fn store_roles(known: &dc_state::Guild) -> Vec<Value> {
+    known
+        .roles
+        .iter()
+        .map(|(id, name)| {
+            let info = known.role_info.get(id).copied().unwrap_or_default();
+            let permissions = known.role_permissions.get(id).copied().unwrap_or(0);
+            serde_json::json!({
+                "id": id.to_string(),
+                "name": name,
+                "position": info.position,
+                "color": info.color,
+                "colors": {
+                    "primary_color": info.color,
+                    "secondary_color": info.secondary_color,
+                    "tertiary_color": info.tertiary_color,
+                },
+                "hoist": info.hoist,
+                "mentionable": info.mentionable,
+                "managed": info.managed,
+                "permissions": permissions.to_string(),
+            })
+        })
+        .collect()
+}
+
 impl Draft {
     fn from_role(role: &Value) -> Self {
         let colors = &role["colors"];
@@ -556,14 +597,20 @@ impl Root {
         cx.notify();
     }
 
+    /// The server's roles, highest first. Store 396816 lists `getSortedRoles` of the role store (module 317525),
+    /// which READY and the role events fill; the fetched list, when there is one, carries the edits saved since.
     fn roles_of(&self, guild: Id) -> Vec<Value> {
-        let mut roles: Vec<Value> = self
+        let fetched = self
             .fetched
             .get(&format!("{ROLES_PREFIX}{guild}"))
-            .and_then(|body| body.as_array().cloned())
-            .unwrap_or_default();
-        // Highest position first, as the list shows them.
-        roles.sort_by_key(|role| std::cmp::Reverse(role["position"].as_i64().unwrap_or(0)));
+            .and_then(|body| body.as_array().cloned());
+        let mut roles = fetched.unwrap_or_else(|| {
+            self.stores
+                .guild(guild)
+                .map(store_roles)
+                .unwrap_or_default()
+        });
+        sort_roles(&mut roles);
         roles
     }
 
@@ -823,27 +870,60 @@ impl Root {
             })
             .collect();
         let total = roles.len();
-        let rows: Vec<AnyElement> = roles
+        let last = roles.len().saturating_sub(1);
+        let row_ids: Vec<Id> = roles
             .iter()
             .map(|role| {
-                let id: Id = role["id"]
+                role["id"]
                     .as_str()
                     .and_then(|id| id.parse().ok())
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+            })
+            .collect();
+        let rows: Vec<AnyElement> = roles
+            .iter()
+            .enumerate()
+            .map(|(index, role)| {
+                let id: Id = row_ids[index];
                 let draft = Draft::from_role(role);
                 let count = counts[id.to_string()].as_u64().unwrap_or(0);
+                let group = SharedString::from(format!("server-role-row-{id}"));
+                // `roleRow_YEKbw3:before` / `:last-child:after`: a 1px line 32px and 8px in, at the row's top (and
+                // under the last row), gone while this row or the one above it is hovered.
+                let line = |top: bool| {
+                    let above = (top && index > 0).then(|| {
+                        SharedString::from(format!("server-role-row-{}", row_ids[index - 1]))
+                    });
+                    div()
+                        .absolute()
+                        .left(px(32.))
+                        .right(px(8.))
+                        .h(px(1.))
+                        .when(top, |line| line.top_0())
+                        .when(!top, |line| line.bottom(px(-1.)))
+                        .when_some(above, |line, above| {
+                            line.group_hover(above, |style| style.opacity(0.))
+                        })
+                        .child(
+                            div()
+                                .size_full()
+                                .bg(color("--border-subtle"))
+                                .group_hover(group.clone(), |style| style.opacity(0.)),
+                        )
+                };
                 div()
                     .id(SharedString::from(format!("server-role-row-{id}")))
-                    .group(SharedString::from(format!("server-role-row-{id}")))
+                    .group(group.clone())
+                    .relative()
                     .ml(px(-32.))
                     .w(px(700.))
                     .h(px(61.))
                     .pt(px(1.))
                     .pr(px(8.))
                     .rounded(px(4.))
-                    .border_b_1()
-                    .border_color(color("--border-subtle"))
-                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                    .child(line(true))
+                    .when(index == last, |row| row.child(line(false)))
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
                     .cursor_pointer()
                     .flex()
                     .items_center()
@@ -2853,6 +2933,54 @@ pub(super) fn gradient_stop_label(index: usize, count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Without a fetched list the role store's roles stand in, read back as `Draft` reads a role, and sort as `AT`.
+    #[test]
+    fn store_roles_read_as_the_api_spells_them() {
+        let mut guild = dc_state::Guild::default();
+        guild.roles.insert(3, "Mods".into());
+        guild.roles.insert(2, "Plain".into());
+        guild.roles.insert(4, "Top".into());
+        guild.role_permissions.insert(3, 1 << 10);
+        guild.role_info.insert(
+            3,
+            dc_state::RoleInfo {
+                position: 1,
+                color: 0x3498db,
+                hoist: true,
+                mentionable: true,
+                secondary_color: Some(0x123456),
+                ..Default::default()
+            },
+        );
+        guild.role_info.insert(
+            2,
+            dc_state::RoleInfo {
+                position: 1,
+                ..Default::default()
+            },
+        );
+        guild.role_info.insert(
+            4,
+            dc_state::RoleInfo {
+                position: 2,
+                ..Default::default()
+            },
+        );
+        let mut roles = store_roles(&guild);
+        sort_roles(&mut roles);
+        let ids: Vec<&str> = roles
+            .iter()
+            .filter_map(|role| role["id"].as_str())
+            .collect();
+        assert_eq!(ids, ["4", "2", "3"]);
+        let mods = Draft::from_role(&roles[2]);
+        assert_eq!(mods.name, "Mods");
+        assert_eq!(mods.color, 0x3498db);
+        assert_eq!(mods.secondary, Some(0x123456));
+        assert!(mods.hoist && mods.mentionable);
+        assert_eq!(mods.permissions, 1 << 10);
+    }
 
     #[test]
     fn drafts_read_and_write_like_update_role() {
