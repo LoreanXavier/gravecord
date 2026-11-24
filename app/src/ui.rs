@@ -1074,6 +1074,8 @@ pub struct Root {
     birthday: birthday::State,
     file_menu: Option<file_actions::FileMenu>,
     file_wrap: HashSet<Id>,
+    /// Text files whose Render Markdown was turned off (module 383055 keeps it on at first).
+    file_markdown_off: HashSet<Id>,
     file_language: HashMap<Id, String>,
     file_expanded: Option<dc_state::Attachment>,
     view_reactions: Option<reactions_modal::ViewReactions>,
@@ -1745,6 +1747,7 @@ impl Root {
             birthday: birthday::State::default(),
             file_menu: None,
             file_wrap: HashSet::new(),
+            file_markdown_off: HashSet::new(),
             file_language: HashMap::new(),
             file_expanded: None,
             view_reactions: None,

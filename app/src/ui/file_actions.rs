@@ -134,6 +134,53 @@ pub(crate) struct FileMenu {
     pub query: String,
 }
 
+/// A checkbox row of the More menu (Wrap Text, Render Markdown): the label, then the 18px box.
+fn checkbox_row(id: &'static str, label: SharedString, checked: bool) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(px(36.))
+        .px(px(8.))
+        .rounded(px(4.))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .hover(|style| style.bg(color("--interactive-background-hover")))
+        .child(
+            div()
+                .flex_grow(1.)
+                .truncate()
+                .mr(px(8.))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-strong"))
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_none()
+                .size(px(18.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(if checked {
+                    color("--checkbox-border-selected-default")
+                } else {
+                    color("--checkbox-border-default")
+                })
+                .bg(if checked {
+                    color("--checkbox-background-selected-default")
+                } else {
+                    color("--checkbox-background-default")
+                })
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(checked, |this| {
+                    this.child(icon("checkbox_check", 16., "--white"))
+                }),
+        )
+}
+
 impl Root {
     pub(super) fn open_file_menu(
         &mut self,
@@ -215,7 +262,15 @@ impl Root {
         let menu = self.file_menu.as_ref()?;
         let attachment = menu.attachment.clone();
         let id: Id = attachment.id;
+        let markdown = super::files::renders_markdown(
+            &super::files::file_language(
+                self.file_language.get(&id).map(String::as_str),
+                &attachment.filename,
+            ),
+            true,
+        );
         let height = match menu.kind {
+            FileMenuKind::More if markdown => 78. + 36.,
             FileMenuKind::More => 78.,
             FileMenuKind::Language => 250.,
         };
@@ -224,7 +279,7 @@ impl Root {
                 let wrapped = self.file_wrap.contains(&id);
                 let download = attachment.clone();
                 div()
-                    .w(px(144.))
+                    .min_w(px(144.))
                     .p(px(8.))
                     .rounded(px(8.))
                     .border_1()
@@ -252,57 +307,33 @@ impl Root {
                             .child("Download"),
                     )
                     .child(
-                        div()
-                            .id("file-wrap")
-                            .h(px(36.))
-                            .px(px(8.))
-                            .rounded(px(4.))
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .hover(|style| style.bg(color("--interactive-background-hover")))
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                        checkbox_row("file-wrap", "Wrap Text".into(), wrapped).on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 if !this.file_wrap.remove(&id) {
                                     this.file_wrap.insert(id);
                                 }
                                 cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .mr(px(8.))
-                                    .text_size(px(14.))
-                                    .line_height(px(18.))
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--text-strong"))
-                                    .child("Wrap Text"),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .size(px(18.))
-                                    .rounded(px(4.))
-                                    .border_1()
-                                    .border_color(if wrapped {
-                                        color("--checkbox-border-selected-default")
-                                    } else {
-                                        color("--checkbox-border-default")
-                                    })
-                                    .bg(if wrapped {
-                                        color("--checkbox-background-selected-default")
-                                    } else {
-                                        color("--checkbox-background-default")
-                                    })
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .when(wrapped, |this| {
-                                        this.child(icon("checkbox_check", 16., "--white"))
-                                    }),
-                            ),
+                            }),
+                        ),
                     )
+                    // `em.has(l)`: Render Markdown (`zstmkn`) for a file read as Markdown, on until turned off.
+                    .when(markdown, |panel| {
+                        panel.child(
+                            checkbox_row(
+                                "file-render-markdown",
+                                dc_intl::t("zstmkn").into(),
+                                !self.file_markdown_off.contains(&id),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if !this.file_markdown_off.remove(&id) {
+                                        this.file_markdown_off.insert(id);
+                                    }
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                    })
                     .into_any_element()
             }
             FileMenuKind::Language => {

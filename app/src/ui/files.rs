@@ -89,7 +89,58 @@ pub(super) fn wanted(message: &Message) -> Vec<(String, String)> {
 /// `--custom-plaintext-preview-collapsed-lines` is not reached by short files: they take their own lines.
 const COLLAPSED_LINES: usize = 6;
 
+/// `em` of module 383055: the languages a text file is drawn as Markdown in.
+const MARKDOWN_LANGUAGES: [&str; 4] = ["markdown", "md", "mkd", "mkdown"];
+
+/// The language a text file is read in: the one chosen, else the last part of its name (`n.split(".").slice(-1)`).
+pub(super) fn file_language(chosen: Option<&str>, filename: &str) -> String {
+    chosen.map_or_else(
+        || filename.rsplit('.').next().unwrap_or_default().to_owned(),
+        str::to_owned,
+    )
+}
+
+/// Whether the file is drawn as Markdown: its language is one of `em` and Render Markdown is on (`j=h&&em.has(c)`).
+pub(super) fn renders_markdown(language: &str, on: bool) -> bool {
+    on && MARKDOWN_LANGUAGES.contains(&language)
+}
+
 impl Root {
+    /// Module 456262 in the card (`markup_ku1OHH markdownView_KFT5TX`: 8px by 16px, the message markup's styles),
+    /// then the notice of what is not shown (`markdownEllipsis_KFT5TX`, body-sm in `--text-subtle`, 16px in, 8px
+    /// under). The text is read by the message parser, not markdown-it: tables, soft line breaks and link
+    /// references are not drawn as the official preview draws them.
+    fn markdown_preview(
+        &self,
+        attachment: &Attachment,
+        text: &str,
+        notice: Option<String>,
+    ) -> AnyElement {
+        let body = Message::from_value(&serde_json::json!({
+            "id": attachment.id.to_string(), "channel_id": "0", "content": text,
+            "timestamp": "1970-01-01T00:00:00+00:00", "author": {"id": "0", "username": ""},
+        }));
+        div()
+            .flex()
+            .flex_col()
+            .children(body.map(|body| {
+                div()
+                    .px(px(16.))
+                    .py(px(8.))
+                    .child(self.content_tinted(&body, "--text-default"))
+            }))
+            .children(notice.map(|notice| {
+                div()
+                    .px(px(16.))
+                    .pb(px(8.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-subtle"))
+                    .child(notice)
+            }))
+            .into_any_element()
+    }
+
     fn plaintext_card(&self, attachment: &Attachment, cx: &mut Context<Self>) -> AnyElement {
         let text = self
             .texts
@@ -100,6 +151,13 @@ impl Root {
         let language = self.file_language.get(&attachment.id).cloned();
         let wrap = self.file_wrap.contains(&attachment.id);
         let shown_text = shown.join("\n");
+        let markdown = renders_markdown(
+            &file_language(language.as_deref(), &attachment.filename),
+            !self.file_markdown_off.contains(&attachment.id),
+        );
+        // `eE`: past the lines shown, "..." and how many lines are left (`DQnFp2`).
+        let left = text.lines().count().saturating_sub(COLLAPSED_LINES);
+        let notice = (left > 0).then(|| format!("... {}", dc_intl::t!("DQnFp2", lines = left)));
         let (for_language, for_expand, for_more) =
             (attachment.clone(), attachment.clone(), attachment.clone());
         // `max(lines * 16px, 100px) + 26px`.
@@ -110,32 +168,38 @@ impl Root {
             .min_w(px(302.))
             .child(
                 div()
-                    .h(px(height))
+                    // The Markdown view is not clamped to the collapsed lines (`KQ` only without it).
+                    .when(!markdown, |code| code.h(px(height)))
                     .overflow_hidden()
                     .rounded_t(px(8.))
                     .border_1()
                     .border_color(color("--border-subtle"))
                     .bg(color("--background-base-lower"))
-                    .child(
-                        div()
-                            .mt(px(8.))
-                            .mx(px(8.))
-                            .p(px(8.))
-                            .font_family(MONO)
-                            .text_size(px(14.))
-                            .line_height(px(16.))
-                            .text_color(color("--text-code"))
-                            .when(!wrap, |this| this.whitespace_nowrap())
-                            // A chosen language highlights the preview; plain text otherwise.
-                            .when_some(language.clone(), |this, language| {
-                                this.children(super::code_lines(Some(&language), &shown_text))
-                            })
-                            .when(language.is_none(), |this| {
-                                this.children(
-                                    shown.iter().map(|line| div().child((*line).to_owned())),
-                                )
-                            }),
-                    ),
+                    .when(markdown, |card| {
+                        card.child(self.markdown_preview(attachment, &shown_text, notice.clone()))
+                    })
+                    .when(!markdown, |card| {
+                        card.child(
+                            div()
+                                .mt(px(8.))
+                                .mx(px(8.))
+                                .p(px(8.))
+                                .font_family(MONO)
+                                .text_size(px(14.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-code"))
+                                .when(!wrap, |this| this.whitespace_nowrap())
+                                // A chosen language highlights the preview; plain text otherwise.
+                                .when_some(language.clone(), |this, language| {
+                                    this.children(super::code_lines(Some(&language), &shown_text))
+                                })
+                                .when(language.is_none(), |this| {
+                                    this.children(
+                                        shown.iter().map(|line| div().child((*line).to_owned())),
+                                    )
+                                }),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -521,7 +585,17 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, format_size, kind, wanted};
+    use super::{Kind, file_language, format_size, kind, renders_markdown, wanted};
+
+    #[test]
+    fn markdown_files_render_until_turned_off() {
+        assert_eq!(file_language(None, "notes.md"), "md");
+        assert_eq!(file_language(Some("rust"), "notes.md"), "rust");
+        assert!(renders_markdown("md", true));
+        assert!(renders_markdown("markdown", true));
+        assert!(!renders_markdown("md", false));
+        assert!(!renders_markdown("txt", true));
+    }
     use dc_state::Attachment;
 
     fn named(name: &str) -> Attachment {
