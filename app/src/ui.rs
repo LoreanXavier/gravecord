@@ -13953,11 +13953,22 @@ impl Render for Root {
                                                                 }
                                                             })
                                                             .into_any_element(),
-                                                        None if self.screening_pending() => {
-                                                            self.screening_composer(cx)
-                                                        }
+                                                        // Module 678655's order: the Follow bar, an account
+                                                        // that is not claimed, rules screening, then the
+                                                        // server's other verification reasons.
                                                         None if self.follow_blocker_applies() => {
                                                             self.follow_composer(cx)
+                                                        }
+                                                        None if self.verification_gate()
+                                                            == Some(verification_gate::Gate::NotClaimed) =>
+                                                        {
+                                                            self.verification_composer(
+                                                                verification_gate::Gate::NotClaimed,
+                                                                cx,
+                                                            )
+                                                        }
+                                                        None if self.screening_pending() => {
+                                                            self.screening_composer(cx)
                                                         }
                                                         None if let Some(gate) =
                                                             self.verification_gate() =>

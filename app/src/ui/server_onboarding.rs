@@ -9007,6 +9007,7 @@ mod tests {
             description: None,
             preferred_locale: None,
             verification_level: None,
+            verification_role_id: None,
             owner_id: None,
             home_header: None,
             rules_channel_id: None,

@@ -34,6 +34,9 @@ fn onboarding_cutoff_ms() -> i64 {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct GateFacts {
     pub level: u64,
+    /// The server has a verification role (`verificationRoleId`), and the account's member object lacks it.
+    pub verification_role: bool,
+    pub missing_role: bool,
     pub owner: bool,
     /// The account's member object here: its flags, whether it holds a role that is not managed, and when it joined.
     pub member: Option<(u64, bool, Option<i64>)>,
@@ -47,10 +50,12 @@ pub(super) struct GateFacts {
     pub guild_joined_ms: Option<i64>,
 }
 
-/// The first reason of module 678655 that applies, in its order.
+/// The first reason of module 678655 that applies, in its order (rules screening comes between the first two).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Gate {
     NotClaimed,
+    /// The member lacks the server's verification role (`HbivnU`).
+    MissingRole,
     NotPhoneVerified,
     NotEmailVerified,
     /// The member deadline, in milliseconds since the epoch.
@@ -61,7 +66,8 @@ pub(super) enum Gate {
 
 /// Module 834942 `I`, then the order module 678655 reads its answer in.
 pub(super) fn gate(facts: &GateFacts, now_ms: i64) -> Option<Gate> {
-    if facts.level == 0 || facts.owner {
+    let leveled = facts.level != 0;
+    if !leveled && !facts.verification_role || facts.owner {
         return None;
     }
     if facts
@@ -70,38 +76,45 @@ pub(super) fn gate(facts: &GateFacts, now_ms: i64) -> Option<Gate> {
     {
         return None;
     }
-    if facts.phone {
-        return None;
-    }
-    // A member holding a role that is not managed passes, unless onboarding was ever on and it joined after the cut.
-    if let Some((_, has_role, joined)) = facts.member {
-        let early = joined.is_none_or(|at| at < onboarding_cutoff_ms());
-        let onboarding = facts.onboarding_ever_enabled && !early;
-        if !onboarding && has_role {
-            return None;
+    let missing_role = facts.verification_role && facts.member.is_some() && facts.missing_role;
+    let (mut not_claimed, mut not_email, mut not_phone) = (false, false, false);
+    let (mut new_account, mut new_member) = (None, None);
+    if leveled && !facts.phone {
+        // A member holding a role that is not managed passes, unless the server has a verification role, or
+        // onboarding was ever on and it joined after the cut.
+        let exempt = facts.member.is_some_and(|(_, has_role, joined)| {
+            let early = joined.is_none_or(|at| at < onboarding_cutoff_ms());
+            let onboarding = facts.onboarding_ever_enabled && !early;
+            !facts.verification_role && !onboarding && has_role
+        });
+        if !exempt {
+            let account_deadline = facts.account_created_ms + 60_000 * ACCOUNT_AGE_MIN as i64;
+            let member_deadline =
+                facts.guild_joined_ms.unwrap_or(now_ms) + 60_000 * MEMBER_AGE_MIN as i64;
+            not_claimed = facts.level >= LOW && !facts.claimed;
+            if !facts.staff {
+                not_email = facts.level >= LOW && !facts.email_verified;
+                not_phone = facts.level >= VERY_HIGH;
+                new_account = (facts.level >= MEDIUM && account_deadline > now_ms)
+                    .then_some(account_deadline);
+                new_member =
+                    (facts.level >= HIGH && member_deadline > now_ms).then_some(member_deadline);
+            }
         }
     }
-    let account_deadline = facts.account_created_ms + 60_000 * ACCOUNT_AGE_MIN as i64;
-    let member_deadline = facts.guild_joined_ms.unwrap_or(now_ms) + 60_000 * MEMBER_AGE_MIN as i64;
-    if facts.level >= LOW && !facts.claimed {
-        return Some(Gate::NotClaimed);
+    if not_claimed {
+        Some(Gate::NotClaimed)
+    } else if missing_role {
+        Some(Gate::MissingRole)
+    } else if not_phone && !facts.staff {
+        Some(Gate::NotPhoneVerified)
+    } else if not_email {
+        Some(Gate::NotEmailVerified)
+    } else if let Some(deadline) = new_member {
+        Some(Gate::NewMember(deadline))
+    } else {
+        new_account.map(Gate::NewAccount)
     }
-    if facts.staff {
-        return None;
-    }
-    if facts.level >= VERY_HIGH {
-        return Some(Gate::NotPhoneVerified);
-    }
-    if facts.level >= LOW && !facts.email_verified {
-        return Some(Gate::NotEmailVerified);
-    }
-    if facts.level >= HIGH && member_deadline > now_ms {
-        return Some(Gate::NewMember(member_deadline));
-    }
-    if facts.level >= MEDIUM && account_deadline > now_ms {
-        return Some(Gate::NewAccount(account_deadline));
-    }
-    None
 }
 
 /// Module 576470's default render: days, when there are any, then hours, minutes and seconds, two digits each, with
@@ -145,8 +158,14 @@ impl Root {
             .any(|role| guild.role_info.get(role).is_some_and(|info| !info.managed));
         let member = Some((guild.my_flags, has_role, parse_ms(&guild.joined_at)));
         let account = &self.stores.account;
+        let role = guild.verification_role_id;
         Some(GateFacts {
             level: guild.verification_level.unwrap_or(0),
+            verification_role: role.is_some(),
+            // Module 678655 draws the notice only for a role the role store knows (`null!=E`).
+            missing_role: role.is_some_and(|role| {
+                guild.roles.contains_key(&role) && !guild.my_roles.contains(&role)
+            }),
             owner: guild.owner_id == Some(me.id),
             member,
             onboarding_ever_enabled: guild
@@ -172,8 +191,27 @@ impl Root {
     /// `countdown_ST_Y69` (`--text-muted`, 16px from the end).
     pub(super) fn verification_composer(&self, gate: Gate, cx: &mut Context<Self>) -> AnyElement {
         let now = chrono::Utc::now().timestamp_millis();
+        let role = self.current_guild().and_then(|guild| {
+            let id = guild.verification_role_id?;
+            let info = guild.role_info.get(&id);
+            Some((
+                guild.id,
+                id,
+                guild.roles.get(&id).cloned().unwrap_or_default(),
+                info.map_or(0, |info| info.color),
+                info.is_some_and(|info| info.guild_connection),
+            ))
+        });
         let (message, button, left): (String, Option<&'static str>, Option<i64>) = match gate {
             Gate::NotClaimed => (dc_intl::t("Eg3/c9").to_owned(), Some("fiNVin"), None),
+            // `HbivnU` with `@name` in bold, and Get Role (`6Ge2LG`) for a linked role (`guild_connections`).
+            Gate::MissingRole => (
+                String::new(),
+                role.as_ref()
+                    .filter(|(_, _, _, _, linked)| *linked)
+                    .map(|_| "6Ge2LG"),
+                None,
+            ),
             Gate::NotPhoneVerified => (dc_intl::t("2dThMM").to_owned(), Some("50gfOv"), None),
             Gate::NotEmailVerified => (dc_intl::t("FkGPS5").to_owned(), Some("lm1UKt"), None),
             Gate::NewMember(deadline) => (
@@ -224,7 +262,27 @@ impl Root {
                             .line_height(px(20.))
                             .font_weight(FontWeight(600.))
                             .text_color(color("--text-strong"))
-                            .child(message),
+                            .when(gate != Gate::MissingRole, |title| title.child(message))
+                            .when(gate == Gate::MissingRole, |title| {
+                                let name = role
+                                    .as_ref()
+                                    .map(|(_, _, name, _, _)| format!("@{name}"))
+                                    .unwrap_or_default();
+                                title.flex().flex_wrap().children(
+                                    dc_intl::format_runs(
+                                        "HbivnU",
+                                        &[("roleName", dc_intl::Arg::from(name.as_str()))],
+                                    )
+                                    .into_iter()
+                                    .map(|(text, tag)| {
+                                        div()
+                                            .when(tag.as_deref() == Some("$b"), |run| {
+                                                run.font_weight(FontWeight(700.))
+                                            })
+                                            .child(text)
+                                    }),
+                                )
+                            }),
                     )
                     .children(button.map(|key| {
                         div()
@@ -250,6 +308,13 @@ impl Root {
                                 Gate::NotClaimed => this.open_claim_account_modal(false, cx),
                                 Gate::NotPhoneVerified => this.open_account_form("phone", cx),
                                 Gate::NotEmailVerified => this.trigger_verify_resend(cx),
+                                Gate::MissingRole => {
+                                    if let Some((guild, id, name, color, _)) = role.clone() {
+                                        this.open_role_connection_verify(
+                                            guild, id, name, color, cx,
+                                        );
+                                    }
+                                }
                                 _ => {}
                             }))
                     }))
@@ -337,7 +402,7 @@ mod tests {
 }
 
 impl Root {
-    /// Capture only: `verification <level> <joined seconds ago> [unverified] [unclaimed]` puts the open server under that
+    /// Capture only: `verification <level> <joined seconds ago> [unverified] [unclaimed] [role]` puts the open server under that
     /// verification level as a member that is not its owner, holds no role and joined that long ago; `unverified`
     /// clears the account's verified email and `unclaimed` its email; the phone is always cleared (nothing is sent).
     #[cfg(feature = "capture")]
@@ -360,6 +425,20 @@ impl Root {
             guild.my_roles.clear();
             guild.my_flags = 0;
             guild.joined_at = joined.to_rfc3339();
+            // `role`: the server's highest role other than @everyone becomes its verification role.
+            guild.verification_role_id = words
+                .contains(&"role")
+                .then(|| {
+                    guild
+                        .roles
+                        .keys()
+                        .copied()
+                        .filter(|role| *role != id)
+                        .max_by_key(|role| {
+                            guild.role_info.get(role).map_or(0, |info| info.position)
+                        })
+                })
+                .flatten();
         }
         if words.contains(&"unverified") {
             self.stores.account.verified = false;
@@ -370,5 +449,65 @@ impl Root {
         self.stores.account.phone = None;
         cx.notify();
         format!("{:?}", self.verification_gate())
+    }
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    const NOW: i64 = 1_800_000_000_000;
+
+    #[test]
+    fn a_missing_verification_role_comes_after_claiming_and_before_the_phone() {
+        let facts = GateFacts {
+            level: VERY_HIGH,
+            verification_role: true,
+            missing_role: true,
+            member: Some((0, true, Some(NOW))),
+            claimed: true,
+            email_verified: true,
+            account_created_ms: NOW - 86_400_000,
+            guild_joined_ms: Some(NOW - 86_400_000),
+            ..GateFacts::default()
+        };
+        assert_eq!(gate(&facts, NOW), Some(Gate::MissingRole));
+        assert_eq!(
+            gate(
+                &GateFacts {
+                    claimed: false,
+                    ..facts.clone()
+                },
+                NOW
+            ),
+            Some(Gate::NotClaimed)
+        );
+        // The role alone gates a server without a level, and holding it lets the member talk.
+        let role_only = GateFacts {
+            level: 0,
+            ..facts.clone()
+        };
+        assert_eq!(gate(&role_only, NOW), Some(Gate::MissingRole));
+        assert_eq!(
+            gate(
+                &GateFacts {
+                    missing_role: false,
+                    ..role_only
+                },
+                NOW
+            ),
+            None
+        );
+        // With a verification role, holding another role no longer exempts the member.
+        assert_eq!(
+            gate(
+                &GateFacts {
+                    missing_role: false,
+                    ..facts
+                },
+                NOW
+            ),
+            Some(Gate::NotPhoneVerified)
+        );
     }
 }

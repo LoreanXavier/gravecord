@@ -513,6 +513,8 @@ pub struct Guild {
     pub description: Option<String>,
     pub preferred_locale: Option<String>,
     pub verification_level: Option<u64>,
+    /// `verification_role_id`: the role a member must hold to talk (GuildVerificationStore, module 834942).
+    pub verification_role_id: Option<Id>,
     pub owner_id: Option<Id>,
     pub home_header: Option<String>,
     pub rules_channel_id: Option<Id>,
@@ -913,6 +915,7 @@ impl Guild {
             description: text(&properties["description"]),
             preferred_locale: text(&properties["preferred_locale"]),
             verification_level: properties["verification_level"].as_u64(),
+            verification_role_id: id(&properties["verification_role_id"]),
             owner_id: id(&properties["owner_id"]),
             home_header: text(&properties["home_header"]),
             rules_channel_id: id(&properties["rules_channel_id"]),
@@ -1006,6 +1009,13 @@ impl Guild {
             self.splash = text(&value["splash"]);
         }
         self.owner_id = id(&value["owner_id"]).or(self.owner_id);
+        // GuildVerificationStore runs its check again on GUILD_UPDATE: the level and the role come with it.
+        if let Some(level) = value["verification_level"].as_u64() {
+            self.verification_level = Some(level);
+        }
+        if value.get("verification_role_id").is_some() {
+            self.verification_role_id = id(&value["verification_role_id"]);
+        }
         if value.get("home_header").is_some() {
             self.home_header = text(&value["home_header"]);
         }
@@ -5017,6 +5027,20 @@ mod tests {
     }
 
     #[test]
+    fn guild_update_refreshes_the_verification_level_and_role() {
+        let mut guild = Guild {
+            verification_level: Some(1),
+            ..Guild::default()
+        };
+        guild.apply_update(&json!({"id": "1", "verification_level": 3, "verification_role_id": "9"}));
+        assert_eq!(guild.verification_level, Some(3));
+        assert_eq!(guild.verification_role_id, Some(9));
+        guild.apply_update(&json!({"id": "1", "verification_role_id": null}));
+        assert_eq!(guild.verification_level, Some(3));
+        assert_eq!(guild.verification_role_id, None);
+    }
+
+    #[test]
     fn guild_update_changes_the_guilds_own_properties_only() {
         let mut stores = super::Stores::default();
         stores.dispatch(
@@ -5335,6 +5359,7 @@ mod tests {
             description: None,
             preferred_locale: None,
             verification_level: None,
+            verification_role_id: None,
             owner_id: None,
             home_header: None,
             rules_channel_id: None,
