@@ -302,6 +302,7 @@ pub(crate) mod regions;
 mod remediation;
 mod reminder_modal;
 mod reorder_hint;
+mod reply_content;
 mod report;
 mod report_issue;
 mod role_connection_verify;
@@ -591,6 +592,24 @@ pub(crate) fn shadow_border() -> gpui::BoxShadow {
         spread_radius: px(1.),
         inset: false,
     }
+}
+
+/// `replyBadge_2i8Bfm`: the 16px `--background-base-lowest` disc with the 10.8 x 7.2 reply arrow in `--text-default`,
+/// drawn for the avatar of a reply preview that has none to show (module 448368 `R`).
+fn reply_badge() -> gpui::Div {
+    div()
+        .size(px(16.))
+        .flex_none()
+        .rounded_full()
+        .bg(color("--background-base-lowest"))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            icon("reply_badge", 10.8, "--text-default")
+                .w(px(10.8))
+                .h(px(7.2)),
+        )
 }
 
 fn icon(name: &str, size: f32, tint: &str) -> gpui::Svg {
@@ -5403,22 +5422,7 @@ impl Root {
                         spine.child(motion::hover_probe(spine_key))
                     }),
             )
-            .child(
-                div()
-                    .size(px(16.))
-                    .flex_none()
-                    .mr(px(4.))
-                    .rounded_full()
-                    .bg(color("--background-base-lowest"))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        icon("reply_badge", 10.8, "--text-default")
-                            .w(px(10.8))
-                            .h(px(7.2)),
-                    ),
-            )
+            .child(reply_badge().mr(px(4.)))
             .child(
                 div()
                     .min_w(px(0.))
@@ -5456,7 +5460,10 @@ impl Root {
             .images
             .get(&self.guild_avatar_source(&referenced.author).0)
             .cloned();
-        let text = first_spans(&referenced.content);
+        let facts = self.reply_facts(referenced);
+        let line = reply_content::reply_line(facts);
+        // Module 448368 `R`: compact, or an author blocked for the message, draws the arrow badge for the avatar.
+        let badge = compact || facts.blocked;
         // `.repliedMessageClickableSpine:hover` and `.repliedTextPreview.clickable:hover` (738015): over either one
         // the spine turns `--interactive-text-default` (`transition: border 50ms`) and the text `--text-strong`.
         let spine_key = motion::key(&("reply-spine", referenced.id));
@@ -5492,12 +5499,14 @@ impl Root {
                     .border_color(spine)
                     .child(motion::hover_probe(spine_key)),
             )
-            .child(
+            .child(if badge {
+                reply_badge()
+            } else {
                 div()
                     .size(px(16.))
                     .flex_none()
-                    .children(avatar.map(|image| img(image).size(px(16.)).rounded_full())),
-            )
+                    .children(avatar.map(|image| img(image).size(px(16.)).rounded_full()))
+            })
             .child(
                 div()
                     .ml(px(4.))
@@ -5517,11 +5526,7 @@ impl Root {
                     .flex_1()
                     .min_w(px(0.))
                     .h(px(18.))
-                    .child(if text.is_empty() && referenced.is_voice_message() {
-                        self.voice_reply_placeholder(over)
-                    } else {
-                        self.preview_text(&text, over).into_any_element()
-                    })
+                    .child(self.reply_content_row(referenced, line, over))
                     .child(motion::hover_probe(text_key)),
             )
     }

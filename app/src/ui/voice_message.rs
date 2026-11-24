@@ -508,37 +508,6 @@ fn ripple(playing: bool, key: &str) -> AnyElement {
 }
 
 impl Root {
-    /// The reply preview of a voice message with no text (module 448368 `V`): the placeholder `XC3A52` "Click to see
-    /// voice message" in italics (`repliedTextPlaceholder_2i8Bfm`: `font-style: italic; padding-inline-end: 2px`) and the
-    /// microphone icon after it, 20 px high and 19/24 of that wide with a 4 px margin
-    /// (`repliedTextContentTrailingIcon_2i8Bfm`).
-    pub(super) fn voice_reply_placeholder(&self, strong: bool) -> AnyElement {
-        let tone = if strong {
-            "--text-strong"
-        } else {
-            "--text-default"
-        };
-        div()
-            .flex()
-            .items_center()
-            .h(px(18.))
-            .text_color(color(tone))
-            .child(
-                div()
-                    .pr(px(2.))
-                    .italic()
-                    .whitespace_nowrap()
-                    .child(dc_intl::t!("XC3A52")),
-            )
-            .child(
-                div()
-                    .ml(px(4.))
-                    .flex_none()
-                    .child(icon("cp_mic", 20., tone).w(px(20. * 19. / 24.)).h(px(20.))),
-            )
-            .into_any_element()
-    }
-
     /// The pill of one voice message attachment.
     pub(super) fn voice_pill(&self, message: &Message, attachment: &Attachment) -> AnyElement {
         let hub = self.voice_hub.clone();
@@ -726,7 +695,10 @@ impl Root {
             .child(speed_button)
             .child(volume_control)
             // Not in the pinned client: VoiceDownload's button after the volume (`plugin_hooks.rs`).
-            .children(super::plugin_hooks::voice_download_button(&attachment.url, salt))
+            .children(super::plugin_hooks::voice_download_button(
+                &attachment.url,
+                salt,
+            ))
             .into_any_element()
     }
 
