@@ -767,6 +767,7 @@ impl Root {
                             this.open_create_channel(false, window, cx);
                             if let Some(form) = this.create_channel.as_mut() {
                                 form.kind = super::create_channel::Kind::Forum;
+                                form.forum_helper = true;
                                 form.name.update(cx, |ed, _| {
                                     ed.set_text(dc_intl::t("5z1Xat"));
                                 });

@@ -5877,7 +5877,10 @@ impl Root {
                     .top(px(0.))
                     .flex()
                     .items_center()
-                    .child({
+                    // Only drawn when `2026-02-friends-list` gives `hasFriendList` (module 291445, read by
+                    // the app title bar in module 596339).
+                    .when(self.stores.experiments.variant("2026-02-friends-list") == Some(1), |bar| {
+                        bar.child({
                         // Module 824042: App Title Bar Friends List Popout trigger (`TdEu5X`, red dot when pending > 0).
                         let friends_open = self.friends_popout.open;
                         let pending = friends_popout::pending_incoming_friend_count(
@@ -5925,6 +5928,7 @@ impl Root {
                             .mr(px(12.))
                             .into_any_element()
                         }
+                        })
                     })
                     .child({
                         let inbox_open = self.inbox.is_some();
@@ -6046,9 +6050,11 @@ impl Root {
             (None, Some(image)) => tile.child(img(image).size(px(40.)).rounded(px(12.))),
             (None, None) => {
                 let acronym = guild.acronym();
-                // `R[MEDIUM]` of module 682163: 40px tile acronym font size by length.
-                const SIZES: [f32; 7] = [16., 16., 14., 14., 12., 10., 8.];
-                let font_size = SIZES[acronym.chars().count().min(SIZES.len() - 1)];
+                // `A` of module 67811 (the guild bar's acronym tile): font size by length, `A[length - 1]`,
+                // the last entry for longer acronyms.
+                const SIZES: [f32; 7] = [18., 18., 16., 16., 14., 12., 10.];
+                let font_size =
+                    SIZES[acronym.chars().count().saturating_sub(1).min(SIZES.len() - 1)];
                 tile
                     // `childWrapper_JJ-hgR`: brand coloured while hovered or selected, over .15s.
                     .bg(motion::rail::tile_background(

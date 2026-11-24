@@ -44,6 +44,9 @@ pub(crate) struct CreateChannel {
     slide: Slide,
     /// Roles picked as Stage moderators.
     moderators: Vec<Id>,
+    /// Opened for a forum (`channelType` of module 410380 is `GUILD_FORUM`): the name field's helper text
+    /// points to the forum examples.
+    pub forum_helper: bool,
 }
 
 /// The official name rule for text-like channels: lower case, whitespace runs become one dash.
@@ -280,6 +283,7 @@ impl Root {
             scroll: gpui::ScrollHandle::new(),
             slide: Slide::Info,
             moderators: Vec::new(),
+            forum_helper: false,
         });
         cx.notify();
     }
@@ -452,35 +456,12 @@ impl Root {
                                     "Voice",
                                     "Hang out together with voice, video, and screen share",
                                 ))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .child(option(
-                                            Kind::Forum,
-                                            "channel_type_forum",
-                                            "Forum",
-                                            "Create a space for organized discussions",
-                                        ))
-                                        .child(
-                                            div()
-                                                .id("create-channel-forum-examples")
-                                                .ml(px(48.))
-                                                .mt(px(-4.))
-                                                .mb(px(4.))
-                                                .cursor_pointer()
-                                                .text_size(px(12.))
-                                                .line_height(px(16.))
-                                                .font_weight(FontWeight(500.))
-                                                .text_color(color("--text-link"))
-                                                .hover(|s| s.underline())
-                                                .child("See examples")
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    let guild = this.guild;
-                                                    this.open_forum_demo(guild, false, cx);
-                                                })),
-                                        ),
-                                )
+                                .child(option(
+                                    Kind::Forum,
+                                    "channel_type_forum",
+                                    "Forum",
+                                    "Create a space for organized discussions",
+                                ))
                                 .children(news.then(|| {
                                     option(
                                         Kind::Announcement,
@@ -555,6 +536,28 @@ impl Root {
                             })),
                     ),
             )
+            // `getHelperText` of module 410380 for a forum, drawn by the field (module 452027 `E`,
+            // `helperTextContainer_VhFsFg`): `body-xs/normal` in `--text-subtle`, 4px under the control, its
+            // `forumUpsellHook` an anchor that opens the forum examples.
+            .children(form.forum_helper.then(|| {
+                div()
+                    // The body's 20px gap less the field's 4px.
+                    .mt(px(-16.))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(color("--text-subtle"))
+                    .child(self.text_with_link(
+                        "create-channel-forum-examples",
+                        &format!("{} ", dc_intl::t("qBvLY4")),
+                        dc_intl::t("DgatTQ"),
+                        "",
+                        cx,
+                        |this, cx| {
+                            let guild = this.guild;
+                            this.open_forum_demo(guild, false, cx);
+                        },
+                    ))
+            }))
             // `e9` of module 410380: under the name of an Announcement channel, what following it means.
             .children((form.kind == Kind::Announcement).then(|| {
                 div()

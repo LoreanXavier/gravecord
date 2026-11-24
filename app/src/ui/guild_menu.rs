@@ -272,7 +272,14 @@ impl Root {
                         .is_some_and(|user| user.has_flag(dc_state::USER_FLAG_STAFF))
             }
             Entry::LinkedRoles => known.role_info.values().any(|role| role.guild_connection),
-            Entry::FriendsInServer => self.stores.relationships.values().any(|&kind| kind == 1),
+            // `useFriendsItem` (module 808144): only with `2026-01-friends-in-server` giving
+            // `guildFriendsEnabled`.
+            Entry::FriendsInServer => {
+                self.stores
+                    .experiments
+                    .variant("2026-01-friends-in-server")
+                    == Some(1)
+            }
             _ => true,
         }
     }
