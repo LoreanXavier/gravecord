@@ -168,6 +168,84 @@ pub(super) struct Draft {
     pub permissions: u64,
 }
 
+/// `hZ`'s `j`: the count as it is under 10,000, else compact ("12K", `Intl.NumberFormat` `compact`/`short`).
+fn member_count_label(count: u64) -> String {
+    if count < 10_000 {
+        return count.to_string();
+    }
+    let (value, unit) = if count >= 1_000_000 {
+        (count as f64 / 1_000_000., "M")
+    } else {
+        (count as f64 / 1_000., "K")
+    };
+    // Two significant digits, as `compact` rounds: one decimal under 10, none above.
+    let shown = if value < 10. {
+        let rounded = (value * 10.).round() / 10.;
+        if rounded.fract() == 0. {
+            format!("{rounded:.0}")
+        } else {
+            format!("{rounded:.1}")
+        }
+    } else {
+        format!("{:.0}", value.round())
+    };
+    format!("{shown}{unit}")
+}
+
+/// What `hZ` of module 989433 says over a managed role.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ManagedNotice {
+    /// `FuXsWm`: the integration's name (Twitch and YouTube ones prefixed), linking to its app's page.
+    Integration { name: String, app: String },
+    /// `oF6FYT`: the Server Booster role.
+    Booster,
+    /// `ZQ37tH`: a role given by linked connections.
+    Connections,
+    /// `k5d7DJ`: any other managed role.
+    Other,
+}
+
+/// `hZ`'s `m`: nothing for a role that is not managed; else the integration whose bot (`tags.bot_id`) or id
+/// (`tags.integration_id`) it is, when it has an application and a name, else what the role's tags say.
+pub(super) fn managed_notice(role: &Value, integrations: &Value) -> Option<ManagedNotice> {
+    if role["managed"] != true {
+        return None;
+    }
+    let tags = &role["tags"];
+    let list = integrations
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let found = if let Some(bot) = tags["bot_id"].as_str() {
+        list.iter()
+            .find(|item| item["application"]["bot"]["id"].as_str() == Some(bot))
+    } else if let Some(id) = tags["integration_id"].as_str() {
+        list.iter().find(|item| item["id"].as_str() == Some(id))
+    } else {
+        None
+    };
+    if let Some(item) = found
+        && let (Some(app), Some(name)) = (item["application"]["id"].as_str(), item["name"].as_str())
+    {
+        let name = match item["type"].as_str() {
+            Some("twitch") => format!("Twitch - {name}"),
+            Some("youtube") => format!("YouTube - {name}"),
+            _ => name.to_owned(),
+        };
+        return Some(ManagedNotice::Integration {
+            name,
+            app: app.to_owned(),
+        });
+    }
+    Some(if tags.get("premium_subscriber").is_some() {
+        ManagedNotice::Booster
+    } else if tags.get("guild_connections").is_some() {
+        ManagedNotice::Connections
+    } else {
+        ManagedNotice::Other
+    })
+}
+
 /// `AT` of module 7864 for the list: highest position first, then the lower id.
 fn sort_roles(roles: &mut [Value]) {
     let id = |role: &Value| {
@@ -1287,7 +1365,18 @@ impl Root {
                 if everyone {
                     "Manage Members".to_owned()
                 } else {
-                    format!("Manage Members ({})", members.len())
+                    // `bHnZWW` with the role's member count (`getRoleMemberCount`), short from 10,000 up.
+                    dc_intl::format(
+                        "bHnZWW",
+                        &[(
+                            "numMembers",
+                            member_count_label(
+                                self.settings_role_member_count(guild, role)
+                                    .unwrap_or(members.len() as u64),
+                            )
+                            .into(),
+                        )],
+                    )
                 },
                 RoleTab::Members,
                 cx,
@@ -1365,12 +1454,104 @@ impl Root {
                                         },
                                     ),
                             )
+                            .children(self.managed_role_notice(guild, role, cx))
                             .child(div().h(px(22.)))
                             .child(tabs),
                     )
                     .child(div().pt(px(15.)).child(body)),
             )
             .into_any_element()
+    }
+
+    /// `hZ`'s warning notice (`helpMessageContainer_9pNIZg` holding module 683071's `warning` notice: 12px in, the
+    /// 16px icon 8px before `body-sm/normal` in `text-strong`) over a managed role.
+    fn managed_role_notice(
+        &self,
+        guild: Id,
+        role: Id,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let mut value = self.role_value(guild, role)?;
+        if value.get("managed").is_none() {
+            let managed = self
+                .stores
+                .guild(guild)
+                .and_then(|known| known.role_info.get(&role))
+                .is_some_and(|info| info.managed);
+            value["managed"] = Value::Bool(managed);
+        }
+        let integrations = self
+            .fetched
+            .get(&format!(
+                "{}{guild}",
+                super::integration_apps::INTEGRATIONS_PREFIX
+            ))
+            .cloned()
+            .unwrap_or_default();
+        let notice = managed_notice(&value, &integrations)?;
+        let text: AnyElement = match notice {
+            ManagedNotice::Integration { name, app } => {
+                let runs = dc_intl::format_runs("FuXsWm", &[("name", name.as_str().into())]);
+                let mut before = String::new();
+                let mut link = String::new();
+                let mut after = String::new();
+                for (text, tag) in runs {
+                    if tag.is_some() {
+                        link.push_str(&text);
+                    } else if link.is_empty() {
+                        before.push_str(&text);
+                    } else {
+                        after.push_str(&text);
+                    }
+                }
+                self.text_with_link(
+                    "server-role-integration",
+                    &before,
+                    &link,
+                    &after,
+                    cx,
+                    move |this, _| {
+                        if let Some(open) = this.server_settings.as_mut() {
+                            open.page = super::server_settings::Page::Integrations;
+                            open.role = None;
+                            open.app_open = Some(app.clone());
+                        }
+                    },
+                )
+                .into_any_element()
+            }
+            ManagedNotice::Booster => dc_intl::t("oF6FYT").into_any_element(),
+            ManagedNotice::Connections => dc_intl::t("ZQ37tH").into_any_element(),
+            ManagedNotice::Other => dc_intl::t("k5d7DJ").into_any_element(),
+        };
+        Some(
+            div()
+                .p(px(12.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--inlinenotice-border-warning"))
+                .bg(color("--background-feedback-mod-warning"))
+                .flex()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex_none()
+                        .h(px(18.))
+                        .flex()
+                        .items_center()
+                        .child(icon("warning_triangle", 16., "--icon-feedback-warning")),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-strong"))
+                        .child(text),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Module 989433 `hK`: a copy named "{name} copy" (numbered until free), with the role's settings.
@@ -2814,6 +2995,13 @@ impl Root {
             .collect()
     }
 
+    /// `getRoleMemberCount` of the role, from `GET /guilds/{id}/roles/member-counts`.
+    fn settings_role_member_count(&self, guild: Id, role: Id) -> Option<u64> {
+        self.fetched
+            .get(&format!("{COUNTS_PREFIX}{guild}"))
+            .and_then(|counts| counts[role.to_string()].as_u64())
+    }
+
     fn request_role_members(&mut self, guild: Id, role: Id) {
         let _ = self.requests.send(Request::Fetch {
             key: format!("{MEMBER_IDS_PREFIX}{guild}:{role}"),
@@ -2870,6 +3058,41 @@ impl Root {
                                 }
                             })),
                     ),
+            )
+            // `xz`'s `x`: the role has more members than are loaded here (`searchWarning_mssHMP`, an `info` notice
+            // 16px under the search).
+            .when(
+                self.settings_role_member_count(guild, role)
+                    .is_some_and(|count| count > members.len() as u64),
+                |this| {
+                    this.child(
+                        div()
+                            .mt(px(16.))
+                            .p(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--inlinenotice-border-info"))
+                            .bg(color("--background-feedback-mod-info"))
+                            .flex()
+                            .gap(px(8.))
+                            .child(div().h(px(18.)).flex().items_center().child(
+                                super::settings::mask_icon(
+                                    "settings_notice_info",
+                                    16.,
+                                    "--icon-feedback-info",
+                                ),
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("RQxHZ8")),
+                            ),
+                    )
+                },
             )
             .when(members.is_empty(), |this| {
                 this.child(
@@ -2968,6 +3191,56 @@ pub(super) fn gradient_stop_label(index: usize, count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn member_counts_go_short_from_ten_thousand() {
+        assert_eq!(member_count_label(9_999), "9999");
+        assert_eq!(member_count_label(12_345), "12K");
+        assert_eq!(member_count_label(15_600), "16K");
+        assert_eq!(member_count_label(1_250_000), "1.3M");
+    }
+
+    /// `hZ`: a bot's role names its integration, other managed roles say what manages them.
+    #[test]
+    fn managed_roles_say_what_manages_them() {
+        let integrations = serde_json::json!([
+            {"id": "5", "type": "discord", "name": "Helper", "application": {"id": "9", "bot": {"id": "7"}}},
+            {"id": "6", "type": "twitch", "name": "chan", "application": {"id": "8"}},
+        ]);
+        let role = |tags: serde_json::Value| serde_json::json!({"managed": true, "tags": tags});
+        assert_eq!(
+            managed_notice(&role(serde_json::json!({"bot_id": "7"})), &integrations),
+            Some(ManagedNotice::Integration {
+                name: "Helper".into(),
+                app: "9".into()
+            })
+        );
+        assert_eq!(
+            managed_notice(
+                &role(serde_json::json!({"integration_id": "6"})),
+                &integrations
+            ),
+            Some(ManagedNotice::Integration {
+                name: "Twitch - chan".into(),
+                app: "8".into()
+            })
+        );
+        assert_eq!(
+            managed_notice(
+                &role(serde_json::json!({"premium_subscriber": null})),
+                &integrations
+            ),
+            Some(ManagedNotice::Booster)
+        );
+        assert_eq!(
+            managed_notice(&role(serde_json::json!({"bot_id": "1"})), &integrations),
+            Some(ManagedNotice::Other)
+        );
+        assert_eq!(
+            managed_notice(&serde_json::json!({"managed": false}), &integrations),
+            None
+        );
+    }
 
     /// Without a fetched list the role store's roles stand in, read back as `Draft` reads a role, and sort as `AT`.
     #[test]
