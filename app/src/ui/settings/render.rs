@@ -1197,6 +1197,19 @@ impl Root {
                     .when(*key == "voice_input_profile_category", |this| {
                         this.child(div().h(px(1.)))
                     })
+                    // The Game Overlay widgets' fieldset: its legend is hidden, its description shows over the rows
+                    // (`body-sm/normal`, `game-overlay-darker-cozy`: 18px at the list's top). The generated page does
+                    // not carry it.
+                    .when(*key == "overlay_widgets_list", |this| {
+                        this.child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(400.))
+                                .text_color(color("--text-default"))
+                                .child(dc_intl::tr("Choose what shows up in your overlay.")),
+                        )
+                    })
                     .children(legend.map(|legend| {
                         div()
                             .pt(px(8.))

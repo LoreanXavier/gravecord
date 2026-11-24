@@ -594,13 +594,19 @@ impl Root {
                 )
                 .child(div().flex_1().min_w(px(0.)).child(editor))
         });
+        // `wrapper_Q7s_Rv` (16px apart) under `headerContainer_Q7s_Rv` (16px in at the top, its search and controls 16px
+        // apart), then `guildsList_Q7s_Rv` (24px apart and 24px under). As the capture measures it the search starts 8px
+        // into the setting and the list ends 8px before its end (`activity-privacy-darker-cozy`: 753, 1001 in 745..1009).
         div()
+            .pt(px(8.))
+            .pb(px(8.))
             .flex()
             .flex_col()
             .gap(px(16.))
             .children(search)
             .child(
                 div()
+                    .min_h(px(32.))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -651,7 +657,14 @@ impl Root {
                             })),
                     ),
             )
-            .child(div().flex().flex_col().gap(px(24.)).children(rows))
+            .child(
+                div()
+                    .pb(px(24.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(24.))
+                    .children(rows),
+            )
             .into_any_element()
     }
 

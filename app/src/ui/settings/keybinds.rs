@@ -898,7 +898,8 @@ impl Root {
                             )),
                     ),
             )
-            .child(body)
+            // `baseSettingWrapper_4Z2WJy`: 8px above and below the rows.
+            .child(div().py(px(8.)).child(body))
             .into_any_element()
     }
 
@@ -936,7 +937,8 @@ impl Root {
                             .flex()
                             .flex_col()
                             .child(label(dc_intl::tr("Keybind Action"), keybind.managed))
-                            .child(self.kb_select(keybind, column, cx)),
+                            // `action_pFuVlX` is 72 tall like its neighbour: 4px under the 40px select.
+                            .child(div().pb(px(4.)).child(self.kb_select(keybind, column, cx))),
                     )
                     .child(
                         div()
@@ -945,12 +947,14 @@ impl Root {
                             .flex()
                             .flex_col()
                             .child(label(dc_intl::tr("Keybind"), false))
-                            .child(self.kb_recorder(keybind, cx)),
+                            // `control_VhFsFg` is 44 tall around the 42px recorder (`system-darker-cozy`: 741..785).
+                            .child(div().pb(px(2.)).child(self.kb_recorder(keybind, cx))),
                     )
                     .child(
+                        // `controls_pFuVlX`: 24px down, the 24px switch centred in the 48px left below that.
                         div()
                             .w(px(last))
-                            .h(px(42.))
+                            .h(px(48.))
                             .flex_none()
                             .flex()
                             .items_center()
@@ -1000,6 +1004,8 @@ impl Root {
                             }),
                     ),
             )
+            // `description_pFuVlX` is there even when empty: 2px above it.
+            .when(description.is_empty(), |this| this.child(div().h(px(2.))))
             .when(!description.is_empty(), |this| {
                 this.child(
                     div()
@@ -1343,9 +1349,11 @@ impl Root {
                             .text_color(color("--text-default"))
                             .child(note)
                     }))
+                    // `fieldset_UGw2wN`: the legend's 12px margin, less the description's -8px, then 16px to the card
+                    // (`system-darker-cozy`: Navigation's legend at 1713, its card at 1749; Messages' at 1042, 1104).
                     .child(
                         div()
-                            .pt(px(if section.note.is_some() { 18. } else { 27. }))
+                            .pt(px(if section.note.is_some() { 16. } else { 12. }))
                             .child(card(items)),
                     ),
             );
