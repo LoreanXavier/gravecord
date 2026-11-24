@@ -243,7 +243,10 @@ impl Root {
         )
     }
 
-    /// "Only you can see this • Dismiss message" under a private reply.
+    /// Module 376767 under a private reply (`ephemeralMessage_fipv3s`: 4px down, 12px `--text-muted`, the 16px eye
+    /// 4px before the text): "Only you can see this • Dismiss message" (`uX3ecL`), the Stage moderators' line for a
+    /// raised hand (`qDAX++`), or, when the app's answer says why it was private, "Only you can see this message." over
+    /// that reason and Dismiss (`wx1tLQ` in `userAppsBetaContent_fipv3s`: a column at a line height of 1.33).
     pub(super) fn ephemeral_notice(
         &self,
         message: &Message,
@@ -254,31 +257,49 @@ impl Root {
             return None;
         }
         let (channel, id) = (message.channel_id, message.id);
+        let dismiss = |label: String, cx: &mut Context<Self>| {
+            div()
+                .id(SharedString::from(format!("dismiss-{id}")))
+                .cursor_pointer()
+                .text_color(color("--text-link"))
+                .hover(|style| style.underline())
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.dismiss_message(channel, id, cx);
+                }))
+        };
+        let (lines, _) = ephemeral_lines(message.extra.ephemerality_reason, message.kind);
+        let rows: Vec<AnyElement> = lines
+            .into_iter()
+            .map(|line| {
+                div()
+                    .flex()
+                    .items_center()
+                    .children(line.into_iter().map(|(text, link)| {
+                        if link {
+                            dismiss(text, cx).into_any_element()
+                        } else {
+                            div().child(text).into_any_element()
+                        }
+                    }))
+                    .into_any_element()
+            })
+            .collect();
         Some(
             div()
                 .mt(px(4.))
                 .flex()
-                .items_center()
+                .items_start()
                 .text_size(px(12.))
                 .line_height(px(16.))
                 .text_color(color("--text-muted"))
                 .child(
                     div()
                         .mr(px(4.))
+                        .flex_none()
                         .child(icon("clips_eye", 16., "--text-muted")),
                 )
-                .child("Only you can see this \u{2022} ")
-                .child(
-                    div()
-                        .id(SharedString::from(format!("dismiss-{id}")))
-                        .cursor_pointer()
-                        .text_color(color("--text-link"))
-                        .hover(|style| style.underline())
-                        .child("Dismiss message")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.dismiss_message(channel, id, cx);
-                        })),
-                )
+                .child(div().flex().flex_col().children(rows))
                 .into_any_element(),
         )
     }
@@ -454,5 +475,123 @@ impl Root {
         self.send_ui.forget_notice(id);
         self.rebuild_rows();
         cx.notify();
+    }
+}
+
+/// `STAGE_RAISE_HAND`.
+const STAGE_RAISE_HAND: u64 = 30;
+
+/// Module 376767 `c` with an `onDeleteMessage`: the lines of the private notice, each a list of (text, is the Dismiss
+/// link), and how many links there are.
+fn ephemeral_lines(reason: Option<u64>, kind: u64) -> (Vec<Vec<(String, bool)>>, usize) {
+    let runs_of = |runs: Vec<(String, Option<Box<str>>)>| -> Vec<(String, bool)> {
+        runs.into_iter()
+            .map(|(text, tag)| (text, tag.as_deref() == Some("$link")))
+            .collect()
+    };
+    let lines = match reason {
+        Some(reason) => {
+            let reason_text = ephemerality_reason_text(reason);
+            let runs = runs_of(dc_intl::format_runs(
+                "wx1tLQ",
+                &[("reason", dc_intl::Arg::from(reason_text))],
+            ));
+            // The two paragraphs (`$p`) arrive as one run: the reason starts the second.
+            let mut first = Vec::new();
+            let mut second = Vec::new();
+            for (text, link) in runs {
+                match (link, text.find(reason_text)) {
+                    (false, Some(at)) if second.is_empty() => {
+                        first.push((text[..at].to_owned(), false));
+                        second.push((text[at..].to_owned(), false));
+                    }
+                    _ if second.is_empty() && !link => first.push((text, false)),
+                    _ => second.push((text, link)),
+                }
+            }
+            vec![first, second]
+        }
+        None if kind == STAGE_RAISE_HAND => vec![runs_of(dc_intl::format_runs("qDAX++", &[]))],
+        None => vec![runs_of(dc_intl::format_runs(
+            "uX3ecL",
+            &[
+                ("count", dc_intl::Arg::from(1)),
+                ("countMessages", dc_intl::Arg::from(1)),
+            ],
+        ))],
+    };
+    let links = lines.iter().flatten().filter(|(_, link)| *link).count();
+    (lines, links)
+}
+
+/// The reasons of module 376767 (`FEATURE_LIMITED` = 1 to `CANNOT_USE_EXTERNAL_APPS` = 18).
+fn ephemerality_reason_text(reason: u64) -> &'static str {
+    match reason {
+        1 => dc_intl::t("WCvmrR"),
+        2 => dc_intl::t("0QUDYf"),
+        3 => dc_intl::t("gs1sxd"),
+        4 => dc_intl::t("9UAXh4"),
+        5 => dc_intl::t("zBB9xD"),
+        6 => dc_intl::t("w7sHnP"),
+        7 => dc_intl::t("SLAkFX"),
+        8 => dc_intl::t("AIqS3n"),
+        9 => dc_intl::t("BqKxlT"),
+        10 => dc_intl::t("LLF2DJ"),
+        11 => dc_intl::t("Htl7W1"),
+        12 => dc_intl::t("vGgPMH"),
+        13 => dc_intl::t("byrr7l"),
+        14 => dc_intl::t("24PAJ+"),
+        15 => dc_intl::t("zeqgmP"),
+        16 => dc_intl::t("kzMhhk"),
+        17 => dc_intl::t("Af3rGY"),
+        18 => dc_intl::t("Ji4l7E"),
+        _ => dc_intl::t("v/OAcs"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(lines: &[Vec<(String, bool)>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| line.iter().map(|(text, _)| text.as_str()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_private_reply_offers_to_dismiss_it() {
+        let (lines, links) = ephemeral_lines(None, 20);
+        assert_eq!(
+            text(&lines),
+            ["Only you can see this \u{2022} Dismiss message"]
+        );
+        assert_eq!(links, 1);
+        assert_eq!(lines[0].last(), Some(&("Dismiss message".to_owned(), true)));
+    }
+
+    #[test]
+    fn a_reason_goes_on_its_own_line_before_dismiss() {
+        let (lines, links) = ephemeral_lines(Some(4), 20);
+        assert_eq!(
+            text(&lines),
+            [
+                "Only you can see this message.",
+                "You are sending messages too quickly \u{2022} Dismiss"
+            ]
+        );
+        assert_eq!(links, 1);
+        let (lines, _) = ephemeral_lines(Some(0), 20);
+        assert!(text(&lines)[1].starts_with("An unknown error occurred"));
+    }
+
+    #[test]
+    fn a_raised_hand_is_for_stage_moderators() {
+        let (lines, _) = ephemeral_lines(None, STAGE_RAISE_HAND);
+        assert_eq!(
+            text(&lines),
+            ["Only Stage moderators can see this \u{2022} Dismiss message"]
+        );
     }
 }

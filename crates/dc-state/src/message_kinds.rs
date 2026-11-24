@@ -228,6 +228,8 @@ pub struct MessageExtra {
     pub role_subscription: Option<RoleSubscription>,
     /// `interaction`: the command a reply answers, as (name, who ran it).
     pub interaction: Option<(String, User)>,
+    /// `interaction_metadata.ephemerality_reason`: why an app's answer reached only this account (module 376767).
+    pub ephemerality_reason: Option<u64>,
     /// `poll`: the question text and the answers, as (text, votes).
     pub poll: Option<Poll>,
     /// `activity.type`: an activity invite carried by the message.
@@ -314,6 +316,7 @@ impl MessageExtra {
             }),
             interaction: text(&value["interaction"]["name"])
                 .zip(User::from_value(&value["interaction"]["user"])),
+            ephemerality_reason: value["interaction_metadata"]["ephemerality_reason"].as_u64(),
             poll: value["poll"]
                 .is_object()
                 .then(|| Poll::from_value(&value["poll"])),
