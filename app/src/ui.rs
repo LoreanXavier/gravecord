@@ -5611,43 +5611,32 @@ impl Root {
         } else {
             "--text-default"
         });
+        // The message's own pieces (mention and channel pills in their colours, links in `--text-link`, emoji, inline
+        // code, hidden spoilers, stamps) at the preview's 14px: `.repliedMessage_2i8Bfm { font-size: .875rem }` and
+        // `.repliedTextPreview_2i8Bfm .emoji { height: 1.25em }`. `.repliedTextContent_2i8Bfm { pointer-events: none;
+        // color: inherit }` (738015): nothing in it reacts to the pointer, and the plain text takes the preview's
+        // colour, which turns `--text-strong` under the pointer.
+        let spoilers = Self::spoiler_run_starts(spans);
         let pieces = spans
             .iter()
-            .map(|span| {
-                let style = span.style;
-                let mut run_font: Font = font(if style.code { MONO } else { SANS });
-                run_font.features = kerning();
-                run_font.weight = if style.bold {
-                    FontWeight(700.)
-                } else {
-                    FontWeight(400.)
-                };
-                run_font.style = if style.italic {
-                    FontStyle::Italic
-                } else {
-                    FontStyle::Normal
-                };
-                Piece {
-                    // The reply preview shows a mention as its resolved `@name`, never the raw `<@id>`.
-                    text: match span.kind {
-                        Kind::User(_)
-                        | Kind::Game(_)
-                        | Kind::Role(_)
-                        | Kind::Channel(_)
-                        | Kind::Command { .. } => self.span_label(span),
-                        _ => span.text.clone(),
-                    },
-                    font: run_font,
-                    size: if style.code { px(11.9) } else { px(14.) },
-                    color: color_value,
-                    underline: style.underline,
-                    strike: style.strike,
-                    boxed: style.code.then(preview_code_box),
-                    image: None,
-                    hover: None,
-                    hover_underline: false,
-                    gradient: None,
+            .zip(&spoilers)
+            .map(|(span, start)| {
+                // A key no message has: a spoiler here is never revealed by a click.
+                let mut piece = self.piece_with_spoiler(
+                    span,
+                    *start,
+                    (u64::MAX, u32::MAX),
+                    color_value,
+                    (14., 400., 17.5),
+                );
+                if span.style.code {
+                    piece.boxed = Some(preview_code_box());
+                } else if let Some(boxed) = piece.boxed.as_mut() {
+                    *boxed = preview_box(boxed.clone());
                 }
+                piece.hover = None;
+                piece.hover_underline = false;
+                piece
             })
             .collect();
         inline(pieces, px(18.)).truncate()
@@ -12060,6 +12049,21 @@ fn inline_code_box() -> BoxStyle {
         text_line_height: px(18.),
         text_top: px(2.),
     }
+}
+
+/// A message's pill (a mention, a channel, a spoiler, a stamp) at the 14px of a one-line preview: the box is the run's
+/// content area, which scales with the text (21px for gg sans at 16px, 18px at 14px), on the preview's 18px line.
+fn preview_box(mut boxed: BoxStyle) -> BoxStyle {
+    let scale = 14. / 16.;
+    boxed.height = px((f32::from(boxed.height) * scale).round());
+    boxed.text_line_height = px(18.);
+    boxed.top = px(0.);
+    boxed.text_top = px(0.);
+    if let Some((_, width, height)) = boxed.icon.as_mut() {
+        *width = px((f32::from(*width) * scale).round());
+        *height = px((f32::from(*height) * scale).round());
+    }
+    boxed
 }
 
 /// Inline code inside a reply preview: 0.85 of 14px, so its box is smaller than in the message.

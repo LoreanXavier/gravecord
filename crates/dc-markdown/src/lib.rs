@@ -237,6 +237,8 @@ const MARKS: [(&str, Apply); 7] = [
 struct Rules {
     mentions: bool,
     links: bool,
+    /// `[label](address)` (the `link` rule, gated by `allowLinks` in module 694403); bare addresses stay links.
+    masked: bool,
 }
 
 pub fn inline(source: &str) -> Vec<Span> {
@@ -247,10 +249,70 @@ pub fn inline(source: &str) -> Vec<Span> {
         Rules {
             mentions: true,
             links: true,
+            masked: true,
         },
         &mut spans,
     );
     spans
+}
+
+/// The one line a reply or thread preview shows of a message (`parseInlineReply`, `INLINE_REPLY_RULES` of module
+/// 605275: the message rules without `blockQuote` and `br`, with a code block drawn as inline code). Headings, lists
+/// and quotes are not rules there, so their markers stay text. The line is clamped to one line
+/// (`.repliedTextContent_2i8Bfm { -webkit-line-clamp: 1 }` under `white-space: pre`), so only what comes before the
+/// first line break shows. `masked_links` is `allowLinks`: off for a reply (module 234957), on for a thread's last
+/// message (module 679636).
+pub fn inline_reply(source: &str, masked_links: bool) -> Vec<Span> {
+    let source = source.replace("\r\n", "\n");
+    let rules = Rules {
+        mentions: true,
+        links: true,
+        masked: masked_links,
+    };
+    let mut spans = Vec::new();
+    let mut rest = source.as_str();
+    while !rest.is_empty() {
+        match rest.find("```") {
+            Some(at) => {
+                if let Some((_, text, consumed)) = code_block(&rest[at..]) {
+                    walk(&rest[..at], Style::default(), rules, &mut spans);
+                    spans.push(Span {
+                        text,
+                        style: Style {
+                            code: true,
+                            ..Style::default()
+                        },
+                        kind: Kind::Text,
+                    });
+                    rest = &rest[at + consumed..];
+                } else {
+                    walk(&rest[..at + 3], Style::default(), rules, &mut spans);
+                    rest = &rest[at + 3..];
+                }
+            }
+            None => {
+                walk(rest, Style::default(), rules, &mut spans);
+                rest = "";
+            }
+        }
+    }
+    first_line(spans)
+}
+
+/// The spans up to the first line break.
+fn first_line(spans: Vec<Span>) -> Vec<Span> {
+    let mut out = Vec::new();
+    for mut span in spans {
+        if let Some(cut) = span.text.find('\n') {
+            span.text.truncate(cut);
+            if !span.text.is_empty() {
+                out.push(span);
+            }
+            break;
+        }
+        out.push(span);
+    }
+    out
 }
 
 /// `parseEmbedTitle` / `parseEmbedTitleWithoutLinks` (`EMBED_TITLE_RULES`, modules 605275, 46054 and 679636):
@@ -263,6 +325,7 @@ pub fn embed_title(source: &str, allow_links: bool) -> Vec<Span> {
         Rules {
             mentions: false,
             links: allow_links,
+            masked: allow_links,
         },
         &mut spans,
     );
@@ -600,6 +663,7 @@ fn walk(source: &str, style: Style, rules: Rules, spans: &mut Vec<Span>) {
             continue;
         }
         if rules.links
+            && rules.masked
             && let Some((consumed, label, address)) = masked_link(rest)
         {
             let mut inner_spans = Vec::new();
@@ -609,6 +673,7 @@ fn walk(source: &str, style: Style, rules: Rules, spans: &mut Vec<Span>) {
                 Rules {
                     mentions: rules.mentions,
                     links: false,
+                    masked: false,
                 },
                 &mut inner_spans,
             );
@@ -926,6 +991,56 @@ mod tests {
             assert_eq!(attachment_link(plain), None, "{plain}");
             assert!(matches!(inline(plain)[0].kind, Kind::Link(_)), "{plain}");
         }
+    }
+
+    #[test]
+    fn a_reply_line_keeps_mentions_links_and_marks_but_not_blocks() {
+        let spans = inline_reply("<@12> see https://youtu.be/x and `c` ||s||", false);
+        let kinds: Vec<&Kind> = spans
+            .iter()
+            .map(|span| &span.kind)
+            .filter(|kind| **kind != Kind::Text)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                &Kind::User(12),
+                &Kind::Link("https://youtu.be/x".to_owned())
+            ]
+        );
+        assert!(spans.iter().any(|span| span.style.code && span.text == "c"));
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.style.spoiler && span.text == "s")
+        );
+        // No heading, list or quote rule: the markers stay text.
+        let text = |source: &str| -> String {
+            inline_reply(source, false)
+                .into_iter()
+                .map(|span| span.text)
+                .collect()
+        };
+        assert_eq!(text("# big"), "# big");
+        assert_eq!(text("> quoted"), "> quoted");
+        assert_eq!(text("- item"), "- item");
+        // One line shows.
+        assert_eq!(text("first\nsecond"), "first");
+        // A code block is drawn as inline code (its first line).
+        let code = inline_reply("```rust\nfn x() {}\nmore```", false);
+        assert_eq!(code.len(), 1);
+        assert!(code[0].style.code);
+        assert_eq!(code[0].text, "fn x() {}");
+    }
+
+    #[test]
+    fn masked_links_in_a_reply_follow_allow_links() {
+        let off = inline_reply("[label](https://example.com)", false);
+        assert!(off.iter().all(|span| span.text != "label"));
+        assert!(off.first().is_some_and(|span| span.text.starts_with('[')));
+        let on = inline_reply("[label](https://example.com)", true);
+        assert_eq!(on[0].text, "label");
+        assert_eq!(on[0].kind, Kind::Link("https://example.com".to_owned()));
     }
 
     #[test]

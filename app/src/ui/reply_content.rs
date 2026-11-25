@@ -263,7 +263,12 @@ impl Root {
                     .into_any_element()
             }
             None => self
-                .preview_text(&first_spans(&message.content), strong)
+                // `allowLinks` is off for a reply line (module 234957) unless the message came from a webhook
+                // (module 354777 `m`).
+                .preview_text(
+                    &dc_markdown::inline_reply(&message.content, message.webhook_id.is_some()),
+                    strong,
+                )
                 .into_any_element(),
             Some(Placeholder::PollQuestion) => div()
                 .whitespace_nowrap()

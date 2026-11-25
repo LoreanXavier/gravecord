@@ -84,6 +84,26 @@ pub(super) fn wanted(
             }
         }
     }
+    // The emoji of the line the reply preview shows of the message it answers (`inline_reply`).
+    if let Some(referenced) = &message.referenced {
+        for span in dc_markdown::inline_reply(&referenced.content, true) {
+            match &span.kind {
+                Kind::Unicode => {
+                    if let Some(file) = dc_tokens::emoji_file(&span.text) {
+                        media.push((
+                            format!("emoji:{}", span.text),
+                            format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN),
+                        ));
+                    }
+                }
+                Kind::Emoji { id, .. } => media.push((
+                    format!("custom:{id}"),
+                    format!("https://cdn.discordapp.com/emojis/{id}.webp?size=96"),
+                )),
+                _ => {}
+            }
+        }
+    }
     for reaction in &message.reactions {
         if let Some(file) = dc_tokens::emoji_file(&reaction.name) {
             media.push((

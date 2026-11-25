@@ -3,7 +3,7 @@
 //! 448368 `V` in `threadMessageAccessory_2i8Bfm`), or why there is none, with how long ago it was active.
 
 use super::reply_content::{self, Trailing};
-use super::{Root, color, first_spans, icon};
+use super::{Root, color, icon};
 use dc_state::{Id, Message, Thread};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
 
@@ -216,7 +216,7 @@ impl Root {
         let line = reply_content::reply_line(self.reply_facts(latest));
         let text: AnyElement = match line.placeholder {
             None => self
-                .preview_text(&first_spans(&latest.content), false)
+                .preview_text(&dc_markdown::inline_reply(&latest.content, true), false)
                 .into_any_element(),
             Some(placeholder) => div()
                 .pr(px(2.))
