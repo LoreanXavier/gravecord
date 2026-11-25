@@ -152,6 +152,22 @@ pub(crate) fn native_message(title: &str, text: &str) {
     eprintln!("{title}: {text}");
 }
 
+/// One `panic.log` entry: when, on which thread and in which build it happened, then the panic and its backtrace. A
+/// packaged build's backtrace has no symbols, and without these lines an entry cannot be told from an old one.
+fn panic_entry(info: &str, backtrace: &str) -> String {
+    let thread = std::thread::current();
+    format!(
+        "=== {} thread {} build {}\n{info}\n{backtrace}\n",
+        chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+        thread.name().unwrap_or("unnamed"),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    )
+}
+
 /// Appends `text` to `panic.log` in `dir`, newest last.
 fn append_log(dir: &Path, text: &str) {
     let _ = std::fs::create_dir_all(dir);
@@ -261,7 +277,10 @@ fn record_panics() {
     std::panic::set_hook(Box::new(move |info| {
         if let Some(dir) = storage::data_dir() {
             let backtrace = std::backtrace::Backtrace::force_capture();
-            append_log(&dir, &format!("{info}\n{backtrace}\n"));
+            append_log(
+                &dir,
+                &panic_entry(&info.to_string(), &backtrace.to_string()),
+            );
         }
         restore_audio_in_time();
         previous(info);
@@ -442,6 +461,11 @@ fn run() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
+        // A panic.log entry names the thread: this one is the network's (gateway, REST, CDN). tokio panics on any I/O
+        // driver poll error but an interrupt (`runtime/io/driver.rs`); the one seen, OS error 1450 (no system
+        // resources) under a machine-wide shortage, is outside this process: handles, threads and sockets stay flat
+        // over a replayed soak and a half hour of the live client. In a release build that panic ends one worker.
+        .thread_name("gravecord-net")
         .build()?;
     // With a stored login the network starts now, beside the fonts and the window: the gateway's connection, its
     // READY and the open channel's page do not wait for the first frame.
@@ -727,6 +751,20 @@ fn write_capture(_: &mut App, _: gpui::AnyWindowHandle, _: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_entry_says_when_where_and_which_build() {
+        let entry = std::thread::Builder::new()
+            .name("gravecord-net".to_owned())
+            .spawn(|| panic_entry("panicked at x.rs:1:1:\nboom", "   0: frame"))
+            .unwrap()
+            .join()
+            .unwrap();
+        let first = entry.lines().next().unwrap();
+        assert!(first.starts_with("=== 20"), "{first}");
+        assert!(first.contains(" thread gravecord-net build "), "{first}");
+        assert!(entry.contains("\npanicked at x.rs:1:1:\nboom\n   0: frame\n"));
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("gc-main-{name}-{}", std::process::id()));
