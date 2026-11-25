@@ -561,6 +561,7 @@ impl Root {
         } else {
             self.show_members = !self.show_members;
         }
+        self.sections_toggled();
         cx.notify();
     }
 

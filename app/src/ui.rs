@@ -69,6 +69,7 @@ mod channel_drag;
 mod channel_icon;
 mod channel_mention;
 pub(crate) mod channel_notice;
+mod channel_sections;
 mod channel_settings;
 mod channel_settings_pages;
 mod channel_status;
@@ -1765,12 +1766,13 @@ impl Root {
             menu_extra: menu::MenuExtra::default(),
             last_menu: None,
             confirm_delete: None,
-            // Capture builds: `GRAVECORD_SHOW_MEMBERS=1` starts with the member list open, so a start's first frames show
-            // it (the panel is opened by its header button otherwise; ChannelSectionStore is not ported, F-0081).
-            show_members: cfg!(feature = "capture")
-                && std::env::var("GRAVECORD_SHOW_MEMBERS").as_deref() == Ok("1"),
+            // Open or closed as the last run left it (`channel_sections.rs`). Capture builds:
+            // `GRAVECORD_SHOW_MEMBERS=1` starts with the member list open, so a start's first frames show it.
+            show_members: channel_sections::restored().0
+                || (cfg!(feature = "capture")
+                    && std::env::var("GRAVECORD_SHOW_MEMBERS").as_deref() == Ok("1")),
             member_view: None,
-            show_dm_profile: true,
+            show_dm_profile: channel_sections::restored().1,
             dm_mutual_servers_open: false,
             dm_mutual_friends_open: false,
             group_members: true,
@@ -8301,6 +8303,7 @@ impl Root {
                                             this.cursor_pointer().on_click(cx.listener(
                                                 |this, _, _, cx| {
                                                     this.show_dm_profile = !this.show_dm_profile;
+                                                    this.sections_toggled();
                                                     cx.notify();
                                                 },
                                             ))
@@ -8503,6 +8506,7 @@ impl Root {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.tip = None;
                                 this.show_members = !this.show_members;
+                                this.sections_toggled();
                                 cx.notify();
                             })),
                         )
