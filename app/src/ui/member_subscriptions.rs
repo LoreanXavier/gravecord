@@ -11,14 +11,24 @@ use gpui::Context;
 /// 289287: `updateSubscription` is a lodash `debounce` of 50 ms.
 const RANGE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// The member list channel of `channel` in `guild` (661670 `x`): an announcement thread lists its parent's members;
-/// another thread has a thread member list instead; a channel the guild does not have has none.
-fn list_channel(guild: &dc_state::Guild, channel: Id) -> Option<Id> {
-    let known = guild.channels.iter().find(|known| known.id == channel)?;
-    match known.kind.as_u64() {
-        10 => known.parent_id,
-        11 | 12 => None,
-        _ => Some(channel),
+/// The channel whose member list a view of `channel` shows and subscribes (661670 `x`): the channel itself; for a
+/// thread, its parent. The official lists an announcement thread's parent; another thread has a thread member list
+/// there, which is not ported (the panel of a thread reads the guild's list), so its parent's list stands in.
+fn list_channel(guild: &dc_state::Guild, channel: Id) -> Option<&dc_state::Channel> {
+    let parent = guild
+        .threads
+        .iter()
+        .find(|thread| thread.id == channel)
+        .map(|thread| thread.parent_id);
+    let known = guild
+        .channels
+        .iter()
+        .find(|known| known.id == parent.unwrap_or(channel))?;
+    match (parent, known.kind.as_u64()) {
+        (None, 10..=12) => known
+            .parent_id
+            .and_then(|parent| guild.channels.iter().find(|known| known.id == parent)),
+        _ => Some(known),
     }
 }
 
@@ -31,14 +41,21 @@ impl Root {
         };
         let Some(channel) = self
             .channel
-            .and_then(|channel| guild.channels.iter().find(|known| known.id == channel))
+            .and_then(|channel| list_channel(guild, channel))
         else {
             return Some((guild_id, member_list::EVERYONE.to_owned()));
         };
-        let parent = channel
-            .parent_id
-            .and_then(|parent| guild.channels.iter().find(|known| known.id == parent));
-        Some((guild_id, member_list::list_id(guild, channel, parent)))
+        Some((guild_id, member_list::list_id(guild, channel, None)))
+    }
+
+    /// The guilds a dropped or new connection keeps subscribed (661670 `w`): the open one and the voice call's
+    /// (`RTCConnectionStore`, module 495867).
+    fn kept_guilds(&self) -> Vec<Id> {
+        self.guild
+            .into_iter()
+            .chain(self.call.as_ref().map(|call| call.guild))
+            .filter(|guild| *guild != 0)
+            .collect()
     }
 
     /// Sends the subscription changes not sent yet (661670 `flush` and `GUILD_SUBSCRIPTIONS_FLUSH`, which leaves out
@@ -68,6 +85,7 @@ impl Root {
             .stores
             .guild(guild)
             .and_then(|known| list_channel(known, channel))
+            .map(|list| list.id)
         {
             self.guild_subscriptions
                 .subscribe_channel(guild, list, &DEFAULT_RANGES, true);
@@ -78,7 +96,7 @@ impl Root {
     /// 661670 `k` on `CONNECTION_OPEN`: a new session keeps the open guild's subscription and sends it whole; the
     /// member lists start over (the store dropped them on `READY`).
     pub(super) fn guild_subscriptions_connection_open(&mut self) {
-        let keep: Vec<Id> = self.guild.into_iter().collect();
+        let keep = self.kept_guilds();
         let stores = &self.stores;
         if let Some(whole) = self
             .guild_subscriptions
@@ -107,7 +125,7 @@ impl Root {
 
     /// 661670 `CONNECTION_CLOSED`: the other guilds' subscriptions are dropped without a send.
     pub(super) fn guild_subscriptions_closed(&mut self) {
-        let keep: Vec<Id> = self.guild.into_iter().collect();
+        let keep = self.kept_guilds();
         self.guild_subscriptions.connection_closed(&keep);
     }
 
@@ -168,6 +186,7 @@ impl Root {
             self.stores
                 .guild(guild)
                 .and_then(|known| list_channel(known, channel))
+                .map(|list| list.id)
         }) else {
             return;
         };
