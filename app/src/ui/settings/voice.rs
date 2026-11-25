@@ -2007,6 +2007,9 @@ impl Root {
         }
         // `asValueChanges`: the volumes follow the drag.
         store_slider_volume(key, fraction);
+        if key == SOUNDBOARD_VOLUME {
+            self.soundboard_volume_moved();
+        }
         self.show_slider_bubble(key);
         cx.notify();
     }
@@ -2029,6 +2032,9 @@ impl Root {
         let current = (self.slider_fraction(key) * steps).round();
         let fraction = ((current + direction as f32).clamp(0., steps)) / steps;
         store_slider_volume(key, fraction);
+        if key == SOUNDBOARD_VOLUME {
+            self.soundboard_volume_moved();
+        }
         self.commit_slider(key, fraction);
         cx.notify();
     }

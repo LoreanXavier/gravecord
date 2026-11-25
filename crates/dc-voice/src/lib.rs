@@ -344,6 +344,15 @@ impl Controls {
         drop(table);
         self.shared.playout.set_user_mix(user, clamped, muted);
     }
+    /// The volume factor and local mute this call plays a person with (`None`: 100% and unmuted).
+    pub fn user_mix_of(&self, user: u64) -> Option<(f32, bool)> {
+        self.shared
+            .user_mix
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&user)
+            .copied()
+    }
     /// The hub that carries pictures and watched stream audio; pass it to [`connect_stream`].
     pub fn hub(&self) -> VideoHub {
         self.shared.hub.clone()

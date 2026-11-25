@@ -3978,10 +3978,13 @@ pub(super) struct State {
     pub composer: Option<ComposerMenu>,
     /// The field the text area menu was opened on.
     pub text_area: Option<gpui::WeakEntity<crate::editor::Editor>>,
-    /// People whose soundboard sounds are muted here, for the whole session.
+    /// People whose soundboard sounds are muted here (`localSoundboardMutes`, from the account: `local_audio.rs`).
     pub soundboard_muted: std::collections::HashSet<Id>,
-    /// Each person's volume (a factor) and local mute in the call.
+    /// Each person's volume (a factor) and local mute in the call, as `MediaEngineStore` keeps them
+    /// (`local_audio.rs`).
     pub mix: std::collections::HashMap<Id, (f32, bool)>,
+    /// The people's volumes and mutes on their way to the account.
+    pub audio_sync: super::local_audio::AudioSync,
     /// The next menu opens from a person's row in a voice channel's list: it shows the media items (module 340851
     /// `showMediaItems: true`), whether or not we are in that call.
     pub voice_row: bool,
@@ -7666,6 +7669,7 @@ impl Root {
                 } else {
                     self.context.soundboard_muted.insert(user);
                 }
+                self.soundboard_mute_changed(user);
             }
             (Act::DisableVideo, Target::User { user, .. } | Target::OverlayUser { user, .. }) => {
                 let disabled = !super::call_menus::video_disabled(user);
@@ -7912,6 +7916,8 @@ impl Root {
         // VolumeBooster on: up to its slider top. Off: as the pinned client, the voice engine stops at 2.
         let cap = super::plugin_hooks::user_volume_cap();
         let volume = cap.map_or(volume, |cap| volume.min(cap));
+        let before = self.context.mix.get(&user).copied().unwrap_or((1., false));
+        self.user_mix_changed(user, before, (volume, muted));
         if volume == 1. && !muted {
             self.context.mix.remove(&user);
         } else {

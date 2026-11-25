@@ -288,6 +288,7 @@ impl Root {
     fn open_call_with(&mut self, guild: Id, channel: Id, controls: dc_voice::Controls) {
         controls.set_self_mute(self.engine_mute());
         controls.set_self_deaf(self.self_deaf);
+        self.give_call_the_mix(&controls);
         self.call = Some(Call {
             stats: Default::default(),
             camera: false,

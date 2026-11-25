@@ -153,6 +153,7 @@ mod library;
 mod lightbox;
 mod links;
 mod live_activity;
+mod local_audio;
 mod locale_error;
 pub mod login;
 mod logout;
@@ -1603,7 +1604,7 @@ impl Root {
             composer_draft: Default::default(),
             autocomplete: autocomplete::State::default(),
             slash: slash::State::default(),
-            context: context_menu::State::default(),
+            context: context_menu::State::restored(),
             channel_drag: channel_drag::State::default(),
             too_long: None,
             chat_extra: chat_notices::State::default(),
@@ -2330,6 +2331,13 @@ impl Root {
                 self.gateway_screens_dispatch(&name, &data, cx);
                 self.channel_info_check();
                 // Another session changed the status or the custom status: the account's own presence follows.
+                if name == "USER_SETTINGS_PROTO_UPDATE" {
+                    // Another session's change (`nC(!0)`); the answer to our own write (`wasSaved`) is ours already.
+                    if data["wasSaved"] != true {
+                        self.account_audio_changed(true);
+                    }
+                    self.keep_settings_for_start();
+                }
                 if name == "USER_SETTINGS_PROTO_UPDATE" || name == "SESSIONS_REPLACE" {
                     self.refresh_own_presence();
                     self.schedule_presence_retry(cx);
@@ -2496,6 +2504,8 @@ impl Root {
                         &self.stores.experiments,
                     );
                     self.hydrated_from_cache = false;
+                    // `CONNECTION_OPEN`: the people's volumes and mutes the account holds (`nC()`).
+                    self.account_audio_changed(false);
                     self.refresh_start_members();
                     self.guild_subscriptions_connection_open();
                     if let Some((prev_guild, prev_channel)) = ready_prev_place {
@@ -2647,7 +2657,7 @@ impl Root {
                     self.apply_update(
                         Update::Dispatch {
                             name: "USER_SETTINGS_PROTO_UPDATE".to_owned(),
-                            data: serde_json::json!({"settings": {"type": 1, "proto": proto}, "partial": true}),
+                            data: serde_json::json!({"settings": {"type": 1, "proto": proto}, "partial": true, "wasSaved": true}),
                         },
                         cx,
                     );

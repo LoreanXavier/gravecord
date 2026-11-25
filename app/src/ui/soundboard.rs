@@ -2276,11 +2276,12 @@ impl Root {
                     value,
                     palette: super::menu_slider::ThemePalette::Default,
                     format: super::menu_slider::percent_format(),
-                    on_change: std::rc::Rc::new(|_, pct, cx| {
+                    on_change: std::rc::Rc::new(|this, pct, cx| {
                         let volume = (super::menu_slider::perceptual_to_amplitude(pct, 100) * 100.)
                             .round()
                             .clamp(0., 100.);
                         super::settings::set_soundboard_volume(volume);
+                        this.soundboard_volume_moved();
                         cx.notify();
                     }),
                 },

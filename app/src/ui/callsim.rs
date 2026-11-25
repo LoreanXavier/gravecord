@@ -311,6 +311,37 @@ impl Root {
                 }
                 _ => "usage: callsim volume <peer> <percent>".to_owned(),
             },
+            // A person's volume and local mute as their menu sets them (`set_user_mix`), and what is kept of them: the
+            // menu's mix, `MediaEngineStore` in storage and the call's own table.
+            ["user-volume", name, percent] => match (user_of(name), percent.parse::<f32>()) {
+                (Some(user), Ok(percent)) => {
+                    let muted = self.context.mix.get(&user).is_some_and(|mix| mix.1);
+                    self.set_user_mix(user, percent / 100., muted);
+                    format!("user volume of {name}: {percent}%")
+                }
+                _ => "usage: callsim user-volume <peer> <percent>".to_owned(),
+            },
+            ["user-mute", name] => match user_of(name) {
+                Some(user) => {
+                    let (volume, muted) = self.context.mix.get(&user).copied().unwrap_or((1., false));
+                    self.set_user_mix(user, volume, !muted);
+                    format!("user mute of {name}: {}", !muted)
+                }
+                None => "usage: callsim user-mute <peer>".to_owned(),
+            },
+            ["mix", name] => match user_of(name) {
+                Some(user) => format!(
+                    "mix of {name}: menu {:?} stored {} call {:?}",
+                    self.context.mix.get(&user),
+                    crate::storage::get(super::local_audio::STORE)
+                        .map(|store| store["default"].to_string())
+                        .unwrap_or_default(),
+                    self.call
+                        .as_ref()
+                        .map(|call| call.controls.user_mix_of(user)),
+                ),
+                None => "usage: callsim mix <peer>".to_owned(),
+            },
             ["peer", "add", name] => sim.peer_add(name, false),
             ["peer", "add", name, "same-account"] => sim.peer_add(name, true),
             ["peer", name, "camera", "on"] => sim.peer_camera(name, true),
