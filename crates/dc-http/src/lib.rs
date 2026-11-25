@@ -11,6 +11,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+pub mod plain;
 pub mod spotify;
 mod upload;
 mod webhook;
@@ -178,6 +179,17 @@ impl Client {
 
     fn http(&self) -> reqwest::Client {
         self.http.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The client for a request to `url` outside the API routes: the pinned one (its header set unchanged) for a
+    /// Discord host, the plain one ([`plain`]) for every other host. Decided on the address the app asked for, before
+    /// a replay run rewrites it onto the local server.
+    fn public_http(&self, url: &str) -> reqwest::Client {
+        if plain::is_discord_url(url) {
+            self.http()
+        } else {
+            plain::client()
+        }
     }
 
     /// The same client on a pool of its own: new connections, and a new name lookup for each.
@@ -532,7 +544,7 @@ impl Client {
     pub async fn fetch_public(&self, url: &str) -> Result<Vec<u8>, Error> {
         let asked = std::time::Instant::now();
         let response = self
-            .http()
+            .public_http(url)
             .get(dc_proto::replay::rewrite(url).as_ref())
             .send()
             .await?;
@@ -567,7 +579,7 @@ impl Client {
     /// A public JSON POST: no authorization, so tokens never reach the other host.
     pub async fn post_public_json(&self, url: &str, body: &Value) -> Result<Vec<u8>, Error> {
         let response = self
-            .http()
+            .public_http(url)
             .post(url)
             .header(reqwest::header::ACCEPT, "application/json")
             .json(body)
@@ -580,7 +592,7 @@ impl Client {
     /// Public GET (no authorization) reading at most `limit` bytes of the body: an error status, or a body over the
     /// limit (by its length header or as it streams), comes back as [`LimitedGet`] instead of the bytes.
     pub async fn fetch_public_limited(&self, url: &str, limit: usize) -> Result<LimitedGet, Error> {
-        let mut response = self.http().get(url).send().await?;
+        let mut response = self.public_http(url).get(url).send().await?;
         let status = response.status();
         if !status.is_success() {
             return Ok(LimitedGet::Status(
@@ -611,7 +623,9 @@ impl Client {
         etag: Option<&str>,
     ) -> Result<ConditionalGet, Error> {
         let asked = std::time::Instant::now();
-        let mut req = self.http().get(dc_proto::replay::rewrite(url).as_ref());
+        let mut req = self
+            .public_http(url)
+            .get(dc_proto::replay::rewrite(url).as_ref());
         if let Some(tag) = etag {
             req = req.header(reqwest::header::IF_NONE_MATCH, tag);
         }
@@ -648,7 +662,7 @@ impl Client {
     /// Puts a file at the signed URL `POST /channels/{id}/attachments` handed out. The URL is the grant, so no
     /// authorization goes with it.
     pub async fn put_upload(&self, url: &str, bytes: Vec<u8>) -> Result<(), Error> {
-        self.http()
+        self.public_http(url)
             .put(dc_proto::replay::rewrite(url).as_ref())
             .header("content-type", "application/octet-stream")
             .body(bytes)
@@ -787,6 +801,117 @@ mod tests {
         assert_eq!(headers["x-discord-timezone"], "Europe/Istanbul");
         assert_eq!(headers["origin"], "https://discordapp.com");
         assert_eq!(headers["referer"], "https://discordapp.com/channels/@me");
+    }
+
+    /// A local stand-in for a non-Discord host: answers `/start` with a redirect to `/next`, `/next` with a body, and
+    /// keeps the head of every request it read.
+    async fn third_party() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let heads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = heads.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let kept = kept.clone();
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 4096];
+                    loop {
+                        let mut seen = Vec::new();
+                        while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                            match stream.read(&mut buffer).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(read) => seen.extend_from_slice(&buffer[..read]),
+                            }
+                        }
+                        let head = String::from_utf8_lossy(&seen).into_owned();
+                        let answer = if head.starts_with("GET /start") {
+                            "HTTP/1.1 302 Found\r\nlocation: /next\r\ncontent-length: 0\r\n\r\n"
+                                .to_owned()
+                        } else {
+                            "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok".to_owned()
+                        };
+                        kept.lock().unwrap().push(head);
+                        if stream.write_all(answer.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (format!("http://{address}"), heads)
+    }
+
+    /// The header names and values of a request head, lowercased names, without the request line.
+    fn header_set(head: &str) -> std::collections::BTreeMap<String, String> {
+        let head = head.split("\r\n\r\n").next().unwrap_or_default();
+        head.lines()
+            .skip(1)
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+            .collect()
+    }
+
+    /// A public fetch from a host that is not Discord's carries the plain client's headers and nothing else, on the
+    /// first request and on the redirect it follows: no Discord user agent, client information, language, time zone,
+    /// origin, referer or cookie.
+    #[tokio::test]
+    async fn a_non_discord_host_gets_only_the_plain_headers() {
+        let (base, heads) = third_party().await;
+        let client = Client::new(Token::new("fixture-token"), identity()).unwrap();
+        let body = client.fetch_public(&format!("{base}/start")).await.unwrap();
+        assert_eq!(body, b"ok");
+        client
+            .fetch_public_limited(&format!("{base}/next"), 16)
+            .await
+            .unwrap();
+        client
+            .fetch_public_conditional(&format!("{base}/next"), Some("\"tag\""))
+            .await
+            .unwrap();
+        client
+            .post_public_json(&format!("{base}/next"), &json!({"q": 1}))
+            .await
+            .unwrap();
+        client
+            .put_upload(&format!("{base}/next"), b"file".to_vec())
+            .await
+            .unwrap();
+        let heads = heads.lock().unwrap().clone();
+        assert_eq!(heads.len(), 6, "{heads:#?}");
+        let allowed = [
+            "host",
+            "user-agent",
+            "accept",
+            "accept-encoding",
+            "if-none-match",
+            "content-type",
+            "content-length",
+        ];
+        for head in &heads {
+            let headers = header_set(head);
+            assert_eq!(headers["user-agent"], plain::user_agent(), "{head}");
+            for name in headers.keys() {
+                assert!(allowed.contains(&name.as_str()), "{name} sent: {head}");
+            }
+            let lower = head.to_ascii_lowercase();
+            for leak in [
+                "discord",
+                "electron",
+                "europe/istanbul",
+                "en-us",
+                "fixture-token",
+                "referer",
+                "origin",
+                "cookie",
+                "sec-ch-ua",
+                "x-super-properties",
+            ] {
+                assert!(!lower.contains(leak), "{leak} sent: {head}");
+            }
+        }
+        // The redirect was followed without telling the next address where it came from.
+        assert!(heads[1].starts_with("GET /next"));
     }
 
     #[test]

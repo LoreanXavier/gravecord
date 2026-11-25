@@ -157,7 +157,7 @@ impl Spotify {
     }
 
     fn http_client(https_only: bool) -> Result<reqwest::Client, Error> {
-        reqwest::Client::builder()
+        crate::plain::builder()
             .https_only(https_only)
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -194,9 +194,11 @@ impl Spotify {
             "Origin",
             HeaderValue::from_static(dc_proto::pin::WEBAPP_ORIGIN),
         );
+        // The dealer is Spotify's host: the plain user agent, not the Discord one. The origin is kept as the official
+        // page's WebSocket sends it: without it the dealer's handshake is untested.
         request.headers_mut().insert(
             "User-Agent",
-            HeaderValue::from_static(dc_proto::pin::USER_AGENT),
+            HeaderValue::from_static(crate::plain::user_agent()),
         );
         let config = WebSocketConfig::default()
             .max_message_size(Some(PLAYER_BYTES))
@@ -796,6 +798,7 @@ mod tests {
                  response: tungstenite::handshake::server::Response| {
                     assert_eq!(request.uri().query(), Some("access_token=fixture-provider"));
                     assert_eq!(request.headers()["origin"], dc_proto::pin::WEBAPP_ORIGIN);
+                    assert_eq!(request.headers()["user-agent"], crate::plain::user_agent());
                     assert!(!request.headers().contains_key("authorization"));
                     Ok(response)
                 },

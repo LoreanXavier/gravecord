@@ -414,8 +414,8 @@ pub fn is_offer(current: &Version, offered: &Version, channel: Channel) -> bool 
 
 fn build_client(feed: &Url, policy: Policy) -> Result<reqwest::Client> {
     let feed = feed.clone();
-    reqwest::Client::builder()
-        .user_agent(concat!("gravecord/", env!("CARGO_PKG_VERSION")))
+    // The plain client (`dc_http::plain`): a browser user agent and nothing of the Discord identity, no referer.
+    dc_http::plain::builder()
         .https_only(!policy.allow_loopback_http)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= MAX_REDIRECTS {

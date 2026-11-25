@@ -3460,7 +3460,7 @@ async fn save_download(url: &str, filename: &str) -> Option<String> {
     let folder = std::env::var_os("USERPROFILE")
         .map(|home| std::path::PathBuf::from(home).join("Downloads"))?;
     let _ = std::fs::create_dir_all(&folder);
-    let response = match reqwest::get(url).await {
+    let response = match dc_http::plain::client().get(url).send().await {
         Ok(response) => response,
         Err(error) => {
             warn!("download failed: {error}");
@@ -3497,7 +3497,7 @@ async fn save_download(url: &str, filename: &str) -> Option<String> {
 /// The first source of a file that answers with success.
 async fn fetch_first(sources: &[String]) -> Option<Vec<u8>> {
     for source in sources {
-        match reqwest::get(source).await {
+        match dc_http::plain::client().get(source).send().await {
             Ok(response) if response.status().is_success() => match response.bytes().await {
                 Ok(bytes) => return Some(bytes.to_vec()),
                 Err(error) => warn!("attachment download failed: {error}"),
@@ -4448,7 +4448,7 @@ async fn webhook_demo(client: &dc_http::Client, channel: u64) -> Value {
 /// OpenInApp's `getRedirect`: HEAD requests that follow `Location` five times at most; the last address reached, or
 /// the one given when a request fails.
 async fn resolve_redirect(url: &str) -> String {
-    let Ok(client) = reqwest::Client::builder()
+    let Ok(client) = dc_http::plain::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
     else {

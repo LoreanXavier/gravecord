@@ -1226,7 +1226,7 @@ fn fetch_video_bytes(url: &str) -> Result<Vec<u8>, String> {
         .ok_or("no HTTP runtime")?;
     let url = url.to_owned();
     runtime.block_on(async move {
-        let client = reqwest::Client::builder()
+        let client = dc_http::plain::builder()
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 5 {
                     attempt.error("too many redirects")

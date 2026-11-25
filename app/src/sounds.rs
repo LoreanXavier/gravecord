@@ -629,7 +629,7 @@ pub(crate) fn fetch_url_typed(url: &str, max_bytes: usize) -> Result<(Vec<u8>, S
         .ok_or("no runtime")?;
     let client = CLIENT
         .get_or_init(|| {
-            reqwest::Client::builder()
+            dc_http::plain::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(20))
                 .build()
