@@ -12,6 +12,7 @@ use thiserror::Error;
 use tracing::{debug, warn};
 
 pub mod plain;
+pub mod redact;
 pub mod spotify;
 mod upload;
 mod webhook;
@@ -64,15 +65,24 @@ fn transport_error(error: reqwest::Error, route: &str) -> Error {
     Error::Transport(if diagnostic_route(route) != route {
         error.without_url()
     } else {
-        error
+        redact::error(error)
     })
+}
+
+/// A request error keeps only the scheme, host and path of its address ([`redact::error`]), so neither its text nor
+/// its debug form can show a query.
+impl From<reqwest::Error> for Error {
+    fn from(error: reqwest::Error) -> Self {
+        Error::Transport(redact::error(error))
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("request failed: {0}")]
-    Transport(#[from] reqwest::Error),
-    #[error("{route} returned {status}")]
+    Transport(#[source] reqwest::Error),
+    /// The text names the route's path only; `route` itself keeps its query for the caller.
+    #[error("{} returned {status}", redact::url(route))]
     Status {
         route: String,
         status: StatusCode,
@@ -80,7 +90,7 @@ pub enum Error {
     },
     /// Every attempt was answered 429. `retry_after` is what the last answer asked to wait, in seconds as the body
     /// carries it (`retry_after`), so a caller can hold off as the official client does.
-    #[error("{route} stayed rate limited")]
+    #[error("{} stayed rate limited", redact::url(route))]
     RateLimited {
         route: String,
         retry_after: Option<f64>,
@@ -912,6 +922,54 @@ mod tests {
         }
         // The redirect was followed without telling the next address where it came from.
         assert!(heads[1].starts_with("GET /next"));
+    }
+
+    /// What a failed request's error shows in a log line: the path, never the query.
+    #[tokio::test]
+    async fn an_error_names_the_address_without_its_query() {
+        let status = Error::Status {
+            route: "/guilds/1/messages/search?content=private%20words".to_owned(),
+            status: StatusCode::BAD_REQUEST,
+            body: Value::Null,
+        };
+        assert_eq!(
+            status.to_string(),
+            "/guilds/1/messages/search returned 400 Bad Request"
+        );
+        let limited = Error::RateLimited {
+            route: "/x?q=private".to_owned(),
+            retry_after: None,
+        };
+        assert_eq!(limited.to_string(), "/x stayed rate limited");
+        // A transport error from a real request: nothing listens on the port.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let client = Client::new(Token::new("fixture"), identity()).unwrap();
+        let failed = client
+            .fetch_public(&format!("http://{address}/search?q=private#frag"))
+            .await
+            .unwrap_err();
+        for shown in [
+            format!("{failed}"),
+            format!("{failed:?}"),
+            anyhow_like(&failed),
+        ] {
+            assert!(!shown.contains("private"), "{shown}");
+            assert!(!shown.contains("frag"), "{shown}");
+        }
+        assert!(format!("{failed:?}").contains(&format!("{address}/search")));
+    }
+
+    /// The error with its whole source chain, as `{:#}` of an `anyhow::Error` prints it.
+    fn anyhow_like(error: &Error) -> String {
+        let mut text = error.to_string();
+        let mut source = std::error::Error::source(error);
+        while let Some(cause) = source {
+            text.push_str(&format!(": {cause}"));
+            source = cause.source();
+        }
+        text
     }
 
     #[test]

@@ -2383,11 +2383,11 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             json!({"ok": true, "status": 200, "body": value})
                         }
                         Err(dc_http::Error::Status { status, body, .. }) => {
-                            warn!("{route} failed: {status}");
+                            warn!("{} failed: {status}", dc_http::redact::url(&route));
                             json!({"ok": false, "status": status.as_u16(), "body": body})
                         }
                         Err(error) => {
-                            warn!("{route} failed: {error}");
+                            warn!("{} failed: {error}", dc_http::redact::url(&route));
                             json!({"ok": false, "status": 0, "body": null})
                         }
                     };
@@ -2457,11 +2457,11 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     let report = match client.post_form(&route, &form).await {
                         Ok(value) => json!({"ok": true, "status": 200, "body": value}),
                         Err(dc_http::Error::Status { status, body, .. }) => {
-                            warn!("{route} failed: {status}");
+                            warn!("{} failed: {status}", dc_http::redact::url(&route));
                             json!({"ok": false, "status": status.as_u16(), "body": body})
                         }
                         Err(error) => {
-                            warn!("{route} failed: {error}");
+                            warn!("{} failed: {error}", dc_http::redact::url(&route));
                             json!({"ok": false, "status": 0, "body": null})
                         }
                     };
@@ -2508,11 +2508,11 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     let report = match client.get_as_bearer(&route, &bearer).await {
                         Ok(value) => json!({"ok": true, "status": 200, "body": value}),
                         Err(dc_http::Error::Status { status, body, .. }) => {
-                            warn!("{route} failed: {status}");
+                            warn!("{} failed: {status}", dc_http::redact::url(&route));
                             json!({"ok": false, "status": status.as_u16(), "body": body})
                         }
                         Err(error) => {
-                            warn!("{route} failed: {error}");
+                            warn!("{} failed: {error}", dc_http::redact::url(&route));
                             json!({"ok": false, "status": 0, "body": null})
                         }
                     };

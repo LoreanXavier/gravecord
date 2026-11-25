@@ -4,6 +4,9 @@
 //! `--log <file>` (live tests driven from outside) keeps writing every debug event to its file, as before.
 //!
 //! Debug events may name user ids, so the files stay on this machine unless the user uploads them (Upload Logs).
+//! Addresses are written as scheme, host and path only: every line passes `dc_http::redact::text` on its way into a
+//! file, so no query string, fragment or user name and password of an address reaches one. gravecord's own log lines
+//! print no request or response header.
 
 use std::fs::File;
 use std::io::Write;
@@ -46,8 +49,27 @@ static TESTER: AtomicBool = AtomicBool::new(false);
 
 struct Writer;
 
+/// One formatted event as it goes into a file: every address in it cut to scheme, host and path
+/// (`dc_http::redact::text`), whichever crate wrote the line. The fmt layer hands over a whole event per write.
+fn redacted(buffer: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    match std::str::from_utf8(buffer) {
+        Ok(text) => match dc_http::redact::text(text) {
+            std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(buffer),
+            std::borrow::Cow::Owned(safe) => std::borrow::Cow::Owned(safe.into_bytes()),
+        },
+        Err(_) => std::borrow::Cow::Owned(
+            dc_http::redact::text(&String::from_utf8_lossy(buffer))
+                .into_owned()
+                .into_bytes(),
+        ),
+    }
+}
+
 impl Write for Writer {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+    fn write(&mut self, written: &[u8]) -> std::io::Result<usize> {
+        let taken = written.len();
+        let safe = redacted(written);
+        let buffer: &[u8] = &safe;
         if let Ok(mut sinks) = SINKS.lock() {
             let Sinks {
                 command_line,
@@ -69,7 +91,7 @@ impl Write for Writer {
                 }
             }
         }
-        Ok(buffer.len())
+        Ok(taken)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -161,8 +183,8 @@ pub fn start_file(folder: &Path) -> Option<PathBuf> {
 
 /// A tester build's log, on from start to exit: the debug events of gravecord's own crates in a new
 /// `gravecord-<seconds>.log` of `folder`, a new file every [`TESTER_FILE_BYTES`], the newest [`KEEP_FILES`] kept.
-/// HTTP lines name paths without their queries (`dc_http::log_path`), and tokens and message text are never logged,
-/// so the files can be sent with a bug report.
+/// Addresses in it have no queries (`dc_http::redact`) and tokens are never logged. Lines can still name user ids
+/// and the paths of requests (a channel or message id), so read a file before posting it publicly.
 pub fn start_tester_file(folder: &Path) -> Option<PathBuf> {
     let (file, path) = new_file(folder, "gravecord")?;
     let mut sinks = SINKS.lock().ok()?;
@@ -214,4 +236,25 @@ pub fn stop_file() {
 
 pub fn file_open() -> bool {
     DEBUG.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A log line reaches a file without the query, fragment or credentials of any address in it, and a line without
+    /// an address is written as it is.
+    #[test]
+    fn a_log_line_is_written_without_queries() {
+        let line = b"WARN dc_http: cdn fetch failed: error sending request for url \
+                     (https://media.example.com/a.gif?sig=secret#frag) /guilds/1/search\n";
+        let safe = String::from_utf8(redacted(line).into_owned()).unwrap();
+        assert_eq!(
+            safe,
+            "WARN dc_http: cdn fetch failed: error sending request for url \
+             (https://media.example.com/a.gif) /guilds/1/search\n"
+        );
+        let plain = b"INFO app: voice connected\n";
+        assert!(matches!(redacted(plain), std::borrow::Cow::Borrowed(_)));
+    }
 }
