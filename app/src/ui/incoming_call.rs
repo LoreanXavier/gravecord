@@ -229,6 +229,14 @@ impl Root {
             .collect()
     }
 
+    /// The channels of the cards that are up, in the order they are drawn.
+    pub(in crate::ui) fn incoming_call_channels(&self) -> Vec<dc_state::Id> {
+        self.incoming_visible()
+            .iter()
+            .map(|call| call.channel)
+            .collect()
+    }
+
     /// Escape while a card is up (760571: a window `keydown` listener calls `stopRinging(channel.id)` for each card).
     /// Returns whether a card took the key.
     pub(super) fn incoming_escape(&mut self, cx: &mut Context<Self>) -> bool {

@@ -22,6 +22,17 @@ pub(super) enum HomeStop {
     Dm(Id),
 }
 
+/// `TOGGLE_CATEGORY_COLLAPSED` (module 151199): with any category open every open one collapses
+/// (`collapseAllCategories`), otherwise every one opens (`expandAllCategories`). The categories whose state changes.
+pub(super) fn categories_to_toggle(categories: &[(Id, bool)]) -> Vec<Id> {
+    let collapse = categories.iter().any(|(_, collapsed)| !collapsed);
+    categories
+        .iter()
+        .filter(|(_, collapsed)| *collapsed != collapse)
+        .map(|(category, _)| *category)
+        .collect()
+}
+
 impl Root {
     /// Runs the action a key hit. True when the key is used up.
     pub(super) fn run_shortcut(
@@ -141,18 +152,13 @@ impl Root {
                 }
             }
             Action::ToggleFullscreen => window.toggle_fullscreen(),
-            // No picture of the Keyboard Shortcuts help exists to build it from, there is no scaling of the whole
-            // interface and no direct message call UI, so those keys are left alone. Shift+F10 opens the menu of the
-            // focused element (`context_key`).
             Action::ToggleHotkeys => self.toggle_keyboard_help(cx),
+            // Shift+F10 opens the menu of the focused element (`context_key`).
             Action::OpenContextMenu => return self.open_focused_context_menu(window, cx),
-            Action::ZoomIn
-            | Action::ZoomOut
-            | Action::ZoomReset
-            | Action::CallAccept
-            | Action::CallStart => {
-                return false;
-            }
+            // The root key handler steps the zoom before the table is read (`zoom_key`).
+            Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => return false,
+            Action::CallStart => self.call_start_shortcut(hit.bind, cx),
+            Action::CallAccept => self.call_accept_shortcut(cx),
             Action::CloseChannelTab => {
                 if let Some(active_id) = self.channel_tabs.active_tab_id {
                     self.channel_tabs.close_tab(active_id);
@@ -536,6 +542,9 @@ impl Root {
         cx.notify();
     }
 
+    /// `TOGGLE_USERS` (module 158781): the chat of a voice channel, the profile panel of a direct message, and
+    /// otherwise the member list (`toggleMembersSection`): a group's, or the servers' one, even from a page that does
+    /// not show it.
     fn toggle_users(&mut self, cx: &mut Context<Self>) {
         if self.voice_view_open() {
             if let Some(channel) = self.channel
@@ -543,12 +552,53 @@ impl Root {
             {
                 self.vv.chat_open.insert(channel);
             }
-        } else if self.current_dm().is_some() {
-            self.show_dm_profile = !self.show_dm_profile;
-        } else if self.guild.is_some() {
+        } else if let Some(kind) = self.current_dm().map(|dm| dm.kind) {
+            if kind == 3 {
+                self.group_members = !self.group_members;
+            } else {
+                self.show_dm_profile = !self.show_dm_profile;
+            }
+        } else {
             self.show_members = !self.show_members;
         }
         cx.notify();
+    }
+
+    /// `CALL_START` (module 774603): the voice call button of the open direct message's header (`handleVoiceClick`
+    /// of module 289287) when it is there and enabled: it joins the call when one is going on, starts one otherwise,
+    /// and with Shift starts it without ringing (`ctrl+shift+'`).
+    fn call_start_shortcut(&mut self, bind: &str, cx: &mut Context<Self>) {
+        if self.guild.is_some() {
+            return;
+        }
+        let Some(dm) = self.current_dm() else {
+            return;
+        };
+        if self.stores.is_system_dm(dm) {
+            return;
+        }
+        let channel = dm.id;
+        let other = self.stores.dm_recipient(dm).map(|user| user.id);
+        let enabled = self
+            .dm_call_buttons(channel, other)
+            .voice
+            .is_some_and(|(_, disabled)| !disabled);
+        if enabled {
+            self.dm_call_clicked(channel, false, bind.contains("shift"), cx);
+        }
+    }
+
+    /// `CALL_ACCEPT` (module 774603): the Join Call button of module 496841, on an incoming call's card (760571) or
+    /// in the tray of a direct message's call this account is not in (105225). Every mounted button joins; the last
+    /// one wins.
+    fn call_accept_shortcut(&mut self, cx: &mut Context<Self>) {
+        let tray = self
+            .channel
+            .filter(|&channel| self.dm_call_shown() && !self.dm_call_in(Some(channel)));
+        let target = tray.or_else(|| self.incoming_call_channels().last().copied());
+        if let Some(channel) = target {
+            self.join_dm_call(channel, false, cx);
+        }
     }
 
     /// `TOGGLE_CATEGORY_COLLAPSED` (module 151199): collapses every open category, or opens them all when all are
@@ -574,11 +624,7 @@ impl Root {
                 )
             })
             .collect();
-        let collapse = categories.iter().any(|(_, collapsed)| !collapsed);
-        for (category, collapsed) in categories {
-            if collapsed != collapse {
-                continue;
-            }
+        for category in categories_to_toggle(&categories) {
             self.toggle_category(guild, category);
         }
         cx.notify();
@@ -678,5 +724,18 @@ impl Root {
             self.ack_channel(channel, message);
             cx.notify();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::categories_to_toggle;
+
+    #[test]
+    fn any_open_category_collapses_the_open_ones_else_all_open() {
+        assert_eq!(categories_to_toggle(&[(1, false), (2, true)]), vec![1]);
+        assert_eq!(categories_to_toggle(&[(1, false), (2, false)]), vec![1, 2]);
+        assert_eq!(categories_to_toggle(&[(1, true), (2, true)]), vec![1, 2]);
+        assert!(categories_to_toggle(&[]).is_empty());
     }
 }

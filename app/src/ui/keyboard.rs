@@ -123,6 +123,10 @@ pub(super) struct Entry {
     /// Still works while a modal or menu is open: the official client binds these globally with no layer check, and
     /// none of them acts on what the modal shows.
     pub under_modal: bool,
+    /// Still bound while a settings layer is open. Each layer replaces the whole layout with its own (module 596339
+    /// `S4`: `enableTemp` of module 390435, Escape and the zoom keys); the desktop menu's accelerators are outside
+    /// the page and always work.
+    pub in_layers: bool,
 }
 
 const fn entry(
@@ -140,11 +144,17 @@ const fn entry(
         availability: Availability::Active,
         source,
         under_modal: false,
+        in_layers: false,
     }
 }
 
 const fn always(mut entry: Entry) -> Entry {
     entry.under_modal = true;
+    entry
+}
+
+const fn layer_too(mut entry: Entry) -> Entry {
+    entry.in_layers = true;
     entry
 }
 
@@ -458,21 +468,27 @@ pub(super) const TABLE: &[Entry] = &[
         Open,
         "158781",
     ),
-    always(entry(A::ZoomIn, "ZOOM_IN", &["mod+plus"], Open, "406975")),
-    always(entry(
+    layer_too(always(entry(
+        A::ZoomIn,
+        "ZOOM_IN",
+        &["mod+plus"],
+        Open,
+        "406975",
+    ))),
+    layer_too(always(entry(
         A::ZoomOut,
         "ZOOM_OUT",
         &["mod+minus"],
         Open,
         "406975",
-    )),
-    always(entry(
+    ))),
+    layer_too(always(entry(
         A::ZoomReset,
         "ZOOM_RESET",
         &["mod+0"],
         Open,
         "406975",
-    )),
+    ))),
     with(
         entry(
             A::OpenAppDirectory,
@@ -507,20 +523,20 @@ pub(super) const TABLE: &[Entry] = &[
         Open,
         "158781",
     ),
-    entry(
+    layer_too(always(entry(
         A::OpenSettings,
         "MENU_OPEN_SETTINGS",
         &["ctrl+,"],
         Open,
         "desktop menu",
-    ),
-    entry(
+    ))),
+    layer_too(always(entry(
         A::ToggleFullscreen,
         "MENU_TOGGLE_FULLSCREEN",
         &["f11"],
         Open,
         "desktop menu",
-    ),
+    ))),
 ];
 
 /// A parsed bind: its modifiers and the key it needs.
@@ -639,7 +655,8 @@ pub(super) enum Route {
 /// table last (module 775121 binds every action with `bindGlobal`, so a key that names an action reaches it even
 /// from a text field). Plain printable keys are not in the table: they belong to the field, or start typing.
 pub(super) fn route(keystroke: &Keystroke, facts: Facts) -> Route {
-    if let Some(hit) = lookup(keystroke) {
+    // Under a settings layer the page's layout is not registered: its keys reach the layer and the focused field.
+    if let Some(hit) = lookup(keystroke).filter(|hit| !facts.layers || hit.entry.in_layers) {
         if facts.modal && !hit.entry.under_modal {
             return Route::Overlay;
         }
@@ -661,6 +678,50 @@ pub(super) fn route(keystroke: &Keystroke, facts: Facts) -> Route {
 }
 
 impl crate::ui::Root {
+    /// Script step `keys state`: what the shortcuts and Escape act on, in one line.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_keys_state(&self, window: &gpui::Window) -> String {
+        let categories: Vec<bool> = self
+            .guild
+            .and_then(|guild| self.stores.guild(guild).map(|known| (guild, known)))
+            .map(|(guild, known)| {
+                known
+                    .channels
+                    .iter()
+                    .filter(|channel| channel.kind == dc_state::ChannelKind::Category)
+                    .map(|channel| {
+                        self.stores
+                            .guild_settings
+                            .channel(guild, channel.id)
+                            .collapsed
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        format!(
+            "layers={} settings_layer={} modals={} quick_switcher={} fullscreen={} native_fullscreen={} focused_tile={} voice_chat={} members={} group_members={} dm_profile={} sidebar_post={} new_thread={} channel={:?} guild={:?} root_focused={} categories_collapsed={}/{}",
+            self.open_layers().len(),
+            self.layers_open(),
+            self.modal_open(),
+            self.quick_switcher.is_some(),
+            self.vv.fullscreen,
+            window.is_fullscreen(),
+            self.vv.focus.tile.is_some(),
+            self.channel
+                .is_some_and(|channel| self.vv.chat_open.contains(&channel)),
+            self.show_members,
+            self.group_members,
+            self.show_dm_profile,
+            self.open_post_forum().is_some(),
+            self.new_thread.is_some(),
+            self.channel,
+            self.guild,
+            self.focus.is_focused(window),
+            categories.iter().filter(|collapsed| **collapsed).count(),
+            categories.len(),
+        )
+    }
+
     /// Script step `unread`: a message newer than anything acked arrived in `channel`.
     #[cfg(feature = "capture")]
     pub(crate) fn script_unread(&mut self, channel: u64, cx: &mut gpui::Context<Self>) {
@@ -839,16 +900,45 @@ mod tests {
     }
 
     #[test]
-    fn layer_guards_swallow_the_key() {
+    fn a_settings_layer_keeps_only_escape_zoom_and_the_menu_keys() {
+        // A layer is also a modal for the window (`modal_open` counts it).
         let layers = Facts {
+            layers: true,
+            modal: true,
+            ..Facts::default()
+        };
+        for page_key in [
+            "ctrl-k",
+            "ctrl-e",
+            "ctrl-tab",
+            "alt-left",
+            "ctrl-shift-m",
+            "ctrl-/",
+            "pageup",
+        ] {
+            assert!(
+                matches!(route(&stroke(page_key), layers), Route::Overlay),
+                "{page_key}"
+            );
+        }
+        for layer_key in ["ctrl-=", "ctrl--", "ctrl-0", "ctrl-,", "f11"] {
+            assert!(
+                matches!(route(&stroke(layer_key), layers), Route::Global(_)),
+                "{layer_key}"
+            );
+        }
+        // A field in the layer keeps what the page would have taken.
+        let typing = Facts {
             layers: true,
             ..Facts::default()
         };
-        assert!(matches!(route(&stroke("ctrl-k"), layers), Route::Swallow));
-        assert!(matches!(route(&stroke("ctrl-e"), layers), Route::Swallow));
-        assert!(matches!(
-            route(&stroke("ctrl-tab"), layers),
-            Route::Global(_)
-        ));
+        assert!(matches!(route(&stroke("ctrl-k"), typing), Route::Pass));
+    }
+
+    #[test]
+    fn the_quick_switcher_is_a_page_key_with_a_layer_guard() {
+        let hit = lookup(&stroke("ctrl-k")).unwrap();
+        assert_eq!(hit.entry.guard, Guard::NoLayers);
+        assert!(!hit.entry.in_layers);
     }
 }
