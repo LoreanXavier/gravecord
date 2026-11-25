@@ -1302,13 +1302,16 @@ impl Root {
             return div().into_any_element();
         };
         let size = window.viewport_size();
-        let width = f32::from(size.width) - self.combined_sidebar_width();
-        let height = f32::from(size.height) - 32.;
         let in_call = self
             .call
             .as_ref()
             .is_some_and(|call| call.channel == channel);
         let chat = in_call && self.vv.chat_open.contains(&channel);
+        // The docked chat sits beside the call, not over it: the call (its grid, the focused tile of module 699707
+        // and the bar) has the width that is left (`width` of `ChannelCall`).
+        let chat_room = if chat { CHAT_WIDTH } else { 0. };
+        let width = f32::from(size.width) - self.combined_sidebar_width() - chat_room;
+        let height = f32::from(size.height) - 32.;
         let body = if in_call && self.call_popped_out() {
             self.call_popped_out_message()
         } else if in_call && self.vv.fullscreen {
@@ -1343,7 +1346,15 @@ impl Root {
                 }
                 this.voice_view_moved(cx);
             }))
-            .child(body);
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .bottom_0()
+                    .right(px(chat_room))
+                    .child(body),
+            );
         if chat {
             view = view.child(self.voice_chat_panel(guild, channel, cx));
         }
