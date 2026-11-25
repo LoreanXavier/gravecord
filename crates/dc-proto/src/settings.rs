@@ -4,6 +4,9 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
+pub mod audio_context;
+pub mod soundboard_volume;
+
 const FIELD_APPEARANCE: u64 = 13;
 const APPEARANCE_THEME: u64 = 1;
 const FIELD_GUILD_FOLDERS: u64 = 14;
@@ -485,6 +488,11 @@ fn with_encoded(message: &[u8], path: &[u64], field: u64, encoded: &[u8]) -> Vec
 /// The account's settings as bytes, from the base64 of READY or an update.
 pub fn decode(settings_base64: &str) -> Vec<u8> {
     STANDARD.decode(settings_base64).unwrap_or_default()
+}
+
+/// The account's settings as the base64 READY carries.
+pub fn encode(settings: &[u8]) -> String {
+    STANDARD.encode(settings)
 }
 
 /// Setting one preference: the PATCH body value, and the settings as they are from now on. The server replaces a

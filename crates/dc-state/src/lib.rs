@@ -3580,6 +3580,51 @@ impl Stores {
         self.settings_loaded
     }
 
+    /// The account's whole settings, base64 as READY carries them, once they have arrived: what the start cache keeps
+    /// (`UserSettingsProtoStore-Cache`), so the next start shows the latest choices and not READY's of that run.
+    pub fn settings_base64(&self) -> Option<String> {
+        self.settings_loaded
+            .then(|| settings::encode(&self.settings_raw))
+    }
+
+    /// `soundboardSettings.volume` as the account holds it (0 to 100), `None` before the settings arrived or when the
+    /// account has none.
+    pub fn soundboard_volume(&self) -> Option<f32> {
+        self.settings_loaded
+            .then(|| settings::soundboard_volume::read(&self.settings_raw))
+            .flatten()
+    }
+
+    /// Sets `soundboardSettings.volume`: kept at once, and the PATCH body value (the whole `voice_and_video`) comes
+    /// back, empty until the account's settings have arrived.
+    pub fn set_soundboard_volume(&mut self, volume: f32) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::soundboard_volume::write(&self.settings_raw, volume);
+        self.settings_raw = updated;
+        patch
+    }
+
+    /// `audioContextSettings` as the account holds it: each person's volume and local mutes.
+    pub fn audio_context(&self) -> settings::audio_context::AudioContextSettings {
+        settings::audio_context::read(&self.settings_raw)
+    }
+
+    /// Replaces `audioContextSettings`: kept at once, and the PATCH body value (the whole field 16) comes back, empty
+    /// until the account's settings have arrived.
+    pub fn set_audio_context(
+        &mut self,
+        audio: &settings::audio_context::AudioContextSettings,
+    ) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::audio_context::write(&self.settings_raw, audio);
+        self.settings_raw = updated;
+        patch
+    }
+
     pub fn content_dismissed(&self, content: u16) -> bool {
         settings::content_dismissed(&self.settings_raw, content)
     }
