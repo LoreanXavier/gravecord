@@ -11,7 +11,7 @@
 ![Built with](https://img.shields.io/badge/Rust%20%2B%20GPUI-2b2b2b?style=for-the-badge&logo=rust&logoColor=white)
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-2b2b2b?style=for-the-badge)
 
-**[What it is](#what-it-is) · [Status](#status) · [Features](#features) · [Install](#install) · [Updates](#automatic-updates) · [Building](#building-from-source) · [Layout](#project-layout) · [Contributing](#contributing) · [License](#license) · [Support](#support)**
+**[What it is](#what-it-is) · [Your data](#your-account-and-your-data) · [Plugins](#built-in-plugins) · [Status](#status) · [Features](#features) · [Install](#install) · [Updates](#automatic-updates) · [Building](#building-from-source) · [Layout](#project-layout) · [Contributing](#contributing) · [License](#license) · [Support](#support)**
 
 </div>
 
@@ -35,6 +35,186 @@ The goal is not a Discord-like app with its own ideas. Each screen is meant to m
 
 Web content that has to stay web content (Activities, the captcha, embedded video players) runs in a separate
 WebView2 host. Everything else is native.
+
+## Your account and your data
+
+gravecord talks to Discord. It does not talk to us: there is no gravecord server, no gravecord account and no
+analytics service, so there is nothing of yours that we receive, keep or could sell.
+
+- **What it connects to:**
+  - **Discord's own services:** the API, gateway, CDN, media proxy and voice servers, the same ones the official app
+    uses.
+  - **With default settings, only a few other hosts:**
+    - GitHub, for update checks
+    - content Discord shows from other sites, loaded as the official app loads it: Spotify players and cover art,
+      Twitch and YouTube previews, GIF previews, and hCaptcha when Discord asks for a captcha
+  - YouTube, Twitch and TikTok players load only when you press Play.
+- **What Discord receives:**
+  - What it needs to work: your messages, actions and presence.
+  - The same client-information header the official app sends: Windows version, system language, client version.
+  - gravecord does not send the official app's background analytics: tracking events, metrics, crash reports.
+  - Two buttons send diagnostics to Discord, and only when you use them: the Game Overlay's Report a Problem form and
+    Upload Logs.
+- **Your token:**
+  - **Where it is kept:** in Windows Credential Manager, encrypted by Windows for your user account. It is never
+    kept in gravecord's own files, logs or backups.
+  - **Where it goes:** only to Discord. Picture and file downloads, plugin services and update checks never carry it.
+- **Plugins:**
+  - Every plugin is off until you turn it on, except MessageClickActions, which talks only to Discord.
+  - The few plugins that use another service say so in the list below and in [PRIVACY.md](PRIVACY.md). For example,
+    Translate+ sends a message's text to Google's translation service when you click Translate.
+- **On your PC:** settings, a start cache (your server list and the last channel's recent messages) and picture
+  caches, in `%LOCALAPPDATA%\gravecord`. Logs are written only while Debug Logging is on (nightly tester builds always
+  keep one), plus a crash log if the app crashes. Nothing is uploaded unless you click Upload Logs.
+- **Open source:** every statement here can be checked in the code. [PRIVACY.md](PRIVACY.md) lists every host and
+  what it receives.
+
+| Destination | Why | On by default? |
+| - | - | - |
+| Discord (API, gateway, CDN, media proxy, voice) | Everything the client does | Yes |
+| GitHub API and downloads | Update checks and update downloads (installed copies only) | Yes |
+| Spotify (images, embedded player; API only if your Discord account has Spotify connected) | Activities, Spotify link players, Listen Along | Yes, as in the official app |
+| Twitch and YouTube image servers, the GIF provider's image host | Activity pictures and GIF previews | Yes, as in the official app |
+| hCaptcha, Activities (`*.discordsays.com`) | Captcha when Discord asks for one; an Activity you launch | When needed |
+| YouTube, Twitch, TikTok players | A video embed you press Play on | When you press Play |
+| Equicord badges, UserPFP, USRBG | GlobalBadges, UserPFP and USRBG plugins | No, plugin only |
+| Google Translate, serversmp (Toki Pona) | Translate+ plugin, on click | No, plugin only |
+| Tenor or Giphy | TenorGifSearch plugin | No, plugin only |
+| The Dog API, The Cat API, nekos.best, Reddit | MoreCommands plugin, when you run its commands | No, plugin only |
+| `spotify.link`, `s.team` | OpenInApp plugin, to expand a short link you click | No, plugin only |
+
+**Verifying what you run:**
+
+- **Updates:** an installed copy downloads updates from GitHub over HTTPS, and runs one only if it matches GitHub's
+  checksum and is signed with the project's Ed25519 release key, which is built into the app (see
+  [Automatic updates](#automatic-updates)).
+- **What the signature proves:** who published the build, not which source it came from. Releases are built by the
+  maintainer, not on a public build server.
+- **How to be sure:** [build it from source](#building-from-source) yourself.
+
+## Built-in plugins
+
+gravecord ships native ports of popular [Vencord](https://github.com/Vendicated/Vencord) and
+[Equicord](https://github.com/Equicord/Equicord) plugins:
+
+- **How they are built:** they are rewritten in Rust and compiled into the client. There is no injection, no mod
+  loader and no patching of Discord's code, so a Discord update cannot break them the way it breaks a client-mod
+  patch. They update with the app.
+- **Defaults:** every plugin is off until you turn it on in Settings > Gravecord > Plugins. The one exception is
+  MessageClickActions, which provides double-click to edit.
+- **Turning them all off:** the master switch on the Gravecord page turns every plugin off at once.
+- **Plugins off means official:** `cargo xtask plugins-off` checks a set of scenarios with the plugins off against
+  the app without plugin code, and fails on one differing pixel.
+- **Settings:** plugin ids and setting names are the originals', so an Equicord or Vencord backup imports as it is
+  (see [Backup & Restore](#backup--restore)).
+
+**Credit:** the behaviour of each port was read from the Vencord and Equicord sources (GPL-3.0-or-later, the same
+licence as gravecord), plus one user plugin. Each port names the original file it follows. Thanks to their authors
+and contributors.
+
+**Coverage:** 86 plugins are ported. A few more are things gravecord already does without a plugin. 16 are planned
+and not listed here. [PLUGINS.md](PLUGINS.md) has the full status table, with each plugin's source and settings.
+Plugins marked † use a service outside Discord once turned on; [PRIVACY.md](PRIVACY.md) says what each one sends.
+
+<details>
+<summary><b>The 86 ported plugins</b></summary>
+
+| Plugin | From | What it does |
+| - | - | - |
+| AccountPanelServerProfile | Vencord | Right-click your account panel to view your profile in the current server. |
+| AlwaysAnimate | Vencord | Plays animated avatars, server icons, nameplates and gradient role names without hovering. |
+| AlwaysTrust | Vencord | Opens links without the "Leaving Discord" prompt; deleting a server asks a simple confirmation instead of its typed name. |
+| AnonymiseFileNames | Vencord | Renames uploaded files as they are sent, with a per-file switch. |
+| BetterActivities † | Equicord | Shows activity icons in the member and DM lists, and every activity in profiles. |
+| BetterBlockedUsers | Equicord | Groups blocked and ignored messages and opens a blocked person's profile without the prompt. |
+| BetterCommands | Equicord | Adds /refresh to reload the command list of the open channel or server. |
+| BetterForwards | Equicord | Lets you choose which attachments and embeds to forward, and shows where a forward came from. |
+| BetterQuickReact | Vencord | Shows more quick reactions in the hover bar and as a scrolling grid in the message menu. |
+| BetterRoleContext | Vencord | Right-click a role header to edit the role, copy its colour, view its icon or members, or copy its id. |
+| BetterRoleDot | Vencord | Click a role dot to copy its colour; show role dots and coloured names together. |
+| BetterUploadButton | Vencord | Click the upload button to pick a file at once; right-click for its menu. |
+| BiggerStreamPreview | Vencord | View a stream's preview picture at full size from the streamer's menu. |
+| BypassStatus | Equicord | Still get notifications from chosen people, channels and servers while on Do Not Disturb. |
+| CallTimer | Vencord | Shows how long you, and optionally everyone, have been in the call. |
+| CancelFriendRequest | Equicord | Cancel an outgoing friend request from the person's profile or DM. |
+| ClearURLs | Vencord | Removes tracking parameters from links you send or edit, with the bundled ClearURLs rules. |
+| ClipsEnhancements | Equicord | Adds more clip lengths, resolutions and frame rates, and tags clips with your game. |
+| ClipUpload | Equicord | Uploads a local MP4 file as a Discord clip, with its metadata. |
+| ColorSighted | Vencord | Draws status dots as plain coloured circles, without the colourblind shapes. |
+| CopyUserURLs | Vencord | Adds Copy User URL to user menus. |
+| CustomRPC | Vencord | Sets a fully custom Rich Presence activity on your profile. |
+| DisableCallIdle | Vencord | Stops a DM call from disconnecting you after three minutes alone. |
+| DownloadAllAttachments | Equicord | A hover bar button that saves every attachment of a message at once. |
+| ExpressionCloner | Vencord | Clone stickers into your servers, and edit, delete or copy stickers and emoji from their menus. |
+| FavoriteEmojiFirst | Vencord | Puts your favourite emoji first in emoji autocomplete. |
+| FixImagesQuality | Vencord | Loads attachment pictures at their original resolution. |
+| FixYoutubeEmbeds | Vencord | Shows a YouTube embed's description, folded until clicked. |
+| FriendInvites | Vencord | Slash commands to create, view and revoke friend invite links. |
+| FullVCPFP | Equicord | Makes avatars fill the whole call tile. |
+| GameActivityToggle | Vencord | A panel button that turns sharing your activity on and off. |
+| GifPaste | Vencord | Picking a GIF puts its link in the message box instead of sending it. |
+| GlobalBadges † | Equicord | Shows badges from other client mods on profiles. |
+| GreetStickerPicker | Vencord | Choose which greet sticker to send instead of a random one. |
+| IgnoreActivities | Vencord | Hides chosen activities from your status. |
+| ImageZoom | Vencord | A magnifying lens on pictures in the viewer, sized with the wheel. |
+| MemberCount | Vencord | Shows online, total and in-voice member counts in the member list and server tooltip. |
+| MessageClickActions | Vencord | Double-click to edit or reply, and other click and key actions on messages. On by default. |
+| MessageLogger | Vencord | Keeps deleted messages visible in red and shows the edit history of edited ones. |
+| MessagePeek | Equicord | Shows the last message and its time under each DM. |
+| MessageTags | Vencord | Saved text snippets you send with your own slash commands. |
+| MoreCommands † | Equicord | Fifty extra slash commands: dice, coin flip, text transforms, random pictures and more. |
+| MuteChannelMentions | User plugin | Hides mention badges of channels you pick. |
+| NewGuildSettings | Vencord | Applies your chosen notification settings to servers you join. |
+| NoNitroUpsell | Equicord | Hides Nitro upsells. Discord still applies your real plan. |
+| NoPendingCount | Vencord | Removes the friend request and message request counts. |
+| NoTypingAnimation | Vencord | Draws still typing dots. |
+| OnePingPerDM | Vencord | Plays one sound per DM until you read it, not one per message. |
+| OpenInApp † | Vencord | Opens Spotify, Steam, Epic, Tidal, Apple Music, VRChat and Telegram links in their apps. |
+| PermissionsViewer | Vencord | Shows the permissions of a member, a channel or a server's roles. |
+| PinDMs | Vencord | Pin DMs into categories at the top of the DM list. |
+| PlatformIndicators | Vencord | Shows which clients people are on: desktop, mobile, web and others. |
+| PreviewMessage | Vencord | Shows your message as it will look before you send it. |
+| QuickMention | Vencord | A hover bar button that mentions the message's author. |
+| ReadAllNotificationsButton | Vencord | A button that marks every server as read. |
+| RelationshipNotifier | Vencord | Tells you when a friend, group DM or server removes you. |
+| RevealAllSpoilers | Vencord | Ctrl-click a spoiler to open every spoiler of the message, Ctrl+Shift-click for the whole chat. |
+| ReverseImageSearch | Vencord | Search a picture with an image search engine, opened in your browser. |
+| RoleColorEverywhere | Vencord | Uses role colours on mentions, role headers, voice channels and reaction lists. |
+| SearchFix | Equicord | Lets search go past Discord's 5,000-result limit by flipping the sort order. |
+| ServerInfo | Vencord | A Server Info dialog with friends, mutual, blocked and ignored members. |
+| ServerListIndicators | Vencord | Shows how many friends are online or how many servers you are in, under Home. |
+| ShowConnections | Vencord | Shows people's connected accounts as icons in profiles. |
+| SilentMessageToggle | Vencord | A chat bar button that sends messages as @silent. |
+| SpotifyCrack | Vencord | Lets Listen Along work without Spotify Premium and keeps Spotify playing while you talk. |
+| SpotifyShareCommands | Vencord | /track, /album and /artist share what you are listening to. |
+| SteamStatusSync | Equicord | Mirrors your Discord status to Steam through the Steam client. |
+| StreamingCodecDisabler | Equicord | Can turn off H.264 encoding for streaming and camera. |
+| SuperReactionTweaks | Vencord | Opens the reaction picker with Super Reactions on. |
+| TenorGifSearch † | Vencord | Uses Tenor or Giphy for GIF search instead of Discord's provider. |
+| Translate+ † | Equicord | Translates messages, including Toki Pona, sitelen pona and Shavian. |
+| TypingIndicator | Vencord | Shows who is typing next to the channel's name. |
+| TypingTweaks | Vencord | Shows avatars and role colours in the typing line. |
+| UnlimitedAccounts | Equicord | Raises the number of accounts in Switch Accounts. |
+| UnlockedAvatarZoom | Vencord | Lets you zoom further when cropping an avatar. |
+| UserMessagesPronouns | Vencord | Shows people's pronouns next to their messages. |
+| UserPFP † | Equicord | Shows avatars from the UserPFP list, and lets you set local avatars for anyone. |
+| USRBG † | Vencord | Shows profile banners from USRBG. |
+| ValidUser | Vencord | Fixes @unknown-user mentions when you hover them. |
+| ViewIcons | Vencord | View avatars, banners, decorations and server icons at full size. |
+| VoiceDownload | Vencord | A download button on voice messages. |
+| VoiceMessages | Vencord | Send voice messages from desktop, recorded or from an audio file. |
+| VoiceStats | Equicord | Shows how long you have spent in voice with each person. |
+| VolumeBooster | Vencord | Lets user and stream volume go past 200%. |
+| WhoReacted | Vencord | Shows the avatars of who reacted next to each reaction. |
+| ZipPreview | Equicord | Lists the files inside a ZIP attachment. |
+
+</details>
+
+**Already native, so no plugin is needed:**
+
+- **ForceOwnerCrown:** the owner crown shows at any server size.
+- **NormalizeMessageLinks:** Copy Message Link writes plain `discord.com` links.
+- **NoTrack:** gravecord sends no analytics, metrics or crash reports to begin with.
 
 ## Status
 
@@ -129,19 +309,6 @@ Developer and Log Out:
 - **Backup & Restore:** import and export plugin settings (see below).
 - **Updates:** version, last check, download progress, Restart to Update, and the update channel (Stable or Nightly).
 - **Report a Bug:** where the log files are, with Open Folder and Copy Path, and where to report.
-
-### Built-in plugins
-
-gravecord has native rewrites of popular Vencord and Equicord plugins. They are compiled in rather than injected, so a
-Discord update cannot break them the way it breaks a client-mod patch.
-
-- **Coverage:** of the 156 plugins on the list, 86 are ported, 9 are things gravecord already does natively, 16 are
-  planned and 45 do not apply to a native client. [PLUGINS.md](PLUGINS.md) lists each one with its source and what it
-  does here.
-- **Defaults:** every plugin is off until you turn it on. The one exception is MessageClickActions, which provides
-  double-click to edit.
-- **Plugins off means official:** with the plugins off, the app is the official client.
-  `cargo xtask plugins-off` captures a set of scenarios three ways and fails on one differing pixel.
 
 ### Backup & Restore
 
@@ -333,6 +500,7 @@ The project's own records:
 - [BLOCKED.md](BLOCKED.md): the gaps and their substitutes.
 - [DECISIONS.md](DECISIONS.md): why things are the way they are.
 - [PLUGINS.md](PLUGINS.md): the built-in plugins.
+- [PRIVACY.md](PRIVACY.md): what is sent where, and what stays on your PC.
 
 ## Contributing
 
