@@ -125,6 +125,10 @@ impl Dave {
     pub fn contains(&self, user: u64) -> bool {
         self.participants.contains(&user)
     }
+    /// Other clients the voice server announced, for the call's debug log.
+    pub fn announced_peers(&self) -> usize {
+        self.announced.len().saturating_sub(1)
+    }
     /// Only this device remains announced in the call.
     pub fn alone(&self) -> bool {
         self.announced.len() == 1

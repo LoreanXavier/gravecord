@@ -1496,6 +1496,11 @@ pub(crate) async fn run(
                         decrypted = tally[3],
                         sent = tally[4],
                         ready = dave.ready,
+                        // Alone in a DAVE call nothing is keyed or sent until a peer joins: `waiting`, not stuck.
+                        waiting = dave.waiting,
+                        peers = dave.announced_peers(),
+                        transitioning = dave.transitioning(),
+                        secure_transport = transport.is_some(),
                         "voice packet tally"
                     );
                     tally = [0; 5];
