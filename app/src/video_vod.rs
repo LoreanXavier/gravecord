@@ -25,6 +25,83 @@ const SEEK_END_EPSILON: f64 = 0.02;
 /// How long a Play waits for the audio engine to apply it before its status is believed anyway (a stuck engine). The
 /// first sound of a session opens the output device, which takes a few hundred milliseconds on some machines.
 const ENGINE_ACK_GRACE: Duration = Duration::from_secs(5);
+/// How far the picture's clock may stray from the sound's before it jumps to it instead of easing (a stall of the
+/// speaker, a device change). Below it the gap closes by [`AV_GAIN`] at each look, so the steps in which the sound
+/// engine reports its playhead do not reach the picture.
+const AV_SNAP_SECS: f64 = 0.15;
+/// The share of the gap to the sound's clock closed at each frame.
+const AV_GAIN: f64 = 0.08;
+/// How long the sound's last reported playhead is carried forward on the wall clock: longer than the engine's
+/// reports are apart (its loop wakes every 5 ms, the speaker takes 10 ms blocks), short enough that the picture holds
+/// soon after the sound when the speaker stalls.
+const AV_CARRY_SECS: f64 = 0.05;
+/// A frame counts as due this much before its time, for the rounding of 100 ns timestamps.
+const PICK_EPSILON: f64 = 0.000_5;
+/// Late frames the decoder may skip in a row before it hands one over anyway, so an overloaded machine still sees
+/// the picture move.
+const MAX_SKIPPED_IN_A_ROW: u32 = 4;
+
+/// The clock the picture follows while the sound plays, as a browser's media element follows its audio output: the
+/// sound's last reported playhead is carried forward on the wall clock for a little while ([`AV_CARRY_SECS`]), and the
+/// picture's clock eases toward that. It never runs backwards unless the gap is too large to ease
+/// ([`AV_SNAP_SECS`]), and it stops soon after the sound does.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AvClock {
+    media: f64,
+    wall: f64,
+    /// The last playhead the sound reported, and when it changed.
+    audio: f64,
+    audio_at: f64,
+    live: bool,
+}
+
+impl AvClock {
+    /// Forgets the last reading: the next one is taken as it is (after a play, a pause or a seek).
+    pub(crate) fn reset(&mut self) {
+        self.live = false;
+    }
+
+    /// The position to show at `wall` seconds, given the sound engine's playhead `audio` read then.
+    pub(crate) fn follow(&mut self, wall: f64, audio: f64) -> f64 {
+        if !self.live || audio != self.audio {
+            self.audio = audio;
+            self.audio_at = wall;
+        }
+        if !self.live {
+            self.live = true;
+            self.media = audio;
+            self.wall = wall;
+            return audio;
+        }
+        let sound = self.audio + (wall - self.audio_at).clamp(0.0, AV_CARRY_SECS);
+        let free = self.media + (wall - self.wall).max(0.0);
+        let error = sound - free;
+        let next = if error.abs() > AV_SNAP_SECS {
+            sound
+        } else {
+            // Never ahead of where the sound could be by now, and never back.
+            (free + error * AV_GAIN)
+                .min(self.audio + AV_CARRY_SECS)
+                .max(self.media)
+        };
+        self.media = next;
+        self.wall = wall;
+        next
+    }
+}
+
+/// How many frames at the front of the ring (presentation order) are due at `clock`. The last of them is the one to
+/// show; the ones before it came too late and are dropped, as a browser drops late video frames.
+pub(crate) fn frames_due(ring: impl IntoIterator<Item = f64>, clock: f64) -> usize {
+    ring.into_iter()
+        .take_while(|pts| *pts <= clock + PICK_EPSILON)
+        .count()
+}
+
+/// Whether a decoded frame shown from `pts` for `duration` seconds is already over at `clock` and will never be seen.
+pub(crate) fn frame_is_late(pts: f64, duration: f64, clock: f64) -> bool {
+    pts + duration.max(0.001) < clock
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LoadStatus {
@@ -73,6 +150,10 @@ struct WorkerShared {
     media: Option<Arc<MediaInfo>>,
     /// Frames decoded into the ring (`getVideoPlaybackQuality().totalVideoFrames`).
     decoded_frames: u64,
+    /// Frames decoded too late to be shown (`droppedVideoFrames`).
+    dropped_frames: u64,
+    /// The playhead while the video plays: frames that end before it are not converted for the screen.
+    late_before: Option<f64>,
     loaded_at: Option<Instant>,
     ring: VecDeque<DecodedFrame>,
     retired: Vec<Arc<RenderImage>>,
@@ -94,6 +175,8 @@ impl WorkerShared {
             audio: None,
             media: None,
             decoded_frames: 0,
+            dropped_frames: 0,
+            late_before: None,
             loaded_at: None,
             ring: VecDeque::with_capacity(RING_CAPACITY),
             retired: Vec::new(),
@@ -139,6 +222,12 @@ pub(crate) struct VodPlayer {
     engine_asked: Option<(u64, Instant)>,
     active_seek_generation: u64,
     current_frame: Option<DecodedFrame>,
+    /// The frame shown is from before the last seek: it stays until the first one after it is decoded, as a seeking
+    /// `<video>` keeps its last picture.
+    frame_stale: bool,
+    /// The picture's clock while the sound plays.
+    av: AvClock,
+    epoch: Instant,
     worker: Option<std::thread::JoinHandle<()>>,
     #[cfg(test)]
     test_engine: Option<Arc<voice_player::Engine>>,
@@ -170,6 +259,9 @@ impl VodPlayer {
             engine_asked: None,
             active_seek_generation: 0,
             current_frame: None,
+            frame_stale: false,
+            av: AvClock::default(),
+            epoch: Instant::now(),
             worker: None,
             #[cfg(test)]
             test_engine: None,
@@ -284,6 +376,39 @@ impl VodPlayer {
             .map_or(0, |shared| shared.decoded_frames)
     }
 
+    /// The position the last seek or tick set.
+    #[cfg(test)]
+    pub(crate) fn tick_position(&self) -> f64 {
+        self.position_secs
+    }
+
+    /// The frames that came too late to be shown.
+    pub(crate) fn dropped_frames(&self) -> u64 {
+        self.sync
+            .shared
+            .lock()
+            .map_or(0, |shared| shared.dropped_frames)
+    }
+
+    /// Whether a newer frame than the one shown is due now, or a seek waits: the page needs drawing again. Asked at
+    /// every display refresh while the video plays, so it only reads.
+    pub(crate) fn frame_due(&self) -> bool {
+        if !self.playing {
+            return false;
+        }
+        let clock = match self.clock_anchor {
+            Some(anchor) => self.clock_base_secs + anchor.elapsed().as_secs_f64(),
+            None => self.position_secs,
+        };
+        self.sync.shared.lock().is_ok_and(|shared| {
+            shared.pending_seek_secs.is_some()
+                || shared
+                    .ring
+                    .front()
+                    .is_some_and(|frame| frame.pts_secs <= clock + PICK_EPSILON)
+        })
+    }
+
     pub(crate) fn playing(&self) -> bool {
         self.playing
     }
@@ -312,6 +437,7 @@ impl VodPlayer {
         self.playing = true;
         self.clock_base_secs = self.position_secs;
         self.clock_anchor = Some(Instant::now());
+        self.av.reset();
         if let Some(clip) = audio {
             self.start_audio_clip(clip, self.position_secs);
         } else {
@@ -332,6 +458,10 @@ impl VodPlayer {
         self.sync_clock_before_stop();
         self.playing = false;
         self.clock_anchor = None;
+        self.av.reset();
+        if let Ok(mut shared) = self.sync.shared.lock() {
+            shared.late_before = None;
+        }
         // A play the engine has not applied yet is ours to cancel even though its status still names another clip.
         let pending = self.engine_asked.take().is_some();
         let has_audio = self
@@ -402,15 +532,16 @@ impl VodPlayer {
                 self.audio_engine().pause();
             }
         }
+        self.av.reset();
         if let Ok(mut shared) = self.sync.shared.lock() {
             shared.seek_generation = shared.seek_generation.wrapping_add(1);
             self.active_seek_generation = shared.seek_generation;
             shared.pending_seek_secs = Some(clamped);
+            shared.late_before = None;
             shared.clear_ring();
-            if let Some(frame) = self.current_frame.take() {
-                shared.retired.push(frame.image);
-            }
         }
+        // The picture from before the seek stays until the first one after it is decoded.
+        self.frame_stale = self.current_frame.is_some();
         if let Some(clip) = audio {
             let status = self.audio_engine().status();
             if self.playing && self.engine_asked.is_some() {
@@ -418,11 +549,10 @@ impl VodPlayer {
                 self.start_audio_clip(clip, clamped);
             } else if status.key.as_deref() == Some(&self.key) {
                 if self.playing {
-                    if status.ended {
-                        self.start_audio_clip(clip, clamped);
-                    } else {
-                        self.audio_engine().seek(clamped);
-                    }
+                    // A play from the new position rather than a seek: the engine answers a play with its number, so
+                    // the picture waits at the new position until the sound is there instead of following the old
+                    // playhead the engine reports until it reads the seek.
+                    self.start_audio_clip(clip, clamped);
                 } else {
                     let engine = self.audio_engine();
                     engine.pause();
@@ -543,6 +673,7 @@ impl VodPlayer {
                 // The sound has not started yet: the picture waits with it (a browser's `play()` before data).
                 self.clock_base_secs = self.position_secs;
                 self.clock_anchor = Some(Instant::now());
+                self.av.reset();
             } else if engine_status.key.as_deref() == Some(&self.key) {
                 if !engine_status.playing && !engine_status.ended {
                     if engine_status.error.is_some() {
@@ -570,7 +701,9 @@ impl VodPlayer {
                         self.position_secs = self.clock_base_secs + anchor.elapsed().as_secs_f64();
                     }
                 } else {
-                    self.position_secs = engine_status.position.max(0.0);
+                    // The sound is the master clock; the picture eases toward its reports.
+                    let wall = self.epoch.elapsed().as_secs_f64();
+                    self.position_secs = self.av.follow(wall, engine_status.position.max(0.0));
                     self.clock_base_secs = self.position_secs;
                     self.clock_anchor = Some(Instant::now());
                 }
@@ -623,27 +756,40 @@ impl VodPlayer {
         if !pending_seek && let Ok(mut shared) = self.sync.shared.lock() {
             // Advance displayed frame only once `seek_generation` matches the current seek.
             if shared.seek_generation == self.active_seek_generation {
-                while shared
-                    .ring
-                    .get(1)
-                    .is_some_and(|next| next.pts_secs <= target)
-                {
+                // The newest frame whose time has come; the ones before it were not shown in time.
+                let due = frames_due(shared.ring.iter().map(|frame| frame.pts_secs), target);
+                let mut newest: Option<DecodedFrame> = None;
+                for _ in 0..due {
                     if let Some(frame) = shared.ring.pop_front()
-                        && let Some(old) = self.current_frame.replace(frame)
+                        && let Some(skipped) = newest.replace(frame)
                     {
-                        retired.push(old.image);
+                        retired.push(skipped.image);
+                        if self.playing {
+                            shared.dropped_frames += 1;
+                        }
                     }
                 }
-                if self.current_frame.is_none()
+                if let Some(frame) = newest {
+                    if let Some(old) = self.current_frame.replace(frame) {
+                        retired.push(old.image);
+                    }
+                    self.frame_stale = false;
+                }
+                if (self.current_frame.is_none() || self.frame_stale)
                     && let Some(first) = shared.ring.front()
                     && (first.pts_secs <= target + 0.05 || !self.playing)
                     && let Some(frame) = shared.ring.pop_front()
                 {
-                    self.current_frame = Some(frame);
+                    if let Some(old) = self.current_frame.replace(frame) {
+                        retired.push(old.image);
+                    }
+                    self.frame_stale = false;
                 }
+                shared.late_before = self.playing.then_some(target);
                 if shared.eof_decoded
                     && shared.ring.is_empty()
                     && self.playing
+                    && !self.frame_stale
                     && let Some(cur) = &self.current_frame
                     && target >= cur.pts_secs + cur.duration_secs.max(DEFAULT_FRAME_SECS)
                 {
@@ -820,6 +966,7 @@ fn worker_main(key: String, url: String, sync: Arc<SyncState>) {
     };
 
     let mut decode_idx = 0usize;
+    let mut skipped_in_a_row = 0u32;
 
     loop {
         let (seek_req, seek_gen, ring_len, eof_done, shutdown) = {
@@ -858,7 +1005,8 @@ fn worker_main(key: String, url: String, sync: Arc<SyncState>) {
             decode_idx = key_idx;
             // Decode forward from the nearest keyframe, keeping only the latest frame covering `target_100ns` plus
             // lookahead frames starting at `target_100ns`.
-            let mut pre_target: Option<DecodedFrame> = None;
+            // Frames before the target are only converted for the screen once the last of them is known.
+            let mut pre_target: Option<(i64, Picture)> = None;
             let mut lookahead: Vec<DecodedFrame> = Vec::with_capacity(RING_CAPACITY);
             let mut seek_done = false;
             let mut aborted = false;
@@ -895,24 +1043,17 @@ fn worker_main(key: String, url: String, sync: Arc<SyncState>) {
                     if dimensions.is_none() {
                         dimensions = Some((picture.width, picture.height));
                     }
-                    let Some(image) = picture_to_render_image(&picture) else {
-                        continue;
-                    };
-                    let pts_secs = (pts_100ns as f64) / 10_000_000.0;
-                    let duration_secs = lookup_duration(pts_100ns);
-                    let decoded = DecodedFrame {
-                        pts_secs,
-                        duration_secs,
-                        image,
-                    };
                     if pts_100ns < target_100ns && lookahead.is_empty() {
-                        if let Some(old) = pre_target.replace(decoded)
-                            && let Ok(mut shared) = sync.shared.lock()
-                        {
-                            shared.retired.push(old.image);
-                        }
+                        pre_target = Some((pts_100ns, picture));
                     } else {
-                        lookahead.push(decoded);
+                        let Some(image) = picture_to_render_image(&picture) else {
+                            continue;
+                        };
+                        lookahead.push(DecodedFrame {
+                            pts_secs: (pts_100ns as f64) / 10_000_000.0,
+                            duration_secs: lookup_duration(pts_100ns),
+                            image,
+                        });
                         if lookahead.len() >= 2 {
                             seek_done = true;
                         }
@@ -923,6 +1064,17 @@ fn worker_main(key: String, url: String, sync: Arc<SyncState>) {
                 }
             }
 
+            let pre_target = if aborted {
+                None
+            } else {
+                pre_target.and_then(|(pts_100ns, picture)| {
+                    Some(DecodedFrame {
+                        pts_secs: (pts_100ns as f64) / 10_000_000.0,
+                        duration_secs: lookup_duration(pts_100ns),
+                        image: picture_to_render_image(&picture)?,
+                    })
+                })
+            };
             if let Ok(mut shared) = sync.shared.lock() {
                 if aborted || shared.shutdown || shared.seek_generation != active_gen {
                     if let Some(old) = pre_target {
@@ -978,15 +1130,33 @@ fn worker_main(key: String, url: String, sync: Arc<SyncState>) {
             }
         };
 
+        let late_before = sync
+            .shared
+            .lock()
+            .ok()
+            .and_then(|shared| shared.late_before);
         let mut converted = Vec::with_capacity(frames.len());
+        let mut late = 0u64;
         for (pts_100ns, picture) in frames {
             if dimensions.is_none() {
                 dimensions = Some((picture.width, picture.height));
             }
+            let pts_secs = (pts_100ns as f64) / 10_000_000.0;
+            let duration_secs = lookup_duration(pts_100ns);
+            // A frame whose time is already over is decoded (the next ones refer to it) but not converted for the
+            // screen, so a decoder that fell behind catches up with the sound instead of staying behind it.
+            if skipped_in_a_row < MAX_SKIPPED_IN_A_ROW
+                && late_before.is_some_and(|clock| frame_is_late(pts_secs, duration_secs, clock))
+            {
+                skipped_in_a_row += 1;
+                late += 1;
+                continue;
+            }
+            skipped_in_a_row = 0;
             if let Some(image) = picture_to_render_image(&picture) {
                 converted.push(DecodedFrame {
-                    pts_secs: (pts_100ns as f64) / 10_000_000.0,
-                    duration_secs: lookup_duration(pts_100ns),
+                    pts_secs,
+                    duration_secs,
                     image,
                 });
             }
@@ -1002,6 +1172,8 @@ fn worker_main(key: String, url: String, sync: Arc<SyncState>) {
             if shared.dimensions.is_none() {
                 shared.dimensions = dimensions;
             }
+            shared.decoded_frames += late;
+            shared.dropped_frames += late;
             for frame in converted {
                 shared.ring.push_back(frame);
                 shared.decoded_frames += 1;
@@ -1193,6 +1365,118 @@ pub(crate) fn synthetic_mp4(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sound engine's playhead as the player reads it: the speaker callback takes 10 ms blocks, the engine's loop
+    /// publishes every 5 ms, and the sound card's crystal runs `skew` fast against the wall clock.
+    fn reported_audio(wall: f64, skew: f64) -> (f64, f64) {
+        let heard = wall * (1.0 + skew);
+        let published_at = (wall / 0.005).floor() * 0.005;
+        let reported = ((published_at * (1.0 + skew)) / 0.010).floor() * 0.010;
+        (heard, reported)
+    }
+
+    #[test]
+    fn av_clock_smooths_the_stepped_audio_playhead_and_keeps_with_it() {
+        for skew in [0.0, 0.003, -0.003] {
+            let mut clock = AvClock::default();
+            let mut last = f64::MIN;
+            let mut worst = 0.0f64;
+            // A 144 Hz screen for 20 seconds, its refreshes a little uneven.
+            let mut wall = 0.0;
+            let mut step = 0;
+            while wall < 20.0 {
+                let (heard, reported) = reported_audio(wall, skew);
+                let shown = clock.follow(wall, reported);
+                assert!(shown >= last, "the picture's clock went back at {wall}");
+                if last > f64::MIN {
+                    // No stalls and no leaps between two refreshes.
+                    assert!(shown - last < 0.02, "a leap of {} at {wall}", shown - last);
+                }
+                if wall > 1.0 {
+                    worst = worst.max((shown - heard).abs());
+                }
+                last = shown;
+                step += 1;
+                wall += if step % 3 == 0 { 0.0080 } else { 0.0065 };
+            }
+            // Within a frame of a 60 fps video of the sound, over twenty seconds of a skewed sound card.
+            assert!(
+                worst < 0.016,
+                "drifted {worst} s from the sound (skew {skew})"
+            );
+        }
+    }
+
+    #[test]
+    fn av_clock_holds_with_a_stalled_sound_jumps_with_a_moved_one_and_restarts_after_a_reset() {
+        let mut clock = AvClock::default();
+        assert_eq!(clock.follow(5.0, 2.0), 2.0);
+        // Half a second of the speaker stalled: the reports stop while the wall clock goes on. The picture stops
+        // too, a little after the sound, and does not run on or jump back and forth.
+        let mut wall = 5.0;
+        let mut last = 2.0;
+        while wall < 5.5 {
+            wall += 0.016;
+            let shown = clock.follow(wall, 2.0);
+            assert!(
+                shown >= last && shown <= 2.0 + AV_CARRY_SECS + 1e-9,
+                "{shown} at {wall}"
+            );
+            last = shown;
+        }
+        // The sound goes on from where it stopped: the picture waits for it rather than going back.
+        let resumed = clock.follow(wall + 0.016, 2.01);
+        assert!(resumed >= last && resumed - 2.01 < AV_CARRY_SECS);
+        // The sound is somewhere else entirely (another device took over): the picture goes there at once.
+        let moved = clock.follow(wall + 0.032, 7.0);
+        assert!((moved - 7.0).abs() < 1e-9, "eased to {moved}");
+        clock.reset();
+        assert_eq!(clock.follow(9.0, 40.0), 40.0);
+    }
+
+    #[test]
+    fn frame_pick_shows_the_newest_due_frame_and_drops_the_late_ones() {
+        let ring = [0.0, 1.0 / 30.0, 2.0 / 30.0, 3.0 / 30.0];
+        // 40 ms in, the frame of 33 ms is on screen (the one of 0 ms is over).
+        assert_eq!(frames_due(ring, 0.040), 2);
+        // Exactly at a frame's time it is due.
+        assert_eq!(frames_due(ring, 2.0 / 30.0), 3);
+        assert_eq!(frames_due(ring, -0.01), 0);
+        // Behind by more than the ring: everything is due, only the last is shown.
+        assert_eq!(frames_due(ring, 9.0), 4);
+        assert!(frame_is_late(0.0, 1.0 / 30.0, 0.034));
+        assert!(!frame_is_late(0.0, 1.0 / 30.0, 0.033));
+    }
+
+    #[test]
+    fn a_30_fps_video_on_a_60_hz_screen_shows_every_frame_twice_in_step_with_the_sound() {
+        let frame = 1.0 / 30.0;
+        let mut clock = AvClock::default();
+        let mut ring: VecDeque<f64> = (0..300).map(|index| f64::from(index) * frame).collect();
+        let mut shown: Option<f64> = None;
+        let mut times_shown: Vec<u32> = vec![0; 300];
+        let mut wall = 0.0;
+        while wall < 9.5 {
+            let (_, reported) = reported_audio(wall, 0.002);
+            let now = clock.follow(wall, reported);
+            let due = frames_due(ring.iter().copied(), now);
+            for _ in 0..due {
+                shown = ring.pop_front();
+            }
+            let pts = shown.expect("a frame is on screen");
+            // The frame on screen is the one whose time it is: never one behind, never ahead.
+            assert!(
+                pts <= now + PICK_EPSILON && now - pts < frame + 0.001,
+                "{pts} at {now}"
+            );
+            times_shown[(pts / frame).round() as usize] += 1;
+            wall += 1.0 / 60.0;
+        }
+        // Past the first second every frame is shown, and none of them more than three refreshes.
+        for (index, count) in times_shown.iter().enumerate().take(270).skip(30) {
+            assert!((1..=3).contains(count), "frame {index} shown {count} times");
+        }
+    }
 
     fn wait_ready(player: &mut VodPlayer) -> TickResult {
         for _ in 0..200 {

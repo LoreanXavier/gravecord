@@ -33,6 +33,10 @@ const INLINE_HIDE_SECS: f64 = 3.0;
 const FULLSCREEN_HIDE_SECS: f64 = 1.0;
 const CENTER_POP_MS: f64 = 400.0;
 const MAX_CACHED_PLAYERS: usize = 16;
+/// While a video plays the page is drawn again when its next frame is due, read at each display refresh; at the
+/// latest this long after the last draw, for the clock and the progress bar when no frame comes (the picture ended
+/// before the sound, or the decoder is behind).
+const PLAYING_REDRAW_MAX: Duration = Duration::from_millis(250);
 /// Module 953584: the store forgets the oldest source past ten.
 const STATS_LIMIT: usize = 10;
 /// Module 410694: "Copied!" shows for two seconds.
@@ -161,6 +165,10 @@ pub(super) struct VideoHub {
     epoch: u64,
     timer_generation: u64,
     timer_deadline: Option<Instant>,
+    /// A display-refresh poll for the next frame of a playing video is registered.
+    frame_poll: bool,
+    /// When the page was last drawn with the videos ticked.
+    prepared_at: Instant,
     /// `VideoStatsStore` (module 953584): the sources whose "Stats for Nerds" is on, oldest first, at most ten.
     stats: Vec<String>,
     /// The source whose stats were just copied, and when: "Copied!" for two seconds.
@@ -184,6 +192,8 @@ impl VideoHub {
             epoch: 0,
             timer_generation: 0,
             timer_deadline: None,
+            frame_poll: false,
+            prepared_at: Instant::now(),
             stats: Vec::new(),
             stats_copied: None,
             #[cfg(any(test, feature = "capture"))]
@@ -260,7 +270,7 @@ impl VideoHub {
             current_time: entry.tick.position,
             duration,
             buffered_seconds,
-            dropped_frames: 0,
+            dropped_frames: entry.player.dropped_frames(),
             total_frames: entry.player.decoded_frames(),
             frame_rate: codec.as_ref().and_then(|codec| codec.frame_rate),
             file_size: file_size.or(media.map(|media| media.file_size as u64)),
@@ -463,10 +473,25 @@ impl VideoHub {
         }
     }
 
-    fn prepare(&mut self, now: Instant) -> (Vec<Arc<RenderImage>>, Option<Instant>) {
+    /// Whether the page must be drawn again for a playing video: its next frame is due, or the clock has not been
+    /// drawn for [`PLAYING_REDRAW_MAX`].
+    fn playing_redraw_due(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.prepared_at) >= PLAYING_REDRAW_MAX
+            || self.entries.values().any(|entry| entry.player.frame_due())
+    }
+
+    fn any_playing(&self) -> bool {
+        self.entries.values().any(|entry| entry.player.playing())
+    }
+
+    /// Ticks every player for the frame being drawn. Returns the pictures to free, the next time the page must be
+    /// drawn for a timed change, and whether a video plays (its frames are followed at the display's refresh).
+    fn prepare(&mut self, now: Instant) -> (Vec<Arc<RenderImage>>, Option<Instant>, bool) {
         self.epoch = self.epoch.wrapping_add(1);
+        self.prepared_at = now;
         let mut retired = std::mem::take(&mut self.pending_retired);
         let mut next_deadline: Option<Instant> = None;
+        let mut playing = false;
 
         for (key, entry) in &mut self.entries {
             if let Some(until) = entry.volume_hide_at
@@ -485,7 +510,13 @@ impl VideoHub {
             retired.extend(tick.retired.iter().cloned());
             entry.tick = tick;
 
-            if entry.tick.needs_redraw || entry.center_flash.is_some() {
+            // A playing video is followed at the display's refresh rather than by a timer, whose period on Windows
+            // is the system tick (15.6 ms): a 16 ms timer fired every other tick, about 32 times a second and
+            // unevenly, so a 30 fps video showed frames for one, two or three ticks and a 60 fps one lost half.
+            if entry.tick.playing {
+                playing = true;
+            }
+            if (entry.tick.needs_redraw && !entry.tick.playing) || entry.center_flash.is_some() {
                 let candidate = now + Duration::from_millis(16);
                 next_deadline = Some(match next_deadline {
                     Some(prev) => prev.min(candidate),
@@ -536,7 +567,7 @@ impl VideoHub {
             }
         }
 
-        (retired, next_deadline)
+        (retired, next_deadline, playing)
     }
 
     /// Drops the players of messages in the chat, as the official list unmounting its `<video>` elements does: a
@@ -594,6 +625,30 @@ impl VideoHub {
     }
 }
 
+/// At each display refresh: draws the page again once a playing video's next frame is due, as a browser presents a
+/// `<video>` frame at the refresh after its time. The check reads the players only, so the refreshes between two
+/// frames cost nothing.
+fn poll_video_frames(
+    hub: std::rc::Rc<std::cell::RefCell<VideoHub>>,
+    root: gpui::EntityId,
+    window: &Window,
+) {
+    window.on_next_frame(move |window, cx| {
+        let (due, playing) = {
+            let hub = hub.borrow();
+            (hub.playing_redraw_due(Instant::now()), hub.any_playing())
+        };
+        if due || !playing {
+            hub.borrow_mut().frame_poll = false;
+            if due {
+                cx.notify(root);
+            }
+        } else {
+            poll_video_frames(hub, root, window);
+        }
+    });
+}
+
 fn fit_contain(bounds: Bounds<Pixels>, aspect: (u32, u32)) -> Bounds<Pixels> {
     let bw = f32::from(bounds.size.width).max(1.0);
     let bh = f32::from(bounds.size.height).max(1.0);
@@ -618,12 +673,16 @@ fn play_circle_bg(hover: bool) -> gpui::Hsla {
 impl Root {
     pub(super) fn prepare_videos(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
-        let (retired, deadline) = {
+        let (retired, deadline, playing) = {
             let mut hub = self.video_hub.borrow_mut();
             hub.prepare(now)
         };
         for image in retired {
             cx.drop_image(image, Some(window));
+        }
+        if playing && !self.video_hub.borrow().frame_poll {
+            self.video_hub.borrow_mut().frame_poll = true;
+            poll_video_frames(self.video_hub.clone(), cx.entity().entity_id(), window);
         }
 
         let schedule = deadline.and_then(|at| {
@@ -2858,7 +2917,7 @@ mod tests {
             (64, 64),
             true,
         );
-        let (retired_swap, _) = hub.prepare(Instant::now());
+        let (retired_swap, _, _) = hub.prepare(Instant::now());
         assert!(
             !retired_swap.is_empty(),
             "replacing src on an entry must drain its prior GPU textures"
