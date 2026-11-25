@@ -50,12 +50,16 @@ code of this repository. If you find something this page does not mention, pleas
 **Links you click** open in your browser, and gravecord sends nothing itself. That includes the Report a Bug page,
 which opens GitHub's issue form.
 
-**What is not here at all:**
+**What gravecord's own code does not include:**
 
-- no crash reporter
-- no analytics or telemetry library
-- no font service
-- no advertising or tracking service of any kind
+- a crash reporter
+- an analytics or telemetry library
+- a font service
+- an advertising or tracking service
+
+This page covers the connections gravecord's own code makes. Pages shown inside a web view (the Spotify and
+video players, the captcha, Activities) run in Microsoft's WebView2 and behave as those pages do in a browser,
+including whatever they load themselves.
 
 Noise suppression (DeepFilterNet) runs on your PC with its model built in, and downloads nothing.
 
@@ -69,7 +73,7 @@ Every plugin below is off by default and contacts nothing until you switch it on
 | UserPFP | UserPFP's list on GitHub Pages and its images on GitHub (address editable), plus image hosts in the list | A request for the list, then the pictures | While on, when a listed person's avatar is shown |
 | USRBG | `usrbg.is-hardly.online` and the image host it names | A request for the list, then banner requests. A banner request contains the Discord user id of the person whose profile you are viewing. | While on, when a listed person's profile or voice tile is shown |
 | Translate+ | Google's translation service (`translate.googleapis.com`); for Toki Pona text, `aiapi.serversmp.xyz`; dictionaries from GitHub | **The text of the message you translate** | Only when you click Translate on a message |
-| TenorGifSearch | Tenor or Giphy | Your GIF searches, and which GIF you sent | While on, when you use the GIF picker |
+| GifProviderSwitcher | Tenor or Giphy | Your GIF searches, and which GIF you sent | While on, when you use the GIF picker |
 | MoreCommands | The Dog API, The Cat API, nekos.best, Reddit | A plain request for a random picture, sent as your message | Only when you run those commands |
 | OpenInApp | `spotify.link`, `s.team` and the address they redirect to | A request that follows the short link to find the real one | When you click such a link |
 | BetterActivities | Spotify's image server | Picture requests | While on, when member and DM lists show Spotify activities |
@@ -106,13 +110,14 @@ metrics and crash reports.
   overlay bug report.
 - **Upload Logs** (Voice & Video > Advanced, or after a call survey): sends your debug log files to Discord, as the
   official button does.
-- **Sending a GIF from the picker:** tells Discord which GIF you picked, as the official app does.
+- **Sending a GIF from the picker:** tells Discord which GIF you picked and what you searched for, as the official
+  app does.
 
 ## Your token
 
 - **Where it is kept:**
   - In Windows Credential Manager, under the name `gravecord`.
-  - Windows encrypts it for your user account, so other Windows users on the PC cannot read it.
+  - Windows encrypts it for your Windows account, so it is tied to that account.
   - gravecord never writes it to a settings file, cache, log or backup.
   - With Switch Accounts, each account's token gets its own Credential Manager entry.
 - **Where it is sent:**
