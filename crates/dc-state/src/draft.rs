@@ -53,6 +53,9 @@ pub struct DraftStore {
     user: Option<String>,
     /// The store emitted a change since the last write (a `PersistedStore` writes on change).
     dirty: bool,
+    /// READY came without the private channels (a user account gets them in READY_SUPPLEMENTAL): the prune waits
+    /// for them, so a DM's draft is not taken for a channel the client does not know.
+    prune_pending: bool,
 }
 
 /// `substr(0, 4500)`, kept on a character boundary.
@@ -100,6 +103,7 @@ impl DraftStore {
             state,
             user,
             dirty: migrated,
+            prune_pending: false,
         };
         let empties: Vec<(String, String)> = store
             .state
@@ -527,11 +531,25 @@ impl crate::Stores {
             "READY" => {
                 if let Some(user) = self.current_user.as_ref().map(|user| user.id) {
                     let mut drafts = std::mem::take(&mut self.drafts);
-                    drafts.connection_open(user, unavailable, &|channel| {
-                        self.draft_channel_known(channel)
-                    });
+                    let dms_pending = !data["private_channels"]
+                        .as_array()
+                        .is_some_and(|channels| !channels.is_empty());
+                    if dms_pending {
+                        drafts.connection_open(user, unavailable, &|_| true);
+                        drafts.prune_pending = true;
+                    } else {
+                        drafts.connection_open(user, unavailable, &|channel| {
+                            self.draft_channel_known(channel)
+                        });
+                    }
                     self.drafts = drafts;
                 }
+            }
+            "READY_SUPPLEMENTAL" if self.drafts.prune_pending => {
+                let mut drafts = std::mem::take(&mut self.drafts);
+                drafts.prune_pending = false;
+                drafts.guild_delete(unavailable, &|channel| self.draft_channel_known(channel));
+                self.drafts = drafts;
             }
             "GUILD_DELETE" => {
                 let mut drafts = std::mem::take(&mut self.drafts);

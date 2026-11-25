@@ -1462,6 +1462,12 @@ impl Root {
         updates: UnboundedSender<Update>,
         cx: &mut Context<Self>,
     ) -> Self {
+        // `beforeunload` (module 84046): quitting saves the open channel's text at once.
+        cx.on_app_quit(|this, cx| {
+            this.flush_draft(cx);
+            async {}
+        })
+        .detach();
         cx.on_release(|this, cx| {
             this.flush_draft(cx);
             this.release_nameplates(cx);

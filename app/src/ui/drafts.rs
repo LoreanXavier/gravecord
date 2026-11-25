@@ -72,6 +72,8 @@ impl Root {
         let key = (self.channel, user);
         let previous = self.composer_draft.synced;
         if previous == Some(key) {
+            // A change the editor did not report: the send button submits without notifying the editor.
+            self.draft_edited(cx);
             return;
         }
         if previous.is_some_and(|(_, was)| was == user) {
