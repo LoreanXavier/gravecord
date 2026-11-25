@@ -19,7 +19,7 @@
 > **gravecord is made by one person in their spare time.** If you want to see it finished, please consider supporting it on [**Patreon**](https://www.patreon.com/loreanxavier).
 
 > [!WARNING]
-> **There is no release yet.** Parts of it work well, others are not built. It is an unofficial client, not made or endorsed by Discord, and third-party clients are against Discord's terms: using one is your own decision, on your own account.
+> **Early release (0.3.0).** Parts of it work well, others are not built yet. It is an unofficial client, not made or endorsed by Discord, and third-party clients are against Discord's terms: using one is your own decision, on your own account.
 
 ## What it is
 
@@ -232,7 +232,7 @@ Plugin names are the ones the Plugins page shows. Plugins marked † can reach a
 
 ## Status
 
-gravecord is **pre-1.0 and Windows only**, and it has not had a public release.
+gravecord is **pre-1.0 and Windows only**. 0.3.0 is its first public release.
 
 The project tracks its own progress (numbers from the last generated report in [PARITY.md](PARITY.md)):
 
@@ -266,21 +266,7 @@ See [BLOCKED.md](BLOCKED.md) for the full list with reasons.
 
 ## Screenshots
 
-Screenshots will be added before the first release. Suggested shots, all taken on a test account in a test server:
-
-1. The login screen with the QR code
-2. A text channel with messages, embeds, replies, reactions and a thread
-3. The @-mention and emoji suggestions while typing
-4. A voice channel call with member tiles and the control bar
-5. A Go Live stream tile next to a member tile (generated test pattern as the picture)
-6. The Go Live source picker
-7. The soundboard picker
-8. The voice connection popout with ping and packet loss
-9. User Settings > Voice & Video
-10. Settings > Gravecord > Plugins, with one plugin's settings unfolded
-11. Settings > Gravecord > Backup & Restore
-12. The title bar's Update Ready button and Settings > Gravecord > Updates
-13. The installer's welcome page
+Screenshots are on the way.
 
 ## Features
 
@@ -347,8 +333,6 @@ Developer and Log Out:
   installer keep the Gravecord icon.
 
 ## Install
-
-There is no published release yet. When there is one:
 
 ### Installer
 
@@ -568,7 +552,7 @@ Noise suppression uses the DeepFilterNet machine-learning model when enabled.
 
 ## Support
 
-gravecord is built in spare time by one person. If you want to see it reach a first release and beyond, supporting it
+gravecord is built in spare time by one person. If you want to see it reach 1.0 and beyond, supporting it
 on Patreon is the way to help:
 
 <a href="https://www.patreon.com/loreanxavier"><img src="https://img.shields.io/badge/Support%20gravecord%20on%20Patreon-F96854?style=for-the-badge&logo=patreon&logoColor=white" alt="Support gravecord on Patreon"></a>
