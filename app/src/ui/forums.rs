@@ -77,15 +77,8 @@ fn chevron(open: bool) -> gpui::Svg {
 
 /// The byte ranges of `name` that match `query`, ignoring case (the list's search highlight).
 fn title_matches(name: &str, query: &str) -> Vec<std::ops::Range<usize>> {
-    let (haystack, needle) = (name.to_lowercase(), query.trim().to_lowercase());
-    // Lower-casing can change byte lengths; offsets are only trusted when it did not.
-    if needle.is_empty() || haystack.len() != name.len() {
-        return Vec::new();
-    }
-    haystack
-        .match_indices(&needle)
-        .map(|(start, found)| start..start + found.len())
-        .collect()
+    // Offsets of `name` itself, also where lower-casing changes byte lengths (`İ`).
+    super::search::match_ranges(name, &[query.trim()])
 }
 
 fn search_route(channel: Id, query: &str, tags: &BTreeSet<Id>, all: bool, offset: usize) -> String {
@@ -3138,6 +3131,13 @@ mod tests {
         );
         assert_eq!(title_matches("aa aa", "aa"), vec![0..2, 3..5]);
         assert!(title_matches("anything", "  ").is_empty());
+        // `İ` lower-cases to three bytes: the match is still found, at offsets of the title.
+        let title = "İzmir buluşması";
+        let found = title_matches(title, "BULUŞ");
+        assert_eq!(
+            found.iter().map(|r| &title[r.clone()]).collect::<Vec<_>>(),
+            ["buluş"]
+        );
     }
 
     #[test]

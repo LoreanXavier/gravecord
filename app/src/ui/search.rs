@@ -42,6 +42,42 @@ pub(crate) struct Search {
 
 /// The line under the results that hides or shows those of blocked and ignored people (module 36544): what is hidden
 /// while they are, and what to hide while they are shown.
+/// Byte ranges of `text` where any of `needles` occurs, compared lower-cased, sorted and merged. Lower-casing can
+/// change a character's byte length (Turkish `İ` grows from 2 to 3 bytes, the Kelvin sign `K` shrinks from 3 to 1),
+/// so offsets found in `text.to_lowercase()` are not offsets of `text`. The search runs on a lower-cased copy that
+/// remembers, for each of its bytes, the character of `text` it came from: every range starts and ends on one of
+/// `text`'s character boundaries, as a text run needs.
+pub(super) fn match_ranges(text: &str, needles: &[&str]) -> Vec<std::ops::Range<usize>> {
+    let mut lower = String::with_capacity(text.len());
+    let mut origin: Vec<std::ops::Range<usize>> = Vec::with_capacity(text.len());
+    for (at, character) in text.char_indices() {
+        let span = at..at + character.len_utf8();
+        for low in character.to_lowercase() {
+            lower.push(low);
+            origin.extend(std::iter::repeat_n(span.clone(), low.len_utf8()));
+        }
+    }
+    let mut found: Vec<std::ops::Range<usize>> = Vec::new();
+    for needle in needles {
+        let needle = needle.to_lowercase();
+        if needle.is_empty() {
+            continue;
+        }
+        for (start, matched) in lower.match_indices(needle.as_str()) {
+            found.push(origin[start].start..origin[start + matched.len() - 1].end);
+        }
+    }
+    found.sort_by_key(|range| range.start);
+    let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(found.len());
+    for range in found {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
 pub(super) fn blocked_results_text(blocked: u64, ignored: u64, shown: bool) -> String {
     let both = blocked + ignored;
     match (shown, blocked > 0, ignored > 0) {
@@ -593,40 +629,28 @@ impl Root {
 
     /// A message's text with the searched words on the highlight colour.
     fn highlighted(&self, text: &str, words: &[String], size: f32, weight: f32) -> AnyElement {
-        let lower = text.to_lowercase();
-        let mut marks = vec![false; text.len()];
-        for word in words {
-            let mut from = 0;
-            while let Some(at) = lower[from..].find(word.as_str()) {
-                let start = from + at;
-                for mark in marks.iter_mut().skip(start).take(word.len()) {
-                    *mark = true;
-                }
-                from = start + word.len().max(1);
-            }
-        }
-        let mut runs: Vec<TextRun> = Vec::new();
-        let mut index = 0;
+        let needles: Vec<&str> = words.iter().map(String::as_str).collect();
         let mut base = gpui::font(super::SANS);
         base.weight = FontWeight(weight);
-        while index < text.len() {
-            let marked = marks[index];
-            let mut end = index;
-            while end < text.len() && marks[end] == marked {
-                end += 1;
+        let run = |len: usize, marked: bool| TextRun {
+            len,
+            font: base.clone(),
+            color: color("--text-default").into(),
+            background_color: marked.then(|| gpui::rgba(HIGHLIGHT).into()),
+            underline: None,
+            strikethrough: None,
+        };
+        let mut runs: Vec<TextRun> = Vec::new();
+        let mut index = 0;
+        for found in match_ranges(text, &needles) {
+            if found.start > index {
+                runs.push(run(found.start - index, false));
             }
-            while !text.is_char_boundary(end) {
-                end += 1;
-            }
-            runs.push(TextRun {
-                len: end - index,
-                font: base.clone(),
-                color: color("--text-default").into(),
-                background_color: marked.then(|| gpui::rgba(HIGHLIGHT).into()),
-                underline: None,
-                strikethrough: None,
-            });
-            index = end;
+            runs.push(run(found.len(), true));
+            index = found.end;
+        }
+        if index < text.len() {
+            runs.push(run(text.len() - index, false));
         }
         div()
             .text_size(px(size))
@@ -1014,6 +1038,52 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    use super::match_ranges;
+
+    /// Every range of a match is on a character boundary of the shown text, whatever lower-casing did to the bytes.
+    fn assert_on_boundaries(text: &str, ranges: &[std::ops::Range<usize>]) {
+        for range in ranges {
+            assert!(range.end <= text.len(), "{range:?} past {text:?}");
+            assert!(text.is_char_boundary(range.start) && text.is_char_boundary(range.end));
+        }
+    }
+
+    #[test]
+    fn matches_are_offsets_of_the_original_text_when_lower_casing_changes_lengths() {
+        // `İ` (2 bytes) lower-cases to `i̇` (3 bytes): offsets in the lower-cased copy run one byte ahead after it.
+        let text = "İstanbul'da buluşalım";
+        let ranges = match_ranges(text, &["buluş"]);
+        assert_eq!(
+            ranges.iter().map(|r| &text[r.clone()]).collect::<Vec<_>>(),
+            ["buluş"]
+        );
+        assert_on_boundaries(text, &ranges);
+        // The Kelvin sign (3 bytes) lower-cases to `k` (1 byte).
+        let text = "\u{212a}elvin kedi";
+        let ranges = match_ranges(text, &["kedi", "k"]);
+        assert_eq!(
+            ranges.iter().map(|r| &text[r.clone()]).collect::<Vec<_>>(),
+            ["\u{212a}", "kedi"]
+        );
+        assert_on_boundaries(text, &ranges);
+    }
+
+    #[test]
+    fn matches_inside_emoji_and_isolates_stay_on_boundaries() {
+        let text = "\u{2068}Çağrı\u{2069} 🎉🎉 ŞİMDİ şimdi";
+        let ranges = match_ranges(text, &["çağrı", "🎉", "şi\u{307}mdi\u{307}", "şimdi"]);
+        assert_on_boundaries(text, &ranges);
+        let shown: Vec<&str> = ranges.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(shown, ["Çağrı", "🎉🎉", "ŞİMDİ", "şimdi"]);
+    }
+
+    #[test]
+    fn overlapping_words_merge_and_empty_words_match_nothing() {
+        assert_eq!(match_ranges("abcdef", &["abc", "cde", ""]), [0..5]);
+        assert!(match_ranges("abc", &[]).is_empty());
+        assert!(match_ranges("", &["a"]).is_empty());
+    }
+
     use super::{
         blocked_results_text, decode, encode, operators, plain_words, results_body, tabs_payload,
     };
