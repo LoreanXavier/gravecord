@@ -39,6 +39,9 @@ pub(super) enum Body {
     Guild(Id),
     /// `richTooltipContent`: a medium title over muted text, both `body-sm`.
     Rich(SharedString, SharedString),
+    /// A direct message on the server rail (module 396655 `tN`): its name, then who is in its call, streaming or in
+    /// an Activity, and whether it is muted.
+    DirectMessage(Id),
     /// Module 683063 `u` with a server's 24px icon as its asset and no body (`richTooltipContent_xlDuA-`: 8px by
     /// 12px inside, the icon 8px before a `body-sm/medium` title, up to 272px wide): the voice invite card's channel.
     GuildTitle {
@@ -648,21 +651,30 @@ impl Root {
                 .font_weight(FontWeight(600.))
                 .child(div().max_w(px(MAX_WIDTH - 24.)).child(text.clone()))
                 .into_any_element(),
+            // Module 683063 `u` without an asset: `richTooltipContent_xlDuA-` (up to 272px, 8px by 12px inside) holds
+            // `textContent_xlDuA-` (a column, centred under `noAsset_xlDuA-`): the `body-sm/medium` title over the
+            // `body-sm/normal` body in `text-subtle`.
             Body::Rich(title, body) => frame()
+                .max_w(px(272.))
+                .flex_col()
+                .text_center()
                 .text_size(px(14.))
                 .line_height(px(18.))
                 .child(
                     div()
-                        .max_w(px(MAX_WIDTH - 24.))
+                        .max_w(px(272. - 24.))
                         .font_weight(FontWeight(500.))
                         .child(title.clone()),
                 )
                 .child(
                     div()
-                        .max_w(px(MAX_WIDTH - 24.))
+                        .max_w(px(272. - 24.))
                         .text_color(color("--text-subtle"))
                         .child(body.clone()),
                 )
+                .into_any_element(),
+            Body::DirectMessage(channel) => frame()
+                .child(self.dm_tooltip_body(*channel))
                 .into_any_element(),
             Body::GuildTitle { guild, title } => {
                 let picture = self.images.get(&format!("guild:{guild}")).cloned();

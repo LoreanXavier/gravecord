@@ -186,29 +186,57 @@ fn compute_upper_badge(
     Some((glyph, bg))
 }
 
-/// Computes the rail tooltip subtext (`396655:tg`): `"Incoming Call"` / `"Ongoing Call"` + `(Muted)`.
-fn compute_tooltip_subtext(
-    stores: &Stores,
-    channel_id: Id,
-    is_connected: bool,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Option<String> {
-    let incoming = stores.calls.is_incoming_call(channel_id);
-    let ongoing = !incoming
-        && (is_connected
-            || stores.calls.is_ongoing_call(channel_id)
-            || !stores.voice_members(0, channel_id).is_empty());
-    let muted = stores.guild_settings.channel_muted(0, channel_id, now);
-    let mut parts: Vec<String> = Vec::new();
-    if incoming {
-        parts.push(dc_intl::t!("fk1/bX").to_owned());
-    } else if ongoing {
-        parts.push(dc_intl::t!("NGg/fm").to_owned());
+/// The people a DM's tooltip lists (module 396655 `tg`): those in an Activity in it, those streaming in it who are
+/// not in the Activity, and those in its call who are in neither, each without blocked or ignored users and without
+/// users the client does not know (module 297334 `aw`), in the order the stores give them (module 907459 `L` sorts only
+/// under the `2025-08-voice-user-affinity` experiment, whose default is off).
+pub(super) struct DmTooltipRows {
+    pub voice: Vec<Id>,
+    pub stream: Vec<Id>,
+    pub activity: Vec<Id>,
+}
+
+pub(super) fn dm_tooltip_rows(
+    voice: &[(Id, bool)],
+    activity: &[Id],
+    hidden: impl Fn(Id) -> bool,
+) -> DmTooltipRows {
+    let mut seen_activity: Vec<Id> = Vec::new();
+    for user in activity {
+        if !hidden(*user) && !seen_activity.contains(user) {
+            seen_activity.push(*user);
+        }
     }
-    if muted {
-        parts.push(format!("({})", dc_intl::t!("fpKdS1")));
+    let mut stream: Vec<Id> = Vec::new();
+    for (user, streaming) in voice {
+        if *streaming && !hidden(*user) && !seen_activity.contains(user) && !stream.contains(user) {
+            stream.push(*user);
+        }
     }
-    (!parts.is_empty()).then(|| parts.join(" "))
+    let mut in_call: Vec<Id> = Vec::new();
+    for (user, _) in voice {
+        if !hidden(*user)
+            && !seen_activity.contains(user)
+            && !stream.contains(user)
+            && !in_call.contains(user)
+        {
+            in_call.push(*user);
+        }
+    }
+    DmTooltipRows {
+        voice: in_call,
+        stream,
+        activity: seen_activity,
+    }
+}
+
+/// What the 24px avatar list of module 104171 (`max: 6`) draws for `count` people: how many avatars, and the
+/// "+n" pill after them (`renderMoreUsers`: up to 99).
+pub(super) fn summary_layout(count: usize, max: usize) -> (usize, Option<usize>) {
+    let room = if count == max { count } else { max - 1 };
+    let shown = room.min(count);
+    let more = (shown < count).then(|| (count - shown).min(99));
+    (shown, more)
 }
 
 thread_local! {
@@ -286,6 +314,16 @@ impl Root {
             } else {
                 images.push(group_icon(&channel));
             }
+            // The 24px avatars of its tooltip.
+            let rows = self.dm_rows(channel.id);
+            images.extend(
+                rows.activity
+                    .iter()
+                    .chain(&rows.stream)
+                    .chain(&rows.voice)
+                    .filter_map(|id| self.dm_tooltip_user(*id))
+                    .map(|user| avatar(&user, 24)),
+            );
         }
         for (key, url) in images {
             if url.starts_with("data:") {
@@ -299,6 +337,176 @@ impl Root {
                 self.request_image(key, url);
             }
         }
+    }
+
+    /// A user the client knows (module 297334 `Vq`), the account included.
+    fn dm_tooltip_user(&self, id: Id) -> Option<User> {
+        self.stores.users.get(&id).cloned().or_else(|| {
+            self.stores
+                .current_user
+                .clone()
+                .filter(|current| current.id == id)
+        })
+    }
+
+    fn dm_rows(&self, channel: Id) -> DmTooltipRows {
+        let voice: Vec<(Id, bool)> = self
+            .stores
+            .voice_members(0, channel)
+            .into_iter()
+            .map(|state| (state.user_id, state.self_stream))
+            .collect();
+        let activity: Vec<Id> = self
+            .activities
+            .in_channel(channel)
+            .into_iter()
+            .flat_map(|instance| instance.participants.iter())
+            .filter_map(|participant| participant.user_id.parse().ok())
+            .collect();
+        // `getBlockedOrIgnoredIDs` (module 297334 `aw`), and users the client does not know.
+        dm_tooltip_rows(&voice, &activity, |user| {
+            self.stores.relationships.get(&user) == Some(&2)
+                || self.stores.is_ignored(user)
+                || self.dm_tooltip_user(user).is_none()
+        })
+    }
+
+    /// Module 396655 `tS`/`tg` inside `guildTooltipWrapper__-eZlF` (`body-md/semibold`, `text-default`, up to
+    /// 196px, start-aligned): the name (`row__-eZlF rowGuildName__-eZlF`, `guildNameText__-eZlF
+    /// guildNameTextLimitedSize__-eZlF`: two lines at most), then one row per kind of presence (`tm`: the 20px icon in
+    /// `--interactive-text-default` 8px before the avatars, rows 8px apart), then the mute line (`tT`,
+    /// `body-xs/normal` `text-muted`, `muteText__-eZlF` medium, `muteTextWithActivity__-eZlF` 8px above it: `tg` sets
+    /// that class on elements that always exist, so the 8px is always there).
+    pub(super) fn dm_tooltip_body(&self, channel: Id) -> AnyElement {
+        let name = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|known| known.id == channel)
+            .map(|known| self.private_channel_name(known))
+            .unwrap_or_default();
+        let rows = self.dm_rows(channel);
+        let now = chrono::Utc::now();
+        let settings = self.stores.guild_settings.channel(0, channel);
+        let muted = self.stores.guild_settings.channel_muted(0, channel, now);
+        let mute_line = muted.then(|| match settings.mute_end {
+            // "Muted until {endTime}" (module 145408).
+            Some(end) => super::notify::muted_until(end),
+            // `fpKdS1`.
+            None => dc_intl::t!("fpKdS1").to_owned(),
+        });
+        let row = |glyph: &str, users: &[Id]| -> Option<AnyElement> {
+            if users.is_empty() {
+                return None;
+            }
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .child(div().flex_none().mr(px(8.)).child(super::icon(
+                        glyph,
+                        20.,
+                        "--interactive-text-default",
+                    )))
+                    .child(self.user_summary(users))
+                    .into_any_element(),
+            )
+        };
+        let lines: Vec<AnyElement> = [
+            row("overlay_voice_normal", &rows.voice),
+            row("overlay_screen_arrow", &rows.stream),
+            row("cp_apps", &rows.activity),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        div()
+            .max_w(px(196.))
+            .flex()
+            .flex_col()
+            .text_size(px(16.))
+            .line_height(px(20.))
+            .font_weight(gpui::FontWeight(600.))
+            .text_color(color("--text-default"))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .child(div().min_w(px(0.)).line_clamp(2).child(name)),
+            )
+            .children(lines.into_iter().map(|line| div().mt(px(8.)).child(line)))
+            .children(mute_line.map(|text| {
+                div()
+                    .mt(px(8.))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(gpui::FontWeight(500.))
+                    .text_color(color("--text-muted"))
+                    .child(text)
+            }))
+            .into_any_element()
+    }
+
+    /// Module 104171 at its default 24px with `max: 6` (`container_m-EqeQ size24_m-EqeQ`): each avatar but the last
+    /// sits in `avatarContainerMasked_m-EqeQ` (6px under the next one, cut by `svg-mask-voice-user-summary-item`: the
+    /// box less a circle at (58/48, 1/2) of radius 26/48, module 573435), then a "+n" pill (`moreUsers_m-EqeQ`: 24px
+    /// high, at least 24px wide, 8px inside, 12px radius, `--background-base-lowest`, 12px semibold `text-default`).
+    fn user_summary(&self, users: &[Id]) -> AnyElement {
+        let (shown, more) = summary_layout(users.len(), 6);
+        // The mask's hole, painted in the tooltip's own fill (`frame`): what shows through it.
+        let hole = || {
+            div()
+                .absolute()
+                .left(px(24. * 58. / 48. - 13.))
+                .top(px(12. - 13.))
+                .size(px(26.))
+                .rounded_full()
+                .bg(color("--background-surface-high"))
+        };
+        let mut items: Vec<AnyElement> = Vec::new();
+        for (index, id) in users.iter().take(shown).enumerate() {
+            let last = more.is_none() && index + 1 == shown;
+            let picture = self
+                .dm_tooltip_user(*id)
+                .and_then(|user| self.images.get(&avatar(&user, 24).0).cloned());
+            items.push(
+                div()
+                    .relative()
+                    .flex_none()
+                    .size(px(24.))
+                    .when(!last, |item| item.mr(px(-6.)))
+                    // `avatar_m-EqeQ`: round.
+                    .children(picture.map(|picture| img(picture).size_full().rounded_full()))
+                    .when(!last, |item| item.child(hole()))
+                    .into_any_element(),
+            );
+        }
+        if let Some(more) = more {
+            items.push(
+                div()
+                    .relative()
+                    .flex_none()
+                    .h(px(24.))
+                    .min_w(px(24.))
+                    .px(px(8.))
+                    .rounded(px(12.))
+                    .bg(color("--background-base-lowest"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(12.))
+                    .line_height(px(12.))
+                    .font_weight(gpui::FontWeight(600.))
+                    .text_color(color("--text-default"))
+                    .child(format!("+{more}"))
+                    .into_any_element(),
+            );
+        }
+        div()
+            .flex()
+            .items_center()
+            .children(items)
+            .into_any_element()
     }
 
     fn rail_dm_art(&self, channel: &PrivateChannel, highlighted: bool) -> AnyElement {
@@ -421,7 +629,6 @@ impl Root {
                 cache.insert(channel.id, (channel.clone(), *count));
             }
         });
-        let now = chrono::Utc::now();
         let mut first_seen = false;
         super::motion::dm_rail::step(&ids)
             .into_iter()
@@ -469,11 +676,7 @@ impl Root {
                 let upper_badge =
                     compute_upper_badge(&self.stores, id, is_connected, own_camera, own_stream);
 
-                let channel_name = self.private_channel_name(&channel);
-                let tip_body = match compute_tooltip_subtext(&self.stores, id, is_connected, now) {
-                    Some(subtext) => Body::Rich(channel_name.into(), subtext.into()),
-                    None => Body::Heading(channel_name.into()),
-                };
+                let tip_body = Body::DirectMessage(id);
 
                 let tile = div()
                     .when(probe, |tile| tile.parity("dm-rail-tile"))
@@ -603,8 +806,8 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_rail_dm_entries, compute_tooltip_subtext, compute_upper_badge, decode_data_image,
-        decode_data_render_image, group_icon, show_left_pill, uses_diagonal_facepile,
+        compute_rail_dm_entries, compute_upper_badge, decode_data_image, decode_data_render_image,
+        dm_tooltip_rows, group_icon, show_left_pill, summary_layout, uses_diagonal_facepile,
     };
     use dc_state::{Stores, VoiceState};
     use serde_json::json;
@@ -705,60 +908,30 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_subtext_includes_incoming_ongoing_and_muted() {
-        let mut stores = Stores::default();
-        let ch = 777;
-        let now = chrono::Utc::now();
-        stores.dispatch(
-            "READY",
-            &json!({
-                "user": { "id": "999", "username": "me" },
-                "private_channels": [
-                    { "id": "777", "type": 1, "recipient_ids": ["1"] }
-                ]
-            }),
-        );
+    fn the_dm_tooltip_lists_activity_then_stream_then_call_without_repeats_or_blocked() {
+        // 1 in the Activity and streaming, 2 streaming, 3 in the call, 4 blocked, 5 in the call twice.
+        let voice = [
+            (1, true),
+            (2, true),
+            (3, false),
+            (4, false),
+            (5, false),
+            (5, false),
+        ];
+        let rows = dm_tooltip_rows(&voice, &[1, 1], |user| user == 4);
+        assert_eq!(rows.activity, vec![1]);
+        assert_eq!(rows.stream, vec![2]);
+        assert_eq!(rows.voice, vec![3, 5]);
+        let empty = dm_tooltip_rows(&[], &[], |_| false);
+        assert!(empty.voice.is_empty() && empty.stream.is_empty() && empty.activity.is_empty());
+    }
 
-        assert_eq!(compute_tooltip_subtext(&stores, ch, false, now), None);
-
-        // Incoming call ringing current user ("999").
-        stores.dispatch(
-            "CALL_CREATE",
-            &json!({
-                "channel_id": "777",
-                "message_id": "9",
-                "region": "us-east",
-                "ongoing_rings": { "999": "1" }
-            }),
-        );
-        assert_eq!(
-            compute_tooltip_subtext(&stores, ch, false, now),
-            Some("Incoming Call".to_owned())
-        );
-
-        // Ongoing call when not ringing current user + muted channel override.
-        stores.dispatch(
-            "CALL_UPDATE",
-            &json!({
-                "channel_id": "777",
-                "message_id": "9",
-                "region": "us-east",
-                "ongoing_rings": {}
-            }),
-        );
-        stores.dispatch(
-            "USER_GUILD_SETTINGS_UPDATE",
-            &json!({
-                "guild_id": null,
-                "channel_overrides": [
-                    { "channel_id": "777", "muted": true }
-                ]
-            }),
-        );
-        assert_eq!(
-            compute_tooltip_subtext(&stores, ch, false, now),
-            Some("Ongoing Call (Muted)".to_owned())
-        );
+    #[test]
+    fn the_avatar_list_shows_up_to_six_then_five_and_a_count() {
+        assert_eq!(summary_layout(2, 6), (2, None));
+        assert_eq!(summary_layout(6, 6), (6, None));
+        assert_eq!(summary_layout(7, 6), (5, Some(2)));
+        assert_eq!(summary_layout(200, 6), (5, Some(99)));
     }
 
     #[test]
