@@ -7753,7 +7753,13 @@ impl Root {
                 }
             }
             (Act::Paste, Target::Composer | Target::TextArea) => {
-                if let Some(field) = self.context_field(target) {
+                // The browser's paste reaches the composer's own paste handler whichever way it was asked for, so a
+                // picture or files on the clipboard attach from the menu as they do from Ctrl+V.
+                let attached = target == Target::Composer
+                    && cx
+                        .read_from_clipboard()
+                        .is_some_and(|item| self.paste_clipboard_item(&item, cx));
+                if !attached && let Some(field) = self.context_field(target) {
                     field.update(cx, |field, cx| field.paste_clipboard(cx));
                 }
             }
