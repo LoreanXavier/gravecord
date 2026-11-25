@@ -14,6 +14,7 @@ pub mod content_inventory;
 pub mod content_inventory_manager;
 pub mod deleted_entities;
 pub mod display_name_styles;
+pub mod draft;
 pub mod emoji_packs;
 pub mod entitlements;
 pub mod experiments;
@@ -2500,6 +2501,8 @@ pub struct Stores {
     /// The user's scheduled messages and each channel's scheduled-message draft (`scheduledMessageStore`, `DraftStore`).
     pub scheduled_messages: scheduled_message::ScheduledMessageStore,
     pub scheduled_drafts: scheduled_message::ScheduledDrafts,
+    /// `DraftStore`: the unsent text of each channel's message box.
+    pub drafts: draft::DraftStore,
     pub content_inventory: content_inventory::ContentInventoryStore,
     pub current_user: Option<User>,
     /// This session's status as READY reports it.
@@ -3241,6 +3244,7 @@ impl Stores {
         self.join_requests_dispatch(name, data);
         self.deleted_entities_dispatch(name, data);
         self.notes_dispatch(name, data);
+        self.drafts_dispatch(name, data);
         self.game_relationships_dispatch(name, data);
         self.guild_bans_dispatch(name, data);
         self.guild_integrations_dispatch(name, data);

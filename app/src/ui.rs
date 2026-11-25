@@ -208,6 +208,7 @@ mod channel_browser;
 mod channel_link;
 mod command_permissions;
 mod discover;
+mod drafts;
 mod emoji_studio;
 mod favorite_nickname;
 mod favorites;
@@ -760,6 +761,8 @@ pub struct Root {
     /// Desktop notifications waiting for their icon (`notifications::ICON_PREFIX`), with the icon's file name.
     notify_icons: std::collections::HashMap<String, (crate::notifications::Notice, String)>,
     composer: Entity<Editor>,
+    /// The channel the composer's text is the draft of (`DraftStore`).
+    composer_draft: drafts::ComposerDraft,
     /// The composer's `@`, `#` and `:` suggestions.
     autocomplete: autocomplete::State,
     slash: slash::State,
@@ -1451,6 +1454,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.on_release(|this, cx| {
+            this.flush_draft(cx);
             this.release_nameplates(cx);
             this.release_member_avatars(cx);
             this.release_inline_videos(cx);
@@ -1497,11 +1501,19 @@ impl Root {
         .detach();
         // The editor notifies on every edit and caret move; the suggestion list follows the word at the caret.
         cx.observe(&composer, |this, _, cx| {
+            this.draft_edited(cx);
             this.refresh_autocomplete(false, cx)
         })
         .detach();
         Self {
-            stores: Stores::default(),
+            stores: {
+                let mut stores = Stores::default();
+                stores.drafts = dc_state::draft::DraftStore::initialize(
+                    crate::storage::get(dc_state::draft::PERSIST_KEY).as_ref(),
+                    None,
+                );
+                stores
+            },
             requests,
             guild: None,
             channel: None,
@@ -1570,6 +1582,7 @@ impl Root {
             list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
             notify_icons: Default::default(),
             composer,
+            composer_draft: Default::default(),
             autocomplete: autocomplete::State::default(),
             slash: slash::State::default(),
             context: context_menu::State::default(),
@@ -2237,6 +2250,7 @@ impl Root {
                 // Not in the pinned client: MessageLogger keeps deletes and edits (`plugin_hooks/message_logger.rs`).
                 self.message_logger_before(&name, &data);
                 self.stores.dispatch(&name, &data);
+                self.persist_drafts();
                 self.message_logger_after(&name, &data);
                 self.unread_notice_event(&name, &data);
                 match name.as_str() {
@@ -12254,6 +12268,7 @@ impl Render for Root {
         #[cfg(feature = "capture")]
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.interaction_modal_frame(window, cx);
+        self.drafts_frame(cx);
         if std::mem::take(&mut self.chat_extra.back_to_login) {
             self.back_to_login(cx);
         }

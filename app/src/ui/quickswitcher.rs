@@ -1311,18 +1311,8 @@ impl Root {
                 push(ch_id);
             }
         }
-        for key in ["drafts", "DraftStore"] {
-            if let Some(map) = crate::storage::get(key).and_then(|val| val.as_object().cloned()) {
-                for (id_str, entry) in map {
-                    let non_empty = entry.as_str().is_some_and(|s| !s.trim().is_empty())
-                        || entry["draft"]
-                            .as_str()
-                            .is_some_and(|s| !s.trim().is_empty());
-                    if non_empty && let Ok(ch_id) = id_str.parse::<Id>() {
-                        push(ch_id);
-                    }
-                }
-            }
+        for ch_id in self.draft_channels() {
+            push(ch_id);
         }
         out
     }
