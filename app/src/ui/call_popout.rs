@@ -17,6 +17,9 @@ use gpui::{
 /// The root view of the popped-out window: the call view of the app's `Root`, at this window's size.
 pub(crate) struct Popout {
     root: WeakEntity<Root>,
+    /// The document of the window: it has focus when nothing in it does, so its keys reach the handlers below
+    /// (a window with no focused element dispatches keys to no element of its view).
+    focus: gpui::FocusHandle,
 }
 
 /// `onBeforeUnload` of module 140539: intercept closing the popped-out call window while an embedded Activity of this
@@ -56,12 +59,25 @@ impl Render for Popout {
         let root_esc = self.root.clone();
         div()
             .id("call-popout")
+            .track_focus(&self.focus)
             .relative()
             .size_full()
             .bg(rgb(0x000000))
-            .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
+                    // Full Screen here is the element fullscreen of this window's document (module 540462,
+                    // `currentDocument`): the browser takes Escape to leave it before anything in the page.
+                    if window.is_fullscreen() && !event.is_held {
+                        window.toggle_fullscreen();
+                        cx.stop_propagation();
+                        return;
+                    }
                     let _ = root_esc.update(cx, |root, cx| {
+                        // A tile's menu or a call bar menu in this window closes on its own Escape (module 165862).
+                        if root.vv.menu.take().is_some() {
+                            cx.notify();
+                            return;
+                        }
                         if matches!(
                             root.voice_alert,
                             Some(super::voice_alerts::VoiceAlert::ReloadActivity {
@@ -176,7 +192,9 @@ impl Root {
                             // Whatever changes the call redraws this window too.
                             cx.observe(&entity, |_, _, cx| cx.notify()).detach();
                         }
-                        Popout { root: view }
+                        let focus = cx.focus_handle();
+                        window.focus(&focus, cx);
+                        Popout { root: view, focus }
                     })
                 },
             );

@@ -2493,6 +2493,27 @@ pub async fn run(
                 };
                 let _ = writeln!(output, "{line}");
             }
+            // What the shortcuts and Escape act on (`Root::script_keys_state`).
+            ["keys", "state", label @ ..] => {
+                let report = window
+                    .update(cx, |_, window, cx| root.read(cx).script_keys_state(window))
+                    .unwrap_or_else(|_| "window closed".to_owned());
+                let _ = writeln!(output, "keys {}: {report}", label.join(" "));
+            }
+            // Capture only: `popout key <stroke>` presses a key in the popped-out call window.
+            ["popout", "key", stroke] => {
+                let handle = root.read_with(cx, |root, _| root.call_popout_window());
+                let stroke: &'static str = Box::leak(stroke.to_string().into_boxed_str());
+                let line = match (handle, Keystroke::parse(stroke)) {
+                    (Some(handle), Ok(parsed)) => {
+                        cx.update(|cx| key(cx, handle, parsed));
+                        format!("popout key {stroke}")
+                    }
+                    (None, _) => "popout key: no popout window".to_owned(),
+                    (_, Err(_)) => format!("popout key: cannot parse {stroke}"),
+                };
+                let _ = writeln!(output, "{line}");
+            }
             // `shot <png>`: the main window as it is now, so one run can keep several frames (one sign-in for many
             // checks).
             ["shot", path] => {

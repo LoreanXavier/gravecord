@@ -214,6 +214,11 @@ pub(super) fn menu_row_focus_is_gone(menu_open: bool, row_had_focus: bool) -> bo
 }
 
 /// Whether the message box gives up focus: a dialog is open, or the box is not drawn.
+/// The field focused when the last frame was built is still focused, and that frame did not draw it inside the window.
+pub(super) fn field_is_undrawn(still_focused: bool, drawn_in_window: bool) -> bool {
+    still_focused && !drawn_in_window
+}
+
 pub(super) fn blurs_composer(anchor: &Anchor, modal: bool, reachable: bool) -> bool {
     matches!(anchor, Anchor::Composer) && (modal || !reachable)
 }
@@ -274,7 +279,7 @@ pub(in crate::ui) struct State {
 
 impl Root {
     /// A settings layer is open: the official `LayerStore` has entries.
-    pub(super) fn layers_open(&self) -> bool {
+    pub(in crate::ui) fn layers_open(&self) -> bool {
         self.settings.is_some()
             || self.server_settings.is_some()
             || self.channel_settings.is_some()
@@ -574,6 +579,35 @@ impl Root {
         self.keys.seen = now;
         self.keys.picker_search = self.picker.as_ref().map(|picker| picker.search_handle(cx));
         self.keys.anchor = self.anchor_now(window, cx);
+        self.watch_undrawn_field(window, cx);
+    }
+
+    /// A text field keeps focus after whatever drew it is gone (a closed launcher, a page the call's Full Screen
+    /// covers). A focus handle that is not drawn receives no keys: Escape, the shortcuts and typing all stop. In the
+    /// official client the browser moves focus to the body when the focused element leaves the page, and the keys reach
+    /// the document again. Once the frame built now is drawn, a field still focused but not in it gives focus to the
+    /// window. The inline edit box is left alone: its row can scroll out of a virtual list and come back.
+    fn watch_undrawn_field(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(focused) = window.focused(cx) else {
+            return;
+        };
+        if focused == self.focus || !is_field(&focused) {
+            return;
+        }
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|(_, editor)| focused == editor.read(cx).focus_handle(cx))
+        {
+            return;
+        }
+        cx.on_next_frame(window, move |this, window, cx| {
+            let still = window.focused(cx).as_ref() == Some(&focused);
+            if field_is_undrawn(still, this.focus.contains_focused(window, cx)) {
+                window.focus(&this.focus, cx);
+                cx.notify();
+            }
+        });
     }
 
     /// Ends the inline edit without saving and gives the composer focus (Escape in the edit box, module 91624 and
@@ -590,7 +624,7 @@ impl Root {
         cx.notify();
     }
 
-    fn escape_state(&self) -> EscapeState {
+    fn escape_state(&self, window: &Window) -> EscapeState {
         let unread = self.channel.is_some_and(|channel| {
             self.stores.is_unread(channel)
                 && !self
@@ -612,12 +646,18 @@ impl Root {
             scheduled_draft: false,
             sticker_preview: false,
             create_thread_panel: self.new_thread.is_some(),
-            sidebar_open: self.new_thread.is_some(),
+            // The sidebar of module 92960 (`getSidebarState`): a forum post open beside its forum's list is the
+            // `VIEW_CHANNEL` sidebar of the forum.
+            sidebar_open: self.new_thread.is_some() || self.post_sidebar_open(window),
             has_more_after: self.window_detached(),
             unread,
             at_bottom: self.list.is_scrolled_to_end().unwrap_or(true),
             voice_chat_open: self.voice_chat_docked(),
         }
+    }
+
+    fn post_sidebar_open(&self, window: &Window) -> bool {
+        self.open_post_forum().is_some() && self.forum_split_fits(window)
     }
 
     fn composer_reachable_or_voice(&self) -> bool {
@@ -630,7 +670,7 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let effects = escape_effects(self.escape_state());
+        let effects = escape_effects(self.escape_state(window));
         if !effects.any() {
             return false;
         }
@@ -644,7 +684,14 @@ impl Root {
             self.cancel_reply(window, cx);
         }
         if effects.close_sidebar {
-            self.new_thread = None;
+            if self.new_thread.is_some() {
+                self.new_thread = None;
+            } else if self.post_sidebar_open(window)
+                && let (Some(guild), Some(forum)) = (self.guild, self.open_post_forum())
+            {
+                // `closeChannelSidebar(forum)`: the post closes and its forum's list stays, as the post's X does.
+                self.select(guild, Some(forum));
+            }
         }
         if effects.mark_read {
             self.mark_current_read(cx);
@@ -1070,6 +1117,14 @@ mod tests {
             Restore::Composer
         );
         assert_eq!(restore_target(&Anchor::Edit, false, false), Restore::Keep);
+    }
+
+    #[test]
+    fn a_field_left_undrawn_gives_up_focus_only_if_it_kept_it() {
+        assert!(field_is_undrawn(true, false));
+        assert!(!field_is_undrawn(true, true));
+        // Something else took focus since the frame was built: that is its own business.
+        assert!(!field_is_undrawn(false, false));
     }
 
     #[test]

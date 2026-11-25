@@ -12594,6 +12594,18 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // Full Screen is the element fullscreen of the page (module 540462 `requestFullscreen`): the browser
+                // takes Escape to leave it before the page sees the key, so it comes before every layer, and the
+                // Escape chain of module 92960 then does nothing (`isElementFullScreen`).
+                if keys.key == "escape" && !event.is_held && this.exit_video_fullscreen(window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && !event.is_held && this.vv.fullscreen {
+                    this.toggle_call_fullscreen(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && !event.is_held && this.close_floating_select() {
                     cx.notify();
                     cx.stop_propagation();
@@ -13115,8 +13127,13 @@ impl Render for Root {
                     return;
                 }
                 // Escape in the search box: its field would emit Cancel, but the chain below takes the key first.
+                // The box must still have focus: a dialog opened since (New Message, Create Server) has its own field.
                 if keys.key == "escape"
-                    && this.search.as_ref().is_some_and(|search| search.focused)
+                    && this.search.as_ref().is_some_and(|search| {
+                        search.focused
+                            && gpui::Focusable::focus_handle(search.field.read(cx), cx)
+                                .is_focused(window)
+                    })
                     && this.search_filters.is_none()
                 {
                     this.clear_search(cx);
@@ -13153,15 +13170,6 @@ impl Render for Root {
                     return;
                 }
                 // Dialogs of the server menu and the Stage and announcement flows: a modal's own Escape.
-                if keys.key == "escape" && this.exit_video_fullscreen(window, cx) {
-                    cx.stop_propagation();
-                    return;
-                }
-                if keys.key == "escape" && this.vv.fullscreen {
-                    this.toggle_call_fullscreen(window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
                 if keys.key == "escape" && this.close_boost_apply() {
                     cx.notify();
                     cx.stop_propagation();
@@ -13345,11 +13353,13 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
-                // `QUICKSWITCHER_SHOW`: Ctrl+K anywhere.
+                // `QUICKSWITCHER_SHOW`: Ctrl+K anywhere but under a settings layer, where only the layer's own binds
+                // are registered (module 596339 `S4`: `enableTemp` with Escape and the zoom keys of module 390435).
                 if keys.key == "k"
                     && keys.modifiers.control
                     && !keys.modifiers.shift
                     && !keys.modifiers.alt
+                    && !this.layers_open()
                 {
                     this.open_quick_switcher(window, cx);
                     cx.stop_propagation();
@@ -13484,7 +13494,7 @@ impl Render for Root {
                     && !keys.modifiers.control
                     && !keys.modifiers.shift
                     && !keys.modifiers.platform;
-                if alt_only && (keys.key == "left" || keys.key == "right") {
+                if alt_only && (keys.key == "left" || keys.key == "right") && !this.layers_open() {
                     if keys.key == "left" {
                         this.go_back(cx);
                     } else {
