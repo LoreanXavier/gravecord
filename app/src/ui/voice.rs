@@ -1913,9 +1913,12 @@ impl Root {
                                     )
                             }),
                     )
+                    // `username_YUoOxm`: `flex: 1 1 auto`, one line cut with an ellipsis.
                     .child(
                         div()
                             .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))

@@ -483,9 +483,10 @@ impl Root {
                                             .size_full(),
                                         )
                                         .child(
+                                            // `link_zln_tS`: `white-space: nowrap; text-overflow: ellipsis`.
                                             div()
                                                 .min_w(px(0.))
-                                                .text_ellipsis()
+                                                .truncate()
                                                 .text_size(px(16.))
                                                 .line_height(px(20.))
                                                 .font_weight(look.weight())

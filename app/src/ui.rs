@@ -4581,6 +4581,8 @@ impl Root {
                                         .flex()
                                         .items_center()
                                         .min_w(px(0.))
+                                        // `username_Iy0c7A`: `max-width: 100%`, so a long name is cut at the column.
+                                        .max_w_full()
                                         .h(px(20.))
                                         // "Next to names" (`roleStyle` "dot"): the role's dot before the name, 4px
                                         // clear of it (`.roleDot` 790340).
@@ -4614,7 +4616,8 @@ impl Root {
                                                 .when(first_styled == Some(user.id), |this| {
                                                     this.parity("member-name-styled")
                                                 })
-                                                .text_ellipsis()
+                                                // `content_J1Adu_`: `white-space: nowrap; text-overflow: ellipsis`.
+                                                .truncate()
                                                 .line_height(px(20.))
                                                 .font_weight(FontWeight(500.))
                                                 .text_color(self.guild_author_color(
@@ -4680,8 +4683,7 @@ impl Root {
                                         )),
                                 )
                                 .children(activity.map(|line| {
-                                    div()
-                                        .mt(px(-2.))
+                                    presence::sub_text()
                                         .when(first_activity == Some(user.id), |this| {
                                             this.parity("presence-line")
                                         })
@@ -5904,31 +5906,43 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .gap(px(8.))
-                    .child(if let Some(guild_icon) = guild_icon {
-                        guild_icon
-                    } else if in_dm {
-                        icon("title_direct_messages", 18., "--text-default").into_any_element()
-                    } else if self.discover_active() {
-                        icon("discover", 18., "--text-default").into_any_element()
-                    } else if self.nitro_open {
-                        icon("home_nitro", 16., "--text-default").into_any_element()
-                    } else if self.quests_active() {
-                        icon("home_quests", 18., "--text-default").into_any_element()
-                    } else if self.shop_active() {
-                        icon("home_shop", 18., "--text-default").into_any_element()
-                    } else if self.message_requests_active() || self.library_active() {
-                        div().into_any_element()
-                    } else {
-                        icon("home_friends", 16., "--text-default").into_any_element()
-                    })
                     .child(
+                        // `title_LnjVAX`: `display: inline-flex; gap: 8px; max-width: 50vw`, the title in a
+                        // `lineClamp: 1` text (`lineClamp1_MMUIw6`: one line, an ellipsis).
                         div()
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-default"))
-                            .child(title),
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .min_w(px(0.))
+                            .max_w(gpui::relative(0.5))
+                            .child(if let Some(guild_icon) = guild_icon {
+                                guild_icon
+                            } else if in_dm {
+                                icon("title_direct_messages", 18., "--text-default")
+                                    .into_any_element()
+                            } else if self.discover_active() {
+                                icon("discover", 18., "--text-default").into_any_element()
+                            } else if self.nitro_open {
+                                icon("home_nitro", 16., "--text-default").into_any_element()
+                            } else if self.quests_active() {
+                                icon("home_quests", 18., "--text-default").into_any_element()
+                            } else if self.shop_active() {
+                                icon("home_shop", 18., "--text-default").into_any_element()
+                            } else if self.message_requests_active() || self.library_active() {
+                                div().into_any_element()
+                            } else {
+                                icon("home_friends", 16., "--text-default").into_any_element()
+                            })
+                            .child(
+                                div()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-default"))
+                                    .child(title),
+                            ),
                     ),
             )
             .child(
@@ -6394,7 +6408,8 @@ impl Root {
                             SharedString::from(format!("category-group-{category}")),
                             |style| style.text_color(color("--interactive-text-hover")),
                         )
-                        .child(channel.name.clone())
+                        // `name_yOdhm_` holds module 3026's overflow text (`overflow__WDjet`: one line, an ellipsis).
+                        .child(div().min_w(px(0.)).truncate().child(channel.name.clone()))
                         .child(
                             svg()
                                 .path("icons/category_chevron.svg")
@@ -6656,8 +6671,11 @@ impl Root {
                         .gap(px(8.))
                         .child(glyph)
                         .child(
+                            // `name_TNyK-N`: `flex: 1 1 auto`, one line cut with an ellipsis.
                             div()
                                 .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
                                 .when(dim, |this| this.opacity(0.5))
                                 .text_size(px(16.))
                                 .line_height(px(20.))
@@ -7522,10 +7540,10 @@ impl Root {
                     .flex()
                     .flex_col()
                     .child(
+                        // `title_1hp6hz`: `overflow: hidden; text-overflow: ellipsis; white-space: nowrap`.
                         div()
                             .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
+                            .truncate()
                             .text_size(px(16.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
@@ -7577,8 +7595,8 @@ impl Root {
                                     .top(px(-13. * 1.07 * roll))
                                     .opacity(1. - roll)
                                     .min_w_0()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
+                                    // `default_Dq3ch1`: one line cut with an ellipsis.
+                                    .truncate()
                                     .text_size(px(12.))
                                     .line_height(px(13.))
                                     .font_weight(FontWeight(500.))
