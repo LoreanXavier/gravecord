@@ -784,7 +784,7 @@ impl Root {
                     .child(
                         div()
                             .min_w(px(0.))
-                            .text_ellipsis()
+                            .truncate()
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
@@ -808,7 +808,7 @@ impl Root {
                     .id(SharedString::from(format!("inventory-title-{}", entry.id)))
                     .when(first, |d| d.parity("inventory-title"))
                     .h(px(18.))
-                    .text_ellipsis()
+                    .truncate()
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))

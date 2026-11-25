@@ -816,6 +816,7 @@ impl Root {
                                     .text_color(color(tint))
                                     .overflow_hidden()
                                     .text_ellipsis()
+                                    .whitespace_nowrap()
                                     .child(channel.name.clone()),
                             ),
                     )
@@ -855,6 +856,7 @@ impl Root {
                                                     text.min_w(px(0.))
                                                         .overflow_hidden()
                                                         .text_ellipsis()
+                                                        .whitespace_nowrap()
                                                 })
                                                 .child(text.clone())
                                                 .into_any_element(),
@@ -997,6 +999,7 @@ impl Root {
                         .min_w(px(0.))
                         .overflow_hidden()
                         .text_ellipsis()
+                        .whitespace_nowrap()
                         .text_size(px(20.))
                         .line_height(px(24.))
                         .font_weight(FontWeight(500.))

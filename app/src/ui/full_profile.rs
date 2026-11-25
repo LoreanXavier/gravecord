@@ -2549,7 +2549,7 @@ impl Root {
                 .child(
                     div()
                         .min_w(px(0.))
-                        .text_ellipsis()
+                        .truncate()
                         .text_size(px(12.))
                         .line_height(px(16.))
                         .font_weight(FontWeight(500.))

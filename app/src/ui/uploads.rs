@@ -866,6 +866,7 @@ impl Root {
                                         .text_color(color("--text-brand"))
                                         .overflow_hidden()
                                         .text_ellipsis()
+                                        .whitespace_nowrap()
                                         .child(filename),
                                 ),
                         )

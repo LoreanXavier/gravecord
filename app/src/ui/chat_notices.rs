@@ -1913,6 +1913,7 @@ impl Root {
                                     .min_w(px(0.))
                                     .overflow_hidden()
                                     .text_ellipsis()
+                                    .whitespace_nowrap()
                                     .text_color(super::color("--text-muted"))
                                     .child(summary),
                             ),

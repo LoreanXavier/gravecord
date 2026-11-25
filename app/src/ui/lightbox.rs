@@ -1172,6 +1172,7 @@ impl Root {
                             .text_color(midnight("--text-muted"))
                             .overflow_hidden()
                             .text_ellipsis()
+                            .whitespace_nowrap()
                             .child(value),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {

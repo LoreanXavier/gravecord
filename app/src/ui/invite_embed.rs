@@ -1013,7 +1013,7 @@ impl Root {
                                 .flex()
                                 .items_center()
                                 .gap(px(4.))
-                                .child(div().min_w(px(0.)).text_ellipsis().child(name))
+                                .child(div().min_w(px(0.)).truncate().child(name))
                                 .children(
                                     super::tooltip::badge_image(known)
                                         .map(|image| img(image).size(px(18.)).flex_none()),

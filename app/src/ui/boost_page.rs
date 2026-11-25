@@ -2849,6 +2849,7 @@ impl Root {
                                                     .max_w(px(180.))
                                                     .overflow_hidden()
                                                     .text_ellipsis()
+                                                    .whitespace_nowrap()
                                                     .text_color(color("--text-link"))
                                                     .child(code.to_owned()),
                                             ),

@@ -1010,7 +1010,7 @@ impl Root {
                                     .line_height(px(20.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-strong"))
-                                    .text_ellipsis()
+                                    .truncate()
                                     .child(account.name.clone()),
                             )
                             .children(
@@ -1023,7 +1023,7 @@ impl Root {
                             .text_size(px(12.))
                             .line_height(px(16.))
                             .text_color(color("--text-default"))
-                            .text_ellipsis()
+                            .truncate()
                             .child(platform_name),
                     ),
             )

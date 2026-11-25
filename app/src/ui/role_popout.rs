@@ -247,7 +247,7 @@ impl Root {
                     .ml(px(12.))
                     .min_w(px(0.))
                     .flex_1()
-                    .text_ellipsis()
+                    .truncate()
                     .font_weight(FontWeight(500.))
                     .line_height(px(20.))
                     .text_color(tint)

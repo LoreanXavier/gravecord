@@ -227,6 +227,7 @@ impl Root {
                             .id("browser-preview-title")
                             .min_w(px(0.))
                             .text_ellipsis()
+                            .whitespace_nowrap()
                             .overflow_hidden()
                             .text_size(px(16.))
                             .line_height(px(20.))
