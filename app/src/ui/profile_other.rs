@@ -707,6 +707,7 @@ impl Root {
                         .into_any_element()
                 });
         // The frame of module 744808 over the popout (`user-profile-popout`), when the window is taller than 480px.
+        let window_height = f32::from(window.viewport_size().height);
         let (frame_back, frame_front) = if bot {
             (Vec::new(), Vec::new())
         } else {
@@ -715,32 +716,42 @@ impl Root {
                 304.,
                 None,
                 super::profile_frames::FrameSurface::Popout,
-                f32::from(window.viewport_size().height),
+                window_height,
             )
         };
-        let card = div()
-            .parity("user-popout")
-            .id("profile-popout")
-            .aria_label(dc_intl::format(
-                "KRe1Fk",
-                &[("name", dc_intl::Arg::Str(display_name.as_str().into()))],
-            ))
-            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
-                this.profile_effect_hover("popout", *inside, cx);
-            }))
-            .occlude()
-            .relative()
-            .w(px(304.))
-            .max_h(window.viewport_size().height - px(20.))
-            .p(px(2.))
-            .children(frame_back)
-            .rounded(px(8.))
-            .bg(linear_gradient(
-                180.,
-                linear_color_stop(palette.top, 0.),
-                linear_color_stop(palette.bottom, 1.),
-            ))
-            .shadow(vec![
+        // A framed popout (`themeContainer_NOlkhE.custom-profile-frame`): room for the bottom staple below it, a
+        // `max-height` short of both overflows, and in place of its ring and `--shadow-high` the `:before` backdrop's
+        // `20px 20px 30px` shadow at the theme's `--custom-profile-frame-drop-shadow-opacity`.
+        let themed = palette.theme.is_some();
+        let framed = (!bot)
+            .then(|| {
+                self.profile_frame_margins(
+                    id,
+                    super::profile_frames::FrameSurface::Popout,
+                    themed,
+                    window_height,
+                )
+            })
+            .flatten()
+            .zip(self.profile_frame(id));
+        let (frame_bottom, height_cut) = framed.as_ref().map_or((0., 0.), |(margins, frame)| {
+            (margins.bottom, frame.popout_height_cut(themed))
+        });
+        let shadows = if framed.is_some() {
+            vec![BoxShadow {
+                color: hsla(
+                    0.,
+                    0.,
+                    0.,
+                    super::profile_frames::drop_shadow_opacity(super::theme()),
+                ),
+                offset: point(px(20.), px(20.)),
+                blur_radius: px(30.),
+                spread_radius: px(0.),
+                inset: false,
+            }]
+        } else {
+            vec![
                 BoxShadow {
                     color: hsla(0., 0., if light { 0. } else { 1. }, 0.08),
                     offset: point(px(0.), px(0.)),
@@ -755,12 +766,36 @@ impl Root {
                     spread_radius: px(0.),
                     inset: false,
                 },
-            ])
+            ]
+        };
+        let card = div()
+            .parity("user-popout")
+            .id("profile-popout")
+            .aria_label(dc_intl::format(
+                "KRe1Fk",
+                &[("name", dc_intl::Arg::Str(display_name.as_str().into()))],
+            ))
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                this.profile_effect_hover("popout", *inside, cx);
+            }))
+            .occlude()
+            .relative()
+            .w(px(304.))
+            .max_h(window.viewport_size().height - px(20. + height_cut))
+            .p(px(2.))
+            .children(frame_back)
+            .rounded(px(8.))
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(palette.top, 0.),
+                linear_color_stop(palette.bottom, 1.),
+            ))
+            .shadow(shadows)
             .child(
                 div()
                     .relative()
                     .rounded(px(6.))
-                    .max_h(window.viewport_size().height - px(24.))
+                    .max_h(window.viewport_size().height - px(24. + height_cut))
                     .bg(palette.overlay)
                     .pb(px(4.))
                     .flex()
@@ -840,7 +875,8 @@ impl Root {
                     .snap_to_window_with_margin(px(12.))
                     // `animatorLeft` for a member, `animatorRight` for a message author, both translate
                     // (design/dom/popouts/pt-decorated-member, channel/profile-popout).
-                    .child(card.popout(
+                    // A framed card's `margin-block-end` keeps its bottom staple inside the window.
+                    .child(div().pb(px(frame_bottom)).child(card.popout(
                         "user-popout",
                         PopKind::Translate,
                         if popout.left {
@@ -848,7 +884,7 @@ impl Root {
                         } else {
                             PopSide::Right
                         },
-                    )),
+                    ))),
             )
             .with_priority(1)
             .into_any_element(),
