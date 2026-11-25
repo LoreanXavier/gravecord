@@ -1,21 +1,23 @@
 //! Discord classic `MediaPlayer` (`153440.js`, `317714.js`, `122641.js`, `20504.js`, `423562.js`, `96782.js`)
 //! backed by the progressive H.264 decoder and A/V clock in `crate::video_vod`.
 
-use super::audio_attachment::{BUFFER_MIN_SECONDS, clock, clock_pair, control_icon, control_tint};
+use super::audio_attachment::{
+    BUFFER_MIN_SECONDS, MediaBarLook, clock, clock_pair, control_icon, control_tint,
+    media_bar_parts,
+};
 use super::audio_menu::{slider_to_volume, volume_to_slider};
 use super::tooltip::{Side, Tip};
 use super::voice_message::{
-    fraction_of, position_of, store_volume, stored_volume, tnum, unmute_restore_volume,
+    fraction_of, position_of, store_volume, stored_volume, unmute_restore_volume,
 };
-use super::{Root, color, icon};
+use super::{MONO, Root, color, icon};
 use crate::parity::Parity;
 use crate::video_vod::{KEY_PREFIX, LoadStatus, TickResult, VodPlayer};
 use dc_state::{Attachment, Message};
-use dc_tokens::Theme;
 use gpui::{
-    AnyElement, Bounds, Context, Corners, FontWeight, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ObjectFit, Pixels, RenderImage, Window, canvas, deferred, div, hsla, img,
-    point, prelude::*, px, rgba, size, svg,
+    AnyElement, Bounds, Context, Corners, DispatchPhase, FontWeight, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, RenderImage, Window, canvas,
+    deferred, div, fill, hsla, img, point, prelude::*, px, rgba, size, svg,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,9 +27,11 @@ const MIN_ATT_WIDTH: f32 = 150.0;
 const MIN_ATT_HEIGHT: f32 = 110.0;
 const CLOCK_MIN_WIDTH: f32 = 250.0;
 const CONTROL_BAR_HEIGHT: f32 = 32.0;
-const VOLUME_POPOUT_WIDTH: f32 = 28.0;
-const VOLUME_POPOUT_HEIGHT: f32 = 96.0;
-const VOLUME_TRACK_HEIGHT: f32 = 76.0;
+/// `mediaBarInteractionVolume_s1cr3c` turned upright: 14 by 88, an 8 px padding round a 6 by 72 rail, 4 px above the
+/// volume button and 8 px in from its left edge (as `voice_slider` of the voice messages and the audio card).
+const VOLUME_POPOUT_WIDTH: f32 = 14.0;
+const VOLUME_POPOUT_HEIGHT: f32 = 88.0;
+const VOLUME_POPOUT_INSET: f32 = 8.0;
 const VOLUME_HIDE_GRACE_MS: u64 = 150;
 const INLINE_HIDE_SECS: f64 = 3.0;
 const FULLSCREEN_HIDE_SECS: f64 = 1.0;
@@ -41,10 +45,6 @@ const PLAYING_REDRAW_MAX: Duration = Duration::from_millis(250);
 const STATS_LIMIT: usize = 10;
 /// Module 410694: "Copied!" shows for two seconds.
 pub(super) const STATS_COPIED: Duration = Duration::from_secs(2);
-
-fn midnight(name: &str) -> gpui::Rgba {
-    rgba(Theme::Midnight.color(name))
-}
 
 #[derive(Clone)]
 pub(super) struct AttachmentActions {
@@ -420,6 +420,102 @@ impl VideoHub {
         store_volume(self.volume, self.muted);
         for entry in self.entries.values_mut() {
             entry.player.set_audio_output(self.volume, self.muted);
+        }
+    }
+
+    /// `handleDragStart` of the DURATION bar (module 122641) and `handleDragStart`/`handleDrag` of module 153440: the
+    /// element pauses while dragged and seeks to the pointer.
+    fn start_scrub(&mut self, key: &str, x: Pixels) {
+        if let Some(entry) = self.entries.get_mut(key) {
+            let frac = fraction_of(x, entry.scrub_bounds) as f32;
+            let resume_after = entry.player.playing();
+            if resume_after {
+                entry.player.pause();
+            }
+            if let Some(dur) = entry.effective_duration() {
+                entry.player.seek(f64::from(frac) * dur);
+            }
+            entry.last_interaction = Instant::now();
+            self.scrub_drag = Some(ScrubDrag {
+                key: key.to_owned(),
+                fraction: frac,
+                resume_after,
+            });
+        }
+    }
+
+    /// `handleDragMove`: the pointer anywhere in the window sets the time (`setTime(duration * fraction)`). Whether it
+    /// moved the bar.
+    fn drag_scrub_to(&mut self, x: Pixels) -> bool {
+        let Some(mut drag) = self.scrub_drag.take() else {
+            return false;
+        };
+        let mut moved = false;
+        if let Some(entry) = self.entries.get_mut(&drag.key) {
+            let frac = fraction_of(x, entry.scrub_bounds) as f32;
+            if (frac - drag.fraction).abs() > 0.0005 {
+                drag.fraction = frac;
+                if let Some(dur) = entry.effective_duration() {
+                    entry.player.seek(f64::from(frac) * dur);
+                }
+                moved = true;
+            }
+            entry.last_interaction = Instant::now();
+        }
+        self.scrub_drag = Some(drag);
+        moved
+    }
+
+    /// `handleDragEnd`: the element plays again if it played before the drag.
+    fn end_scrub(&mut self) {
+        let Some(drag) = self.scrub_drag.take() else {
+            return;
+        };
+        let (volume, muted) = (self.volume, self.muted);
+        if let Some(entry) = self.entries.get_mut(&drag.key) {
+            if drag.resume_after {
+                entry.player.play(volume, muted);
+            }
+            entry.last_interaction = Instant::now();
+            entry.tick = entry.player.tick();
+        }
+    }
+
+    /// The VOLUME bar's press: the volume follows the pointer from there.
+    fn start_volume_drag(&mut self, key: &str, y: Pixels) {
+        if let Some(bounds) = self.entries.get(key).map(|entry| entry.volume_track_bounds) {
+            self.set_slider_volume(position_of(y, bounds) * 100.0);
+            self.volume_drag = Some(key.to_owned());
+        }
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.last_interaction = Instant::now();
+        }
+    }
+
+    fn drag_volume_to(&mut self, y: Pixels) -> bool {
+        let Some(key) = self.volume_drag.clone() else {
+            return false;
+        };
+        let Some(bounds) = self
+            .entries
+            .get(&key)
+            .map(|entry| entry.volume_track_bounds)
+        else {
+            return false;
+        };
+        self.set_slider_volume(position_of(y, bounds) * 100.0);
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.last_interaction = Instant::now();
+        }
+        true
+    }
+
+    /// The release ends the volume drag; the slider hides 150 ms later unless the pointer is over it.
+    fn end_volume_drag(&mut self) {
+        if let Some(key) = self.volume_drag.take()
+            && let Some(entry) = self.entries.get_mut(&key)
+        {
+            Self::schedule_volume_hide(entry, Instant::now());
         }
     }
 
@@ -840,66 +936,6 @@ impl Root {
         had
     }
 
-    pub(super) fn video_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let mut changed = false;
-        {
-            let mut hub = self.video_hub.borrow_mut();
-            if let Some(mut drag) = hub.scrub_drag.take() {
-                if let Some(entry) = hub.entries.get_mut(&drag.key) {
-                    let frac = fraction_of(event.position.x, entry.scrub_bounds) as f32;
-                    if (frac - drag.fraction).abs() > 0.002 {
-                        drag.fraction = frac;
-                        if let Some(dur) = entry.effective_duration() {
-                            entry.player.seek(f64::from(frac) * dur);
-                        }
-                        entry.last_interaction = Instant::now();
-                        changed = true;
-                    }
-                }
-                hub.scrub_drag = Some(drag);
-            }
-            if let Some(key) = hub.volume_drag.clone()
-                && let Some(bounds) = hub.entries.get(&key).map(|e| e.volume_track_bounds)
-            {
-                let slider = position_of(event.position.y, bounds) * 100.0;
-                hub.set_slider_volume(slider);
-                if let Some(entry) = hub.entries.get_mut(&key) {
-                    entry.last_interaction = Instant::now();
-                }
-                changed = true;
-            }
-        }
-        if changed {
-            cx.notify();
-        }
-    }
-
-    pub(super) fn video_mouse_up(&mut self, cx: &mut Context<Self>) {
-        let mut changed = false;
-        {
-            let mut hub = self.video_hub.borrow_mut();
-            if let Some(drag) = hub.scrub_drag.take() {
-                let (vol, muted) = (hub.volume, hub.muted);
-                if let Some(entry) = hub.entries.get_mut(&drag.key) {
-                    if let Some(dur) = entry.effective_duration() {
-                        entry.player.seek(f64::from(drag.fraction) * dur);
-                    }
-                    if drag.resume_after {
-                        entry.player.play(vol, muted);
-                    }
-                    entry.last_interaction = Instant::now();
-                }
-                changed = true;
-            }
-            if hub.volume_drag.take().is_some() {
-                changed = true;
-            }
-        }
-        if changed {
-            cx.notify();
-        }
-    }
-
     pub(super) fn video_key(
         &mut self,
         keystroke: &gpui::Keystroke,
@@ -1086,11 +1122,10 @@ impl Root {
             let flash = entry.center_flash;
             let shover = entry.scrub_hover;
             let fs_active = hub_mut.fullscreen.as_ref().is_some_and(|fs| fs.key == key);
-            let drag_frac = hub_mut
-                .scrub_drag
-                .as_ref()
-                .filter(|d| d.key == key)
-                .map(|d| d.fraction);
+            let drag = hub_mut.scrub_drag.as_ref().filter(|d| d.key == key);
+            let drag_frac = drag.map(|d| d.fraction);
+            // Module 153440 keeps `state.playing` through a drag and only pauses the element: the button stays Pause.
+            let playing = playing || drag.is_some_and(|d| d.resume_after);
             let entry_ref = hub_mut.entries.get(&key).expect("entry present");
             let vol_open = hub_mut.is_volume_open(&key, entry_ref, now);
             let ctrl_vis = hub_mut.controls_visible(
@@ -1396,6 +1431,7 @@ impl Root {
                     cx,
                 );
 
+                // `en`: only on a player wider than 250 px.
                 let show_clock = spec.width > CLOCK_MIN_WIDTH || spec.is_fullscreen_view;
                 let display_pos = scrub_fraction_override
                     .zip(tick_dur)
@@ -1410,16 +1446,38 @@ impl Root {
                             None
                         }),
                     );
+                    // `durationTimeWrapper_FJ99sr`: 12 px `--font-code`, medium, a 4 px margin, 2 px round the slash;
+                    // the wrapper's `color: var(--white)`.
+                    let digits = |text: String| {
+                        let width = text.chars().count() as f32 * 7.2;
+                        div()
+                            .flex_none()
+                            .w(px(width))
+                            .h(px(12.0))
+                            .whitespace_nowrap()
+                            .child(text)
+                    };
                     div()
+                        .parity("video-time")
+                        .flex()
                         .flex_none()
-                        .px(px(4.0))
-                        .whitespace_nowrap()
+                        .m(px(4.0))
+                        .h(px(12.0))
+                        .font_family(MONO)
                         .text_size(px(12.0))
                         .line_height(px(12.0))
                         .font_weight(FontWeight::MEDIUM)
-                        .font_features(tnum())
-                        .text_color(midnight("--text-default"))
-                        .child(format!("{elapsed_str} / {total_str}"))
+                        .text_color(gpui::white())
+                        .child(digits(elapsed_str))
+                        .child(
+                            div()
+                                .flex_none()
+                                .mx(px(2.0))
+                                .w(px(7.2))
+                                .h(px(12.0))
+                                .child("/"),
+                        )
+                        .child(digits(total_str))
                         .into_any_element()
                 });
 
@@ -1427,101 +1485,110 @@ impl Root {
                     Some(dur) if dur > 0.0 => (tick_pos / dur).clamp(0.0, 1.0) as f32,
                     _ => 0.0,
                 });
-                let scrub_active = scrub_fraction_override.is_some() || scrub_hover.is_some();
-                let preview_pct = scrub_fraction_override.or(scrub_hover);
-                let preview_bubble: Option<AnyElement> =
-                    preview_pct.zip(tick_dur).map(|(frac, dur)| {
-                        let label = clock(f64::from(frac) * dur);
-                        div()
-                            .absolute()
-                            .bottom(px(22.0))
-                            .left(gpui::relative(frac.clamp(0.06, 0.94)))
-                            .ml(px(-18.0))
-                            .px(px(5.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .bg(hsla(0.0, 0.0, 0.0, 0.85))
-                            .text_size(px(11.0))
-                            .line_height(px(14.0))
-                            .font_features(tnum())
-                            .text_color(gpui::white())
-                            .child(label)
-                            .into_any_element()
-                    });
+                let dragging = scrub_fraction_override.is_some();
+                let over = scrub_hover.is_some();
+                // Module 122641: the bubble follows the pointer, and the progress while dragging; it and the grabber
+                // show while the bar is hovered or dragged.
+                let bubble_at = if dragging {
+                    played_pct
+                } else {
+                    scrub_hover.unwrap_or(played_pct)
+                };
+                let bubble_text = match tick_dur {
+                    Some(dur) => clock(f64::from(bubble_at) * dur),
+                    None => "-:--".to_owned(),
+                };
+                let (track, grabber, bubble) = media_bar_parts(MediaBarLook {
+                    fraction: played_pct,
+                    preview: scrub_hover.unwrap_or(0.0),
+                    // `mediaBarPreview_s1cr3c` shows under `.mediaBarInteraction:hover` only, not while dragging.
+                    preview_shown: over && !dragging,
+                    buffered: tick_buffered,
+                    bubble_text,
+                    bubble_at,
+                });
+                let hot = (over || dragging) && tick_dur.is_some();
 
                 let (bounds_hub, bounds_key) = (hub.clone(), key.clone());
                 let (down_hub, down_key) = (hub.clone(), key.clone());
                 let (move_hub, move_key) = (hub.clone(), key.clone());
                 let (hover_hub, hover_key) = (hub.clone(), key.clone());
+                let entity = cx.entity().downgrade();
 
+                // `mediaBarInteraction_s1cr3c`: `margin: 0 7px`, the whole height of the controls.
                 let scrubber = div()
                     .id(("vp-scrub", key_hash))
+                    .parity("video-scrubber")
                     .relative()
-                    .flex_1()
-                    .min_w(px(24.0))
-                    .h_full()
-                    .mx(px(6.0))
                     .flex()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h_full()
+                    .mx(px(7.0))
                     .items_center()
                     .cursor_pointer()
                     .child(
-                        canvas(
-                            move |bounds, _, _| {
-                                if let Some(entry) =
-                                    bounds_hub.borrow_mut().entries.get_mut(&bounds_key)
-                                {
-                                    entry.scrub_bounds = bounds;
-                                }
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .inset_0(),
-                    )
-                    .child(
                         div()
                             .relative()
-                            .w_full()
-                            .h(px(6.0))
-                            .rounded(px(3.0))
-                            .bg(hsla(0.0, 0.0, 1.0, 0.2))
-                            .when(tick_buffered, |bar| {
-                                bar.child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .left_0()
-                                        .h_full()
-                                        .w_full()
-                                        .rounded(px(3.0))
-                                        .bg(hsla(0.0, 0.0, 1.0, 0.3)),
-                                )
-                            })
+                            .flex()
+                            .flex_1()
                             .child(
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .left_0()
-                                    .h_full()
-                                    .w(gpui::relative(played_pct.clamp(0.0, 1.0)))
-                                    .rounded(px(3.0))
-                                    .bg(midnight("--brand-500")),
-                            )
-                            .when(scrub_active, |bar| {
-                                bar.child(
-                                    div()
-                                        .absolute()
-                                        .top(px(-2.0))
-                                        .left(gpui::relative(played_pct.clamp(0.0, 1.0)))
-                                        .ml(px(-5.0))
-                                        .size(px(10.0))
-                                        .rounded_full()
-                                        .bg(gpui::white())
-                                        .shadow_xs(),
+                                canvas(
+                                    |_, _, _| {},
+                                    move |bounds, _, window, _| {
+                                        let dragging = {
+                                            let mut hub = bounds_hub.borrow_mut();
+                                            if let Some(entry) = hub.entries.get_mut(&bounds_key) {
+                                                entry.scrub_bounds = bounds;
+                                            }
+                                            hub.scrub_drag
+                                                .as_ref()
+                                                .is_some_and(|d| d.key == bounds_key)
+                                        };
+                                        // `handleDragStart` listens on the window: the drag goes on wherever the
+                                        // pointer goes until the button is released.
+                                        if dragging {
+                                            let (move_hub, move_entity) =
+                                                (bounds_hub.clone(), entity.clone());
+                                            window.on_mouse_event(
+                                                move |event: &MouseMoveEvent, phase, _, cx| {
+                                                    if phase != DispatchPhase::Capture {
+                                                        return;
+                                                    }
+                                                    if move_hub
+                                                        .borrow_mut()
+                                                        .drag_scrub_to(event.position.x)
+                                                    {
+                                                        let _ = move_entity
+                                                            .update(cx, |_, cx| cx.notify());
+                                                    }
+                                                },
+                                            );
+                                            let (up_hub, up_entity) =
+                                                (bounds_hub.clone(), entity.clone());
+                                            window.on_mouse_event(
+                                                move |event: &MouseUpEvent, phase, _, cx| {
+                                                    if phase != DispatchPhase::Capture
+                                                        || event.button != MouseButton::Left
+                                                    {
+                                                        return;
+                                                    }
+                                                    up_hub.borrow_mut().end_scrub();
+                                                    let _ =
+                                                        up_entity.update(cx, |_, cx| cx.notify());
+                                                },
+                                            );
+                                        }
+                                    },
                                 )
-                            }),
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full(),
+                            )
+                            .child(track)
+                            .when(hot, |this| this.child(grabber).child(bubble)),
                     )
-                    .children(preview_bubble)
                     .on_hover(cx.listener(move |_, inside: &bool, _, cx| {
                         if !*inside {
                             if let Some(entry) = hover_hub.borrow_mut().entries.get_mut(&hover_key)
@@ -1543,23 +1610,9 @@ impl Root {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |_, event: &MouseDownEvent, _, cx| {
-                            let mut hub = down_hub.borrow_mut();
-                            if let Some(entry) = hub.entries.get_mut(&down_key) {
-                                let frac = fraction_of(event.position.x, entry.scrub_bounds) as f32;
-                                let resume_after = entry.player.playing();
-                                if resume_after {
-                                    entry.player.pause();
-                                }
-                                if let Some(dur) = entry.effective_duration() {
-                                    entry.player.seek(f64::from(frac) * dur);
-                                }
-                                entry.last_interaction = Instant::now();
-                                hub.scrub_drag = Some(ScrubDrag {
-                                    key: down_key.clone(),
-                                    fraction: frac,
-                                    resume_after,
-                                });
-                            }
+                            down_hub
+                                .borrow_mut()
+                                .start_scrub(&down_key, event.position.x);
                             cx.stop_propagation();
                             cx.notify();
                         }),
@@ -1568,6 +1621,8 @@ impl Root {
                 // Mute + hover popout (`20504.js`).
                 let vol_icon = if muted || volume <= 0.0 {
                     "clips_voice_off"
+                } else if volume < 0.5 {
+                    "vm_voice_low"
                 } else {
                     "clips_voice_on"
                 };
@@ -1643,19 +1698,24 @@ impl Root {
                     .into_any_element()
                 });
 
-                let right_offset = if spec.allow_fullscreen { 34.0 } else { 2.0 };
+                // The volume box is the last control but the full-screen button (32 px).
+                let right_offset = if spec.allow_fullscreen {
+                    CONTROL_BAR_HEIGHT
+                } else {
+                    0.0
+                } + CONTROL_BAR_HEIGHT
+                    - VOLUME_POPOUT_INSET
+                    - VOLUME_POPOUT_WIDTH;
                 let popout: Option<AnyElement> = volume_open.then(|| {
-                    let slider_pct = if muted || volume <= 0.0 {
+                    let position = if muted || volume <= 0.0 {
                         0.0
                     } else {
                         (volume_to_slider(volume * 100.0) / 100.0).clamp(0.0, 1.0)
                     };
-                    let fill_h = (VOLUME_TRACK_HEIGHT * slider_pct).clamp(0.0, VOLUME_TRACK_HEIGHT);
                     let (pop_hover_hub, pop_hover_key) = (hub.clone(), key.clone());
-                    let (track_bounds_hub, track_bounds_key) = (hub.clone(), key.clone());
-                    let (track_down_hub, track_down_key) = (hub.clone(), key.clone());
-                    let (track_move_hub, track_move_key) = (hub.clone(), key.clone());
-
+                    let (down_hub, down_key) = (hub.clone(), key.clone());
+                    let (paint_hub, paint_key) = (hub.clone(), key.clone());
+                    let entity = cx.entity().downgrade();
                     div()
                         .id(("vp-vol-pop", key_hash))
                         .parity("video-volume-popout")
@@ -1664,15 +1724,9 @@ impl Root {
                         .right(px(right_offset))
                         .w(px(VOLUME_POPOUT_WIDTH))
                         .h(px(VOLUME_POPOUT_HEIGHT))
-                        .py(px(10.0))
                         .rounded(px(8.0))
-                        .bg(midnight("--background-surface-higher"))
-                        .border_1()
-                        .border_color(midnight("--border-subtle"))
-                        .shadow_md()
-                        .flex()
-                        .items_center()
-                        .justify_center()
+                        .bg(color("--opacity-black-68"))
+                        .cursor_pointer()
                         .on_hover(cx.listener(move |_, inside: &bool, _, cx| {
                             let mut hub = pop_hover_hub.borrow_mut();
                             if let Some(entry) = hub.entries.get_mut(&pop_hover_key) {
@@ -1682,109 +1736,91 @@ impl Root {
                             }
                             cx.notify();
                         }))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |_, event: &MouseDownEvent, _, cx| {
+                                down_hub
+                                    .borrow_mut()
+                                    .start_volume_drag(&down_key, event.position.y);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .child(
-                            div()
-                                .id(("vp-vol-track-hit", key_hash))
-                                .relative()
-                                .w(px(16.0))
-                                .h(px(VOLUME_TRACK_HEIGHT))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .child(
-                                    canvas(
-                                        move |bounds, _, _| {
-                                            if let Some(entry) = track_bounds_hub
-                                                .borrow_mut()
-                                                .entries
-                                                .get_mut(&track_bounds_key)
-                                            {
-                                                entry.volume_track_bounds = bounds;
-                                            }
-                                        },
-                                        |_, _, _, _| {},
-                                    )
-                                    .absolute()
-                                    .inset_0(),
-                                )
-                                .child(
-                                    div()
-                                        .relative()
-                                        .w(px(6.0))
-                                        .h(px(VOLUME_TRACK_HEIGHT))
-                                        .rounded_full()
-                                        .bg({
-                                            // `mediaBarWrapperVolume_s1cr3c`: `rgba(201,202,206,.3)` (`--primary-300` at 30%).
-                                            let mut rail = midnight("--primary-300");
-                                            rail.a *= 0.3;
-                                            rail
-                                        })
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .bottom_0()
-                                                .left_0()
-                                                .w_full()
-                                                .h(px(fill_h))
-                                                .rounded_full()
-                                                .bg(midnight("--brand-500")),
-                                        )
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .bottom(px((fill_h - 6.0)
-                                                    .clamp(0.0, VOLUME_TRACK_HEIGHT - 12.0)))
-                                                .left(px(-3.0))
-                                                .size(px(12.0))
-                                                .rounded_full()
-                                                .bg(gpui::white())
-                                                .shadow_xs(),
-                                        ),
-                                )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |_, event: &MouseDownEvent, _, cx| {
-                                        let mut hub = track_down_hub.borrow_mut();
-                                        if let Some(bounds) = hub
-                                            .entries
-                                            .get(&track_down_key)
-                                            .map(|e| e.volume_track_bounds)
-                                        {
-                                            let pos = position_of(event.position.y, bounds);
-                                            hub.set_slider_volume(pos * 100.0);
-                                            hub.volume_drag = Some(track_down_key.clone());
+                            canvas(
+                                |_, _, _| {},
+                                move |bounds, _, window, _| {
+                                    // The rail: 6 by 72, 4 px in from the sides and 8 px from the ends.
+                                    let track = Bounds::new(
+                                        point(bounds.origin.x + px(4.0), bounds.origin.y + px(8.0)),
+                                        size(px(6.0), bounds.size.height - px(16.0)),
+                                    );
+                                    let dragging = {
+                                        let mut hub = paint_hub.borrow_mut();
+                                        if let Some(entry) = hub.entries.get_mut(&paint_key) {
+                                            entry.volume_track_bounds = track;
                                         }
-                                        if let Some(entry) = hub.entries.get_mut(&track_down_key) {
-                                            entry.last_interaction = Instant::now();
-                                        }
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    }),
-                                )
-                                .on_mouse_move(cx.listener(
-                                    move |_, event: &MouseMoveEvent, _, cx| {
-                                        let mut hub = track_move_hub.borrow_mut();
-                                        if hub.volume_drag.as_deref()
-                                            == Some(track_move_key.as_str())
-                                            && let Some(bounds) = hub
-                                                .entries
-                                                .get(&track_move_key)
-                                                .map(|e| e.volume_track_bounds)
-                                        {
-                                            let pos = position_of(event.position.y, bounds);
-                                            hub.set_slider_volume(pos * 100.0);
-                                            if let Some(entry) =
-                                                hub.entries.get_mut(&track_move_key)
-                                            {
-                                                entry.last_interaction = Instant::now();
-                                            }
-                                            cx.notify();
-                                        }
-                                    },
-                                )),
+                                        hub.volume_drag.as_deref() == Some(paint_key.as_str())
+                                    };
+                                    if dragging {
+                                        let (move_hub, move_entity) =
+                                            (paint_hub.clone(), entity.clone());
+                                        window.on_mouse_event(
+                                            move |event: &MouseMoveEvent, phase, _, cx| {
+                                                if phase != DispatchPhase::Capture {
+                                                    return;
+                                                }
+                                                if move_hub
+                                                    .borrow_mut()
+                                                    .drag_volume_to(event.position.y)
+                                                {
+                                                    let _ =
+                                                        move_entity.update(cx, |_, cx| cx.notify());
+                                                }
+                                            },
+                                        );
+                                        let (up_hub, up_entity) =
+                                            (paint_hub.clone(), entity.clone());
+                                        window.on_mouse_event(
+                                            move |event: &MouseUpEvent, phase, _, cx| {
+                                                if phase != DispatchPhase::Capture
+                                                    || event.button != MouseButton::Left
+                                                {
+                                                    return;
+                                                }
+                                                up_hub.borrow_mut().end_volume_drag();
+                                                let _ = up_entity.update(cx, |_, cx| cx.notify());
+                                            },
+                                        );
+                                    }
+                                    // `mediaBarWrapperVolume_s1cr3c`: `--primary-300` at 30%.
+                                    let mut rail = color("--primary-300");
+                                    rail.a *= 0.3;
+                                    window.paint_quad(fill(track, rail).corner_radii(px(3.0)));
+                                    let filled = track.size.height * position;
+                                    let top = track.origin.y + track.size.height - filled;
+                                    let bar = Bounds::new(
+                                        point(track.origin.x, top),
+                                        size(track.size.width, filled),
+                                    );
+                                    window.paint_quad(
+                                        fill(bar, color("--brand-500")).corner_radii(px(3.0)),
+                                    );
+                                    // The grabber shows only while dragging (`transform: scale(0)` otherwise).
+                                    if dragging {
+                                        let grabber = Bounds::new(
+                                            point(track.origin.x - px(2.0), top - px(5.0)),
+                                            size(px(10.0), px(10.0)),
+                                        );
+                                        window.paint_quad(
+                                            fill(grabber, color("--brand-560"))
+                                                .corner_radii(px(5.0)),
+                                        );
+                                    }
+                                },
+                            )
+                            .size_full(),
                         )
                         .into_any_element()
                 });
@@ -1797,14 +1833,13 @@ impl Root {
                     .left_0()
                     .right_0()
                     .h(px(CONTROL_BAR_HEIGHT))
-                    .px(px(4.0))
                     .rounded_b(px(spec.radius))
                     .bg(control_bar_bg())
                     .flex()
                     .items_center()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(play_btn)
+                    .child(div().flex_none().mr(px(8.0)).child(play_btn))
                     .children(clock_el)
                     .child(scrubber)
                     .child(vol_btn)
@@ -2856,6 +2891,58 @@ mod tests {
     }
 
     #[test]
+    fn a_scrub_drag_seeks_live_follows_the_pointer_off_the_bar_and_resumes_on_release() {
+        let mp4 = Arc::new(
+            synthetic_mp4(64, 64, 10, &[[220, 40, 40], [40, 220, 40]], 1).expect("synthetic mp4"),
+        );
+        let mut hub = VideoHub::new();
+        hub.seed_bytes("https://example.test/drag.mp4", mp4);
+        hub.ensure_entry("att:drag", "https://example.test/drag.mp4", (64, 64), true);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            let entry = hub.entries.get_mut("att:drag").expect("entry");
+            entry.tick = entry.player.tick();
+            if entry.effective_duration().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let duration = hub.entries["att:drag"]
+            .effective_duration()
+            .expect("the length is known");
+        // The bar is 200 px wide from x = 100.
+        hub.entries.get_mut("att:drag").expect("entry").scrub_bounds =
+            Bounds::new(point(px(100.), px(0.)), size(px(200.), px(6.)));
+        assert!(hub.entries["att:drag"].player.playing());
+
+        hub.start_scrub("att:drag", px(150.));
+        let entry = &hub.entries["att:drag"];
+        // The element pauses under the drag, but the player keeps its Pause button (`state.playing`).
+        assert!(!entry.player.playing());
+        assert!(
+            hub.scrub_drag
+                .as_ref()
+                .is_some_and(|drag| drag.resume_after)
+        );
+        assert!((entry.player.tick_position() - 0.25 * duration).abs() < 1e-6);
+
+        // The pointer leaves the bar and the player: the time keeps following it, clamped to the ends.
+        assert!(hub.drag_scrub_to(px(250.)));
+        assert!((hub.entries["att:drag"].player.tick_position() - 0.75 * duration).abs() < 1e-6);
+        assert!(hub.drag_scrub_to(px(900.)));
+        assert!((hub.entries["att:drag"].player.tick_position() - duration).abs() < 1e-6);
+        assert!(hub.drag_scrub_to(px(-40.)));
+        assert!(hub.entries["att:drag"].player.tick_position().abs() < 1e-6);
+        assert!(hub.controls_visible("att:drag", &hub.entries["att:drag"], false, Instant::now()));
+
+        hub.end_scrub();
+        assert!(hub.scrub_drag.is_none());
+        assert!(hub.entries["att:drag"].player.playing());
+        // Without a drag a move does nothing.
+        assert!(!hub.drag_scrub_to(px(200.)));
+    }
+
+    #[test]
     fn video_hub_scrub_seek_and_release_drains_gpu_textures() {
         let mp4 = Arc::new(
             synthetic_mp4(
@@ -3002,6 +3089,7 @@ mod tests {
 
     #[test]
     fn player_design_tokens_resolve_in_midnight_and_dark() {
+        use dc_tokens::Theme;
         for token in [
             "--white",
             "--interactive-text-default",

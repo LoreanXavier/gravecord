@@ -163,6 +163,157 @@ struct AudioBar<'a> {
     playable: bool,
 }
 
+/// What the rail of `mediaBar_s1cr3c` (module 122641, the DURATION bar) shows, for the audio card and the video
+/// player alike.
+pub(super) struct MediaBarLook {
+    /// The progress (`mediaBarProgress_s1cr3c`), 0 to 1.
+    pub fraction: f32,
+    /// Where the pointer is (`mediaBarPreview_s1cr3c`), 0 to 1.
+    pub preview: f32,
+    /// The preview shows (`opacity: .3` while the bar is hovered).
+    pub preview_shown: bool,
+    /// The whole file is buffered (`buffer_s1cr3c`).
+    pub buffered: bool,
+    pub bubble_text: String,
+    /// Where the time bubble stands, 0 to 1: the pointer, or the progress while dragging.
+    pub bubble_at: f32,
+}
+
+/// `mediaBarWrapper_s1cr3c` with its parts: the rail (6 px, `--primary-300` at 30%, 3 px caps at both ends), the
+/// buffered part, the hover preview and the progress; then the grabber (10 px, `--brand-560` as shown while hovered or
+/// dragged) and the time bubble (`top: -28px`, centred, a 5 px caret under it), which the caller adds while the bar is
+/// hovered or dragged.
+pub(super) fn media_bar_parts(look: MediaBarLook) -> (gpui::Div, gpui::Div, gpui::Div) {
+    let MediaBarLook {
+        fraction,
+        preview,
+        preview_shown,
+        buffered,
+        bubble_text,
+        bubble_at,
+    } = look;
+    let mut rail = color("--primary-300");
+    rail.a *= 0.3;
+    // A segment of the rail with its caps: `fakeEdges_s1cr3c` puts 3 px round ends outside both sides.
+    let segment = |width: f32, tone: gpui::Rgba, alpha: f32| {
+        let mut tone = tone;
+        tone.a *= alpha;
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .h_full()
+            .w(relative(width))
+            .bg(tone)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(px(-3.))
+                    .w(px(3.))
+                    .h_full()
+                    .rounded_l(px(3.))
+                    .bg(tone),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right(px(-3.))
+                    .w(px(3.))
+                    .h_full()
+                    .rounded_r(px(3.))
+                    .bg(tone),
+            )
+    };
+    let mut track = div()
+        .relative()
+        .flex_1()
+        .h(px(6.))
+        .bg(rail)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left(px(-3.))
+                .w(px(3.))
+                .h_full()
+                .rounded_l(px(3.))
+                .bg(rail),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .right(px(-3.))
+                .w(px(3.))
+                .h_full()
+                .rounded_r(px(3.))
+                .bg(rail),
+        );
+    if buffered {
+        track = track.child(segment(1., color("--white"), 0.3));
+    }
+    track = track
+        .child(segment(
+            preview,
+            color("--white"),
+            if preview_shown { 0.3 } else { 0. },
+        ))
+        .child(segment(fraction, color("--brand-500"), 1.));
+    // The grabber: 10 px, at the end of the progress, only while the pointer is over the bar or it is dragged.
+    let grabber = div()
+        .absolute()
+        .top(px(-2.))
+        .left(relative(fraction))
+        .ml(px(-5.))
+        .size(px(10.))
+        .rounded(px(5.))
+        .bg(color("--brand-560"));
+    // The bubble: `top: -28px`, centred on the pointer; a 5 px caret under it.
+    let bubble = div()
+        .absolute()
+        .top(px(-28.))
+        .left(relative(bubble_at))
+        .w(px(0.))
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .flex_none()
+                .relative()
+                .h(px(18.))
+                .px(px(8.))
+                .rounded(px(3.))
+                .bg(color("--black"))
+                .text_size(px(12.))
+                .line_height(px(18.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(color("--primary-100"))
+                .whitespace_nowrap()
+                .child(bubble_text)
+                .child(
+                    div().absolute().top_full().left_1_2().ml(px(-5.)).child(
+                        canvas(
+                            |_, _, _| {},
+                            |bounds, _, window, _| {
+                                let mut path = gpui::Path::new(bounds.origin);
+                                path.line_to(point(bounds.origin.x + px(10.), bounds.origin.y));
+                                path.line_to(point(
+                                    bounds.origin.x + px(5.),
+                                    bounds.origin.y + px(5.),
+                                ));
+                                window.paint_path(path, color("--black"));
+                            },
+                        )
+                        .w(px(10.))
+                        .h(px(5.)),
+                    ),
+                ),
+        );
+    (track, grabber, bubble)
+}
+
 impl Root {
     /// `audioControls_FJ99sr`: the 32 px controls row shared by audio attachments and audio embeds (`eh` in module 153440).
     fn audio_controls(
@@ -606,130 +757,20 @@ impl Root {
             playable,
         } = spec;
         let hub = self.voice_hub.clone();
-        let mut rail = color("--primary-300");
-        rail.a *= 0.3;
-        // A segment of the rail with its caps: `fakeEdges_s1cr3c` puts 3 px round ends outside both sides.
-        let segment = |width: f32, tone: gpui::Rgba, alpha: f32| {
-            let mut tone = tone;
-            tone.a *= alpha;
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .h_full()
-                .w(relative(width))
-                .bg(tone)
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left(px(-3.))
-                        .w(px(3.))
-                        .h_full()
-                        .rounded_l(px(3.))
-                        .bg(tone),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .right(px(-3.))
-                        .w(px(3.))
-                        .h_full()
-                        .rounded_r(px(3.))
-                        .bg(tone),
-                )
-        };
         let bubble_text = if loaded {
             clock(f64::from(preview) * span)
         } else {
             "-:--".to_owned()
         };
         let show = playable && (over || dragging);
-        let mut track = div()
-            .relative()
-            .flex_1()
-            .h(px(6.))
-            .bg(rail)
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left(px(-3.))
-                    .w(px(3.))
-                    .h_full()
-                    .rounded_l(px(3.))
-                    .bg(rail),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .right(px(-3.))
-                    .w(px(3.))
-                    .h_full()
-                    .rounded_r(px(3.))
-                    .bg(rail),
-            );
-        if buffered {
-            track = track.child(segment(1., color("--white"), 0.3));
-        }
-        track = track
-            .child(segment(
-                preview,
-                color("--white"),
-                if show { 0.3 } else { 0. },
-            ))
-            .child(segment(fraction, color("--brand-500"), 1.));
-        // The grabber: 10 px, at the end of the progress, only while the pointer is over the bar.
-        let grabber = div()
-            .absolute()
-            .top(px(-2.))
-            .left(relative(fraction))
-            .ml(px(-5.))
-            .size(px(10.))
-            .rounded(px(5.))
-            .bg(color("--brand-560"));
-        // The bubble: `top: -28px`, centred on the pointer; a 5 px caret under it.
-        let bubble = div()
-            .absolute()
-            .top(px(-28.))
-            .left(relative(preview))
-            .w(px(0.))
-            .flex()
-            .justify_center()
-            .child(
-                div()
-                    .flex_none()
-                    .relative()
-                    .h(px(18.))
-                    .px(px(8.))
-                    .rounded(px(3.))
-                    .bg(color("--black"))
-                    .text_size(px(12.))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(color("--primary-100"))
-                    .child(bubble_text)
-                    .child(
-                        div().absolute().top_full().left_1_2().ml(px(-5.)).child(
-                            canvas(
-                                |_, _, _| {},
-                                |bounds, _, window, _| {
-                                    let mut path = gpui::Path::new(bounds.origin);
-                                    path.line_to(point(bounds.origin.x + px(10.), bounds.origin.y));
-                                    path.line_to(point(
-                                        bounds.origin.x + px(5.),
-                                        bounds.origin.y + px(5.),
-                                    ));
-                                    window.paint_path(path, color("--black"));
-                                },
-                            )
-                            .w(px(10.))
-                            .h(px(5.)),
-                        ),
-                    ),
-            );
+        let (track, grabber, bubble) = media_bar_parts(MediaBarLook {
+            fraction,
+            preview,
+            preview_shown: show,
+            buffered,
+            bubble_text,
+            bubble_at: preview,
+        });
 
         let (down_hub, down_key) = (hub.clone(), key.to_owned());
         let (hover_hub, hover_key) = (hub.clone(), key.to_owned());

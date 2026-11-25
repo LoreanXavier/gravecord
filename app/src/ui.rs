@@ -12521,7 +12521,6 @@ impl Render for Root {
                 this.voice_mouse(event.button, false, cx);
                 this.end_browser_resize();
                 this.clips_mouse_up(cx);
-                this.video_mouse_up(cx);
             }))
             // The text area menu (module 216603) of the field the release landed on, after that field's handlers.
             .on_mouse_up(
@@ -12541,7 +12540,6 @@ impl Render for Root {
             }))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 this.move_browser_resize(event, cx);
-                this.video_mouse_move(event, cx);
                 if hover_bar::set_shift(event.modifiers.shift) && this.hovered.is_some() {
                     cx.notify();
                 }
