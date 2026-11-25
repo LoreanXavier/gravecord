@@ -128,19 +128,20 @@ fn problems(source: &Source) -> Vec<String> {
     problems
 }
 
-/// Whether the build is dirty, or the refusal: a source with problems is packaged only with `--allow-dirty`, and is
-/// then stamped dirty.
+/// Whether the build is dirty, or the refusal: a source with problems is packaged only with `--allow-dirty`, and every
+/// `--allow-dirty` package, even one from a clean tree, is stamped dirty.
 fn verdict(source: &Source, allow_dirty: bool) -> Result<bool> {
     let problems = problems(source);
+    if allow_dirty {
+        // A test package is stamped dirty even from a clean tree: the flag says it is not a release.
+        println!("LOCAL TEST PACKAGE (--allow-dirty), stamped dirty, not for release");
+        for problem in &problems {
+            println!("- {problem}");
+        }
+        return Ok(true);
+    }
     if problems.is_empty() {
         return Ok(false);
-    }
-    if allow_dirty {
-        println!(
-            "LOCAL TEST PACKAGE (--allow-dirty), stamped dirty, not for release:\n- {}",
-            problems.join("\n- ")
-        );
-        return Ok(true);
     }
     bail!(
         "refusing to package:\n- {}\nCommit the changes on integration or main, or pass --allow-dirty for a local test \
@@ -549,9 +550,10 @@ mod tests {
                 .contains("neither integration nor main"),
             "{elsewhere}"
         );
-        // The override packages it, stamped dirty.
+        // The override packages it, stamped dirty, and stamps a clean release tree dirty too.
         assert!(verdict(&tree(&[" M a.rs"], &[]), true).unwrap());
         assert!(verdict(&tree(&[], &[]), true).unwrap());
+        assert!(verdict(&tree(&[], &["integration"]), true).unwrap());
     }
 
     #[test]
