@@ -9,8 +9,12 @@ use std::{
 };
 use tokio::time::Instant;
 
-const MAX_PACKETS: u64 = 512;
-const MAX_BYTES: usize = 512 * 1024;
+/// Packets a hole may hold back before the window gives up on the chain: libwebrtc's `kPacketBufferMaxSize` of 2048
+/// (`video/rtp_video_stream_receiver2.cc`), which clears its packet buffer and asks for a keyframe only past that. At
+/// 512 a single loss during a 1440p60 keyframe overflowed the window and cost a keyframe request.
+const MAX_PACKETS: u64 = 2048;
+/// The same packets at a 1200-byte RTP payload, as a memory bound.
+const MAX_BYTES: usize = MAX_PACKETS as usize * 1200;
 const MAX_PAYLOAD: usize = 4096;
 const REPAIR_AGE: Duration = Duration::from_millis(120);
 const MAX_REPAIR_AGE: Duration = Duration::from_millis(400);
@@ -459,20 +463,28 @@ mod tests {
         window.push(0, 1, false, &[1], now);
         window.pop(now);
         let payload = vec![1; MAX_PAYLOAD];
-        for sequence in 2..=129 {
+        let full = 2 + (MAX_BYTES / MAX_PAYLOAD) as u16;
+        for sequence in 2..full {
             assert!(!window.push(sequence, 1, false, &payload, now));
         }
         assert_eq!(window.bytes, MAX_BYTES);
-        assert!(window.push(130, 1, true, &payload, now));
+        assert!(window.push(full, 1, true, &payload, now));
         assert_eq!(window.bytes, MAX_PAYLOAD);
-        assert_eq!(window.pop(now).0.unwrap().sequence, 130);
-        assert!(window.push(900, 2, true, &[1], now));
+        assert_eq!(window.pop(now).0.unwrap().sequence, full);
+        let jump = full + 1 + MAX_PACKETS as u16;
+        assert!(window.push(jump, 2, true, &[1], now));
         window.pop(now);
-        window.push(1412, 3, true, &[1], now);
+        assert!(!window.push(jump + MAX_PACKETS as u16, 3, true, &[1], now));
         let (_, body) = window.nack(7, 9, now + REORDER_GRACE).unwrap();
         assert!(body.len() <= 4 + MAX_REQUESTS * 4);
         assert!(window.missing.len() < MAX_PACKETS as usize);
-        assert!(window.push(1413, 3, true, &vec![1; MAX_PAYLOAD + 1], now));
+        assert!(window.push(
+            jump + MAX_PACKETS as u16 + 1,
+            3,
+            true,
+            &vec![1; MAX_PAYLOAD + 1],
+            now
+        ));
         assert_eq!(window.bytes, 0);
         assert!(window.missing.is_empty());
     }

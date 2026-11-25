@@ -645,6 +645,8 @@ pub(crate) async fn run(
     let mut sink_wants_at = Instant::now();
     let mut tally = [0u32; 4];
     let mut tally_at = Instant::now() + Duration::from_secs(5);
+    let mut last_received = receive::ReceiveTally::default();
+    let mut last_tally_at = Instant::now();
     let mut stats_at = Instant::now() + Duration::from_millis(250);
     let mut fps_at = Instant::now() + Duration::from_secs(1);
     let mut last_fps_at = Instant::now();
@@ -1098,6 +1100,11 @@ pub(crate) async fn run(
                 }
                 if now >= tally_at {
                     let (numbered, unnumbered) = receivers.transport_counts();
+                    let counts = receivers.tally();
+                    let (received, video_kbps) = counts.since(&last_received, now.saturating_duration_since(last_tally_at));
+                    last_received = counts;
+                    last_tally_at = now;
+                    let decoded = (!sending).then(|| decoders.video_stats(owner)).flatten().unwrap_or_default();
                     let (stream_audio_underruns, stream_audio_trimmed) = playout.as_ref().map_or_else(
                         || hub.stream_audio_counts(owner),
                         |p| (p.stats_snapshot().stream_underruns, 0),
@@ -1111,6 +1118,25 @@ pub(crate) async fn run(
                         ready = dave.ready,
                         transport_cc_packets = numbered,
                         without_transport_cc = unnumbered,
+                        video_kbps,
+                        width = decoded.width,
+                        height = decoded.height,
+                        decoded_fps,
+                        frames_decoded = decoded.frames_decoded,
+                        keyframes_decoded = decoded.keyframes_decoded,
+                        nacks_sent = received.nacks,
+                        plis_sent = received.plis,
+                        rtx_repaired = received.repaired,
+                        holes_expired = received.expired,
+                        window_resets = received.window_resets,
+                        transport_feedback_sent = received.feedback_reports,
+                        transport_feedback_late = received.feedback_late,
+                        transport_feedback_missing = received.feedback_missing,
+                        receiver_reports_sent = received.receiver_reports,
+                        dave_failures = received.dave_failures,
+                        refused_awaiting_keyframe = received.refused,
+                        decoder_queue_drops = received.decoder_dropped,
+                        decoder_keyframe_requests = received.decoder_lost,
                         stream_audio_underruns,
                         stream_audio_trimmed,
                         repairs_sent = sender.as_ref().map_or(0, |sender| sender.repairs),

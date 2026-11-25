@@ -64,6 +64,63 @@ struct Source {
     bytes_received: u64,
     nacks: u64,
     plis: u64,
+    /// Times a window bound gave up on the reference chain.
+    resets: u64,
+}
+
+/// What the receiving side did so far, summed over its video sources, for the tally line of the log.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReceiveTally {
+    pub video_bytes: u64,
+    pub nacks: u64,
+    pub plis: u64,
+    /// Holes filled by a retransmission, and holes given up on.
+    pub repaired: u64,
+    pub expired: u64,
+    pub window_resets: u64,
+    /// Transport-wide feedback messages built, and packets reported again after a message called them missing.
+    pub feedback_reports: u64,
+    pub feedback_late: u64,
+    /// Statuses the transport-wide feedback reported as not received.
+    pub feedback_missing: u64,
+    pub receiver_reports: u64,
+    /// Pictures DAVE could not open, pictures refused while the chain waited for a keyframe, pictures the decoder's
+    /// queue had no room for, and keyframe requests from the decoder itself.
+    pub dave_failures: u64,
+    pub refused: u64,
+    pub decoder_dropped: u64,
+    pub decoder_lost: u64,
+}
+
+impl ReceiveTally {
+    /// The counts since `earlier`, and the video payload rate in kbit/s over `elapsed`.
+    pub fn since(&self, earlier: &Self, elapsed: Duration) -> (Self, u64) {
+        let delta = Self {
+            video_bytes: self.video_bytes.saturating_sub(earlier.video_bytes),
+            nacks: self.nacks.saturating_sub(earlier.nacks),
+            plis: self.plis.saturating_sub(earlier.plis),
+            repaired: self.repaired.saturating_sub(earlier.repaired),
+            expired: self.expired.saturating_sub(earlier.expired),
+            window_resets: self.window_resets.saturating_sub(earlier.window_resets),
+            feedback_reports: self
+                .feedback_reports
+                .saturating_sub(earlier.feedback_reports),
+            feedback_late: self.feedback_late.saturating_sub(earlier.feedback_late),
+            feedback_missing: self
+                .feedback_missing
+                .saturating_sub(earlier.feedback_missing),
+            receiver_reports: self
+                .receiver_reports
+                .saturating_sub(earlier.receiver_reports),
+            dave_failures: self.dave_failures.saturating_sub(earlier.dave_failures),
+            refused: self.refused.saturating_sub(earlier.refused),
+            decoder_dropped: self.decoder_dropped.saturating_sub(earlier.decoder_dropped),
+            decoder_lost: self.decoder_lost.saturating_sub(earlier.decoder_lost),
+        };
+        let seconds = elapsed.as_secs_f64().max(0.001);
+        let kbps = (delta.video_bytes as f64 * 8.0 / seconds / 1000.0).round() as u64;
+        (delta, kbps)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -232,6 +289,12 @@ pub(crate) struct Receivers {
     audio: Vec<(u32, Stats)>,
     next_report: Option<Instant>,
     transport: Option<TransportFeedback>,
+    receiver_reports: u64,
+    /// What `hand_over` did with complete pictures; see `ReceiveTally`.
+    handed: ReceiveTally,
+    /// Transport-wide feedback as it was before the back window (`TransportFeedback::drop_late`).
+    #[cfg(test)]
+    pub drop_late_feedback: bool,
 }
 
 impl Receivers {
@@ -268,6 +331,7 @@ impl Receivers {
             bytes_received: 0,
             nacks: 0,
             plis: 0,
+            resets: 0,
         });
         Ok(())
     }
@@ -308,6 +372,7 @@ impl Receivers {
         {
             // A bound forced the window to give up on the chain.
             source.awaiting = true;
+            source.resets += 1;
         }
     }
 
@@ -362,6 +427,10 @@ impl Receivers {
         let feedback = self
             .transport
             .get_or_insert_with(|| TransportFeedback::new(now.into_std()));
+        #[cfg(test)]
+        {
+            feedback.drop_late = self.drop_late_feedback;
+        }
         match sequence {
             Some(sequence) => feedback.receive(ssrc, sequence, now.into_std()),
             None => feedback.unnumbered += 1,
@@ -456,9 +525,36 @@ impl Receivers {
             if !blocks.is_empty() {
                 let (header, body) = rtp::receiver_report(own_ssrc, &blocks);
                 out.push((header, body));
+                self.receiver_reports += 1;
             }
         }
         out
+    }
+
+    /// The receiving side's counts so far; sources that were removed take theirs with them.
+    pub fn tally(&self) -> ReceiveTally {
+        let mut tally = ReceiveTally {
+            receiver_reports: self.receiver_reports,
+            dave_failures: self.handed.dave_failures,
+            refused: self.handed.refused,
+            decoder_dropped: self.handed.decoder_dropped,
+            decoder_lost: self.handed.decoder_lost,
+            ..ReceiveTally::default()
+        };
+        if let Some(transport) = &self.transport {
+            tally.feedback_reports = transport.reports;
+            tally.feedback_late = transport.late;
+            tally.feedback_missing = transport.missing;
+        }
+        for source in &self.sources {
+            tally.video_bytes += source.bytes_received;
+            tally.nacks += source.nacks;
+            tally.plis += source.plis;
+            tally.repaired += source.window.repaired;
+            tally.expired += source.window.expired_packets;
+            tally.window_resets += source.resets;
+        }
+        tally
     }
 
     pub fn audio_jitter_ms(&self, ssrc: u32) -> f32 {
@@ -506,19 +602,23 @@ pub(crate) fn hand_over(
             continue;
         }
         let Ok(plain) = dave.decrypt(unit.user, davey::MediaType::VIDEO, &unit.data) else {
+            receivers.handed.dave_failures += 1;
             receivers.require_keyframe(unit.user);
             continue;
         };
         let keyframe = dc_media::h264::is_keyframe(&plain);
         if !receivers.accept(unit.user, keyframe) {
+            receivers.handed.refused += 1;
             continue;
         }
         offered += 1;
         if decoders.offer(unit.user, plain, unit.timestamp, now) == Offer::Dropped {
+            receivers.handed.decoder_dropped += 1;
             receivers.require_keyframe(unit.user);
         }
     }
     for user in decoders.take_lost() {
+        receivers.handed.decoder_lost += 1;
         receivers.require_keyframe(user);
     }
     offered
@@ -911,6 +1011,72 @@ mod tests {
             receivers.feedback(7, at(450)).is_empty(),
             "nothing due 50 ms later"
         );
+    }
+
+    #[test]
+    fn a_lost_packet_is_nacked_then_given_up_with_a_pli_and_the_tally_counts_it_all() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut receivers = Receivers::default();
+        receivers.announce(5, 100, 101).unwrap();
+        // Each packet's transport-wide number is its RTP sequence less one, so a lost packet is a hole in both.
+        let arrive =
+            |receivers: &mut Receivers, sequence: u16, marker: bool, payload: &[u8], ms| {
+                receivers.observe_transport(100, Some(sequence - 1), at(ms));
+                receivers.push(rtp(101, 100, sequence, marker, payload), at(ms));
+            };
+        // A keyframe in three FU-A packets arrives whole and is accepted.
+        arrive(&mut receivers, 1, false, &[0x7c, 0x85, 1], 0);
+        arrive(&mut receivers, 2, false, &[0x7c, 0x05, 2], 0);
+        arrive(&mut receivers, 3, true, &[0x7c, 0x45, 3], 0);
+        let mut out = Vec::new();
+        receivers.drain(at(0), &mut out);
+        assert_eq!(out.len(), 1);
+        assert!(receivers.accept(5, true));
+        let first = receivers.feedback(7, at(1));
+        assert!(
+            first.iter().all(|(header, _)| header[1] != 206),
+            "no PLI while the chain is intact"
+        );
+        // The next picture loses its middle packet: a NACK for 5 once the reorder grace has passed.
+        arrive(&mut receivers, 4, false, &[0x7c, 0x81, 4], 33);
+        arrive(&mut receivers, 6, true, &[0x7c, 0x41, 6], 34);
+        receivers.drain(at(34), &mut out);
+        assert_eq!(out.len(), 1, "the picture waits for its repair");
+        let nacks: Vec<_> = receivers
+            .feedback(7, at(45))
+            .into_iter()
+            .filter(|(header, _)| header[0] == 0x81 && header[1] == 205)
+            .collect();
+        assert_eq!(nacks.len(), 1);
+        assert_eq!(&nacks[0].1[4..8], &[0, 5, 0, 0], "PID 5, no BLP");
+        // No repair comes: past the repair budget the hole is given up, the chain is broken and a PLI goes out.
+        receivers.drain(at(200), &mut out);
+        assert_eq!(out.len(), 1, "a broken picture is not handed over");
+        assert!(!receivers.accept(5, false));
+        let late = receivers.feedback(7, at(200));
+        let pli = late
+            .iter()
+            .find(|(header, _)| header[1] == 206)
+            .expect("a PLI");
+        assert_eq!(pli.0[0], 0x81, "FMT 1");
+        assert_eq!(&pli.1[..], &100u32.to_be_bytes());
+        let tally = receivers.tally();
+        assert_eq!(tally.video_bytes, 15);
+        assert_eq!((tally.plis, tally.repaired, tally.expired), (1, 0, 1));
+        assert!(tally.nacks >= 1);
+        assert!(tally.feedback_reports >= 1 && tally.receiver_reports >= 1);
+        // Transport sequence 4 was never seen (packet 5 did not come), so a message reported it missing.
+        let _ = receivers.feedback(7, at(400));
+        assert_eq!(receivers.tally().feedback_missing, 1);
+        let (delta, kbps) = tally.since(&ReceiveTally::default(), Duration::from_secs(1));
+        assert_eq!((delta, kbps), (tally, 0));
+        let (_, kbps) = ReceiveTally {
+            video_bytes: 625_000,
+            ..tally
+        }
+        .since(&tally, Duration::from_secs(1));
+        assert_eq!(kbps, 5000);
     }
 
     #[test]

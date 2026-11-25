@@ -431,6 +431,12 @@ pub(crate) struct Setup {
     pub media_from_ms: u64,
     pub pictures: Pictures,
     pub gate: Gate,
+    /// The share of datagrams, in percent, that the link holds back by the given milliseconds past the ones behind
+    /// them: reordering, nothing lost.
+    pub reorder: Option<(f64, u64)>,
+    /// Transport-wide feedback reports a packet that turned up after a message called it missing (libwebrtc's back
+    /// window); `false` is the behaviour before, where it stayed lost.
+    pub late_feedback: bool,
 }
 
 /// What the encoder makes.
@@ -468,6 +474,8 @@ const ORIGINAL: Setup = Setup {
     media_from_ms: 0,
     pictures: Pictures::Target,
     gate: Gate::Idle,
+    reorder: None,
+    late_feedback: true,
 };
 /// As it is now: probing, the call's start rate, the screen share's pacing and the pacer clock.
 const NOW: Setup = Setup {
@@ -482,6 +490,8 @@ const NOW: Setup = Setup {
     media_from_ms: 0,
     pictures: Pictures::Target,
     gate: Gate::Intervals(2),
+    reorder: None,
+    late_feedback: true,
 };
 
 /// What [`run_capacity`] saw.
@@ -546,6 +556,7 @@ pub(crate) fn run_capacity(phases: &[(u64, u32)], setup: Setup) -> LinkRun {
     let mut random = Random(0x2545_F491);
     let mut receivers = Receivers::default();
     receivers.announce(1, SSRC, RTX).unwrap();
+    receivers.drop_late_feedback = !setup.late_feedback;
     let end = phases.last().map_or(0, |phase| phase.0) * 1000;
     let capacity_at = |ms: u64| {
         phases
@@ -668,7 +679,11 @@ pub(crate) fn run_capacity(phases: &[(u64, u32)], setup: Setup) -> LinkRun {
                     queue_us = queue_us.max(departs - now_us);
                     link_free = departs;
                     order += 1;
-                    let arrives = departs as u64 + DELAY_MS * 1000;
+                    let held_back = setup
+                        .reorder
+                        .filter(|(percent, _)| random.chance(*percent))
+                        .map_or(0, |(_, ms)| ms * 1000);
+                    let arrives = departs as u64 + DELAY_MS * 1000 + held_back;
                     air.push(std::cmp::Reverse((arrives, order, wire.to_vec())));
                     Ok(())
                 })
@@ -1379,5 +1394,50 @@ fn smoothness_table() {
                     .unwrap()
             );
         }
+    }
+}
+
+/// Packets the link only reorders, never loses: with libwebrtc's back window the transport-wide feedback reports each
+/// late one received in the next message, as the native engine's receiver does; dropping them, as before, left every
+/// reordering across a report boundary lost to the sender. At these rates this crate's own send-side estimator keeps
+/// the same target either way (1%: 8.61 Mb/s, 3%: 8.45 Mb/s, 3% by 80 ms: the 9 Mb/s top), so the run shows the
+/// feedback is right, not that the old feedback capped a stream.
+#[test]
+fn packets_reordered_past_a_feedback_message_are_not_loss_to_the_sender() {
+    let phases = [(40, 12_000_000)];
+    let mean_from = |run: &LinkRun, from_ms: u64| {
+        let tail: Vec<u64> = run
+            .samples
+            .iter()
+            .filter(|(ms, _)| *ms >= from_ms)
+            .map(|(_, bits)| u64::from(*bits))
+            .collect();
+        tail.iter().sum::<u64>() / tail.len().max(1) as u64
+    };
+    for (percent, ms) in [(1.0, 30), (3.0, 30), (3.0, 80)] {
+        let reorder = Some((percent, ms));
+        let now = run_capacity(&phases, Setup { reorder, ..NOW });
+        let before = run_capacity(
+            &phases,
+            Setup {
+                reorder,
+                late_feedback: false,
+                ..NOW
+            },
+        );
+        println!(
+            "{percent}% held back {ms} ms: acked {} unacked {} target {} now; acked {} unacked {} target {} before",
+            now.estimation.packets_acked,
+            now.estimation.packets_lost,
+            mean_from(&now, 20_000),
+            before.estimation.packets_acked,
+            before.estimation.packets_lost,
+            mean_from(&before, 20_000),
+        );
+        assert!(
+            now.estimation.packets_acked > before.estimation.packets_acked,
+            "late packets reach the sender as received"
+        );
+        assert!(mean_from(&now, 20_000) >= mean_from(&before, 20_000));
     }
 }

@@ -888,6 +888,8 @@ pub(crate) async fn run(
     // The server's keyframe interval (op 4 or 14), for the camera sender.
     let mut keyframe_interval = 0u64;
     let mut video_tally = [0u32; 3];
+    let mut last_received = receive::ReceiveTally::default();
+    let mut last_tally_at = Instant::now();
 
     loop {
         if let Some(reason) = reconnect.take() {
@@ -1451,12 +1453,30 @@ pub(crate) async fn run(
                 was_secure = secure;
                 if now >= tally_at {
                     let (numbered, unnumbered) = receivers.transport_counts();
+                    let counts = receivers.tally();
+                    let (received, video_kbps) = counts.since(&last_received, now.saturating_duration_since(last_tally_at));
+                    last_received = counts;
+                    last_tally_at = now;
                     debug!(
                         video_packets = video_tally[0],
                         video_pictures = video_tally[2],
                         camera = camera.is_some(),
                         transport_cc_packets = numbered,
                         without_transport_cc = unnumbered,
+                        video_kbps,
+                        nacks_sent = received.nacks,
+                        plis_sent = received.plis,
+                        rtx_repaired = received.repaired,
+                        holes_expired = received.expired,
+                        window_resets = received.window_resets,
+                        transport_feedback_sent = received.feedback_reports,
+                        transport_feedback_late = received.feedback_late,
+                        transport_feedback_missing = received.feedback_missing,
+                        receiver_reports_sent = received.receiver_reports,
+                        dave_failures = received.dave_failures,
+                        refused_awaiting_keyframe = received.refused,
+                        decoder_queue_drops = received.decoder_dropped,
+                        decoder_keyframe_requests = received.decoder_lost,
                         "voice video tally"
                     );
                     if let Some(sender) = video_sender.as_ref() {
