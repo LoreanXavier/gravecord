@@ -890,6 +890,17 @@ impl Root {
                 }))
         });
         let stage = self.profile_editor_stage(&user, window, cx);
+        // A frame's crest rises over the editor's top edge (`inner_P1YEjQ` of the modal clips nothing), so a framed
+        // editor leaves its children unclipped; the panel, the one child reaching its rounded corners, rounds itself.
+        let framed = self.profile_editor_framed(window);
+        let radius = geometry.radius;
+        let panel_slot = move |panel: AnyElement| {
+            panel_slot(panel).when(framed, |slot| {
+                slot.rounded_tl(px(radius))
+                    .rounded_bl(px(radius))
+                    .overflow_hidden()
+            })
+        };
         let root = div()
             .parity("profile-editor")
             .id("profile-editor")
@@ -901,7 +912,7 @@ impl Root {
             .w(px(geometry.width))
             .h(px(geometry.height))
             .rounded(px(geometry.radius))
-            .overflow_hidden()
+            .when(!framed, |root| root.overflow_hidden())
             .bg(color("--background-base-lower"))
             .flex()
             .font_family(SANS)

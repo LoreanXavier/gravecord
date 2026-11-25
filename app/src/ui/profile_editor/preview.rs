@@ -128,6 +128,7 @@ impl Root {
             .expect("editor is open")
             .geometry;
         let card = self.profile_editor_card(user, window, cx);
+        let framed = self.profile_editor_framed(window);
         // `profileContentColumns_s3DB6Y`: the card and the widgets column side by side, down to the editor's bottom.
         let columns = div()
             .relative()
@@ -157,7 +158,8 @@ impl Root {
             .rounded_tr(px(stage_tr))
             .rounded_br(px(stage_br))
             .rounded_bl(px(stage_bl))
-            .overflow_hidden()
+            // A frame's crest rises over the editor's top edge (`inner_P1YEjQ` of the modal clips nothing).
+            .when(!framed, |stage| stage.overflow_hidden())
             .bg(palette
                 .theme
                 .as_ref()
@@ -915,8 +917,23 @@ impl Root {
                     .child(bubble),
             )
             .child(body);
-        let frame_layer =
-            self.profile_editor_art(frame, super::Kind::Frame, width, geometry.card_height());
+        // The frame of module 744808 as the modal draws it on its left card (`profileFrame: tl`, the pending choice
+        // first through `profileFrameOverride`, `filterLayer: u5`): the card's box, hanging out of it unclipped.
+        if let Some(sku) = frame {
+            self.request_frame_product(&sku.to_string());
+        }
+        let (frame_back, frame_front) = self
+            .profile_editor_frame()
+            .map(|chosen| {
+                self.frame_layers(
+                    &chosen,
+                    width,
+                    Some(geometry.card_height()),
+                    super::super::profile_frames::FrameSurface::Modal,
+                    f32::from(window.viewport_size().height),
+                )
+            })
+            .unwrap_or_default();
         let effect_layer = effect.and_then(|sku| {
             self.profile_effect_layer(
                 "profile-editor",
@@ -926,8 +943,35 @@ impl Root {
                 cx,
             )
         });
-        card = card.children(frame_layer).children(effect_layer);
-        card.into_any_element()
+        card = card.children(effect_layer);
+        div()
+            .relative()
+            .w(px(width))
+            .h(px(geometry.card_height()))
+            .flex_none()
+            .children(frame_back)
+            .child(card)
+            .children(frame_front)
+            .into_any_element()
+    }
+
+    /// Whether the editor's card shows a frame now: one is chosen and in, and the window is taller than 785px.
+    pub(in crate::ui) fn profile_editor_framed(&self, window: &Window) -> bool {
+        self.profile_editor_frame().is_some()
+            && super::super::profile_frames::frame_shown(
+                super::super::profile_frames::FrameSurface::Modal,
+                f32::from(window.viewport_size().height),
+            )
+    }
+
+    /// The frame the editor previews: the pending choice, else the saved one, once its product is in.
+    fn profile_editor_frame(&self) -> Option<super::super::profile_frames::Frame> {
+        let open = self.profile_editor.as_ref()?;
+        let sku = open
+            .pending
+            .profile_frame
+            .unwrap_or(open.saved.equipped.profile_frame)?;
+        self.frame_of_sku(&sku.to_string())
     }
 
     pub(super) fn profile_editor_eligible_tags(&self) -> Vec<(Id, String, String, Option<String>)> {

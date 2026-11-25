@@ -893,11 +893,22 @@ impl Root {
                         cx,
                     )
                 });
-                let frame_layer = self.profile_editor_art(frame, Kind::Frame, 300., 274.);
-                div()
+                // Module 641318's card with the frame of module 744808 as its last child (`isPreview`): the card keeps
+                // room for it on every side (`container_-JS7Po.custom-profile-frame`) and its layers hang out of it.
+                if let Some(sku) = frame {
+                    self.request_frame_product(&sku.to_string());
+                }
+                let preview = crate::ui::profile_frames::FrameSurface::Preview;
+                let chosen = frame.and_then(|sku| self.frame_of_sku(&sku.to_string()));
+                let margins = chosen
+                    .as_ref()
+                    .map(|chosen| chosen.margins(preview, false))
+                    .unwrap_or_default();
+                let (frame_back, frame_front) = chosen
+                    .map(|chosen| self.frame_layers(&chosen, 300., Some(274.), preview, 0.))
+                    .unwrap_or_default();
+                let card = div()
                     .relative()
-                    .ml(px(15.))
-                    .mt(px(6.5))
                     .w(px(300.))
                     .h(px(274.))
                     .flex_none()
@@ -956,8 +967,19 @@ impl Root {
                                 "--control-primary-text-default",
                             )),
                     )
-                    .children(frame_layer)
-                    .children(layer)
+                    .children(layer);
+                div()
+                    .relative()
+                    .ml(px(15. + margins.side))
+                    .mt(px(6.5 + margins.top))
+                    .mr(px(margins.side))
+                    .mb(px(margins.bottom))
+                    .w(px(300.))
+                    .h(px(274.))
+                    .flex_none()
+                    .children(frame_back)
+                    .child(card)
+                    .children(frame_front)
                     .into_any_element()
             }
         }

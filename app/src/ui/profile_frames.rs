@@ -72,15 +72,19 @@ pub(super) enum FrameSurface {
     Popout,
     Modal,
     Sidebar,
+    /// The Change Profile Frame dialog's preview card (`container_-JS7Po` of module 641318, `isPreview`).
+    Preview,
 }
 
-/// The `@media (max-height)` rules of `profileFrameContainer_v8co33`: no frame in a window this short or shorter.
+/// The `@media (max-height)` rules of `profileFrameContainer_v8co33`: no frame in a window this short or shorter. A
+/// preview (`.preview_v8co33`) is exempt.
 pub(super) fn frame_shown(surface: FrameSurface, window_height: f32) -> bool {
     window_height
         > match surface {
             FrameSurface::Popout => 480.,
             FrameSurface::Modal => 785.,
             FrameSurface::Sidebar => 510.,
+            FrameSurface::Preview => return true,
         }
 }
 
@@ -177,17 +181,18 @@ impl Frame {
     /// The room a framed card keeps around itself on `surface` (top, each side, bottom): the `.custom-profile-frame`
     /// margins of `themeContainer_S_xUx6` (sidebar) and `themeContainer_NOlkhE` (popout), the overflows scaled by
     /// `--custom-profile-frame-layer-scale`. `themed` is `custom-user-profile-theme` (the popout scales by 304 then).
+    /// The dialog's preview card (`:where(.container_-JS7Po).custom-profile-frame`) takes all three, scaled by 300
+    /// (304 when themed) like the popout.
     pub(super) fn margins(&self, surface: FrameSurface, themed: bool) -> FrameMargins {
         let scale = |width: f32| self.scale(width);
+        let around = |s: f32| FrameMargins {
+            top: self.overflow_top * s,
+            side: self.overflow_horizontal * s,
+            bottom: self.overflow_bottom * s,
+        };
         match surface {
-            FrameSurface::Sidebar => {
-                let s = scale(304.);
-                FrameMargins {
-                    top: self.overflow_top * s,
-                    side: self.overflow_horizontal * s,
-                    bottom: self.overflow_bottom * s,
-                }
-            }
+            FrameSurface::Sidebar => around(scale(304.)),
+            FrameSurface::Preview => around(scale(popout_scale_width(themed))),
             FrameSurface::Popout => FrameMargins {
                 bottom: self.overflow_bottom * scale(popout_scale_width(themed)),
                 ..FrameMargins::default()
@@ -278,6 +283,16 @@ impl Root {
         else {
             return;
         };
+        self.request_frame_product(&sku);
+    }
+
+    /// The frame of product `sku` once it was read (the editor's pending or saved choice).
+    pub(super) fn frame_of_sku(&self, sku: &str) -> Option<Frame> {
+        parse_frame(self.fetched.get(&format!("{PRODUCT_PREFIX}{sku}"))?)
+    }
+
+    /// Reads the product of frame `sku`, and its layers once it is in.
+    pub(super) fn request_frame_product(&mut self, sku: &str) {
         let key = format!("{PRODUCT_PREFIX}{sku}");
         if let Some(product) = self.fetched.get(&key).cloned() {
             self.request_frame_layers(&product);
@@ -345,13 +360,25 @@ impl Root {
         surface: FrameSurface,
         window_height: f32,
     ) -> (Vec<AnyElement>, Vec<AnyElement>) {
+        match self.profile_frame(user) {
+            Some(frame) => self.frame_layers(&frame, width, height, surface, window_height),
+            None => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// [`Root::profile_frame_layers`] for a frame already in hand (the editor's choice).
+    pub(super) fn frame_layers(
+        &self,
+        frame: &Frame,
+        width: f32,
+        height: Option<f32>,
+        surface: FrameSurface,
+        window_height: f32,
+    ) -> (Vec<AnyElement>, Vec<AnyElement>) {
         let (mut back, mut front) = (Vec::new(), Vec::new());
         if !frame_shown(surface, window_height) {
             return (back, front);
         }
-        let Some(frame) = self.profile_frame(user) else {
-            return (back, front);
-        };
         let scale = frame.scale(width);
         let (left, box_width) = frame.frame_box(width);
         for layer in &frame.layers {
@@ -510,6 +537,17 @@ mod tests {
         );
         // `max-height: calc(100vh - 20px - top - bottom)` of a framed popout.
         assert_eq!(frame.popout_height_cut(false), (304. + 148.) * 0.25);
+        // The Change Profile Frame preview: all around at 300 over 1200, and never hidden by the window's height.
+        assert_eq!(
+            frame.margins(FrameSurface::Preview, false),
+            FrameMargins {
+                top: 76.,
+                side: 14.,
+                bottom: 37.
+            }
+        );
+        assert!(frame_shown(FrameSurface::Preview, 300.));
+        assert!(layer_drawn(FrameSurface::Preview, &frame.layers[0]));
         assert_eq!(drop_shadow_opacity(dc_tokens::Theme::Darker), 0.4);
     }
 
