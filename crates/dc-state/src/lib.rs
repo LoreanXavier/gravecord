@@ -28,6 +28,7 @@ pub mod guild_integrations;
 pub mod guild_join_requests;
 pub mod guild_member_counts;
 pub mod guild_settings;
+pub mod guild_subscriptions;
 pub mod interactions;
 pub mod local_activity;
 pub mod location_metadata;
@@ -368,6 +369,16 @@ impl ChannelKind {
     pub fn is_guild_app(self) -> bool {
         self == Self::Other(GUILD_APP_CHANNEL_TYPE)
     }
+
+    /// The channel's `type`.
+    pub fn as_u64(self) -> u64 {
+        match self {
+            Self::Text => 0,
+            Self::Voice => 2,
+            Self::Category => 4,
+            Self::Other(other) => other,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -403,6 +414,8 @@ pub struct Channel {
     pub linked_lobby_application_id: Option<Id>,
     /// `application_id`: configured application on a `GUILD_APP` channel (type 21, module 98492).
     pub application_id: Option<Id>,
+    /// `member_list_id` (module 95701 `memberListId`): the member list the channel reads, when the server names it.
+    pub member_list_id: Option<String>,
 }
 
 /// `ChannelFlags.IS_MODERATOR_REPORT_CHANNEL` (module 746080 `lx`, `1 << 19`).
@@ -497,6 +510,7 @@ impl Channel {
             ),
             linked_lobby_application_id: id(&value["linked_lobby"]["application_id"]),
             application_id: id(&value["application_id"]),
+            member_list_id: text(&value["member_list_id"]),
         })
     }
 }
@@ -2485,7 +2499,8 @@ pub struct Stores {
     pub thread_member_lists: thread_member_list::ThreadMemberLists,
     /// Required action, friend suggestions, forum unread counts, pending bulk bans.
     pub account_events: account_events::AccountEvents,
-    pub member_lists: HashMap<Id, member_list::MemberList>,
+    /// `ChannelMemberStore`: each guild's lists by member list id.
+    pub member_lists: member_list::MemberLists,
     /// User id to status, for people this session has presence for.
     pub presences: HashMap<Id, String>,
     pub presence: presence::PresenceStore,
@@ -2618,7 +2633,11 @@ impl Stores {
         self.thread_messages.dispatch(name, data);
         self.pin_states.dispatch(name, data);
         match name {
-            "READY" => self.on_ready(data),
+            "READY" => {
+                // 963307 `CONNECTION_OPEN`: a new session starts with no member list.
+                self.member_lists.reset();
+                self.on_ready(data)
+            }
             "READY_SUPPLEMENTAL" => {
                 // Who is in voice comes here for a user account, not in READY: without it, people already in a
                 // channel stay invisible until their state next changes.
@@ -2665,7 +2684,7 @@ impl Stores {
             }
             "GUILD_MEMBER_LIST_UPDATE" => {
                 if let Some(guild) = id(&data["guild_id"]) {
-                    self.member_lists.entry(guild).or_default().apply(data);
+                    self.member_lists.apply(guild, data);
                     self.members.apply_list_update(guild, data);
                     for op in data["ops"].as_array().into_iter().flatten() {
                         for item in op["items"]
@@ -2812,6 +2831,10 @@ impl Stores {
                 }
             }
             "GUILD_DELETE" => {
+                // 963307 `GUILD_DELETE`: the guild's member lists go.
+                if let Some(guild) = id(&data["id"]) {
+                    self.member_lists.remove(&guild);
+                }
                 // Module 543897: `GUILD_DELETE` drops a server, then `GUILD_GEO_RESTRICTED` adds it (replacing an
                 // earlier entry) when it went away for its region; `GUILD_DELETE` alone removes the entry.
                 if let Some(guild) = id(&data["id"]) {
@@ -2890,10 +2913,8 @@ impl Stores {
                 }
             }
             "GUILD_MEMBER_UPDATE" => {
-                if let Some(list) =
-                    id(&data["guild_id"]).and_then(|g| self.member_lists.get_mut(&g))
-                {
-                    list.member_updated(data);
+                if let Some(guild) = id(&data["guild_id"]) {
+                    self.member_lists.member_updated(guild, data);
                 }
                 let me = self.current_user.as_ref().map(|user| user.id);
                 if me.is_some()

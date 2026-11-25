@@ -1835,7 +1835,7 @@ impl Root {
                             .is_some_and(|bits| bits & MODERATOR_BITS != 0)
                 })
             })
-            .map(|(user, _)| user.clone())
+            .map(|(user, _)| dc_state::User::clone(user))
             .collect()
     }
 

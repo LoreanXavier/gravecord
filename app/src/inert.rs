@@ -127,8 +127,7 @@ mod tests {
             ),
             (
                 Request::Subscribe {
-                    guild: 1,
-                    channel: 2,
+                    subscriptions: serde_json::Map::new(),
                 },
                 Inert::Allow,
             ),

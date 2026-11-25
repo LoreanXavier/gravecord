@@ -254,6 +254,10 @@ impl Root {
             // What this area laid out for the keyboard last time is laid out again below.
             self.keys.stops.begin_region(motion::current_view());
         }
+        if matches!(kind, Kind::Members | Kind::Messages) {
+            // The member list (beside a channel, or inside a forum) asks for the rows in view.
+            self.member_list_frame(cx);
+        }
         match kind {
             Kind::Titlebar => self.titlebar(cx).into_any_element(),
             Kind::Rail => self.rail(cx).into_any_element(),

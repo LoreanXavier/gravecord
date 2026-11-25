@@ -1621,7 +1621,7 @@ impl Root {
                 if let dc_state::member_list::Row::Member { user, .. } = row
                     && !members.iter().any(|known| known.id == user.id)
                 {
-                    members.push(user.clone());
+                    members.push(User::clone(user));
                 }
             }
         }

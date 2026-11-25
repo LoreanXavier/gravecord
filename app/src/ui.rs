@@ -379,6 +379,7 @@ mod guild_theme_nux;
 mod icymi;
 mod incoming_call;
 mod member_safety;
+mod member_subscriptions;
 mod member_window;
 mod nitro_resubscribe;
 mod nitro_trials_picker;
@@ -689,6 +690,8 @@ pub struct Root {
     profile_effects: Rc<RefCell<profile_effects::Cache>>,
     member_avatars: Rc<RefCell<member_avatars::Cache>>,
     member_window: member_window::State,
+    /// `GuildSubscriptionsStore`'s subscription manager (module 661670).
+    guild_subscriptions: dc_state::guild_subscriptions::GuildSubscriptions,
     inline_videos: Rc<RefCell<inline_video::Cache>>,
     gif_tiles: Rc<RefCell<gif_tiles::Cache>>,
     video_hub: Rc<RefCell<video_player::VideoHub>>,
@@ -1528,6 +1531,7 @@ impl Root {
             profile_effects: Default::default(),
             member_avatars: Default::default(),
             member_window: member_window::State::default(),
+            guild_subscriptions: Default::default(),
             inline_videos: Default::default(),
             gif_tiles: Default::default(),
             video_hub: Rc::new(RefCell::new(video_player::VideoHub::new())),
@@ -2138,6 +2142,8 @@ impl Root {
                 if connected {
                     // Pictures that gave up while the connection was down go out again at their next draw.
                     self.images.retries.online(image_retry::now_ms());
+                } else {
+                    self.guild_subscriptions_closed();
                 }
                 self.tutorial_connection(connected);
                 self.inventory_connection_changed(connected, cx);
@@ -2465,6 +2471,9 @@ impl Root {
                 {
                     self.request_images();
                 }
+                if name == "RESUMED" {
+                    self.guild_subscriptions_resumed();
+                }
                 if name == "READY" {
                     // The account's saved theme is read again by the theme rules at the next frame.
                     self.reset_theme_sync();
@@ -2474,6 +2483,7 @@ impl Root {
                     );
                     self.hydrated_from_cache = false;
                     self.refresh_start_members();
+                    self.guild_subscriptions_connection_open();
                     if let Some((prev_guild, prev_channel)) = ready_prev_place {
                         self.reconcile_after_ready(prev_guild, prev_channel);
                     } else {
@@ -3672,10 +3682,7 @@ impl Root {
                     {
                         self.guild = Some(guild_id);
                         self.channel = Some(chan);
-                        let _ = self.requests.send(Request::Subscribe {
-                            guild: guild_id,
-                            channel: chan,
-                        });
+                        self.subscribe_selected_channel(guild_id, chan);
                         if !self.current_channel().is_some_and(Channel::is_forum) {
                             let _ = self.requests.send(Request::LoadMessages { channel: chan });
                         }
@@ -3906,7 +3913,7 @@ impl Root {
             self.forum_reopened(channel);
         }
         if let Some(channel) = channel {
-            let _ = self.requests.send(Request::Subscribe { guild, channel });
+            self.subscribe_selected_channel(guild, channel);
             if self.current_channel().is_some_and(Channel::is_forum) {
                 self.ready = true;
             } else {
@@ -4178,7 +4185,7 @@ impl Root {
             .rows
             .iter()
             .filter_map(|row| match row {
-                MemberRow::Member { user, .. } => Some(user.clone()),
+                MemberRow::Member { user, .. } => Some(User::clone(user)),
                 _ => None,
             })
             .collect();
@@ -4367,13 +4374,7 @@ impl Root {
         });
         let all_rows = list.map(|list| list.rows.as_slice()).unwrap_or_default();
         // Only the rows near the visible part are built; spacers of the exact height stand in for the rest.
-        let heights: Vec<f32> = all_rows
-            .iter()
-            .map(|row| match row {
-                MemberRow::Member { user, .. } if self.has_presence_line(user, self.guild) => 44.,
-                _ => 42.,
-            })
-            .collect();
+        let heights = self.member_row_heights(list);
         let scroll = &self.member_window.scroll;
         let view = match f32::from(scroll.bounds().size.height) {
             known if known > 0. => known,
@@ -4404,7 +4405,20 @@ impl Root {
                 .enumerate()
                 .skip(built.start)
                 .take(built.len())
-                .map(|(row_index, row)| match row {
+                .map(|(row_index, row)| {
+                // 289287 `renderSection`: a section's header comes from its group, sent or not.
+                let header;
+                let row = match list.and_then(|list| list.group_at(row_index)) {
+                    Some((id, count)) => {
+                        header = MemberRow::Group {
+                            id: id.to_owned(),
+                            count,
+                        };
+                        &header
+                    }
+                    None => row,
+                };
+                match row {
                 MemberRow::Group { id, count } => div()
                     .flex_none()
                     .h(px(42.))
@@ -4676,7 +4690,7 @@ impl Root {
                         .into_any_element()
                 }
                 MemberRow::Unknown => Self::member_placeholder_row(row_index),
-            })
+            }})
             .collect()
         };
         div()

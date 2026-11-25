@@ -463,9 +463,10 @@ pub enum Request {
         message: u64,
         pin: bool,
     },
+    /// Op 37 `GUILD_SUBSCRIPTIONS_BULK` (module 868 `updateGuildSubscriptions`): guild id to subscription, as
+    /// `dc_state::guild_subscriptions` builds it; split into several sends past the size limit.
     Subscribe {
-        guild: u64,
-        channel: u64,
+        subscriptions: serde_json::Map<String, Value>,
     },
     /// Op 28 `REQUEST_FORUM_UNREADS` (module 868 `requestForumUnreads`): the unread counts of a forum's posts, as
     /// (thread, acked message) pairs. The answer is the `FORUM_UNREADS` dispatch.
@@ -3032,13 +3033,14 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     });
                 }
             }
-            Request::Subscribe { guild, channel } => {
-                let subscription = json!({"typing": true, "activities": true, "threads": true, "channels": {channel.to_string(): [[0, 99]]}});
-                let data = json!({"subscriptions": {guild.to_string(): subscription}});
-                let _ = commands.send(Command::Send {
-                    op: Op::GuildSubscriptionsBulk,
-                    data,
-                });
+            Request::Subscribe { subscriptions } => {
+                for data in dc_state::guild_subscriptions::bulk_payloads(&subscriptions) {
+                    debug!("guild subscriptions sent: {data}");
+                    let _ = commands.send(Command::Send {
+                        op: Op::GuildSubscriptionsBulk,
+                        data,
+                    });
+                }
             }
             Request::ForumUnreads {
                 guild,

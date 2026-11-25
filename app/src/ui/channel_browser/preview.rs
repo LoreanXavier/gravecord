@@ -57,7 +57,7 @@ impl Root {
         self.unread_from = None;
         self.notify_open = false;
         self.notify_submenu = None;
-        let _ = self.requests.send(Request::Subscribe { guild, channel });
+        self.subscribe_selected_channel(guild, channel);
         let _ = self.requests.send(Request::LoadMessages { channel });
         self.rebuild_rows();
         self.request_images();

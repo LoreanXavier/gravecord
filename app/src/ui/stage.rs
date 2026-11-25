@@ -703,6 +703,7 @@ impl Root {
                 default_forum_layout: 0,
                 default_reaction_emoji: None,
                 linked_lobby_application_id: None,
+                member_list_id: None,
                 application_id: None,
             });
         }
@@ -2891,6 +2892,7 @@ mod tests {
             default_forum_layout: 0,
             default_reaction_emoji: None,
             linked_lobby_application_id: None,
+            member_list_id: None,
             application_id: None,
         }
     }

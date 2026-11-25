@@ -12,6 +12,26 @@ const OVERSCAN: usize = 8;
 pub(super) struct State {
     /// The scroll position of the list, read back to know which rows are in view.
     pub scroll: ScrollHandle,
+    /// The guild, channel, scroll offset and height the member list ranges were last looked at for.
+    pub seen: Option<(u64, u64, f32, f32)>,
+    /// The pending range request (289287 `updateSubscription`, debounced by 50 ms); dropping it cancels it.
+    pub due: Option<gpui::Task<()>>,
+}
+
+/// The member list's row height in the official range maths (289287 `rowHeight: 42`).
+pub(super) const OFFICIAL_ROW: f32 = 42.;
+
+/// Where `pixels` down the rows falls in rows of the official 42px: the row it lands in plus the part of it, so the
+/// ranges follow the rows drawn even where a row with an activity line is taller.
+pub(super) fn official_offset(heights: &[f32], pixels: f32) -> f32 {
+    let mut at = 0.;
+    for (index, height) in heights.iter().enumerate() {
+        if pixels < at + height {
+            return (index as f32 + (pixels - at) / height) * OFFICIAL_ROW;
+        }
+        at += height;
+    }
+    heights.len() as f32 * OFFICIAL_ROW + (pixels - at).max(0.)
 }
 
 /// The rows to build: those meeting the part of the list that is on screen, plus the overscan.
@@ -45,6 +65,14 @@ pub(super) fn visible(heights: &[f32], scrolled: f32, view: f32, before: f32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offsets_count_in_official_rows() {
+        assert_eq!(official_offset(&[42.; 10], 84.), 84.);
+        // Two 44px rows above: 100px is 12px into the third row.
+        assert!((official_offset(&[44., 44., 42.], 100.) - (2. + 12. / 42.) * 42.).abs() < 1e-3);
+        assert_eq!(official_offset(&[42.; 2], 200.), 84. + 116.);
+    }
 
     #[test]
     fn a_short_list_is_built_whole() {

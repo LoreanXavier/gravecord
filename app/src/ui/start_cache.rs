@@ -1149,7 +1149,7 @@ impl Root {
         let last = items.len() - 1;
         let update = json!({
             "guild_id": guild.to_string(),
-            "id": "everyone",
+            "id": self.stores.member_lists.shown_id(guild),
             "member_count": self.stores.member_counts.get_member_count(guild),
             "online_count": self.stores.member_counts.get_online_count(guild),
             "groups": groups,
@@ -1199,8 +1199,8 @@ impl Root {
         );
     }
 
-    /// The live READY empties the presence store: the cached rows keep their presences (and so their heights and
-    /// status dots) until the live list replaces them.
+    /// The live READY empties the presence store and the member lists: the cached rows stay, with their presences
+    /// (and so their heights and status dots), until the live list replaces them.
     pub(super) fn keep_start_member_presences(&mut self) {
         if let Some((guild, update)) = &self.start_member_list
             && Some(*guild) == self.guild
@@ -1208,6 +1208,7 @@ impl Root {
             self.stores
                 .presence
                 .dispatch("GUILD_MEMBER_LIST_UPDATE", update);
+            self.stores.member_lists.apply(*guild, update);
         }
     }
 
