@@ -29,6 +29,7 @@ mod parity;
 #[cfg(feature = "capture")]
 mod perf;
 mod plugins;
+mod provenance;
 mod release_key;
 mod rive;
 mod rpc;
@@ -157,7 +158,7 @@ pub(crate) fn native_message(title: &str, text: &str) {
 fn panic_entry(info: &str, backtrace: &str) -> String {
     let thread = std::thread::current();
     format!(
-        "=== {} thread {} build {}\n{info}\n{backtrace}\n",
+        "=== {} thread {} build {} {} commit {}\n{info}\n{backtrace}\n",
         chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
         thread.name().unwrap_or("unnamed"),
         if cfg!(debug_assertions) {
@@ -165,6 +166,8 @@ fn panic_entry(info: &str, backtrace: &str) -> String {
         } else {
             "release"
         },
+        crate::updater::current_version(),
+        crate::provenance::short(),
     )
 }
 
@@ -763,6 +766,10 @@ mod tests {
         let first = entry.lines().next().unwrap();
         assert!(first.starts_with("=== 20"), "{first}");
         assert!(first.contains(" thread gravecord-net build "), "{first}");
+        assert!(
+            first.ends_with(&format!(" commit {}", crate::provenance::short())),
+            "{first}"
+        );
         assert!(entry.contains("\npanicked at x.rs:1:1:\nboom\n   0: frame\n"));
     }
 

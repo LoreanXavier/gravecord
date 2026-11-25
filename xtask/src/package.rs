@@ -11,6 +11,12 @@
 //! carries no file but the setup. The private key is a seed in `%USERPROFILE%\gravecord-release-keys` (or
 //! `GRAVECORD_RELEASE_KEYS`), outside every repository; it is made once, never printed and never replaced.
 //!
+//! Provenance: a package is made only from a clean working tree whose HEAD is on `integration` or `main`; the build is
+//! stamped with that commit and a dirty flag (`app/build.rs`), which the app shows next to its version and writes into
+//! `panic.log`, and the output prints `commit: <hash>` for the release notes. `--allow-dirty` makes a local test
+//! package anyway and stamps it dirty, as does `GRAVECORD_PACKAGE_SKIP_BUILD` (which needs `--allow-dirty`). `--check`
+//! runs the source checks alone. The signed update manifest is unchanged: the stamp is inside the app, not in it.
+//!
 //! The release build uses the static C runtime, so neither exe imports VCRUNTIME140. It goes to its own target folder
 //! so the flag change never invalidates the normal release cache.
 
@@ -42,11 +48,160 @@ fn app_version(repo: &Path) -> Result<String> {
         .context("no version in app/Cargo.toml")
 }
 
+/// The branches a release may be packaged from: HEAD must be one of their commits.
+const RELEASE_BRANCHES: &[&str] = &["integration", "main"];
+
+/// The source a package is made from, as git reports it.
+#[derive(Debug)]
+struct Source {
+    commit: String,
+    /// `git status --porcelain` lines: changed, staged and untracked (not ignored) paths.
+    changes: Vec<String>,
+    /// The release branches HEAD is on.
+    branches: Vec<String>,
+}
+
+fn git(repo: &Path, args: &[&str]) -> Result<std::process::Output> {
+    Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .with_context(|| format!("could not run git {}", args.join(" ")))
+}
+
+fn read_source(repo: &Path) -> Result<Source> {
+    let head = git(repo, &["rev-parse", "HEAD"])?;
+    let commit = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    if !head.status.success() || commit.len() != 40 {
+        bail!("not a git checkout: the package needs the commit it is built from");
+    }
+    let status = git(repo, &["--no-optional-locks", "status", "--porcelain"])?;
+    if !status.status.success() {
+        bail!("git status failed");
+    }
+    let changes = String::from_utf8_lossy(&status.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_owned)
+        .collect();
+    let mut branches = Vec::new();
+    for branch in RELEASE_BRANCHES {
+        let on = git(
+            repo,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                "HEAD",
+                &format!("refs/heads/{branch}"),
+            ],
+        )?;
+        if on.status.success() {
+            branches.push((*branch).to_owned());
+        }
+    }
+    Ok(Source {
+        commit,
+        changes,
+        branches,
+    })
+}
+
+/// Why `source` cannot be released, empty when it can: a working tree with changes, or a commit on neither release
+/// branch.
+fn problems(source: &Source) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !source.changes.is_empty() {
+        let shown: Vec<&str> = source.changes.iter().take(10).map(String::as_str).collect();
+        problems.push(format!(
+            "the working tree has {} changed or untracked path(s):\n  {}",
+            source.changes.len(),
+            shown.join("\n  ")
+        ));
+    }
+    if source.branches.is_empty() {
+        problems.push(format!(
+            "HEAD {} is on neither {}",
+            source.commit,
+            RELEASE_BRANCHES.join(" nor ")
+        ));
+    }
+    problems
+}
+
+/// Whether the build is dirty, or the refusal: a source with problems is packaged only with `--allow-dirty`, and is
+/// then stamped dirty.
+fn verdict(source: &Source, allow_dirty: bool) -> Result<bool> {
+    let problems = problems(source);
+    if problems.is_empty() {
+        return Ok(false);
+    }
+    if allow_dirty {
+        println!(
+            "LOCAL TEST PACKAGE (--allow-dirty), stamped dirty, not for release:\n- {}",
+            problems.join("\n- ")
+        );
+        return Ok(true);
+    }
+    bail!(
+        "refusing to package:\n- {}\nCommit the changes on integration or main, or pass --allow-dirty for a local test \
+         package (it is stamped dirty).",
+        problems.join("\n- ")
+    )
+}
+
+/// The commit line of the package output, for the release notes.
+fn commit_line(commit: &str, dirty: bool) -> String {
+    if dirty {
+        format!("commit: {commit} (dirty)")
+    } else {
+        format!("commit: {commit}")
+    }
+}
+
+/// `cargo xtask package --check`: the source checks alone, nothing built or signed.
+pub fn check(repo: &Path) -> Result<()> {
+    let source = read_source(repo)?;
+    let problems = problems(&source);
+    println!("{}", commit_line(&source.commit, !problems.is_empty()));
+    if problems.is_empty() {
+        println!(
+            "clean, on {}: a package may be made from it",
+            source.branches.join(" and ")
+        );
+        Ok(())
+    } else {
+        bail!("a package would be refused:\n- {}", problems.join("\n- "))
+    }
+}
+
+/// `cargo xtask package [--channel nightly] [--allow-dirty]`.
+pub fn run_args(repo: &Path, args: &[&str]) -> Result<()> {
+    let mut nightly = false;
+    let mut allow_dirty = false;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match *arg {
+            "--channel" => match rest.next() {
+                Some(&"nightly") => nightly = true,
+                other => bail!("unknown channel {other:?}: only nightly"),
+            },
+            "--allow-dirty" => allow_dirty = true,
+            other => bail!(
+                "unknown argument {other}: cargo xtask package [--check | --channel nightly | --allow-dirty]"
+            ),
+        }
+    }
+    run(repo, nightly, allow_dirty)
+}
+
 /// What the build is told about itself: a tester (nightly) build names its channel and its stamped version, which the
 /// app reads at compile time (`app/src/updater.rs`); a stable build has neither, so a nightly setting never leaks
-/// into it from the shell.
-fn build(repo: &Path, nightly: Option<&str>) -> Result<()> {
+/// into it from the shell. Every package build is told its commit and whether it is dirty (`app/build.rs`).
+fn build(repo: &Path, nightly: Option<&str>, commit: &str, dirty: bool) -> Result<()> {
     let mut command = Command::new("cargo");
+    command
+        .env("GRAVECORD_BUILD_COMMIT", commit)
+        .env("GRAVECORD_BUILD_DIRTY", if dirty { "1" } else { "0" });
     match nightly {
         Some(version) => command
             .env("GRAVECORD_CHANNEL", "nightly")
@@ -145,7 +300,8 @@ fn key_source(public: &[u8; 32]) -> String {
 }
 
 /// Makes sure the app is built with this key's public half: rewrites the key source when it differs (a first key).
-fn ensure_key_source(repo: &Path, key: &ed25519_dalek::SigningKey) -> Result<()> {
+/// Whether it was written.
+fn ensure_key_source(repo: &Path, key: &ed25519_dalek::SigningKey) -> Result<bool> {
     let path = repo.join(KEY_SOURCE);
     let wanted = key_source(key.verifying_key().as_bytes());
     // Compared without line ending differences: a checkout may turn the file into CRLF.
@@ -153,8 +309,9 @@ fn ensure_key_source(repo: &Path, key: &ed25519_dalek::SigningKey) -> Result<()>
     if current.ok().as_deref() != Some(wanted.as_str()) {
         std::fs::write(&path, wanted)?;
         println!("{KEY_SOURCE} written: commit it with this build");
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// The update manifest for a setup body, as the app reads it (`updater::verify_signed`).
@@ -272,7 +429,17 @@ fn nightly_stamp(since_epoch: u64) -> String {
 /// `cargo xtask package` (stable) or `cargo xtask package --channel nightly` (a tester build: version
 /// `<app version>-nightly.<UTC stamp>`, written to `gravecord-dist/nightly`). Publishing the nightly is copying its
 /// `gravecord-setup.exe` and `update.json` to the `nightly` release of the update repository.
-pub fn run(repo: &Path, nightly: bool) -> Result<()> {
+pub fn run(repo: &Path, nightly: bool, allow_dirty: bool) -> Result<()> {
+    // Before anything writes into the tree (the key source below): the tree must be the commit it says it is.
+    let source = read_source(repo)?;
+    let skip_build = std::env::var_os("GRAVECORD_PACKAGE_SKIP_BUILD").is_some();
+    if skip_build && !allow_dirty {
+        bail!(
+            "GRAVECORD_PACKAGE_SKIP_BUILD reuses a build whose source cannot be checked: pass --allow-dirty for a local \
+             test package"
+        );
+    }
+    let mut dirty = verdict(&source, allow_dirty)? || skip_build;
     let base = app_version(repo)?;
     let version = if nightly {
         let now = std::time::SystemTime::now()
@@ -283,9 +450,20 @@ pub fn run(repo: &Path, nightly: bool) -> Result<()> {
         base
     };
     let key = signing_key(&keys_dir()?)?;
-    ensure_key_source(repo, &key)?;
-    if std::env::var_os("GRAVECORD_PACKAGE_SKIP_BUILD").is_none() {
-        build(repo, nightly.then_some(version.as_str()))?;
+    if ensure_key_source(repo, &key)? {
+        // The tree now differs from the commit: a release waits for that commit.
+        if !allow_dirty {
+            bail!("{KEY_SOURCE} was written: commit it, then package again");
+        }
+        dirty = true;
+    }
+    if !skip_build {
+        build(
+            repo,
+            nightly.then_some(version.as_str()),
+            &source.commit,
+            dirty,
+        )?;
     }
     let release = repo.join(TARGET_DIR).join("release");
     let app_exe = release.join("gravecord.exe");
@@ -298,6 +476,7 @@ pub fn run(repo: &Path, nightly: bool) -> Result<()> {
     };
     std::fs::create_dir_all(&dist)?;
     println!("version: {version}");
+    println!("{}", commit_line(&source.commit, dirty));
 
     let archive = Archive {
         version: version.clone(),
@@ -345,6 +524,64 @@ pub fn run(repo: &Path, nightly: bool) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::windows::fs::OpenOptionsExt;
+
+    fn tree(changes: &[&str], branches: &[&str]) -> Source {
+        Source {
+            commit: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            changes: changes.iter().map(|line| (*line).to_owned()).collect(),
+            branches: branches.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn only_a_clean_tree_on_a_release_branch_is_packaged() {
+        assert!(!verdict(&tree(&[], &["integration"]), false).unwrap());
+        assert!(!verdict(&tree(&[], &["main", "integration"]), false).unwrap());
+        let changed = verdict(&tree(&[" M app/src/net.rs"], &["integration"]), false).unwrap_err();
+        assert!(changed.to_string().contains("app/src/net.rs"), "{changed}");
+        assert!(changed.to_string().contains("--allow-dirty"), "{changed}");
+        let untracked = verdict(&tree(&["?? notes.rs"], &["main"]), false).unwrap_err();
+        assert!(untracked.to_string().contains("notes.rs"));
+        let elsewhere = verdict(&tree(&[], &[]), false).unwrap_err();
+        assert!(
+            elsewhere
+                .to_string()
+                .contains("neither integration nor main"),
+            "{elsewhere}"
+        );
+        // The override packages it, stamped dirty.
+        assert!(verdict(&tree(&[" M a.rs"], &[]), true).unwrap());
+        assert!(verdict(&tree(&[], &[]), true).unwrap());
+    }
+
+    #[test]
+    fn the_commit_line_names_the_full_hash() {
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(commit_line(hash, false), format!("commit: {hash}"));
+        assert_eq!(commit_line(hash, true), format!("commit: {hash} (dirty)"));
+    }
+
+    /// The checks read this checkout as git does.
+    #[test]
+    fn the_source_of_this_checkout_is_read() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let found = read_source(repo).unwrap();
+        assert_eq!(found.commit.len(), 40);
+        assert!(found.commit.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(
+            found
+                .branches
+                .iter()
+                .all(|name| RELEASE_BRANCHES.contains(&name.as_str()))
+        );
+    }
+
+    #[test]
+    fn package_arguments_are_checked() {
+        let repo = Path::new("does-not-matter");
+        assert!(run_args(repo, &["--channel", "beta"]).is_err());
+        assert!(run_args(repo, &["--release"]).is_err());
+    }
 
     #[test]
     fn nightly_stamps_are_utc_dates_that_sort_as_numbers() {

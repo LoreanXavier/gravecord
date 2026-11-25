@@ -1785,8 +1785,8 @@ impl Root {
                 "--text-muted",
             ))
             .child(footnote(
-                // The official line is the host's version; gravecord's is its own.
-                format!("{} (x64)", env!("CARGO_PKG_VERSION")),
+                // The official line is the host's version; gravecord's is its own, with the commit it was built from.
+                super::copy_combo::host_version(),
                 "--text-muted",
             ));
         div()

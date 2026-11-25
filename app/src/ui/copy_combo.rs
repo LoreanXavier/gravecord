@@ -120,12 +120,29 @@ impl CopyComboState {
 /// Full Discord-style build version string copied by Settings footer (`276530.js` `eJ`).
 pub fn build_version_copy_text() -> String {
     format!(
-        "{} {} ({}) Host {} (x64) Build Override: N/A Windows",
+        "{} {} ({}) Host {} Build Override: N/A Windows",
         dc_proto::pin::RELEASE_CHANNEL,
         dc_proto::pin::CLIENT_BUILD_NUMBER,
         &dc_proto::pin::VERSION_HASH[..7],
-        env!("CARGO_PKG_VERSION"),
+        host_version(),
     )
+}
+
+/// The footer's second line, where the official client names its host version: gravecord's version, the commit it
+/// was built from (`crate::provenance`) and the architecture, `0.1.0 (1a2b3c4) (x64)`. A capture build leaves the
+/// commit out, so the settings screens it is compared on stay the same from one commit to the next.
+pub fn host_version() -> String {
+    host_version_of(
+        env!("CARGO_PKG_VERSION"),
+        (!cfg!(feature = "capture")).then(crate::provenance::short),
+    )
+}
+
+fn host_version_of(version: &str, commit: Option<String>) -> String {
+    match commit {
+        Some(commit) => format!("{version} ({commit}) (x64)"),
+        None => format!("{version} (x64)"),
+    }
 }
 
 impl Root {
@@ -294,6 +311,19 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_line_names_the_commit() {
+        assert_eq!(
+            host_version_of("0.1.0", Some("1a2b3c4-dirty".to_owned())),
+            "0.1.0 (1a2b3c4-dirty) (x64)"
+        );
+        assert_eq!(host_version_of("0.1.0", None), "0.1.0 (x64)");
+        if !cfg!(feature = "capture") {
+            assert!(host_version().contains(&crate::provenance::short()));
+            assert!(build_version_copy_text().contains(&host_version()));
+        }
+    }
 
     #[test]
     fn all_eleven_combo_tiers_resolve_and_clamp() {
