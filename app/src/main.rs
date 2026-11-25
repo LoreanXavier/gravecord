@@ -7,6 +7,7 @@ mod clipboard_image;
 mod clips_capture;
 mod deep_link;
 mod editor;
+mod editor_atoms;
 mod fonts;
 mod games;
 #[cfg(feature = "capture")]

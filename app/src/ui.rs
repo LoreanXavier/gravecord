@@ -81,6 +81,7 @@ mod compact_header;
 mod components;
 pub(crate) mod composer_ai;
 mod composer_plus;
+mod composer_voids;
 mod conjure_workspace;
 #[cfg(feature = "capture")]
 mod content_demo;
@@ -12284,6 +12285,7 @@ impl Render for Root {
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.interaction_modal_frame(window, cx);
         self.drafts_frame(cx);
+        self.composer_voids_frame(cx);
         if std::mem::take(&mut self.chat_extra.back_to_login) {
             self.back_to_login(cx);
         }

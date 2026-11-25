@@ -1,6 +1,7 @@
 //! The text field on gpui's input handler, so the OS input method composes straight into it (Turkish, CJK).
 //! Used by the composer; search and every other field follow.
 
+use crate::editor_atoms::{self as atoms, Atom, AtomKind, Bias};
 use crate::spellcheck;
 use crate::text_buffer::TextBuffer;
 use gpui::{
@@ -8,12 +9,17 @@ use gpui::{
     Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, Render, SharedString, Size, Style,
-    Task, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, div, fill,
-    point, prelude::*, px, size,
+    Task, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, div, fill, point, prelude::*,
+    px, size,
 };
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
+
+#[path = "editor_rich.rs"]
+mod rich;
+use rich::Line;
+pub use rich::{AtomLook, Pill};
 
 /// The composer's text: 16px on 22px lines. Other fields (the quick switcher's 22px) set their own.
 pub const LINE_HEIGHT: f32 = 22.;
@@ -170,7 +176,7 @@ struct Laid {
     blink: Blink,
     line_height: Pixels,
     /// Each paragraph with the byte offset it starts at.
-    lines: Vec<(WrappedLine, usize)>,
+    lines: Vec<(Line, usize)>,
     bounds: Option<Bounds<Pixels>>,
     /// A masked field (a password) shows one bullet per character: the real text, to map offsets into the bullets.
     masked_text: Option<String>,
@@ -237,7 +243,7 @@ impl Laid {
             .iter()
             .map(|(line, _)| {
                 let current = top;
-                top += line.size(self.line_height()).height.max(self.line_height());
+                top += line.height(self.line_height());
                 current
             })
             .collect()
@@ -248,7 +254,7 @@ impl Laid {
         for (index, (line, start)) in self.lines.iter().enumerate().rev() {
             if offset >= *start {
                 let local = self.shown_offset(offset) - self.shown_offset(*start);
-                let position = line.position_for_index(local, self.line_height())?;
+                let position = line.position(local, self.line_height())?;
                 return Some(point(position.x, tops[index] + position.y));
             }
         }
@@ -262,9 +268,19 @@ impl Laid {
             return 0;
         };
         let local = point(position.x, position.y - tops[index]);
-        let found = line.closest_index_for_position(local, self.line_height());
-        let shown = self.shown_offset(*start) + found.unwrap_or_else(|nearest| nearest);
+        let found = line.closest(local, self.line_height());
+        let shown = self.shown_offset(*start) + found;
         self.real_offset(shown)
+    }
+
+    /// The void under `position`, with its range in the text.
+    fn atom_at(&self, position: Point<Pixels>) -> Option<(Range<usize>, Rc<AtomLook>)> {
+        let tops = self.paragraph_tops();
+        let index = tops.iter().rposition(|top| position.y >= *top).unwrap_or(0);
+        let (line, start) = self.lines.get(index)?;
+        let local = point(position.x, position.y - tops[index]);
+        line.atom_at(local, self.line_height())
+            .map(|(range, look)| (range.start + start..range.end + start, look))
     }
 
     fn selection_bounds(&self, selection: Range<usize>) -> Vec<Bounds<Pixels>> {
@@ -273,26 +289,8 @@ impl Laid {
             let base = self.shown_offset(*start);
             let from = self.shown_offset(selection.start).saturating_sub(base);
             let to = self.shown_offset(selection.end).saturating_sub(base);
-            let layout = &line.unwrapped_layout;
-            let ends = line
-                .wrap_boundaries
-                .iter()
-                .map(|boundary| layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index)
-                .chain([line.len()]);
-            let mut row_start = 0;
-            for (row, row_end) in ends.enumerate() {
-                let first = from.max(row_start);
-                let last = to.min(row_end);
-                if first < last {
-                    let origin = layout.x_for_index(row_start);
-                    let left = layout.x_for_index(first) - origin;
-                    let right = layout.x_for_index(last) - origin;
-                    result.push(Bounds::new(
-                        point(left.min(right), top + self.line_height() * row as f32),
-                        size((right - left).abs(), self.line_height()),
-                    ));
-                }
-                row_start = row_end;
+            for rect in line.rects(from, to, self.line_height()) {
+                result.push(Bounds::new(rect.origin + point(px(0.), top), rect.size));
             }
         }
         result
@@ -326,6 +324,8 @@ pub struct Editor {
     /// Keeps the visual column across short lines and the side of a soft-wrap boundary.
     vertical: Option<VerticalMove>,
     tab_stop: bool,
+    /// How each void of the text is drawn (the composer's mentions and custom emoji); a token with no look is text.
+    looks: Rc<std::collections::HashMap<AtomKind, Rc<AtomLook>>>,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -375,6 +375,70 @@ impl Editor {
             markdown: false,
             vertical: None,
             tab_stop: false,
+            looks: Rc::default(),
+        }
+    }
+
+    /// The looks of the voids in the text, from the view that knows the names and pictures.
+    pub fn set_atom_looks(&mut self, looks: std::collections::HashMap<AtomKind, AtomLook>) {
+        self.looks = Rc::new(
+            looks
+                .into_iter()
+                .map(|(kind, look)| (kind, Rc::new(look)))
+                .collect(),
+        );
+    }
+
+    /// The voids of the text: none in a masked field, without looks, or with the preview off (module 2368 turns every
+    /// void back into text when `areStylesDisabled`).
+    fn atoms(&self) -> Vec<Atom> {
+        if self.looks.is_empty()
+            || self.masked
+            || !(self.markdown && crate::markup_preview::enabled())
+        {
+            return Vec::new();
+        }
+        atoms::find_atoms(self.buffer.text())
+            .into_iter()
+            .filter(|atom| self.looks.contains_key(&atom.kind))
+            .collect()
+    }
+
+    /// The selection as Copy writes it: each void as its plain label.
+    fn copy_text(&self) -> String {
+        let looks = self.looks.clone();
+        atoms::plain_text(
+            self.buffer.text(),
+            self.buffer.selection(),
+            &self.atoms(),
+            |kind| looks.get(kind).map(|look| look.copy.clone()),
+        )
+    }
+
+    /// No caret or selection end rests inside a void: a caret goes to the nearer edge, a selection grows over it.
+    fn settle(&mut self) {
+        let voids = self.atoms();
+        if voids.is_empty() {
+            return;
+        }
+        let selection = self.buffer.selection();
+        if selection.is_empty() {
+            let at = atoms::snap(&voids, selection.start, Bias::Nearest);
+            if at != selection.start {
+                self.buffer.set_caret(at);
+            }
+            return;
+        }
+        let grown = atoms::grow(&voids, selection.clone());
+        if grown != selection {
+            let reversed = self.buffer.is_reversed();
+            let (anchor, head) = if reversed {
+                (grown.end, grown.start)
+            } else {
+                (grown.start, grown.end)
+            };
+            self.buffer.set_caret(anchor);
+            self.buffer.select_to(head);
         }
     }
 
@@ -446,6 +510,7 @@ impl Editor {
         let text = self.buffer.text();
         let selection = self.buffer.selection();
         let marked = self.buffer.marked();
+        let voids = self.atoms();
         spell
             .raw
             .iter()
@@ -464,6 +529,11 @@ impl Editor {
                 marked
                     .as_ref()
                     .is_none_or(|marked| marked.end <= range.start || range.end <= marked.start)
+            })
+            .filter(|range| {
+                !voids
+                    .iter()
+                    .any(|void| void.range.start < range.end && range.start < void.range.end)
             })
             .cloned()
             .collect()
@@ -523,9 +593,7 @@ impl Editor {
 
     pub fn copy_selection(&self, cx: &mut Context<Self>) {
         if !self.masked && !self.buffer.selection().is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.buffer.selected_text().to_owned(),
-            ));
+            cx.write_to_clipboard(ClipboardItem::new_string(self.copy_text()));
         }
     }
 
@@ -691,7 +759,7 @@ impl Editor {
         let height: Pixels = laid
             .lines
             .iter()
-            .map(|(line, _)| line.size(laid.line_height()).height.max(laid.line_height()))
+            .map(|(line, _)| line.height(laid.line_height()))
             .sum();
         let y = position.y
             + if down {
@@ -757,6 +825,8 @@ impl Editor {
             .then(|| self.buffer.text().to_owned());
         let enter_inserts_newline = self.enter_inserts_newline;
         let masked = self.masked;
+        let voids = self.atoms();
+        let copied = (!self.buffer.selection().is_empty()).then(|| self.copy_text());
         let buffer = &mut self.buffer;
         let move_to = |buffer: &mut TextBuffer, at: usize| {
             if shift {
@@ -771,15 +841,38 @@ impl Editor {
             }
             "enter" => self.submit(cx),
             "escape" => cx.emit(EditorEvent::Cancel),
-            "backspace" => buffer.backspace(),
-            "delete" => buffer.delete(),
+            // A void goes as one unit (Slate deletes a void node whole).
+            "backspace" => {
+                if let Some(void) = buffer
+                    .selection()
+                    .is_empty()
+                    .then(|| atoms::ending_at(&voids, buffer.caret()))
+                    .flatten()
+                {
+                    buffer.set_caret(void.end);
+                    buffer.select_to(void.start);
+                }
+                buffer.backspace();
+            }
+            "delete" => {
+                if let Some(void) = buffer
+                    .selection()
+                    .is_empty()
+                    .then(|| atoms::starting_at(&voids, buffer.caret()))
+                    .flatten()
+                {
+                    buffer.set_caret(void.start);
+                    buffer.select_to(void.end);
+                }
+                buffer.delete();
+            }
             "left" => {
                 let at = match (control, shift) {
                     (true, _) => buffer.word_left(),
                     (false, true) => buffer.char_left(),
                     (false, false) => buffer.left(),
                 };
-                move_to(buffer, at);
+                move_to(buffer, atoms::snap(&voids, at, Bias::Start));
             }
             "right" => {
                 let at = match (control, shift) {
@@ -787,7 +880,7 @@ impl Editor {
                     (false, true) => buffer.char_right(),
                     (false, false) => buffer.right(),
                 };
-                move_to(buffer, at);
+                move_to(buffer, atoms::snap(&voids, at, Bias::End));
             }
             "home" => {
                 let at = buffer.line_start();
@@ -803,10 +896,10 @@ impl Editor {
             "y" if control => buffer.redo(),
             "c" | "x" if control && masked => {}
             "c" if control && !buffer.selection().is_empty() => {
-                cx.write_to_clipboard(ClipboardItem::new_string(buffer.selected_text().to_owned()));
+                cx.write_to_clipboard(ClipboardItem::new_string(copied.unwrap_or_default()));
             }
             "x" if control && !buffer.selection().is_empty() => {
-                cx.write_to_clipboard(ClipboardItem::new_string(buffer.selected_text().to_owned()));
+                cx.write_to_clipboard(ClipboardItem::new_string(copied.unwrap_or_default()));
                 buffer.backspace();
             }
             "v" if control => {
@@ -819,6 +912,7 @@ impl Editor {
                 return;
             }
         }
+        self.settle();
         if before.is_some_and(|before| before != self.buffer.text()) {
             cx.emit(EditorEvent::Edited);
         }
@@ -841,11 +935,21 @@ impl Editor {
         if let Some(spell) = self.spell.as_mut() {
             spell.typing_hold = false;
         }
+        // `preventSelection` (module 787564): a press on a user or role mention leaves the caret where it was.
+        if self
+            .void_at_window_point(event.position)
+            .is_some_and(|(_, look)| look.prevent_selection)
+        {
+            self.dragging = false;
+            cx.notify();
+            return;
+        }
         let at = self.index_for_window_point(event.position);
         // Double and triple clicks select a word or the line (Chromium on Windows, probed in the official composer).
         match event.click_count {
             2 => {
                 self.buffer.select_word_at(at);
+                self.settle();
                 self.dragging = false;
                 cx.notify();
                 return;
@@ -871,12 +975,22 @@ impl Editor {
         if self.dragging {
             let at = self.index_for_window_point(event.position);
             self.buffer.select_to(at);
+            self.settle();
             cx.notify();
         }
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
         self.dragging = false;
+    }
+
+    fn void_at_window_point(
+        &self,
+        position: Point<Pixels>,
+    ) -> Option<(Range<usize>, Rc<AtomLook>)> {
+        let laid = self.laid.borrow();
+        let origin = laid.bounds.map_or(Point::default(), |bounds| bounds.origin);
+        laid.atom_at(position - origin)
     }
 
     fn index_for_window_point(&self, position: Point<Pixels>) -> usize {
@@ -942,6 +1056,7 @@ impl EntityInputHandler for Editor {
         self.vertical = None;
         let range = range.map(|range| self.buffer.range_from_utf16(&range));
         self.buffer.replace(range, text);
+        self.settle();
         cx.emit(EditorEvent::Edited);
         cx.notify();
     }
@@ -996,6 +1111,7 @@ impl EntityInputHandler for Editor {
         let bytes = self.buffer.range_from_utf16(&range);
         self.buffer.set_caret(bytes.start);
         self.buffer.select_to(bytes.end);
+        self.settle();
         cx.notify();
     }
 
@@ -1152,12 +1268,13 @@ fn styled_runs(
         .collect()
 }
 
-fn shape(editor: &Editor, width: Option<Pixels>, window: &Window) -> Vec<(WrappedLine, usize)> {
+fn shape(editor: &Editor, width: Option<Pixels>, window: &Window) -> Vec<(Line, usize)> {
     let system = window.text_system();
     let mut lines = Vec::new();
     let mut offset = 0;
     let text = editor.buffer.text();
     let marked = editor.buffer.marked();
+    let voids = editor.atoms();
     for paragraph in text.split('\n') {
         let shown = if editor.masked {
             paragraph.chars().map(|_| MASK).collect::<String>()
@@ -1171,6 +1288,21 @@ fn shape(editor: &Editor, width: Option<Pixels>, window: &Window) -> Vec<(Wrappe
         } else {
             runs_for(offset, paragraph.len(), marked.as_ref(), &editor.style)
         };
+        let end = offset + paragraph.len();
+        let here: Vec<(Range<usize>, Rc<AtomLook>)> = voids
+            .iter()
+            .filter(|atom| offset <= atom.range.start && atom.range.end <= end)
+            .filter_map(|atom| {
+                let look = editor.looks.get(&atom.kind)?.clone();
+                Some((atom.range.start - offset..atom.range.end - offset, look))
+            })
+            .collect();
+        if !here.is_empty() {
+            let rich = rich::rich_line(paragraph, &here, &runs, &editor.style, width, window);
+            lines.push((Line::Rich(rich), offset));
+            offset += paragraph.len() + 1;
+            continue;
+        }
         let shaped = system.shape_text(
             SharedString::from(shown),
             px(editor.style.size),
@@ -1179,7 +1311,7 @@ fn shape(editor: &Editor, width: Option<Pixels>, window: &Window) -> Vec<(Wrappe
             None,
         );
         if let Some(line) = shaped.ok().and_then(|mut lines| lines.pop()) {
-            lines.push((line, offset));
+            lines.push((Line::Plain(line), offset));
         }
         offset += paragraph.len() + 1;
     }
@@ -1217,7 +1349,7 @@ impl Element for EditorElement {
             let lines = shape(editor.read(cx), width, window);
             let height: Pixels = lines
                 .iter()
-                .map(|(line, _)| line.size(line_height).height.max(line_height))
+                .map(|(line, _)| line.height(line_height))
                 .fold(px(0.), |sum, height| sum + height);
             let measured: Size<Pixels> = size(width.unwrap_or(px(0.)), height.max(line_height));
             measured
@@ -1294,7 +1426,7 @@ impl Element for EditorElement {
         let bounds = if align_end && !multiline {
             let width = lines
                 .iter()
-                .map(|(line, _)| line.size(px(style.line_height)).width)
+                .map(|(line, _)| line.width(px(style.line_height)))
                 .fold(px(0.), Pixels::max);
             let shift = (bounds.size.width - width).max(px(0.));
             Bounds::new(
@@ -1430,16 +1562,9 @@ impl Element for EditorElement {
         let tops = laid.paragraph_tops();
         for (index, (line, _)) in laid.lines.iter().enumerate() {
             let origin = bounds.origin + point(px(0.), tops[index]);
-            let _ = line.paint(
-                origin,
-                px(style.line_height),
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
+            line.paint(origin, px(style.line_height), window, cx);
         }
-        paint_squiggles(&laid, &marks, bounds.origin, style.line_height, window);
+        paint_squiggles(&laid, &marks, bounds.origin, &style, window);
         // Blink paints no caret over a range selection.
         if focused
             && selection.is_empty()
@@ -1463,12 +1588,13 @@ fn paint_squiggles(
     laid: &Laid,
     marks: &[Range<usize>],
     origin: Point<Pixels>,
-    line_height: f32,
+    style: &EditorStyle,
     window: &mut Window,
 ) {
     if marks.is_empty() || laid.masked_text.is_some() {
         return;
     }
+    let line_height = style.line_height;
     let tops = laid.paragraph_tops();
     let height = px(line_height);
     let color: Hsla = gpui::rgb(SQUIGGLE_RED).into();
@@ -1482,26 +1608,45 @@ fn paint_squiggles(
         };
         let (line, start) = &laid.lines[index];
         let (from, to) = (mark.start - start, mark.end - start);
-        let Some(word) = line.text.get(from..to) else {
-            continue;
-        };
-        let layout = &line.unwrapped_layout;
-        let ascent = layout.ascent.round();
-        let descent = layout.descent.round();
-        let padding_top = ((height - ascent - descent) / 2.).floor();
         // (row top, x start, x end) pieces, joined while they stay on one row.
         let mut pieces: Vec<(Pixels, Pixels, Pixels)> = Vec::new();
-        for (at, c) in word.char_indices() {
-            let first = from + at;
-            let Some(position) = line.position_for_index(first, height) else {
-                continue;
-            };
-            let width = layout.x_for_index(first + c.len_utf8()) - layout.x_for_index(first);
-            match pieces.last_mut() {
-                Some(piece) if piece.0 == position.y => piece.2 = position.x + width,
-                _ => pieces.push((position.y, position.x, position.x + width)),
+        let (ascent, descent) = match line {
+            Line::Plain(line) => {
+                let Some(word) = line.text.get(from..to) else {
+                    continue;
+                };
+                let layout = &line.unwrapped_layout;
+                for (at, c) in word.char_indices() {
+                    let first = from + at;
+                    let Some(position) = line.position_for_index(first, height) else {
+                        continue;
+                    };
+                    let width =
+                        layout.x_for_index(first + c.len_utf8()) - layout.x_for_index(first);
+                    match pieces.last_mut() {
+                        Some(piece) if piece.0 == position.y => piece.2 = position.x + width,
+                        _ => pieces.push((position.y, position.x, position.x + width)),
+                    }
+                }
+                (layout.ascent.round(), layout.descent.round())
             }
-        }
+            Line::Rich(_) => {
+                for rect in line.rects(from, to, height) {
+                    pieces.push((
+                        rect.origin.y,
+                        rect.origin.x,
+                        rect.origin.x + rect.size.width,
+                    ));
+                }
+                let system = window.text_system();
+                let font = system.resolve_font(&style.font);
+                (
+                    system.ascent(font, px(style.size)).round(),
+                    system.descent(font, px(style.size)).abs().round(),
+                )
+            }
+        };
+        let padding_top = ((height - ascent - descent) / 2.).floor();
         for (row, x0, x1) in pieces {
             let top = origin.y + tops[index] + row + padding_top + ascent + px(1.);
             let mut path = PathBuilder::stroke(px(SQUIGGLE_THICKNESS));
