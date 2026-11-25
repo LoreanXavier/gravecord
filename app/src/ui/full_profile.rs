@@ -306,10 +306,9 @@ struct ConnectedAccount {
     icon: &'static str,
     /// The platform's `icon.lightSVG` and `icon.darkSVG` (module 573648); only ShowConnections draws them.
     svg: (&'static str, &'static str),
-    /// The account's `verified`: the Verified Connection mark of module 46937 and ShowConnections' label.
+    /// The account's `verified`, for ShowConnections' label only: the profile modal's rows (`t0` of module 927071)
+    /// draw no verified mark.
     verified: bool,
-    /// The mark in the Twitter colour with "Verified on Twitter" ([`verified_mark`]).
-    twitter_verified: bool,
     url: Option<String>,
     /// The account's `id` on its platform (OpenInApp opens it in the app).
     id: String,
@@ -831,26 +830,30 @@ fn connection_url(kind: &str, id: &str, name: &str) -> Option<String> {
     })
 }
 
-/// `S` of module 46937: a Bluesky, Mastodon or X account whose `metadata.verified` (`pK.TWITTER_VERIFIED`) is exactly
-/// the string `"1"` takes the `PLATFORM_TWITTER` colour and the "Verified on Twitter" tooltip (`Jebrww`).
-fn twitter_verified(kind: &str, metadata: &Value) -> bool {
-    matches!(kind, "bluesky" | "mastodon" | "twitter") && metadata["verified"].as_str() == Some("1")
+/// `ML` of module 643068: while Shift is held the profile reads an X account as the retired `twitter_legacy`
+/// platform of module 573648 (its bird `lightPNG`, "Twitter" and a twitter.com link); otherwise as its own type.
+fn shown_platform(kind: &str, shift: bool) -> &str {
+    if shift && kind == "twitter" {
+        "twitter_legacy"
+    } else {
+        kind
+    }
 }
 
-/// `PLATFORM_TWITTER` of module 646514 (`unsafe_rawColors`, no CSS variable).
-const PLATFORM_TWITTER: u32 = 0x1da1f2;
-
-/// The Verified Connection mark of an account (`G` in `S` of module 46937): none unless the account is `verified`;
-/// else the tooltip's key, and whether the flower takes the Twitter colour instead of `--icon-muted`.
-fn verified_mark(account: &ConnectedAccount) -> Option<(&'static str, bool)> {
-    if !account.verified {
-        return None;
+/// An account as `t0` of module 927071 draws it: the platform of [`shown_platform`] gives the icon, the name and the
+/// link; the metadata keeps the account's own type.
+fn with_shown_platform(mut account: ConnectedAccount, shift: bool) -> ConnectedAccount {
+    let shown = shown_platform(&account.kind, shift);
+    if shown != account.kind
+        && let Some(&(_, platform_name, icon, ..)) = CONNECTED_PLATFORMS
+            .iter()
+            .find(|(known, ..)| *known == shown)
+    {
+        account.platform_name = platform_name;
+        account.icon = icon;
+        account.url = connection_url(shown, &account.id, &account.name);
     }
-    Some(if account.twitter_verified {
-        ("Jebrww", true)
-    } else {
-        ("6H6h1r", false)
-    })
+    account
 }
 
 /// The profile's connections as module 851767 keeps them (supported platforms only) and `t0` of module 927071 draws
@@ -880,7 +883,6 @@ fn parse_connected_accounts(body: &Value) -> Vec<ConnectedAccount> {
                 icon,
                 svg: (light_svg, dark_svg),
                 verified: item["verified"] == true,
-                twitter_verified: twitter_verified(kind, metadata),
                 url: connection_url(kind, id, &name),
                 id: id.to_owned(),
                 metadata: meta_items,
@@ -1733,7 +1735,11 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let default: Hsla = palette.token("--text-default").into();
-        let accounts = parse_connected_accounts(body?);
+        let shift = super::hover_bar::shift_held();
+        let accounts: Vec<ConnectedAccount> = parse_connected_accounts(body?)
+            .into_iter()
+            .map(|account| with_shown_platform(account, shift))
+            .collect();
         if accounts.is_empty() {
             return None;
         }
@@ -1746,6 +1752,14 @@ impl Root {
                 // `platformIconContainer_O2KI4e`: 24px, white with a 1px border-subtle edge and 8px corners, the
                 // 18px `lightPNG` in it, and the platform's name as its tooltip.
                 let picture = self.images.get(&connection_icon_key(account.icon)).cloned();
+                if picture.is_none() {
+                    // The legacy bird is only asked for once Shift shows it.
+                    self.want_image(
+                        connection_icon_key(account.icon),
+                        format!("https://discord.com/assets/{}", account.icon),
+                        cx,
+                    );
+                }
                 let tile = div()
                     .id(SharedString::from(format!(
                         "full-profile-conn-badge-{user}-{index}"
@@ -1777,52 +1791,6 @@ impl Root {
                     .line_height(px(18.))
                     .text_color(default)
                     .child(account.name.clone());
-                // `G` of module 46937: module 355971's 16px badge (`connectedAccountVerifiedIcon_XvCt_s`, 4px after the
-                // name) — module 152578's flower in `--icon-muted` (the Twitter colour for a verified X account) with
-                // the 16px CheckmarkSmall (module 478016) centred on it in `--interactive-text-active`, and its tooltip.
-                // GAP: the flower's colour is not desaturated by the saturation setting (`$k` of module 317097).
-                // GAP: no DOM capture of this mark; the 16px check follows 355971's `width`/`height` props, which the
-                // 10px `redesignIconChildContainer_d3vyhc` cannot shrink.
-                let mark = verified_mark(&account).map(|(tip, twitter)| {
-                    let flower: Hsla = if twitter {
-                        gpui::rgb(PLATFORM_TWITTER).into()
-                    } else {
-                        palette.token("--icon-muted").into()
-                    };
-                    let badge = div()
-                        .relative()
-                        .size(px(16.))
-                        .flex_none()
-                        .child(
-                            svg()
-                                .path("icons/discover_flower.svg")
-                                .size(px(16.))
-                                .text_color(flower),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    svg()
-                                        .path("icons/discover_flower_check.svg")
-                                        .size(px(16.))
-                                        .flex_none()
-                                        .text_color(palette.token("--interactive-text-active")),
-                                ),
-                        );
-                    self.with_tip(
-                        format!("full-profile-conn-verified-{user}-{index}"),
-                        super::tooltip::Tip::text(dc_intl::t(tip), super::tooltip::Side::Top),
-                        badge,
-                        cx,
-                    )
-                    // The mark is not part of the profile link.
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                });
                 // `platformUrlAnchor_O2KI4e` around `accountName_O2KI4e` (2px gap) with the 16px LinkExternalSmall
                 // glyph (module 509434), underlined on hover; a platform without a profile link shows the name alone.
                 let (account_kind, account_id) = (account.kind.clone(), account.id.clone());
@@ -1845,8 +1813,6 @@ impl Root {
                             .gap(px(2.))
                             .hover(|style| style.underline())
                             .child(name_text)
-                            // 4px after the name: the anchor's 2px gap and 2px more.
-                            .children(mark.map(|mark| mark.ml(px(2.))))
                             .child(
                                 svg()
                                     .path("icons/link_external_small.svg")
@@ -1869,7 +1835,6 @@ impl Root {
                         .flex()
                         .items_center()
                         .child(name_text)
-                        .children(mark.map(|mark| mark.ml(px(4.))))
                         .into_any_element(),
                 };
                 let meta_count = account.metadata.len();
@@ -4010,37 +3975,42 @@ mod tests {
         );
     }
 
-    /// Module 46937: only a verified account has the mark; a Bluesky, Mastodon or X account with `metadata.verified`
-    /// exactly `"1"` takes the Twitter colour and "Verified on Twitter".
+    /// `t0` of module 927071 draws no verified mark; an X account shows as X (`lightPNG` 311891) unless Shift is held,
+    /// when `ML` of module 643068 reads it as the legacy Twitter platform (bird, "Twitter", twitter.com).
     #[test]
-    fn the_verified_connection_mark_follows_module_46937() {
+    fn x_accounts_show_as_x_unless_shift_is_held() {
         let body = serde_json::json!({"connected_accounts": [
-            {"type": "github", "id": "1", "name": "octocat", "verified": true},
-            {"type": "steam", "id": "2", "name": "s", "verified": false},
-            {"type": "twitter", "id": "3", "name": "x", "verified": true, "metadata": {"verified": "1"}},
-            {"type": "bluesky", "id": "did:plc:a", "name": "b", "verified": true, "metadata": {"verified": "1"}},
-            {"type": "mastodon", "id": "https://m.example/@m", "name": "m", "verified": true, "metadata": {"verified": 1}},
-            {"type": "twitter", "id": "4", "name": "y", "verified": false, "metadata": {"verified": "1"}},
-            {"type": "github", "id": "5", "name": "g", "verified": true, "metadata": {"verified": "1"}}
+            {"type": "twitter", "id": "3", "name": "plu", "verified": true, "metadata": {"verified": "1"}},
+            {"type": "github", "id": "1", "name": "octocat", "verified": true}
         ]});
-        let marks: Vec<_> = parse_connected_accounts(&body)
-            .iter()
-            .map(super::verified_mark)
-            .collect();
+        let shown = |shift| {
+            parse_connected_accounts(&body)
+                .into_iter()
+                .map(|account| super::with_shown_platform(account, shift))
+                .map(|a| (a.platform_name, a.icon, a.url, a.kind))
+                .collect::<Vec<_>>()
+        };
+        let plain = shown(false);
         assert_eq!(
-            marks,
-            [
-                Some(("6H6h1r", false)),
-                None,
-                Some(("Jebrww", true)),
-                Some(("Jebrww", true)),
-                Some(("6H6h1r", false)),
-                None,
-                Some(("6H6h1r", false)),
-            ]
+            plain[0],
+            (
+                "X",
+                "90d18081c2eb2ea3.png",
+                Some("https://x.com/plu".to_owned()),
+                "twitter".to_owned()
+            )
         );
-        assert_eq!(dc_intl::t("6H6h1r"), "Verified Connection");
-        assert_eq!(dc_intl::t("Jebrww"), "Verified on Twitter");
+        let held = shown(true);
+        assert_eq!(
+            held[0],
+            (
+                "Twitter",
+                "7520545bf8990675.png",
+                Some("https://twitter.com/plu".to_owned()),
+                "twitter".to_owned()
+            )
+        );
+        assert_eq!(held[1], plain[1]);
     }
     use serde_json::json;
 

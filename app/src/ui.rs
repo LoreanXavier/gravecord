@@ -12627,7 +12627,9 @@ impl Render for Root {
             }))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 this.move_browser_resize(event, cx);
-                if hover_bar::set_shift(event.modifiers.shift) && this.hovered.is_some() {
+                if hover_bar::set_shift(event.modifiers.shift)
+                    && (this.hovered.is_some() || this.full_profile.is_some())
+                {
                     cx.notify();
                 }
             }))
@@ -12636,8 +12638,11 @@ impl Render for Root {
             }))
             .on_modifiers_changed(cx.listener(
                 |this, event: &gpui::ModifiersChangedEvent, _, cx| {
-                    // The message hover bar expands while Shift is held (module 311283).
-                    if hover_bar::set_shift(event.modifiers.shift) && this.hovered.is_some() {
+                    // The message hover bar expands while Shift is held (module 311283), and the full profile's X
+                    // connections read as Twitter (`ML` of module 643068).
+                    if hover_bar::set_shift(event.modifiers.shift)
+                        && (this.hovered.is_some() || this.full_profile.is_some())
+                    {
                         cx.notify();
                     }
                     this.voice_modifiers(event.modifiers, cx);
