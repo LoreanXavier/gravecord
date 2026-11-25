@@ -45,8 +45,25 @@ pub struct Pill {
 }
 
 pub(super) enum Line {
-    Plain(WrappedLine),
+    /// A paragraph of one size, moved down by the shift (subtext sits on the 16px line's baseline).
+    Plain(WrappedLine, Pixels),
     Rich(RichLine),
+}
+
+/// Inline code (`.inlineCode_nsjAhz` with its `before_`/`after_` delimiters): `--font-code` at 85%, on
+/// `--background-code` inside a 1px `--border-muted` border with `--radius-xs` corners at the ends, sitting on the
+/// line's baseline.
+#[derive(Clone, Copy, Debug)]
+pub struct CodeStyle {
+    pub size: Pixels,
+    /// How far the code's text is moved down from where gpui centres it, to the 16px line's baseline.
+    pub shift: Pixels,
+    /// The box's top and height in the row (the code font's content area and the two border pixels).
+    pub box_top: Pixels,
+    pub box_height: Pixels,
+    pub background: Hsla,
+    pub border: Hsla,
+    pub radius: Pixels,
 }
 
 pub(super) struct RichLine {
@@ -68,7 +85,7 @@ struct Piece {
 }
 
 enum Body {
-    Text(ShapedLine),
+    Text(ShapedLine, Option<CodeStyle>),
     Atom {
         look: Rc<AtomLook>,
         label: Option<ShapedLine>,
@@ -78,14 +95,14 @@ enum Body {
 impl Line {
     pub(super) fn height(&self, line_height: Pixels) -> Pixels {
         match self {
-            Line::Plain(line) => line.size(line_height).height.max(line_height),
+            Line::Plain(line, _) => line.size(line_height).height.max(line_height),
             Line::Rich(rich) => (line_height * rich.rows.len() as f32).max(line_height),
         }
     }
 
     pub(super) fn width(&self, line_height: Pixels) -> Pixels {
         match self {
-            Line::Plain(line) => line.size(line_height).width,
+            Line::Plain(line, _) => line.size(line_height).width,
             Line::Rich(rich) => rich
                 .rows
                 .iter()
@@ -96,7 +113,7 @@ impl Line {
 
     pub(super) fn position(&self, local: usize, line_height: Pixels) -> Option<Point<Pixels>> {
         match self {
-            Line::Plain(line) => line.position_for_index(local, line_height),
+            Line::Plain(line, _) => line.position_for_index(local, line_height),
             Line::Rich(rich) => {
                 let index = rich.rows.iter().rposition(|row| row.start <= local)?;
                 Some(point(
@@ -109,7 +126,7 @@ impl Line {
 
     pub(super) fn closest(&self, at: Point<Pixels>, line_height: Pixels) -> usize {
         match self {
-            Line::Plain(line) => line
+            Line::Plain(line, _) => line
                 .closest_index_for_position(at, line_height)
                 .unwrap_or_else(|nearest| nearest),
             Line::Rich(rich) => {
@@ -119,7 +136,7 @@ impl Line {
                 for piece in &row.pieces {
                     if at.x < piece.x + piece.width {
                         return match &piece.body {
-                            Body::Text(shaped) => {
+                            Body::Text(shaped, _) => {
                                 piece.range.start
                                     + shaped.closest_index_for_x((at.x - piece.x).max(px(0.)))
                             }
@@ -157,7 +174,7 @@ impl Line {
     pub(super) fn rects(&self, from: usize, to: usize, line_height: Pixels) -> Vec<Bounds<Pixels>> {
         let mut result = Vec::new();
         match self {
-            Line::Plain(line) => {
+            Line::Plain(line, _) => {
                 let layout = &line.unwrapped_layout;
                 let ends = line
                     .wrap_boundaries
@@ -206,8 +223,9 @@ impl Line {
         cx: &mut App,
     ) {
         match self {
-            Line::Plain(line) => {
-                let _ = line.paint(origin, line_height, TextAlign::Left, None, window, cx);
+            Line::Plain(line, shift) => {
+                let at = point(origin.x, origin.y + *shift);
+                let _ = line.paint(at, line_height, TextAlign::Left, None, window, cx);
             }
             Line::Rich(rich) => {
                 for (index, row) in rich.rows.iter().enumerate() {
@@ -215,9 +233,14 @@ impl Line {
                     for piece in &row.pieces {
                         let left = origin.x + piece.x;
                         match &piece.body {
-                            Body::Text(shaped) => {
+                            Body::Text(shaped, code) => {
+                                let mut text_top = top;
+                                if let Some(code) = code {
+                                    paint_code_box(code, piece, left, top, window);
+                                    text_top += code.shift;
+                                }
                                 let _ = shaped.paint(
-                                    point(left, top),
+                                    point(left, text_top),
                                     line_height,
                                     TextAlign::Left,
                                     None,
@@ -243,6 +266,23 @@ impl Line {
             }
         }
     }
+}
+
+/// The code's box, from the opening backticks (`before_inlineCode`: left border and corners) to the closing ones
+/// (`after_inlineCode`: right border and corners); a span stays whole on its row.
+fn paint_code_box(code: &CodeStyle, piece: &Piece, left: Pixels, top: Pixels, window: &mut Window) {
+    let bounds = Bounds::new(
+        point(left, top + code.box_top),
+        size(piece.width, code.box_height),
+    );
+    window.paint_quad(gpui::quad(
+        bounds,
+        code.radius,
+        code.background,
+        gpui::Edges::all(px(1.)),
+        code.border,
+        gpui::BorderStyle::Solid,
+    ));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -313,7 +353,9 @@ impl Row {
         for piece in &self.pieces {
             if piece.range.start <= local && local <= piece.range.end {
                 return match &piece.body {
-                    Body::Text(shaped) => piece.x + shaped.x_for_index(local - piece.range.start),
+                    Body::Text(shaped, _) => {
+                        piece.x + shaped.x_for_index(local - piece.range.start)
+                    }
                     Body::Atom { .. } if local == piece.range.start => piece.x,
                     Body::Atom { .. } => piece.x + piece.width,
                 };
@@ -343,6 +385,8 @@ fn slice_runs(runs: &[TextRun], range: &Range<usize>) -> Vec<TextRun> {
 pub(super) fn rich_line(
     paragraph: &str,
     atoms: &[(Range<usize>, Rc<AtomLook>)],
+    // Inline code spans with their look.
+    code: Option<(&[Range<usize>], CodeStyle)>,
     runs: &[TextRun],
     style: &EditorStyle,
     width: Option<Pixels>,
@@ -353,6 +397,7 @@ pub(super) fn rich_line(
     // The paragraph as text stretches and voids, in order.
     enum Item {
         Text(Range<usize>),
+        Code(Range<usize>, Box<ShapedLine>),
         Atom(Range<usize>, Rc<AtomLook>, Option<Box<ShapedLine>>, Pixels),
     }
     let mut items = Vec::new();
@@ -392,12 +437,46 @@ pub(super) fn rich_line(
     if at < paragraph.len() {
         items.push(Item::Text(at..paragraph.len()));
     }
+    // Inline code spans are kept whole on a row, shaped at the code's own size.
+    if let Some((codes, code)) = code {
+        let mut split = Vec::new();
+        for item in items {
+            let Item::Text(range) = item else {
+                split.push(item);
+                continue;
+            };
+            let mut at = range.start;
+            for span in codes
+                .iter()
+                .filter(|span| range.start <= span.start && span.end <= range.end)
+            {
+                if at < span.start {
+                    split.push(Item::Text(at..span.start));
+                }
+                let shaped = system.shape_line(
+                    SharedString::from(paragraph[span.clone()].to_owned()),
+                    code.size,
+                    &slice_runs(runs, span),
+                    None,
+                );
+                split.push(Item::Code(span.clone(), Box::new(shaped)));
+                at = span.end;
+            }
+            if at < range.end {
+                split.push(Item::Text(at..range.end));
+            }
+        }
+        items = split;
+    }
     let breaks: Vec<usize> = match width {
         Some(width) => {
             let fragments: Vec<gpui::LineFragment> = items
                 .iter()
                 .map(|item| match item {
                     Item::Text(range) => gpui::LineFragment::text(&paragraph[range.clone()]),
+                    Item::Code(range, shaped) => {
+                        gpui::LineFragment::element(shaped.width, range.len())
+                    }
                     Item::Atom(range, _, _, width) => {
                         gpui::LineFragment::element(*width, range.len())
                     }
@@ -438,9 +517,21 @@ pub(super) fn rich_line(
                         range: from..to,
                         x,
                         width,
-                        body: Body::Text(shaped),
+                        body: Body::Text(shaped, None),
                     });
                     x += width;
+                }
+                Item::Code(range, shaped) => {
+                    if range.start < start || range.start >= end {
+                        continue;
+                    }
+                    pieces.push(Piece {
+                        range: range.clone(),
+                        x,
+                        width: shaped.width,
+                        body: Body::Text((**shaped).clone(), code.map(|(_, style)| style)),
+                    });
+                    x += shaped.width;
                 }
                 Item::Atom(range, look, label, width) => {
                     if range.start < start || range.start >= end {

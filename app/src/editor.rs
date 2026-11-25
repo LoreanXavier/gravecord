@@ -1310,25 +1310,148 @@ fn styled_runs(
         .collect()
 }
 
+/// The runs of `runs` with those inside `range` changed by `edit`, split where the range starts and ends.
+fn edit_runs(runs: Vec<TextRun>, range: Range<usize>, edit: impl Fn(&mut TextRun)) -> Vec<TextRun> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for run in runs {
+        let end = at + run.len;
+        let cuts = [
+            at,
+            range.start.clamp(at, end),
+            range.end.clamp(at, end),
+            end,
+        ];
+        for pair in cuts.windows(2) {
+            if pair[1] > pair[0] {
+                let mut part = run.clone();
+                part.len = pair[1] - pair[0];
+                if range.start <= pair[0] && pair[1] <= range.end {
+                    edit(&mut part);
+                }
+                out.push(part);
+            }
+        }
+        at = end;
+    }
+    out
+}
+
+/// The ascent and descent of a font at a size, as gpui lays a line out.
+fn metrics(window: &Window, font: &Font, size: Pixels) -> (Pixels, Pixels) {
+    let system = window.text_system();
+    let id = system.resolve_font(font);
+    (system.ascent(id, size), system.descent(id, size).abs())
+}
+
+/// How far text of `font` at `size`, which gpui centres in the row, moves down to sit on the baseline of the
+/// field's own text (an inline span of a smaller font shares the line's baseline in CSS).
+fn baseline_shift(window: &Window, style: &EditorStyle, font: &Font, size: Pixels) -> Pixels {
+    let (ascent, descent) = metrics(window, &style.font, px(style.size));
+    let (small_ascent, small_descent) = metrics(window, font, size);
+    ((ascent - descent) - (small_ascent - small_descent)) / 2.
+}
+
+/// `gg mono`, the `--font-code` the preview's code uses; the font file calls itself `gg sans mono`.
+const CODE_FONT: &str = "gg sans mono";
+/// `font-size: 85%` of `.inlineCode_nsjAhz` and `.codeLine_nsjAhz`.
+const CODE_SCALE: f32 = 0.85;
+/// `.subtext_nsjAhz` and `.before_subtext_nsjAhz`: `font-size: 13px`.
+const SUBTEXT_SIZE: f32 = 13.;
+
 fn shape(editor: &Editor, width: Option<Pixels>, window: &Window) -> Vec<(Line, usize)> {
+    use crate::markup_preview::{self as mp, LineKind};
     let system = window.text_system();
     let mut lines = Vec::new();
     let mut offset = 0;
     let text = editor.buffer.text();
     let marked = editor.buffer.marked();
     let voids = editor.atoms();
-    for paragraph in text.split('\n') {
+    let style = &editor.style;
+    let preview = !editor.masked && editor.markdown && mp::enabled();
+    let line_styles = if preview {
+        mp::line_styles(text)
+    } else {
+        Vec::new()
+    };
+    let mut code_font = style.font.clone();
+    code_font.family = CODE_FONT.into();
+    let code_size = px(style.size * CODE_SCALE);
+    for (index, paragraph) in text.split('\n').enumerate() {
         let shown = if editor.masked {
             paragraph.chars().map(|_| MASK).collect::<String>()
         } else {
             paragraph.to_owned()
         };
+        let line_style = line_styles.get(index).cloned().unwrap_or_default();
+        let mut size = px(style.size);
+        let mut shift = px(0.);
+        let mut codes: Vec<Range<usize>> = Vec::new();
         let runs = if editor.masked {
-            runs_for(0, shown.len(), None, &editor.style)
-        } else if editor.markdown && crate::markup_preview::enabled() {
-            styled_runs(offset, paragraph, marked.as_ref(), &editor.style)
+            runs_for(0, shown.len(), None, style)
+        } else if !preview {
+            runs_for(offset, paragraph.len(), marked.as_ref(), style)
         } else {
-            runs_for(offset, paragraph.len(), marked.as_ref(), &editor.style)
+            match line_style.kind {
+                // `.codeLine_nsjAhz`: the whole line in the code font at 85%, `--text-default`.
+                LineKind::Code => {
+                    size = code_size;
+                    edit_runs(
+                        runs_for(offset, paragraph.len(), marked.as_ref(), style),
+                        0..paragraph.len(),
+                        |run| {
+                            run.font.family = CODE_FONT.into();
+                            run.color = style.text;
+                        },
+                    )
+                }
+                // `.before_subtext_nsjAhz` (weight 700) and `.subtext_nsjAhz`: `--text-muted` at 13px, a link
+                // keeping its colour (`.subtext.fakeLink`).
+                LineKind::Subtext { marker } => {
+                    size = px(SUBTEXT_SIZE);
+                    shift = baseline_shift(window, style, &style.font, size);
+                    let link: Hsla = crate::ui::color("--text-link").into();
+                    let muted: Hsla = crate::ui::color("--text-muted").into();
+                    let runs = styled_runs(offset, paragraph, marked.as_ref(), style);
+                    let runs = edit_runs(runs, 0..marker, |run| {
+                        run.font.weight = gpui::FontWeight(700.);
+                    });
+                    edit_runs(runs, 0..paragraph.len(), |run| {
+                        if run.color != link {
+                            run.color = muted;
+                        }
+                    })
+                }
+                // A fence (`.codeBlockSyntax_nsjAhz`) and its language (`.codeBlockLang_nsjAhz`).
+                LineKind::Normal if !line_style.fences.is_empty() => {
+                    let mut runs = runs_for(offset, paragraph.len(), marked.as_ref(), style);
+                    let syntax: Hsla = crate::ui::color("--textbox-markdown-syntax").into();
+                    for fence in &line_style.fences {
+                        runs = edit_runs(runs, fence.clone(), |run| run.color = syntax);
+                    }
+                    if let Some(lang) = line_style.lang.clone() {
+                        let positive: Hsla = crate::ui::color("--text-feedback-positive").into();
+                        runs = edit_runs(runs, lang, |run| run.color = positive);
+                    }
+                    runs
+                }
+                LineKind::Normal => {
+                    // Inline code spans, delimiters included, each one box.
+                    for (index, flag) in mp::flags(paragraph).into_iter().enumerate() {
+                        let code = flag & mp::CODE != 0;
+                        match codes.last_mut() {
+                            Some(last) if code && last.end == index => last.end = index + 1,
+                            _ if code => codes.push(index..index + 1),
+                            _ => {}
+                        }
+                    }
+                    let mut runs = styled_runs(offset, paragraph, marked.as_ref(), style);
+                    for span in &codes {
+                        runs = edit_runs(runs, span.clone(), |run| run.background_color = None);
+                    }
+                    runs
+                }
+            }
         };
         let end = offset + paragraph.len();
         let here: Vec<(Range<usize>, Rc<AtomLook>)> = voids
@@ -1339,21 +1462,32 @@ fn shape(editor: &Editor, width: Option<Pixels>, window: &Window) -> Vec<(Line, 
                 Some((atom.range.start - offset..atom.range.end - offset, look))
             })
             .collect();
-        if !here.is_empty() {
-            let rich = rich::rich_line(paragraph, &here, &runs, &editor.style, width, window);
+        if !here.is_empty() || !codes.is_empty() {
+            let code = (!codes.is_empty()).then(|| {
+                let (ascent, descent) = metrics(window, &style.font, px(style.size));
+                let (code_ascent, code_descent) = metrics(window, &code_font, code_size);
+                let baseline = (px(style.line_height) - ascent - descent) / 2. + ascent;
+                rich::CodeStyle {
+                    size: code_size,
+                    shift: baseline_shift(window, style, &code_font, code_size),
+                    // The content area of the code font, with the 1px border around it.
+                    box_top: baseline - code_ascent - px(1.),
+                    box_height: code_ascent + code_descent + px(2.),
+                    background: crate::ui::color("--background-code").into(),
+                    border: crate::ui::color("--border-muted").into(),
+                    // `--radius-xs` on the outer corners of `before_`/`after_inlineCode`.
+                    radius: px(4.),
+                }
+            });
+            let code = code.map(|look| (codes.as_slice(), look));
+            let rich = rich::rich_line(paragraph, &here, code, &runs, style, width, window);
             lines.push((Line::Rich(rich), offset));
             offset += paragraph.len() + 1;
             continue;
         }
-        let shaped = system.shape_text(
-            SharedString::from(shown),
-            px(editor.style.size),
-            &runs,
-            width,
-            None,
-        );
+        let shaped = system.shape_text(SharedString::from(shown), size, &runs, width, None);
         if let Some(line) = shaped.ok().and_then(|mut lines| lines.pop()) {
-            lines.push((Line::Plain(line), offset));
+            lines.push((Line::Plain(line, shift), offset));
         }
         offset += paragraph.len() + 1;
     }
@@ -1653,7 +1787,7 @@ fn paint_squiggles(
         // (row top, x start, x end) pieces, joined while they stay on one row.
         let mut pieces: Vec<(Pixels, Pixels, Pixels)> = Vec::new();
         let (ascent, descent) = match line {
-            Line::Plain(line) => {
+            Line::Plain(line, _) => {
                 let Some(word) = line.text.get(from..to) else {
                     continue;
                 };

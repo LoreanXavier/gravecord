@@ -244,6 +244,96 @@ fn scan(text: &str, lo: usize, hi: usize, base: u16, out: &mut [u16]) {
     }
 }
 
+/// How one line of the text box is laid out under the preview (module 818948's blocks): a line inside a fenced code
+/// block is a `codeLine` (`font-size: 85%` in `--font-code`, `--text-default`), a `-# ` line is subtext (`.subtext`:
+/// `--text-muted` at 13px, its marker `.before_subtext` at weight 700), and a line holding a fence colours the fence
+/// (`.codeBlockSyntax`: `--textbox-markdown-syntax`) and the language after it (`.codeBlockLang`:
+/// `--text-feedback-positive`). A heading marker gets no class (`heading_marker` takes no attributes).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LineStyle {
+    pub kind: LineKind,
+    /// Byte ranges of the line that are a fence.
+    pub fences: Vec<std::ops::Range<usize>>,
+    /// The language after an opening fence.
+    pub lang: Option<std::ops::Range<usize>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LineKind {
+    #[default]
+    Normal,
+    /// `-# ` and the spaces after it, as the byte length of the marker from the line start.
+    Subtext {
+        marker: usize,
+    },
+    Code,
+}
+
+/// `^ *-# +((?!-#)[^\n]+)` (the subtext rule): the marker's length, with its leading spaces.
+pub fn subtext_marker(line: &str) -> Option<usize> {
+    let lead = line.len() - line.trim_start_matches(' ').len();
+    let rest = line[lead..].strip_prefix("-#")?;
+    let body = rest.trim_start_matches(' ');
+    (body.len() != rest.len() && !body.trim().is_empty() && !body.starts_with("-#"))
+        .then_some(line.len() - body.len())
+}
+
+/// The style of each line of `text`. A fence opens a block that runs to the next fence, or to the end of the text
+/// while none closes it (module 818948 parses the text with a closing fence added and keeps that block).
+pub fn line_styles(text: &str) -> Vec<LineStyle> {
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    let line_of = |at: usize| starts.partition_point(|start| *start <= at) - 1;
+    let mut styles = vec![LineStyle::default(); starts.len()];
+    let mut at = 0;
+    while let Some(found) = text[at..].find("```") {
+        let open = at + found;
+        let open_line = line_of(open);
+        let close = text[open + 3..].find("```").map(|found| open + 3 + found);
+        styles[open_line]
+            .fences
+            .push(open - starts[open_line]..open + 3 - starts[open_line]);
+        let line_end = text[open..].find('\n').map_or(text.len(), |end| open + end);
+        let lang_end = close.map_or(line_end, |close| close.min(line_end));
+        let lang = &text[open + 3..lang_end];
+        if !lang.is_empty()
+            && !lang.contains(char::is_whitespace)
+            && close.is_none_or(|close| close > line_end)
+        {
+            styles[open_line].lang =
+                Some(open + 3 - starts[open_line]..lang_end - starts[open_line]);
+        }
+        let last = match close {
+            Some(close) => {
+                let close_line = line_of(close);
+                styles[close_line]
+                    .fences
+                    .push(close - starts[close_line]..close + 3 - starts[close_line]);
+                close_line
+            }
+            None => starts.len(),
+        };
+        for style in styles.iter_mut().take(last).skip(open_line + 1) {
+            style.kind = LineKind::Code;
+        }
+        match close {
+            Some(close) => at = close + 3,
+            None => break,
+        }
+    }
+    for (index, line) in text.split('\n').enumerate() {
+        let style = &mut styles[index];
+        if style.kind == LineKind::Normal
+            && style.fences.is_empty()
+            && let Some(marker) = subtext_marker(line)
+        {
+            style.kind = LineKind::Subtext { marker };
+        }
+    }
+    styles
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,5 +383,34 @@ mod tests {
     fn links_are_marked() {
         assert_eq!(at("see https://x.io/a now", "https"), LINK);
         assert_eq!(at("see https://x.io/a now", " now"), 0);
+    }
+
+    #[test]
+    fn code_block_lines_subtext_and_fences() {
+        let styles = line_styles("```rs\nlet a;\n```\n-# small\n# heading");
+        assert_eq!(styles[0].fences, vec![0..3]);
+        assert_eq!(styles[0].lang, Some(3..5));
+        assert_eq!(styles[1].kind, LineKind::Code);
+        assert_eq!(styles[2].kind, LineKind::Normal);
+        assert_eq!(styles[2].fences, vec![0..3]);
+        assert_eq!(styles[3].kind, LineKind::Subtext { marker: 3 });
+        assert_eq!(styles[4].kind, LineKind::Normal);
+    }
+
+    #[test]
+    fn an_open_fence_runs_to_the_end() {
+        let styles = line_styles("```\na\nb");
+        assert_eq!(styles[0].lang, None);
+        assert_eq!(styles[1].kind, LineKind::Code);
+        assert_eq!(styles[2].kind, LineKind::Code);
+    }
+
+    #[test]
+    fn subtext_needs_its_space_and_a_body() {
+        assert_eq!(subtext_marker("-# a"), Some(3));
+        assert_eq!(subtext_marker("  -#   a"), Some(7));
+        assert_eq!(subtext_marker("-#a"), None);
+        assert_eq!(subtext_marker("-# "), None);
+        assert_eq!(subtext_marker("-# -# a"), None);
     }
 }
