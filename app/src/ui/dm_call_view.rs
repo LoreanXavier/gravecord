@@ -108,8 +108,9 @@ pub fn pulse(kind: RingKind, now_ms: f64) -> (f32, f32) {
 pub struct Person {
     pub user: Id,
     pub ringing: bool,
-    pub mute: bool,
-    pub deaf: bool,
+    /// The mute and deafen marks (module 493387 passes `muted: isVoiceMuted()`, `deafen: isVoiceDeafened()`, and
+    /// `CallAvatar` reads `isLocalMute`).
+    pub marks: super::voice_marks::Marks,
     pub speaking: bool,
     pub video: bool,
 }
@@ -178,8 +179,13 @@ impl Root {
             .map(|state| Person {
                 user: state.user_id,
                 ringing: false,
-                mute: state.self_mute || state.mute,
-                deaf: state.self_deaf || state.deaf,
+                marks: super::voice_marks::Marks::of(
+                    state,
+                    self.context
+                        .mix
+                        .get(&state.user_id)
+                        .is_some_and(|mix| mix.1),
+                ),
                 speaking: self.speaking.contains(&state.user_id),
                 video: state.self_video || state.self_stream,
             })
@@ -190,8 +196,7 @@ impl Root {
                     out.push(Person {
                         user: *user,
                         ringing: true,
-                        mute: false,
-                        deaf: false,
+                        marks: super::voice_marks::Marks::default(),
                         speaking: false,
                         video: false,
                     });
@@ -614,15 +619,18 @@ impl Root {
 
     /// `CallAvatar` (module 85448).
     fn call_avatar(&self, user: &User, person: &Person, size: f32) -> AnyElement {
-        self.call_avatar_kind(user, person, size, RingKind::Outgoing)
+        // The avatars sit on the call area's black (`root_rTsZa_`).
+        self.call_avatar_kind(user, person, size, RingKind::Outgoing, "--black")
     }
 
+    /// `backdrop`: the colour behind the avatar, which the hole around a mute or deafen badge shows.
     pub(super) fn call_avatar_kind(
         &self,
         user: &User,
         person: &Person,
         size: f32,
         kind: RingKind,
+        backdrop: &'static str,
     ) -> AnyElement {
         let picture = self.images.get(&avatar_source(user).0).cloned();
         let ringing = person.ringing;
@@ -637,8 +645,10 @@ impl Root {
             })
             .children(picture.map(|picture| img(picture).size(px(size)).rounded_full()));
         // `getAvatarSizeInfo`: SIZE_80 {status 16, offset 4}, SIZE_40 {status 12, offset 0}.
-        let (status, offset) = if size >= 80. { (16., 4.) } else { (12., 0.) };
-        let badge = (person.mute || person.deaf).then(|| {
+        let (status, offset) = super::voice_marks::call_status_size(size);
+        let mark = person.marks.call_avatar();
+        // `statusContainer_NdapwK` (red-400 disk, bottom/end 0) with the icon in white at the status size.
+        let badge = mark.map(|mark| {
             div()
                 .absolute()
                 .bottom_0()
@@ -649,18 +659,25 @@ impl Root {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon(
-                    if person.deaf {
-                        "headphones_deafened"
-                    } else {
-                        "mic_muted"
-                    },
-                    status,
-                    "--white",
-                ))
+                .child(icon(mark, status, "--white"))
         });
-        let (inner, backing) =
-            super::motion::messages::speaking_rings(person.user, person.speaking);
+        // `svg-mask-avatar-call-status-*`: with a mark the avatar is masked with a hole around the badge, so the
+        // backdrop shows in a ring between the two. The hole is painted in the backdrop's colour.
+        let hole = mark.map(|_| {
+            let (centre, radius) = super::voice_marks::call_status_hole(size);
+            div()
+                .absolute()
+                .left(px(centre - radius))
+                .top(px(centre - radius))
+                .size(px(2. * radius))
+                .rounded_full()
+                .bg(color(backdrop))
+        });
+        // `U = !muted && !deafen && !isLocalMute`: the speaking border is drawn only without a mark.
+        let (inner, backing) = super::motion::messages::speaking_rings(
+            person.user,
+            person.speaking && !person.marks.any(),
+        );
         let ring = ringing.then(|| {
             let (opacity, scale) = pulse(kind, super::motion::now());
             // `:after {border: 3px solid var(--interactive-text-active); border-radius: 100%; inset: -3px}`
@@ -704,6 +721,7 @@ impl Root {
                     ),
             )
             .children(ring)
+            .children(hole)
             .children(badge)
             .into_any_element()
     }

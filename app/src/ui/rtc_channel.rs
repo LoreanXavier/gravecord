@@ -42,17 +42,18 @@ pub(super) fn voice_mark(
     local_mute: bool,
     mute: bool,
 ) -> Option<(&'static str, bool, &'static str)> {
+    use super::voice_marks::{HEADPHONES_DENY, HEADPHONES_SLASH, MIC_DENY, MIC_SLASH};
+    // `Tm`: server deafen and server mute are the deny glyphs, coloured; muted for me is the deny microphone, not.
     if server_deaf {
-        Some(("overlay_headphones_deny", true, "btxSdB"))
+        Some((HEADPHONES_DENY, true, "btxSdB"))
     } else if deaf {
-        Some(("overlay_headphones_slash", false, "NjmiOL"))
+        Some((HEADPHONES_SLASH, false, "NjmiOL"))
     } else if server_mute {
-        // GAP: MicrophoneDenyIcon is drawn as the slashed microphone (the deny glyph is not among the icons).
-        Some(("overlay_microphone_slash", true, "uLddbQ"))
+        Some((MIC_DENY, true, "uLddbQ"))
     } else if local_mute {
-        Some(("overlay_microphone_slash", false, "9F+xJU"))
+        Some((MIC_DENY, false, "9F+xJU"))
     } else if mute {
-        Some(("overlay_microphone_slash", false, "tjtv3P"))
+        Some((MIC_SLASH, false, "tjtv3P"))
     } else {
         None
     }
@@ -455,6 +456,25 @@ mod tests {
             Some("9F+xJU")
         );
         assert_eq!(voice_mark(false, false, false, false, false), None);
+    }
+
+    #[test]
+    fn marks_draw_the_official_deny_and_slash_glyphs() {
+        use super::super::voice_marks::{HEADPHONES_DENY, HEADPHONES_SLASH, MIC_DENY, MIC_SLASH};
+        let icon = |marks: (bool, bool, bool, bool, bool)| {
+            voice_mark(marks.0, marks.1, marks.2, marks.3, marks.4).map(|m| m.0)
+        };
+        assert_eq!(
+            icon((true, false, false, false, false)),
+            Some(HEADPHONES_DENY)
+        );
+        assert_eq!(
+            icon((false, true, false, false, true)),
+            Some(HEADPHONES_SLASH)
+        );
+        assert_eq!(icon((false, false, true, false, false)), Some(MIC_DENY));
+        assert_eq!(icon((false, false, false, true, false)), Some(MIC_DENY));
+        assert_eq!(icon((false, false, false, false, true)), Some(MIC_SLASH));
     }
 
     #[test]

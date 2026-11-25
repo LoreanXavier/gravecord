@@ -511,8 +511,8 @@ pub(super) enum TileMedia {
 
 struct Participant {
     user: User,
-    mute: bool,
-    deaf: bool,
+    /// The mute and deafen marks of the person's voice state (module 175203 reads them for its name pill).
+    marks: super::voice_marks::Marks,
     speaking: bool,
     tile: Candidate,
     /// Our own stream with Show My Screen Share off: `HIDDEN_STREAM` (module 568598), drawn as module 256195.
@@ -832,8 +832,12 @@ impl Root {
             let video = state.self_video || (is_me && own_camera);
             let stream = self.video_stream_of(state.user_id);
             let going_live = state.self_stream || stream.is_some();
-            let mute = state.self_mute || state.mute;
-            let deaf = state.self_deaf || state.deaf;
+            let local_mute = self
+                .context
+                .mix
+                .get(&state.user_id)
+                .is_some_and(|mix| mix.1);
+            let marks = super::voice_marks::Marks::of(state, local_mute);
             let speaking = self.speaking.contains(&state.user_id)
                 || self.soundboard.user_playing(state.user_id);
             let tile = Candidate {
@@ -853,8 +857,7 @@ impl Root {
             if going_live {
                 out.push(Participant {
                     user: user.clone(),
-                    mute,
-                    deaf,
+                    marks,
                     speaking: false,
                     tile: Candidate {
                         kind: TileKind::Stream,
@@ -867,8 +870,7 @@ impl Root {
             }
             out.push(Participant {
                 user,
-                mute,
-                deaf,
+                marks,
                 speaking,
                 tile,
                 hidden: false,
@@ -898,8 +900,7 @@ impl Root {
             let owner = &out[index];
             let ended = Participant {
                 user: owner.user.clone(),
-                mute: owner.mute,
-                deaf: owner.deaf,
+                marks: owner.marks,
                 speaking: false,
                 tile: Candidate {
                     kind: TileKind::Stream,
@@ -1840,12 +1841,14 @@ impl Root {
                     .when(stream_tile, |this| {
                         this.child(icon("voice_view_stream", 16., "--white"))
                     })
-                    .when(!stream_tile && person.mute, |this| {
-                        this.child(icon("voice_view_mic_slash", 16., "--white"))
-                    })
-                    .when(!stream_tile && person.deaf && !person.mute, |this| {
-                        this.child(icon("headphones_deafened", 16., "--white"))
-                    })
+                    // `eb` of module 175203 (`titleIcon_7NOr2f`, size "xs" 16px, `currentColor`), user tiles only.
+                    .children(
+                        person
+                            .marks
+                            .tile()
+                            .filter(|_| !stream_tile)
+                            .map(|mark| icon(mark, 16., "--white")),
+                    )
                     .child(person.user.display_name().to_owned()),
             );
         let options = div()

@@ -904,6 +904,27 @@ impl Root {
                 self.fake_dm_call(channel, cx);
                 "this account is shown in the call; nothing was sent".to_owned()
             }
+            // `fake-state me|other [self_mute] [self_deaf] [mute] [deaf] [self_video]`: a person in the call with
+            // those flags, fed to the stores as a VOICE_STATE_UPDATE (nothing is sent).
+            ["fake-state", who, flags @ ..] => {
+                let user = match *who {
+                    "me" => me,
+                    "other" => other,
+                    _ => return "who is me or other".to_owned(),
+                };
+                let mut voice = state(user, false);
+                for flag in flags {
+                    match *flag {
+                        "self_mute" | "self_deaf" | "mute" | "deaf" | "self_video" => {
+                            voice[*flag] = json!(true)
+                        }
+                        _ => return format!("unknown flag {flag}"),
+                    }
+                }
+                self.stores.dispatch("VOICE_STATE_UPDATE", &voice);
+                cx.notify();
+                format!("{who} is in the call with {flags:?}; nothing was sent")
+            }
             ["fake-leave"] => {
                 self.call = None;
                 let mut gone = state(me, false);

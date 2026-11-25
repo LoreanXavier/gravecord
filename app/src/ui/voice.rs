@@ -1792,7 +1792,14 @@ impl Root {
                     })
                     .unwrap_or_default();
                 let avatar = self.images.get(&avatar_source(&user).0).cloned();
-                let (muted, deaf) = (state.self_mute || state.mute, state.self_deaf || state.deaf);
+                // Module 588224: `mute: isVoiceMuted() || isLocalMute`, `localMute`, `serverMute: mute`,
+                // `deaf: isVoiceDeafened()`, `serverDeaf: deaf`.
+                let local_mute = self
+                    .context
+                    .mix
+                    .get(&state.user_id)
+                    .is_some_and(|mix| mix.1);
+                let marks = super::voice_marks::Marks::of(state, local_mute).voice_user();
                 let speaking = self.speaking.contains(&state.user_id)
                     || self.soundboard.user_playing(state.user_id);
                 let member = state.user_id;
@@ -1935,17 +1942,19 @@ impl Root {
                             })
                             .children(timer_under),
                     )
-                    // `icons_YUoOxm`: 16px, the muted microphone or the deafened headphones.
-                    .when(deaf, |this| {
-                        this.child(super::icon(
-                            "headphones_deafened",
+                    // `icons_YUoOxm` (`Kc`, module 293277): the microphone mark, then the headphones mark, 16px in
+                    // `--channels-default`, a server's in `--icon-feedback-critical` (`iconServer_YUoOxm`).
+                    .children(marks.iter().map(|&(mark, server)| {
+                        super::icon(
+                            mark,
                             16.,
-                            "--channels-default",
-                        ))
-                    })
-                    .when(muted && !deaf, |this| {
-                        this.child(super::icon("voice_member_muted", 16., "--channels-default"))
-                    })
+                            if server {
+                                "--icon-feedback-critical"
+                            } else {
+                                "--channels-default"
+                            },
+                        )
+                    }))
                     // `icons_YUoOxm`: the camera, then the red LIVE badge of someone who goes live.
                     .when(state.self_video, |this| {
                         this.child(super::icon(

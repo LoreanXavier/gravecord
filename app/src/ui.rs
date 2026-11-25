@@ -443,6 +443,7 @@ mod violation_detail;
 mod voice;
 mod voice_alerts;
 mod voice_badge;
+mod voice_marks;
 mod voice_blocked;
 mod voice_invite;
 mod voice_panel;

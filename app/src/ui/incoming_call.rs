@@ -285,8 +285,7 @@ impl Root {
                 user: sender.id,
                 // `ringing: isFocused()`: the pulse runs only while the window has focus.
                 ringing: cfg!(feature = "capture") || self.notification_focused,
-                mute: false,
-                deaf: false,
+                marks: super::voice_marks::Marks::default(),
                 speaking: false,
                 video: false,
             };
@@ -394,6 +393,7 @@ impl Root {
                         &person,
                         40.,
                         RingKind::Incoming,
+                        "--background-mod-normal",
                     )))
                     .child(
                         div()
@@ -431,6 +431,7 @@ impl Root {
                         &person,
                         80.,
                         RingKind::Incoming,
+                        "--background-surface-high",
                     )))
                     .child(
                         div()

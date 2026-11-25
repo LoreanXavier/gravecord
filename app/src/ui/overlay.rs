@@ -2194,7 +2194,7 @@ pub(super) fn voice_icons(row: &Row) -> Vec<&'static str> {
         icons.push(if row.server_deaf {
             "overlay_server_deafened"
         } else {
-            "headphones_deafened"
+            super::voice_marks::HEADPHONES_SLASH
         });
     }
     if row.video {
@@ -3434,7 +3434,7 @@ mod tests {
             voice_icons(&deaf),
             [
                 "voice_member_muted",
-                "headphones_deafened",
+                "overlay_headphones_slash",
                 "voice_member_camera"
             ]
         );
