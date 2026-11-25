@@ -143,7 +143,19 @@ impl Root {
         if self.jump.route.is_some_and(|(routed, _)| routed == channel) {
             return;
         }
-        let _ = self.requests.send(Request::LoadMessages { channel });
+        // 123363 `P` on `CHANNEL_SELECT`: a channel whose messages are loading, or loaded and kept current by the
+        // gateway since this session opened (`ready`; READY makes every window stale), is not fetched again.
+        if !self
+            .stores
+            .windows
+            .get(&channel)
+            .is_some_and(|window| window.loading_more || window.ready)
+        {
+            let _ = self.requests.send(Request::LoadMessages { channel });
+        } else if self.channel == Some(channel) {
+            // What the arriving page would have done: the newest messages are on screen, so they are read.
+            self.read_current_channel();
+        }
         self.warm_channel_pins(channel);
     }
 

@@ -119,10 +119,9 @@ impl Root {
             self.request_authorized_apps();
         }
         if let Some((user, _)) = recipient {
-            let _ = self.requests.send(crate::net::Request::Fetch {
-                key: format!("profile:{user}"),
-                route: self.dm_profile_route(user),
-            });
+            // 917445 `E`: not again while it is in and fresh.
+            let route = self.dm_profile_route(user);
+            self.fetch_user_profile(user, route);
             self.prefetch_known_wishlist(user);
         }
         self.stop_lurking_elsewhere();

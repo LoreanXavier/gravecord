@@ -1050,10 +1050,7 @@ impl Root {
         };
         let user = open.user;
         open.guild = guild;
-        let _ = self.requests.send(Request::Fetch {
-            key: format!("profile:{user}"),
-            route: profile_route(user, guild),
-        });
+        self.fetch_user_profile(user, profile_route(user, guild));
         if let Some(known) = self.stores.users.get(&user).cloned() {
             let (image, url) = self.guild_avatar_source_in(&known, guild);
             self.request_image(image, url);

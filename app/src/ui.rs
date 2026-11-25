@@ -383,6 +383,7 @@ mod incoming_call;
 mod member_safety;
 mod member_subscriptions;
 mod member_window;
+mod profile_fetch;
 mod nitro_resubscribe;
 mod nitro_trials_picker;
 mod orb_multiplier_modal;
@@ -694,6 +695,8 @@ pub struct Root {
     member_window: member_window::State,
     /// `GuildSubscriptionsStore`'s subscription manager (module 661670).
     guild_subscriptions: dc_state::guild_subscriptions::GuildSubscriptions,
+    /// `fetchProfile`'s rules (module 917445): profile reads under way and when each ended.
+    profile_fetches: profile_fetch::ProfileFetches,
     inline_videos: Rc<RefCell<inline_video::Cache>>,
     gif_tiles: Rc<RefCell<gif_tiles::Cache>>,
     video_hub: Rc<RefCell<video_player::VideoHub>>,
@@ -1534,6 +1537,7 @@ impl Root {
             member_avatars: Default::default(),
             member_window: member_window::State::default(),
             guild_subscriptions: Default::default(),
+            profile_fetches: Default::default(),
             inline_videos: Default::default(),
             gif_tiles: Default::default(),
             video_hub: Rc::new(RefCell::new(video_player::VideoHub::new())),
@@ -2642,6 +2646,7 @@ impl Root {
                 }
             }
             Update::Fetched { key, body } => {
+                self.profile_answered(&key, &body);
                 if let Some(orig) = key.strip_prefix("attachment-refresh:") {
                     // Module 740024 (`679164.AN`): copy refreshed signed attachment CDN URL (or fallback to original).
                     let resolved = context_menu::extract_refreshed_attachment_url(&body)
