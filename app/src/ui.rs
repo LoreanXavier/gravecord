@@ -8908,8 +8908,13 @@ impl Root {
             boxed,
             image,
             // `.interactive:hover { background-color: var(--brand-500); color: var(--white) }` on the mention
-            // (stylesheet 17256's markup rules); `@everyone` and `@here` are not interactive.
-            hover: (mention && !matches!(span.kind, Kind::Everyone)).then(|| match role_look {
+            // (stylesheet 17256's markup rules). Module 332173 adds `interactive` whenever the mention has an
+            // `onClick`: module 593284 `A` gives `@everyone` one in a server channel (it opens the member list), and
+            // leaves `@here` and any mention outside a server without one.
+            hover: (mention
+                && !matches!(span.kind, Kind::Everyone if span.text != "@everyone"
+                    || self.current_guild().is_none()))
+            .then(|| match role_look {
                 // The inline `color` outranks the stylesheet's white; only the background deepens.
                 Some((color, _)) => (role_tint(color, 0.3), tint),
                 None => (hsla("--brand-500"), hsla("--white")),

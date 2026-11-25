@@ -271,7 +271,6 @@ impl Root {
             .map(|member| self.role_row(member, open.guild, cx))
             .collect();
         let more = more_label(count, rows.len());
-        let (row_count, has_more) = (rows.len(), more.is_some());
         let header = div()
             .flex_none()
             .h(px(40.))
@@ -310,6 +309,9 @@ impl Root {
             .child(
                 div()
                     .id("role-popout-scroller")
+                    // `display: flex` on `rolePopout` lets the scroller take the card's height, capped by its
+                    // `max-height`, and scroll the rest.
+                    .min_h(px(0.))
                     .mb(px(8.))
                     .mt(px(4.))
                     .flex()
@@ -328,29 +330,27 @@ impl Root {
                             .child(SharedString::from(label))
                     })),
             );
-        // `position: "top"` with `autoInvert` (module 787564 through `Popout`, module 265872): above the mention,
-        // or below it when that leaves more room (`calculateState`, module 623646). The default `TRANSLATE`
-        // animation slides it in from the side it opened on.
-        let height =
-            (2. + 4. + 40. + row_count as f32 * ROW + if has_more { 40. } else { 0. } + 8.)
-                .min(limit);
-        let below = opens_below(
-            f32::from(open.anchor.top()),
-            f32::from(open.anchor.bottom()),
-            height,
-            self.viewport.1,
+        // `position: "right"` (module 593284 `A` through `Popout`, module 265872: `align: "top"`, `spacing: 8`,
+        // `autoInvert`, `nudgeAlignIntoViewport`): beside the mention with its top at the mention's top, or on the
+        // left when the right has no room and the left has more (`calculateState`, module 623646). The default
+        // `TRANSLATE` animation slides it in from the side it opened on.
+        let left = opens_left(
+            f32::from(open.anchor.left()),
+            f32::from(open.anchor.right()),
+            WIDTH,
+            self.viewport.0,
         );
-        let (corner, at, side) = if below {
+        let (corner, at, side) = if left {
             (
-                gpui::Anchor::TopLeft,
-                point(open.anchor.left(), open.anchor.bottom() + px(GAP)),
-                PopSide::Bottom,
+                gpui::Anchor::TopRight,
+                point(open.anchor.left() - px(GAP), open.anchor.top()),
+                PopSide::Left,
             )
         } else {
             (
-                gpui::Anchor::BottomLeft,
-                point(open.anchor.left(), open.anchor.top() - px(GAP)),
-                PopSide::Top,
+                gpui::Anchor::TopLeft,
+                point(open.anchor.right() + px(GAP), open.anchor.top()),
+                PopSide::Right,
             )
         };
         Some(
@@ -375,13 +375,13 @@ impl Root {
     }
 }
 
-/// Whether a popout asked for above its target opens below it instead (`autoInvert`, `calculateState` in module
-/// 623646): the room left above is `top - GAP - height`, below it `viewport - (bottom + GAP + height)`; it inverts
-/// when the room above is negative and the room below is larger.
-fn opens_below(top: f32, bottom: f32, height: f32, viewport: f32) -> bool {
-    let above = top - GAP - height;
-    let below = viewport - (bottom + GAP + height);
-    above < 0. && below > above
+/// Whether a popout asked for on the right of its target opens on the left instead (`autoInvert`, `calculateState`
+/// in module 623646): the room left on the right is `viewport - (right + GAP + width)`, on the left
+/// `left - GAP - width`; it inverts when the right is short and the left has more.
+fn opens_left(left: f32, right: f32, width: f32, viewport: f32) -> bool {
+    let room_right = viewport - (right + GAP + width);
+    let room_left = left - GAP - width;
+    room_right < 0. && room_left > room_right
 }
 
 #[cfg(test)]
@@ -389,12 +389,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_popout_opens_above_the_mention_unless_it_does_not_fit() {
-        assert!(!opens_below(400., 418., 200., 720.));
-        // 100 - 8 - 200 < 0 and there is more room below.
-        assert!(opens_below(100., 118., 200., 720.));
+    fn the_popout_opens_right_of_the_mention_unless_it_does_not_fit() {
+        assert!(!opens_left(480., 560., 240., 1280.));
+        // 1280 - (1100 + 8 + 240) < 0 and there is more room on the left.
+        assert!(opens_left(1040., 1100., 240., 1280.));
         // Neither fits: it stays where the room is larger.
-        assert!(!opens_below(300., 318., 600., 400.));
+        assert!(!opens_left(100., 300., 240., 400.));
     }
 
     fn member(id: Id, name: &str, nick: Option<&str>, roles: &[Id]) -> Member {
