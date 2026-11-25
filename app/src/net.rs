@@ -2,6 +2,9 @@
 
 use dc_gateway::{Command, Config, Event, spawn};
 use dc_http::Client;
+/// Whether an address is on one of Discord's hosts (the pinned client keeps its header set for those only), for code
+/// that decides what may be fetched without sending anything itself.
+pub(crate) use dc_http::plain::is_discord_url;
 use dc_proto::identity::{IdentifyState, Identity};
 use dc_proto::op::Op;
 use dc_proto::pin;
@@ -2840,6 +2843,15 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                         || url.clone(),
                         |path| format!("https://cdn.discordapp.com/attachments/{path}"),
                     );
+                    // Only Discord's hosts are fetched for a preview, whoever asked (`zip::load`).
+                    if native.is_none() && zip::load(&url) != zip::Load::Discord {
+                        zip::reject(&url, zip::NOT_FETCHED.to_owned());
+                        let _ = updates.send(Update::Fetched {
+                            key,
+                            body: Value::Null,
+                        });
+                        return;
+                    }
                     let fetched = client
                         .fetch_public_limited(&fetch_url, zip::MAX_ZIP_BYTES)
                         .await;

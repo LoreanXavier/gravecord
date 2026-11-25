@@ -1,6 +1,7 @@
 //! ZipPreview (Equicord `src/equicordplugins/zipPreview`, GPL-3.0-or-later): a file attachment named `*.zip` gets a
 //! 48 by 18 chevron under its name and size (`flex-wrap` and a full-width row, `order: 3`); opening it loads the
-//! archive (a Discord attachment only after the native question "Preview ZIP attachment", Cancel / Preview ZIP) and
+//! archive (a Discord attachment only after the native question "Preview ZIP attachment", Cancel / Preview ZIP; an
+//! address outside Discord's hosts is never fetched and reads "Could not fetch ZIP.") and
 //! lists it: a folder icon with the path as links, the folders ("name/"), then the files with their sizes; a text or
 //! picture file of 10 MB at most opens in a large dialog (text: its code block, Copy and Download; picture: Download).
 //! States: "Loading ZIP preview...", the error, "This ZIP is empty.", "This folder is empty.", "Only showing first 1000
@@ -126,20 +127,25 @@ impl Root {
         )
     }
 
-    /// `loadPreview`: a Discord attachment asks first (the native helper's message box), then the archive is fetched.
+    /// `loadPreview`: a Discord attachment asks first (the native helper's message box), then the archive is fetched;
+    /// another Discord address is fetched; an address on any other host is never fetched (`zip::load`).
     fn zip_preview_load(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         zip::set_state(url, State::Pending);
         CANCELLED_SHOWN.with(|shown| shown.borrow_mut().retain(|known| known != url));
         let key = format!("{KEY}{url}");
-        match zip::attachment_path(url) {
-            None => {
+        match zip::load(url) {
+            zip::Load::Refused => {
+                zip::reject(url, zip::NOT_FETCHED.to_owned());
+                cx.notify();
+            }
+            zip::Load::Discord => {
                 let _ = self.requests.send(crate::net::Request::FetchZip {
                     key,
                     url: url.to_owned(),
                     native: None,
                 });
             }
-            Some(path) => {
+            zip::Load::Ask(path) => {
                 let detail = format!(
                     "Attachment: {}\n\nIf you did not request this intentionally, choose Cancel.",
                     zip::dialog_name(&path)

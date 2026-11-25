@@ -114,6 +114,34 @@ pub(crate) fn attachment_path(url: &str) -> Option<String> {
     })
 }
 
+/// `loadZip` failing its plain `fetch`: the message a ZIP elsewhere than Discord gets.
+pub(crate) const NOT_FETCHED: &str = "Could not fetch ZIP.";
+
+/// How an archive is loaded (`loadZip`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Load {
+    /// A Discord attachment: its native helper asks "Preview ZIP attachment" first, then fetches this
+    /// `<channel>/<attachment>/<name>?<query>` from `cdn.discordapp.com`.
+    Ask(String),
+    /// Another address on a Discord host: fetched as the page's own `fetch` would, which Discord's content security
+    /// policy lets reach Discord's hosts.
+    Discord,
+    /// Any other host: nothing is fetched and the preview shows [`NOT_FETCHED`]. Upstream's page `fetch` cannot reach
+    /// a host outside the content security policy either; here no address outside Discord is contacted for a preview.
+    Refused,
+}
+
+pub(crate) fn load(url: &str) -> Load {
+    if let Some(path) = attachment_path(url) {
+        return Load::Ask(path);
+    }
+    if url.starts_with("https://") && crate::net::is_discord_url(url) {
+        Load::Discord
+    } else {
+        Load::Refused
+    }
+}
+
 /// The attachment's name as the native dialog shows it (the last path part, URL-decoded).
 pub(crate) fn dialog_name(path_and_query: &str) -> String {
     let path = path_and_query.split('?').next().unwrap_or_default();
@@ -434,5 +462,33 @@ mod tests {
         assert_eq!(dialog_name("1/2/a%20b.zip?ex=1"), "a b.zip");
         assert_eq!(code_language("rs"), "rust");
         assert_eq!(kind("txt", MAX_PREVIEW_BYTES + 1), Kind::Unsupported);
+    }
+
+    /// Only Discord's own hosts are fetched: an attachment after its question, another Discord address at once, and
+    /// any other host never.
+    #[test]
+    fn only_discord_addresses_are_fetched() {
+        assert_eq!(
+            load("https://cdn.discordapp.com/attachments/1/2/a.zip?ex=1"),
+            Load::Ask("1/2/a.zip?ex=1".to_owned())
+        );
+        assert_eq!(
+            load("https://media.discordapp.net/attachments/1/2/a.zip"),
+            Load::Ask("1/2/a.zip".to_owned())
+        );
+        assert_eq!(
+            load("https://cdn.discordapp.com/ephemeral-attachments/1/2/a.zip"),
+            Load::Discord
+        );
+        for url in [
+            "https://example.com/attachments/1/2/a.zip",
+            "https://cdn.discordapp.com.example.net/attachments/1/2/a.zip",
+            "https://evildiscordapp.com/a.zip",
+            "http://cdn.discordapp.com/x/a.zip",
+            "http://127.0.0.1:1/a.zip",
+            "",
+        ] {
+            assert_eq!(load(url), Load::Refused, "{url}");
+        }
     }
 }
