@@ -5876,16 +5876,26 @@ impl Root {
             }
             match self.images.get(&format!("guild:{}", guild.id)).cloned() {
                 Some(image) => img(image).size(px(16.)).rounded(px(4.)).into_any_element(),
+                // `icon_qqAqr1 iconSizeSmol_qqAqr1 noIcon_qqAqr1`: 16px, 8px text on a 16px line, centred
+                // (`text-align: center`); `acronym_qqAqr1` is `overflow: hidden; white-space: nowrap`, so an acronym
+                // wider than the tile starts at its left edge and is cut at its right one.
                 None => div()
+                    .flex_none()
                     .size(px(16.))
                     .rounded(px(4.))
+                    .overflow_hidden()
                     .bg(color("--background-base-lower"))
                     .flex()
-                    .items_center()
                     .justify_center()
                     .text_size(px(8.))
+                    .line_height(px(16.))
                     .text_color(color("--text-default"))
-                    .child(guild.acronym())
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .whitespace_nowrap()
+                            .child(guild.acronym()),
+                    )
                     .into_any_element(),
             }
         });
@@ -6141,6 +6151,8 @@ impl Root {
                     .text_size(px(font_size))
                     .line_height(px(font_size * 1.2))
                     .font_weight(FontWeight(500.))
+                    // `acronym_JJ-hgR`: `white-space: nowrap`; the tile's mask cuts what is wider than it.
+                    .whitespace_nowrap()
                     .text_color(motion::rail::tile_foreground(&row_key, selected))
                     .child(acronym)
             }
@@ -10765,10 +10777,14 @@ impl Root {
                                         ),
                                     ),
                             )
+                            // `.cozy_2i8Bfm .header_2i8Bfm`: a block of inline content, `min-height: 1.375rem` and
+                            // `white-space: break-spaces`, so the timestamp and badges go to a new 22px line when the
+                            // name leaves no room for them (and a name wider than the line breaks inside itself).
                             .child(
                                 div()
-                                    .h(px(22.))
+                                    .min_h(px(22.))
                                     .flex()
+                                    .flex_wrap()
                                     .items_center()
                                     .when(timed_out, |header| {
                                         header.child(self.timeout_mark(message, false, cx))
@@ -10799,24 +10815,28 @@ impl Root {
                                             }),
                                     )
                                     .child(
-                                        self.message_author_trigger(
-                                            format!("name-{id}"),
-                                            message,
-                                            div()
-                                                .id(SharedString::from(format!("name-link-{id}")))
-                                                // `.username.clickable:hover` underlines the name (module 2i8Bfm).
-                                                .hover(|style| style.underline())
-                                                .font_weight(FontWeight(500.))
-                                                .text_color(self.guild_author_color(
-                                                    message.author.id,
-                                                    "--text-strong",
-                                                ))
-                                                .line_height(px(22.))
-                                                .child(self.author_name(
-                                                    format!("author-{id}"),
-                                                    &message.author,
-                                                )),
-                                            cx,
+                                        div().min_w(px(0.)).child(
+                                            self.message_author_trigger(
+                                                format!("name-{id}"),
+                                                message,
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "name-link-{id}"
+                                                    )))
+                                                    // `.username.clickable:hover` underlines the name (module 2i8Bfm).
+                                                    .hover(|style| style.underline())
+                                                    .font_weight(FontWeight(500.))
+                                                    .text_color(self.guild_author_color(
+                                                        message.author.id,
+                                                        "--text-strong",
+                                                    ))
+                                                    .line_height(px(22.))
+                                                    .child(self.author_name(
+                                                        format!("author-{id}"),
+                                                        &message.author,
+                                                    )),
+                                                cx,
+                                            ),
                                         ),
                                     )
                                     .children(self.header_decorations(message, cx))
