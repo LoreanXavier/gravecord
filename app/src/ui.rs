@@ -12661,6 +12661,11 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // The call's popups are drawn only where the call is. Left open on a page that no longer shows the call
+                // (or in the popped-out window), they would take an Escape the user cannot see go anywhere.
+                if keys.key == "escape" {
+                    this.drop_unseen_call_popups();
+                }
                 if keys.key == "escape" && !event.is_held && this.close_floating_select() {
                     cx.notify();
                     cx.stop_propagation();

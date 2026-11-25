@@ -680,7 +680,7 @@ pub(super) fn route(keystroke: &Keystroke, facts: Facts) -> Route {
 impl crate::ui::Root {
     /// Script step `keys state`: what the shortcuts and Escape act on, in one line.
     #[cfg(feature = "capture")]
-    pub(crate) fn script_keys_state(&self, window: &gpui::Window) -> String {
+    pub(crate) fn script_keys_state(&self, window: &gpui::Window, cx: &gpui::App) -> String {
         let categories: Vec<bool> = self
             .guild
             .and_then(|guild| self.stores.guild(guild).map(|known| (guild, known)))
@@ -699,7 +699,7 @@ impl crate::ui::Root {
             })
             .unwrap_or_default();
         format!(
-            "layers={} settings_layer={} modals={} quick_switcher={} fullscreen={} native_fullscreen={} focused_tile={} voice_chat={} members={} group_members={} dm_profile={} sidebar_post={} new_thread={} channel={:?} guild={:?} root_focused={} categories_collapsed={}/{}",
+            "layers={} settings_layer={} modals={} quick_switcher={} fullscreen={} native_fullscreen={} focused_tile={} voice_chat={} members={} group_members={} dm_profile={} sidebar_post={} new_thread={} channel={:?} guild={:?} root_focused={} focus_drawn={} categories_collapsed={}/{}",
             self.open_layers().len(),
             self.layers_open(),
             self.modal_open(),
@@ -717,6 +717,7 @@ impl crate::ui::Root {
             self.channel,
             self.guild,
             self.focus.is_focused(window),
+            window.focused(cx).is_some() && self.focus.contains_focused(window, cx),
             categories.iter().filter(|collapsed| **collapsed).count(),
             categories.len(),
         )

@@ -224,6 +224,21 @@ pub async fn run(
                 let result = native::leave(window, cx).await;
                 let _ = writeln!(output, "native leave: {result}");
             }
+            // `native deactivate` / `native activate`: the window loses and regains activation as with Alt+Tab
+            // (`WM_ACTIVATE` through its own procedure, on the hidden desktop only).
+            ["native", which @ ("activate" | "deactivate")] => {
+                let active = *which == "activate";
+                let result = window
+                    .update(cx, |_, window, _| native::activate(window, active))
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result);
+                let _ = writeln!(output, "native {which}: {result:?}");
+            }
+            // `blur`: nothing in the window has focus, as `Window::blur` leaves it.
+            ["blur"] => {
+                let _ = window.update(cx, |_, window, cx| window.blur(cx));
+                let _ = writeln!(output, "blurred");
+            }
             ["native", "state"] => {
                 let _ = writeln!(output, "native state: {}", native::state(window, cx));
             }
@@ -2496,7 +2511,7 @@ pub async fn run(
             // What the shortcuts and Escape act on (`Root::script_keys_state`).
             ["keys", "state", label @ ..] => {
                 let report = window
-                    .update(cx, |_, window, cx| root.read(cx).script_keys_state(window))
+                    .update(cx, |_, window, cx| root.read(cx).script_keys_state(window, cx))
                     .unwrap_or_else(|_| "window closed".to_owned());
                 let _ = writeln!(output, "keys {}: {report}", label.join(" "));
             }

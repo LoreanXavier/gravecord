@@ -56,6 +56,13 @@ impl Render for Popout {
                 })
             })
             .unwrap_or_default();
+        // Its document keeps the keys when nothing in it has focus (a press that blurred a control, a menu row gone).
+        if window
+            .focused(cx)
+            .is_none_or(|handle| !self.focus.contains_focused(window, cx) && handle != self.focus)
+        {
+            window.focus(&self.focus, cx);
+        }
         let root_esc = self.root.clone();
         div()
             .id("call-popout")

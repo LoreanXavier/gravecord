@@ -123,6 +123,32 @@ pub(crate) fn close(window: &mut gpui::Window, cx: &mut gpui::App) -> Result<(),
     }
 }
 
+pub(crate) fn activate(window: &gpui::Window, active: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::{
+            Foundation::{LPARAM, WPARAM},
+            UI::WindowsAndMessaging::{SendMessageW, WA_ACTIVE, WA_INACTIVE, WM_ACTIVATE},
+        };
+        let hwnd = owned_hidden_window(window)?;
+        let state = if active { WA_ACTIVE } else { WA_INACTIVE };
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_ACTIVATE,
+                Some(WPARAM(state as usize)),
+                Some(LPARAM(0)),
+            )
+        };
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, active);
+        Err("native window test requires Windows".into())
+    }
+}
+
 pub(crate) fn minimize_or_restore(window: &gpui::Window, minimize: bool) -> Result<(), String> {
     #[cfg(windows)]
     {

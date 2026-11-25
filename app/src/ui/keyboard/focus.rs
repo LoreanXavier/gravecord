@@ -616,21 +616,39 @@ impl Root {
         {
             self.keys.field_return = Some((field.clone(), back));
         }
-        self.watch_undrawn_field(window, cx);
+        self.watch_undrawn_focus(window, cx);
     }
 
-    /// A text field keeps focus after whatever drew it is gone (a closed launcher, a page the call's Full Screen
+    /// The popups of the call (its tile and bar menus, the soundboard tip, the invite suggestions) where no call is
+    /// drawn: the main window shows another page, or the call is in its own window.
+    pub(in crate::ui) fn drop_unseen_call_popups(&mut self) {
+        let drawn_here = !self.call_popped_out()
+            && (self.voice_view_open() || self.vv.fullscreen || self.dm_call_shown());
+        if drawn_here {
+            return;
+        }
+        self.vv.soundboard_nux_preview = false;
+        self.vv.invite_suggestions_open = false;
+        if !self.call_popped_out() {
+            self.vv.menu = None;
+        }
+    }
+
+    /// A focus handle (a text field, a row, a button) keeps focus after whatever drew it is gone (a closed launcher, a page the call's Full Screen
     /// covers). A focus handle that is not drawn receives no keys: Escape, the shortcuts and typing all stop. The
     /// official popouts and dialogs hold a focus lock (module 315710) that, when they unmount with focus inside, gives
     /// focus back on the next animation frame to what had it when they opened, if that is still on the page; else
     /// focus is on the body and the keys reach the document. Once the frame built now is drawn, a field still focused
     /// but not in it gives focus back the same way. The inline edit box is left alone: its row can scroll out of a
     /// virtual list and come back.
-    fn watch_undrawn_field(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn watch_undrawn_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        // Nothing focused (`blur`, a closed window's focus): the keys would reach no element of the view. The page
+        // itself (the body) has them in the official client; here the window's own handle does.
         let Some(focused) = window.focused(cx) else {
+            window.focus(&self.focus, cx);
             return;
         };
-        if focused == self.focus || !is_field(&focused) {
+        if focused == self.focus {
             return;
         }
         if self
