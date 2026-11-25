@@ -4064,6 +4064,18 @@ impl Stores {
         self.read_states.is_unread(channel, joined)
     }
 
+    /// `resolveUnreadSetting(channel) === ALL_MESSAGES` (module 543465): the channel's unread badge counts every
+    /// message, not only mentions. Always true until the account uses the new notification settings.
+    pub fn channel_counts_all_unreads(&self, guild: Id, channel: Id) -> bool {
+        let Some(known) = self.guild(guild) else {
+            return false;
+        };
+        let Some(row) = known.channels.iter().find(|row| row.id == channel) else {
+            return false;
+        };
+        unread::all_unreads(self, known, row)
+    }
+
     /// A guild is unread when one of its text channels is.
     pub fn guild_unread(&self, guild: &Guild) -> bool {
         unread::guild_counts(self, guild, chrono::Utc::now()).unread

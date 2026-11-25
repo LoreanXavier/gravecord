@@ -474,19 +474,10 @@ impl Root {
             .stores
             .guild_settings
             .channel_muted(guild, channel, chrono::Utc::now());
-        let level = self
-            .stores
-            .guild_settings
-            .channel(guild, channel)
-            .message_notifications;
-        let level = if level == dc_state::guild_settings::INHERIT {
-            self.stores.guild_settings.inherited(guild, row.parent_id)
-        } else {
-            level
-        };
+        // `S.Y`: unread, and the unread setting (not the notification level) counts every message.
         (!muted || mentions > 0)
             && self.stores.is_unread(channel)
-            && level == dc_state::guild_settings::ALL_MESSAGES
+            && self.stores.channel_counts_all_unreads(guild, channel)
     }
 
     /// `UNREAD_NEXT`, `UNREAD_PREV` and the mention variants.
