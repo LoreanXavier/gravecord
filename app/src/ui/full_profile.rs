@@ -3373,8 +3373,8 @@ impl Root {
             }))
             .relative()
             .w(px(geo.card_width))
-            .h_full()
-            .flex_none()
+            .flex_1()
+            .min_h(px(0.))
             .rounded_t(px(16.))
             .overflow_hidden()
             // `profile_s3DB6Y` has no border, only its shadow (design/dom/profile/full-loreanxavier: the avatar at
@@ -3702,34 +3702,26 @@ impl Root {
                 }))
                 .into_any_element(),
         };
-        let columns = div()
-            .w_full()
+        let columns = div().w_full().flex_1().min_w(px(0.)).h_full().flex();
+        let details = div()
             .flex_1()
             .min_w(px(0.))
-            .h_full()
+            .pt(px(20.))
+            .pl(px(32.))
+            .pr(px(16.))
             .flex()
-            .child(identity)
+            .flex_col()
+            .child(tabs)
             .child(
+                // `tabBarPanel_y4ZEM5` starts 2px above the tab line's bottom.
                 div()
+                    .id("full-profile-panel")
+                    .mt(px(-2.))
                     .flex_1()
-                    .min_w(px(0.))
-                    .pt(px(20.))
-                    .pl(px(32.))
-                    .pr(px(16.))
-                    .flex()
-                    .flex_col()
-                    .child(tabs)
-                    .child(
-                        // `tabBarPanel_y4ZEM5` starts 2px above the tab line's bottom.
-                        div()
-                            .id("full-profile-panel")
-                            .mt(px(-2.))
-                            .flex_1()
-                            .min_h(px(0.))
-                            .overflow_y_scroll()
-                            .pb(px(16.))
-                            .child(panel),
-                    ),
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .pb(px(16.))
+                    .child(panel),
             );
         let modal_bg = palette
             .theme
@@ -3778,16 +3770,31 @@ impl Root {
         let top_band = geo
             .sys_pad
             .max(if private_profile { PRIVATE_BANNER } else { 0. });
-        // The frame of module 744808 over the whole modal (`profileContentOuter`), hidden in windows up to 785px tall.
-        let (frame_back, frame_front) = self.profile_frame_layers(
-            id,
-            geo.width,
-            Some(geo.height),
-            super::profile_frames::FrameSurface::Modal,
-            f32::from(viewport.height),
-        );
         let vw = f32::from(viewport.width);
         let vh = f32::from(viewport.height);
+        // The frame of module 744808 is the last child of the left card (`main.profile_s3DB6Y`, `D.A` with
+        // `filterLayer: u5`), not of the modal: its layers take the card's box, hang out of it unclipped (the crest
+        // rises over the modal's top edge), and it is hidden in windows up to 785px tall.
+        let card_height = full_profile_card_height(&geo, vh, top_band);
+        let (frame_back, frame_front) = self.profile_frame_layers(
+            id,
+            geo.card_width,
+            Some(card_height),
+            super::profile_frames::FrameSurface::Modal,
+            vh,
+        );
+        let framed = !frame_back.is_empty() || !frame_front.is_empty();
+        let identity = div()
+            .relative()
+            .w(px(geo.card_width))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .children(frame_back)
+            .child(identity)
+            .children(frame_front);
+        let columns = columns.child(identity).child(details);
         let border_normal = palette.token("--border-normal");
         let modal = div()
             .parity("full-profile")
@@ -3797,7 +3804,8 @@ impl Root {
             .w(px(geo.width))
             .h(px(geo.height))
             .rounded(px(geo.radius))
-            .overflow_hidden()
+            // Nothing reaches the rounded corners but layers rounded themselves; a frame's crest must not be cut.
+            .when(!framed, |modal| modal.overflow_hidden())
             // `f4f30bf79660bbe0.css` (`outer_ZhNJfE`): `border-inline: 1px solid var(--border-normal)` from 929px wide,
             // `border-block: 1px solid var(--border-normal)` from 785px tall, and `border-radius: 16px` when both hold.
             .when(vw >= 929., |d| d.border_l_1().border_r_1())
@@ -3811,7 +3819,6 @@ impl Root {
                 inner_radius,
             ))
             .children(top_banner_backdrop)
-            .children(frame_back)
             .on_click(|_, _, cx| cx.stop_propagation())
             // anner_B_p0HC in the modal (module 312381): a 48px band across the top, the lock (xs) and Private
             // Profile in ody-sm/semibold, 4px apart; the content and the close button move below it
@@ -3894,8 +3901,7 @@ impl Root {
                             .text_color(secondary_fg),
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.close_full_profile(cx))),
-            )
-            .children(frame_front);
+            );
         // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
         let pose =
             crate::ui::motion::legacy_modal_pose("full-profile", "full-profile-layer", false);
@@ -3931,6 +3937,13 @@ struct ModalGeometry {
     sys_pad: f32,
     close_top: f32,
     radius: f32,
+}
+
+/// The left card's height (`main.profile_s3DB6Y`): the modal's height inside its block borders (1px each from 785px
+/// tall), less the content's top padding and the private band, the card running down to the modal's bottom edge.
+fn full_profile_card_height(geo: &ModalGeometry, vh: f32, top_band: f32) -> f32 {
+    let borders = if vh >= 785. { 2. } else { 0. };
+    (geo.height - borders - geo.pad - top_band).max(0.)
 }
 
 /// `.root_ZhNJfE` / `.outer_ZhNJfE` responsive modal bounds (`f4f30bf79660bbe0.css`).
@@ -4292,6 +4305,21 @@ mod tests {
         assert_eq!(
             profile_date("2013-01-06T10:00:00").as_deref(),
             Some("Jan 6, 2013")
+        );
+    }
+
+    /// The frame's box is the left card: 48px under the modal's top border down to its bottom border.
+    #[test]
+    fn the_frame_takes_the_left_cards_box() {
+        let geo = full_profile_modal_geometry(1920., 1080.);
+        assert_eq!(geo.card_width, 400.);
+        assert_eq!(
+            super::full_profile_card_height(&geo, 1080., 0.),
+            800. - 2. - 48.
+        );
+        assert_eq!(
+            super::full_profile_card_height(&geo, 1080., super::PRIVATE_BANNER),
+            800. - 2. - 48. - 48.
         );
     }
 
