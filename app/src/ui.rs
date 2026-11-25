@@ -67,6 +67,7 @@ mod carousel;
 mod ch_fixture;
 mod channel_drag;
 mod channel_icon;
+mod channel_mention;
 pub(crate) mod channel_notice;
 mod channel_settings;
 mod channel_settings_pages;
@@ -8750,10 +8751,11 @@ impl Root {
                     role.map_or_else(|| dc_intl::tr("unknown-role").to_string(), String::clone)
                 )
             }
-            Kind::Channel(id) => self
-                .current_guild()
-                .and_then(|guild| guild.channels.iter().find(|channel| channel.id == *id))
-                .map_or_else(|| "unknown".to_owned(), |channel| channel.name.clone()),
+            Kind::Channel(id) => match self.channel_mention_look(*id) {
+                channel_mention::Look::Pill { text, .. } | channel_mention::Look::Plain(text) => {
+                    text
+                }
+            },
             Kind::Game(id) => self
                 .game_mention_name(*id)
                 .unwrap_or_else(|| dc_intl::t("11pdXZ").to_owned()),
@@ -8775,10 +8777,18 @@ impl Root {
             span.kind,
             Kind::Role(id) if self.current_guild().is_none_or(|guild| !guild.roles.contains_key(&id))
         );
-        let mention = matches!(
-            span.kind,
-            Kind::User(_) | Kind::Game(_) | Kind::Channel(_) | Kind::Everyone
-        ) || (matches!(span.kind, Kind::Role(_)) && !deleted_role)
+        // Module 605275's channel rule: a pill, or plain `#name` text for a category (`isMentionable`).
+        let channel_look = match span.kind {
+            Kind::Channel(id) => Some(self.channel_mention_look(id)),
+            _ => None,
+        };
+        let channel_pill = match &channel_look {
+            Some(channel_mention::Look::Pill { icon, italic, .. }) => Some((*icon, *italic)),
+            _ => None,
+        };
+        let mention = matches!(span.kind, Kind::User(_) | Kind::Game(_) | Kind::Everyone)
+            || channel_pill.is_some()
+            || (matches!(span.kind, Kind::Role(_)) && !deleted_role)
             || matches!(&span.kind, Kind::Command { name, id } if self.command_mention_usable(name, *id));
         let mut run_font: Font = font(if style.code { MONO } else { SANS });
         run_font.features = kerning();
@@ -8787,7 +8797,8 @@ impl Root {
             (false, true) => FontWeight(500.),
             (false, false) => FontWeight(weight),
         };
-        run_font.style = if style.italic {
+        // `k` of module 605275: the unknown channel's name is set in `italics`.
+        run_font.style = if style.italic || channel_pill.is_some_and(|(_, italic)| italic) {
             FontStyle::Italic
         } else {
             FontStyle::Normal
@@ -8835,9 +8846,10 @@ impl Root {
             Some(inline_code_box())
         } else if style.spoiler {
             Some(pill(0., 4., "--spoiler-hidden-background"))
-        } else if matches!(span.kind, Kind::Channel(_)) {
+        } else if let Some((icon, _)) = channel_pill {
+            // Module 232042: the icon of the channel's type (`QG`, module 147036) before its name.
             let mut channel = pill(2., 3., "--mention-background");
-            channel.icon = Some(("icons/text_channel.svg".into(), px(16.), px(20.)));
+            channel.icon = Some((icon.into(), px(16.), px(20.)));
             Some(channel)
         } else if matches!(span.kind, Kind::Game(_)) {
             // Module 654255: `<@$gameId>` inline chip with 1em game icon (`.icon_lXrdH_`).
@@ -9297,16 +9309,25 @@ impl Root {
         self.stores.lurking_guilds.contains(&guild).then_some(guild)
     }
 
+    /// A click on a channel mention opens what it names: a channel, a thread or a forum post of a server, or a direct
+    /// message. The unknown and inaccessible ones open nothing.
     fn open_channel_mention(&mut self, channel: Id, cx: &mut Context<Self>) {
-        let guild = self
-            .stores
-            .guilds
-            .iter()
-            .find(|guild| guild.channels.iter().any(|known| known.id == channel))
-            .map(|guild| guild.id);
-        if let Some(guild) = guild {
-            self.select(guild, Some(channel));
-            cx.notify();
+        match self.channel_mention_look(channel) {
+            channel_mention::Look::Pill {
+                open: Some((0, dm)),
+                ..
+            } => {
+                self.select_home(Some(dm));
+                cx.notify();
+            }
+            channel_mention::Look::Pill {
+                open: Some((guild, id)),
+                ..
+            } => {
+                self.select(guild, Some(id));
+                cx.notify();
+            }
+            _ => {}
         }
     }
 
