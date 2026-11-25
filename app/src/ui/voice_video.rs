@@ -973,6 +973,7 @@ impl Root {
         &mut self,
         owner: u64,
         watch: bool,
+        picture_size: (u32, u32),
         cx: &mut Context<Self>,
     ) -> &'static str {
         let Some((me, session)) = self.stream_identity() else {
@@ -1015,7 +1016,7 @@ impl Root {
         if watch {
             // A stand-in picture, so the tile has something to draw: 64px squares, a lighter one each third.
             self.video_call_started(cx);
-            let (width, height) = (640u32, 360u32);
+            let (width, height) = (picture_size.0.max(2), picture_size.1.max(2));
             let mut data = Vec::with_capacity((width * height * 4) as usize);
             for y in 0..height {
                 for x in 0..width {

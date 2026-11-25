@@ -844,13 +844,20 @@ impl Root {
             // `fake-live own|watch`: a stream of this account, or one of the test person that this client watches and
             // has focused, shown without a connection.
             ["fake-live", "own"] => self
-                .fake_stream(me, false, cx)
+                .fake_stream(me, false, (640, 360), cx)
                 .to_owned(),
-            ["fake-live", "watch"] => {
+            // `fake-live watch [<w>x<h>]`: the stand-in picture is 640x360 unless a size is given, for the shapes of
+            // real shares (a 16:10 or an ultrawide screen).
+            ["fake-live", "watch", rest @ ..] => {
+                let size = rest
+                    .first()
+                    .and_then(|text| text.split_once('x'))
+                    .and_then(|(w, h)| w.parse().ok().zip(h.parse().ok()))
+                    .unwrap_or((640, 360));
                 let mut live = state(other, false);
                 live["self_stream"] = json!(true);
                 self.stores.dispatch("VOICE_STATE_UPDATE", &live);
-                let said = self.fake_stream(other, true, cx);
+                let said = self.fake_stream(other, true, size, cx);
                 self.vv
                     .focus
                     .click(other, super::video_tiles::TileKind::Stream);

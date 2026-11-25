@@ -1065,8 +1065,11 @@ impl Root {
             (0., height)
         };
         let room = (main_bottom - main_top).max(120.);
-        let main_width = (room * ASPECT).min(width);
-        let main_height = (main_width / ASPECT).floor();
+        // `ea`: a stream's tile takes its picture's shape once the picture's size is known (`onVideoResize`), so the
+        // zoom controls and the other corners sit on the picture's own corners; anything else is 16:9.
+        let aspect = self.focus_aspect(&people[index]);
+        let main_width = (room * aspect).min(width);
+        let main_height = (main_width / aspect).floor();
         // `actionRow`: 16px under the tile with the strip, else inside it, 40px (and what the bar needs) from its end.
         let tile_bottom = main_top + (room + main_height) / 2.;
         let toggle_top = if strip_shown {
@@ -2222,6 +2225,23 @@ impl Root {
 
     /// What the tile draws behind its name (module 83982 and 555148): a camera or stream picture when there is one,
     /// else the avatar.
+    /// The shape of the focused tile (`ea` of module 699707): the stream's picture, or 16:9.
+    fn focus_aspect(&self, person: &Participant) -> f32 {
+        match self.tile_media_for(person) {
+            TileMedia::Video(key) if matches!(key.1, dc_voice::VideoSource::Stream(_)) => self
+                .video
+                .images
+                .image(&key)
+                .map(|image| {
+                    let shape = image.size(0);
+                    shape.width.0 as f32 / (shape.height.0 as f32).max(1.)
+                })
+                .filter(|aspect| aspect.is_finite() && *aspect > 0.)
+                .unwrap_or(ASPECT),
+            _ => ASPECT,
+        }
+    }
+
     fn tile_media_for(&self, person: &Participant) -> TileMedia {
         let user = person.user.id;
         match person.tile.kind {
