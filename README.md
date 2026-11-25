@@ -49,12 +49,18 @@ analytics service, so there is nothing of yours that we receive, keep or could s
     - content Discord shows from other sites, loaded as the official app loads it: Spotify players and cover art,
       Twitch and YouTube previews, GIF previews, and hCaptcha when Discord asks for a captcha
   - YouTube, Twitch and TikTok players load only when you press Play.
+  - **Other sites get nothing of your Discord identity.** Requests to any host that is not Discord's use a separate,
+    plain connection: a generic browser user agent and none of the Discord client's headers (no client information,
+    no system language or time zone, no Discord referer or origin), no cookies and no token. Such a site sees your IP
+    address and the address that was asked for.
 - **What Discord receives:**
   - What it needs to work: your messages, actions and presence.
   - The same client-information header the official app sends: Windows version, system language, client version.
   - gravecord does not send the official app's background analytics: tracking events, metrics, crash reports.
   - Two buttons send diagnostics to Discord, and only when you use them: the Game Overlay's Report a Problem form and
     Upload Logs.
+  - What the official app's protocol also sends: the experiments request before login, gateway heartbeats that say
+    whether the app is in use, and which GIF you picked from the picker. [PRIVACY.md](PRIVACY.md) lists them.
 - **Your token:**
   - **Where it is kept:** in Windows Credential Manager, encrypted by Windows for your user account. It is never
     kept in gravecord's own files, logs or backups.
@@ -90,7 +96,12 @@ analytics service, so there is nothing of yours that we receive, keep or could s
   [Automatic updates](#automatic-updates)).
 - **What the signature proves:** who published the build, not which source it came from. Releases are built by the
   maintainer, not on a public build server.
-- **How to be sure:** [build it from source](#building-from-source) yourself.
+- **Which commit a build says it is:** every build is stamped with the git commit it was built from, and marked
+  `dirty` when its source had uncommitted changes. The settings sidebar shows it next to the version, for example
+  `0.1.0 (1a2b3c4) (x64)`, and every `panic.log` entry names it. `cargo xtask package` refuses to make a release from
+  a working tree with changes or from a commit that is on neither `integration` nor `main`, and prints the commit,
+  which the release notes give. The stamp says which source a release claims; it does not prove it.
+- **How to be sure:** [build it from source](#building-from-source) yourself, from the commit a release names.
 
 ## Built-in plugins
 
@@ -445,7 +456,9 @@ account token in a gitignored `secrets.toml`. Building, running, `cargo test` an
 
 **About `cargo xtask package` and the release key.** The first time it runs it creates a signing seed in
 `%USERPROFILE%\gravecord-release-keys`, or in the folder named by `GRAVECORD_RELEASE_KEYS`. It then writes the matching
-public key into `app/src/release_key.rs`. Do not commit that change in a pull request. If you publish your own builds,
+public key into `app/src/release_key.rs` and stops: a package is made only from a clean tree, so commit that change on
+your own branch (not in a pull request) and run it again. `--check` runs the clean-tree and branch checks alone, and
+`--allow-dirty` makes a local test package from any tree, stamped dirty. If you publish your own builds,
 build with `GRAVECORD_UPDATE_REPOSITORY=https://github.com/<you>/<repo>` so your copies look for updates in your
 releases.
 
@@ -513,8 +526,9 @@ If you want to contribute, a few rules keep the project what it is:
 - **A feature comes with a test:** a unit test for logic, a replay for protocol, a parity map for UI.
 - **Run the checks before sending:** `cargo fmt`, `cargo clippy -- -D warnings` and `cargo test`.
 - **Never commit a token.** Never paste one in an issue, a screenshot or a log.
-- **Bug reports:** Settings > Gravecord > Report a Bug shows which log files to attach. HTTP debug lines leave query
-  strings out, but read a log before posting it.
+- **Bug reports:** Settings > Gravecord > Report a Bug shows which log files to attach. Log files write every address
+  without its query string, so searches and signed links stay out, but they can name user ids: read a log before
+  posting it.
 
 ## License
 

@@ -11,6 +11,9 @@ code of this repository. If you find something this page does not mention, pleas
   presence go to Discord, because that is how Discord works.
 - **Your token stays between your PC and Discord.** It is kept in Windows Credential Manager and sent only to
   Discord.
+- **Other sites get none of your Discord identity.** The requests gravecord makes to hosts that are not Discord's
+  carry no token, no client information, no language or time zone and no Discord referer. They see your IP address
+  and what was asked for. The one Spotify connection that keeps Discord's origin is listed below.
 - **Plugins are opt-in.** Every built-in plugin but one is off by default, and that one talks only to Discord.
   The few plugins that use other services are listed below with what they send.
 
@@ -43,9 +46,13 @@ code of this repository. If you find something this page does not mention, pleas
 **How these requests reach other sites:**
 
 - They carry no Discord token.
-- Like any download, they show your IP address to the site.
-- They also send the same browser-style headers as requests to Discord: the client's user agent, your system language
-  and your time zone setting.
+- They go through a separate, plain connection, not the one used for Discord. It sends a generic browser user agent
+  and none of the Discord client's headers: no client-information header, no system language, no time zone, no
+  Discord referer or origin, and no cookies. A redirect does not tell the next site where it came from.
+- Like any download, they show your IP address to the site, and the site sees the address that was asked for.
+- One exception keeps an official header: the Spotify connection for playback state and Listen Along (`dealer.spotify.com`)
+  sends the origin `https://discordapp.com`, as the official app's connection does. It sends the plain user agent.
+- Requests to Discord itself are unchanged: they carry the same headers as the official app's.
 
 **Links you click** open in your browser, and gravecord sends nothing itself. That includes the Report a Bug page,
 which opens GitHub's issue form.
@@ -77,7 +84,7 @@ Every plugin below is off by default and contacts nothing until you switch it on
 | MoreCommands | The Dog API, The Cat API, nekos.best, Reddit | A plain request for a random picture, sent as your message | Only when you run those commands |
 | OpenInApp | `spotify.link`, `s.team` and the address they redirect to | A request that follows the short link to find the real one | When you click such a link |
 | BetterActivities | Spotify's image server | Picture requests | While on, when member and DM lists show Spotify activities |
-| ZipPreview | Wherever the attachment is stored (normally Discord) | A download of the ZIP file, size-capped | When you open the preview |
+| ZipPreview | Discord only | A download of the ZIP file, size-capped. A ZIP stored anywhere but Discord is not downloaded. | When you open the preview. For an attachment it asks first, as the original plugin does. |
 | ReverseImageSearch | Google Lens, Yandex, SauceNAO, IQDB, Bing, TinEye, ImgOps | Nothing from the app. It opens your browser with the picture's address. | When you choose it from the menu |
 
 **Other plugins:**
@@ -100,6 +107,11 @@ Every plugin below is off by default and contacts nothing until you switch it on
   - random ids that are new on every launch
 - **Experiment assignments:** gravecord reads them, as the official app does, so its screens match the official
   ones.
+  - Before you log in, it asks Discord for them (`GET /experiments`), as the official app does. The answer carries
+    the fingerprint the login requests need.
+  - It reports no exposure events back.
+- **Gateway heartbeats:** the real-time connection sends Discord's current heartbeat, which includes whether the app
+  is in use (`active`) and the protocol version, as the official app's does.
 
 **What gravecord does not send:** the background analytics the official app sends: its tracking events, performance
 metrics and crash reports.
@@ -150,8 +162,10 @@ Everything below is in `%LOCALAPPDATA%\gravecord` and is never uploaded unless t
 
 **Before you post a log:**
 
-- A log file never contains your token.
-- It can contain user ids, and the addresses of requests that failed, such as a search you ran.
+- A log file never contains your token, and gravecord logs no request or response headers.
+- Every address in it is written as its scheme, host and path only. Query strings, fragments and user names in
+  addresses are cut before a line reaches the file, so a search you ran or a signed download link does not appear.
+- It can contain user ids, and the paths of requests, which name channels and messages by id.
 - Read a log before posting it publicly.
 
 ## Updates and verifying what you run
@@ -172,11 +186,20 @@ update was built from.
 **How releases are made:**
 
 - Releases are built by the maintainer with `cargo xtask package`, not on a public build server.
+- `cargo xtask package` refuses to package from a working tree with uncommitted or untracked changes, or from a
+  commit that is on neither the `integration` nor the `main` branch. A local test package can be forced with
+  `--allow-dirty`, and is then stamped dirty.
+- Every build is stamped with the git commit it was built from and whether it was dirty. The app shows it next to
+  its version at the bottom of the settings sidebar (for example `0.1.0 (1a2b3c4) (x64)`), and each `panic.log` entry
+  names it. The packaging prints the full commit hash, and the release notes give it.
 - The setup file is not code-signed with a Windows certificate.
 - There is no published release yet.
 
-**How to be certain:** build gravecord yourself from this repository. The steps are in the README under
-[Building from source](README.md#building-from-source).
+**What the commit stamp proves:** which source a release says it was built from, and that the packaging found a clean
+tree at that commit on the maintainer's machine. It does not prove that the file you downloaded was built from it.
+
+**How to be certain:** build gravecord yourself from this repository, at the commit a release names. The steps are
+in the README under [Building from source](README.md#building-from-source).
 
 ## Unofficial client
 
