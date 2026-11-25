@@ -4,28 +4,60 @@
 //! the role colour of `er`), so the composer reuses the message renderer's piece for it.
 
 use super::{Root, hsla};
-use crate::editor::{AtomLook, Pill};
-use crate::editor_atoms::{AtomKind, find_atoms};
+use crate::editor::{AtomLook, Editor, Pill};
+use crate::editor_atoms::{AtomKind, RawKind, find_atoms, raw_mentions};
 use dc_markdown::{Kind, Span};
-use gpui::Context;
+use gpui::{Context, Entity};
 use std::collections::HashMap;
 
 /// `.emoji` (`--custom-emoji-size-emoji: 1.375em`) at the composer's 16px.
 const EMOJI_SIZE: f32 = 22.;
 
+thread_local! {
+    /// The text each field's raw-mention pass last looked at (the composer's, then the edit box's), so an unchanged
+    /// text is not resolved again each frame.
+    static SCANNED: std::cell::RefCell<[String; 2]> = const {
+        std::cell::RefCell::new([String::new(), String::new()])
+    };
+}
+
 impl Root {
-    /// Each frame: the looks of the voids in the composer's text.
+    /// Each frame: raw mentions become tokens, and the voids of the composer's text (and the edit box's, the same
+    /// Slate editor in the official client) get their looks.
     pub(super) fn composer_voids_frame(&mut self, cx: &mut Context<Self>) {
-        let text = self.composer.read(cx).text().to_owned();
-        let mut looks: HashMap<AtomKind, AtomLook> = HashMap::new();
-        for atom in find_atoms(&text) {
-            if let std::collections::hash_map::Entry::Vacant(slot) = looks.entry(atom.kind) {
-                let look = self.void_look(slot.key());
-                slot.insert(look);
+        let composer = self.composer.clone();
+        self.editor_voids(&composer, 0, cx);
+        if let Some((_, editor)) = self.editing.clone() {
+            self.editor_voids(&editor, 1, cx);
+        }
+    }
+
+    fn editor_voids(&mut self, editor: &Entity<Editor>, slot: usize, cx: &mut Context<Self>) {
+        let mut text = editor.read(cx).text().to_owned();
+        // Module 2368's first pass: a finished `@name`, `#channel` or `:emoji:` the client can resolve becomes its
+        // token (and so a void), whether it was typed or pasted. Only while the preview is on (`areStylesDisabled`).
+        let fresh = SCANNED.with(|scanned| scanned.borrow()[slot] != text);
+        if fresh && crate::markup_preview::enabled() {
+            let edits = raw_mentions(&text, |kind| self.resolve_raw(kind));
+            if editor.update(cx, |editor, cx| {
+                let changed = editor.rewrite(edits);
+                if changed {
+                    cx.notify();
+                }
+                changed
+            }) {
+                text = editor.read(cx).text().to_owned();
             }
         }
-        self.composer
-            .update(cx, |editor, _| editor.set_atom_looks(looks));
+        SCANNED.with(|scanned| scanned.borrow_mut()[slot] = text.clone());
+        let mut looks: HashMap<AtomKind, AtomLook> = HashMap::new();
+        for atom in find_atoms(&text) {
+            if let std::collections::hash_map::Entry::Vacant(entry) = looks.entry(atom.kind) {
+                let look = self.void_look(entry.key());
+                entry.insert(look);
+            }
+        }
+        editor.update(cx, |editor, _| editor.set_atom_looks(looks));
     }
 
     fn void_look(&mut self, kind: &AtomKind) -> AtomLook {
@@ -83,6 +115,80 @@ impl Root {
             image: piece.image.clone(),
             copy: self.void_copy(kind),
             prevent_selection: matches!(kind, AtomKind::User(_) | AtomKind::Role(_)),
+        }
+    }
+
+    /// Module 224868 `p`: what a raw mention names, as its token.
+    fn resolve_raw(&self, kind: &RawKind) -> Option<String> {
+        match kind {
+            RawKind::At {
+                name,
+                discriminator,
+            } => {
+                // A role of the server by its exact name, when no discriminator was typed.
+                if discriminator.is_none()
+                    && let Some(guild) = self.current_guild()
+                    && let Some((id, _)) = guild.roles.iter().find(|(_, role)| *role == name)
+                {
+                    return Some(format!("<@&{id}>"));
+                }
+                // `N()`: the one member (or DM recipient) whose username starts with the name, with the typed
+                // discriminator ("0" for a unique username), and it must match exactly.
+                let wanted = discriminator.as_deref().unwrap_or("0");
+                let users: Vec<_> = self
+                    .mention_candidates()
+                    .into_iter()
+                    .map(|(user, _)| user)
+                    .filter(|user| {
+                        let own = if user.discriminator.is_empty() {
+                            "0"
+                        } else {
+                            user.discriminator.as_str()
+                        };
+                        user.username.starts_with(name.as_str()) && own == wanted
+                    })
+                    .collect();
+                match users.as_slice() {
+                    [user] if user.username == *name => Some(format!("<@{}>", user.id)),
+                    _ => None,
+                }
+            }
+            // A custom emoji the user can use here by its name (`getDisambiguatedEmojiContext`).
+            RawKind::Emoji(name) => {
+                let premium = dc_state::premium::PremiumType::from_wire(self.premium_wire())
+                    .has(dc_state::premium::Feature::EmojisEverywhere);
+                self.stores
+                    .guilds
+                    .iter()
+                    .filter(|guild| Some(guild.id) == self.guild || premium)
+                    .flat_map(|guild| guild.emojis.iter())
+                    .find(|emoji| emoji.available && emoji.name == *name)
+                    .map(|emoji| {
+                        dc_state::autocomplete::custom_emoji_markup(
+                            &emoji.name,
+                            emoji.id,
+                            emoji.animated,
+                        )
+                    })
+            }
+            // A channel of the server by its name, text channels first, then the other kinds, then its threads.
+            RawKind::Channel(name) => {
+                let guild = self.current_guild()?;
+                guild
+                    .channels
+                    .iter()
+                    .filter(|channel| channel.name == *name)
+                    .min_by_key(|channel| !matches!(channel.kind, dc_state::ChannelKind::Text))
+                    .map(|channel| channel.id)
+                    .or_else(|| {
+                        guild
+                            .threads
+                            .iter()
+                            .find(|thread| thread.name == *name)
+                            .map(|thread| thread.id)
+                    })
+                    .map(|id| format!("<#{id}>"))
+            }
         }
     }
 

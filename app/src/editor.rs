@@ -389,6 +389,43 @@ impl Editor {
         );
     }
 
+    /// Replaces each range by its text (raw mentions by their tokens, module 2368's `textToVoid`), keeping the caret
+    /// and selection where they were relative to the text around them. Nothing changes while the input method
+    /// composes.
+    pub fn rewrite(&mut self, mut edits: Vec<(Range<usize>, String)>) -> bool {
+        if edits.is_empty() || self.buffer.marked().is_some() {
+            return false;
+        }
+        edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+        let reversed = self.buffer.is_reversed();
+        let selection = self.buffer.selection();
+        let (mut anchor, mut head) = if reversed {
+            (selection.end, selection.start)
+        } else {
+            (selection.start, selection.end)
+        };
+        for (range, text) in edits {
+            let shift = |at: usize| {
+                if at >= range.end {
+                    at - range.len() + text.len()
+                } else if at > range.start {
+                    range.start + text.len()
+                } else {
+                    at
+                }
+            };
+            anchor = shift(anchor);
+            head = shift(head);
+            self.buffer.replace(Some(range), &text);
+        }
+        self.buffer.set_caret(anchor);
+        if head != anchor {
+            self.buffer.select_to(head);
+        }
+        self.vertical = None;
+        true
+    }
+
     /// The voids of the text: none in a masked field, without looks, or with the preview off (module 2368 turns every
     /// void back into text when `areStylesDisabled`).
     fn atoms(&self) -> Vec<Atom> {

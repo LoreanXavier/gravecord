@@ -43,9 +43,15 @@ fn digits(text: &str) -> Option<(u64, usize)> {
 }
 
 /// The token that starts at the beginning of `rest`, with its length.
-fn token_at(rest: &str) -> Option<(AtomKind, usize)> {
+fn token_at(before: &str, rest: &str) -> Option<(AtomKind, usize)> {
+    // The mention rule's `@everyone` and `@here` stand between word boundaries (`dc_markdown`'s
+    // `everyone_here_prefix`, the same rule the message text is parsed with).
+    let boundary = |c: char| !c.is_alphanumeric() && c != '_';
     for (word, len) in [("@everyone", 9), ("@here", 5)] {
-        if rest.starts_with(word) {
+        if rest.starts_with(word)
+            && before.chars().next_back().is_none_or(boundary)
+            && rest[len..].chars().next().is_none_or(boundary)
+        {
             return Some((AtomKind::Text(word.to_owned()), len));
         }
     }
@@ -132,7 +138,7 @@ pub fn find_atoms(text: &str) -> Vec<Atom> {
         if (first == b'<' || first == b'@')
             && !mask[at]
             && !text[..at].ends_with('\\')
-            && let Some((kind, len)) = token_at(rest)
+            && let Some((kind, len)) = token_at(&text[..at], rest)
         {
             out.push(Atom {
                 range: at..at + len,
@@ -221,6 +227,142 @@ pub fn plain_text(
     out
 }
 
+/// What a raw mention typed as text names (the groups of module 2368's `m`): `@name` or `@name#1234`, `:name:`, or
+/// `#name` / `#"quoted name"`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RawKind {
+    At {
+        name: String,
+        discriminator: Option<String>,
+    },
+    Emoji(String),
+    Channel(String),
+}
+
+fn delimiter(c: char, hash: bool) -> bool {
+    c.is_whitespace() || c == '@' || c == ':' || (hash && c == '#')
+}
+
+/// The raw mention that `m` matches at the start of `rest`, with its length. The lookaheads of the regex need the
+/// delimiter after the word to be there already: a mention turns into a void once the word is finished.
+fn raw_at(rest: &str) -> Option<(RawKind, usize)> {
+    let first = rest.chars().next()?;
+    let body = &rest[1..];
+    match first {
+        '@' => {
+            // `@[^@#]+(?:#0|#\d{4})`, within the line.
+            let run = body
+                .find(['@', '#', '\n'])
+                .unwrap_or(body.len());
+            if run > 0 && body[run..].starts_with('#') {
+                let after = &body[run + 1..];
+                let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+                let used = if after.starts_with('0') {
+                    Some(1)
+                } else if digits >= 4 {
+                    Some(4)
+                } else {
+                    None
+                };
+                if let Some(used) = used {
+                    return Some((
+                        RawKind::At {
+                            name: body[..run].to_owned(),
+                            discriminator: Some(after[..used].to_owned()),
+                        },
+                        1 + run + 1 + used,
+                    ));
+                }
+            }
+            // `@[^\s\t@#:]+(?=[\s\t@:])`
+            let run = body
+                .find(|c: char| c.is_whitespace() || c == '@' || c == '#' || c == ':')
+                .unwrap_or(body.len());
+            let next = body[run..].chars().next()?;
+            (run > 0 && delimiter(next, false)).then(|| {
+                (
+                    RawKind::At {
+                        name: body[..run].to_owned(),
+                        discriminator: None,
+                    },
+                    1 + run,
+                )
+            })
+        }
+        ':' => {
+            // `:[a-zA-Z0-9_~]+:`
+            let run = body
+                .bytes()
+                .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'~')
+                .count();
+            (run > 0 && body[run..].starts_with(':'))
+                .then(|| (RawKind::Emoji(body[..run].to_owned()), run + 2))
+        }
+        '#' => {
+            if let Some(quoted) = body.strip_prefix('"') {
+                // `#"(?:\\\\|\\"|(?!")[^\\])+"`, unescaped as module 47167 `LG` does.
+                let mut name = String::new();
+                let mut chars = quoted.char_indices();
+                while let Some((at, c)) = chars.next() {
+                    match c {
+                        '"' if !name.is_empty() => {
+                            return Some((RawKind::Channel(name), 2 + at + 1));
+                        }
+                        '"' => return None,
+                        '\\' => match chars.next() {
+                            Some((_, escaped @ ('\\' | '"'))) => name.push(escaped),
+                            _ => return None,
+                        },
+                        other => name.push(other),
+                    }
+                }
+                return None;
+            }
+            // `#[^\s\t@#:]+(?=[\s\t@#:])`
+            let run = body
+                .find(|c: char| c.is_whitespace() || c == '@' || c == '#' || c == ':')
+                .unwrap_or(body.len());
+            let next = body[run..].chars().next()?;
+            (run > 0 && delimiter(next, true))
+                .then(|| (RawKind::Channel(body[..run].to_owned()), 1 + run))
+        }
+        _ => None,
+    }
+}
+
+/// Module 2368's first pass: each raw mention that starts the text, a line or the text after a void, or follows a
+/// space, outside code, which `resolve` turns into a token. A match that does not resolve is skipped one character
+/// on (`lastIndex = index + 1`); one that does continues after itself.
+pub fn raw_mentions(
+    text: &str,
+    mut resolve: impl FnMut(&RawKind) -> Option<String>,
+) -> Vec<(Range<usize>, String)> {
+    let mask = code_mask(text);
+    let void_ends: Vec<usize> = find_atoms(text).iter().map(|atom| atom.range.end).collect();
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        let starts = at == 0
+            || void_ends.contains(&at)
+            || text[..at]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_whitespace);
+        if starts
+            && !mask[at]
+            && let Some((kind, len)) = raw_at(rest)
+            && let Some(token) = resolve(&kind)
+        {
+            out.push((at..at + len, token));
+            at += len;
+            continue;
+        }
+        at += rest.chars().next().map_or(1, char::len_utf8);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +372,60 @@ mod tests {
             .into_iter()
             .map(|atom| (atom.range, atom.kind))
             .collect()
+    }
+
+    fn raw(text: &str) -> Vec<(Range<usize>, RawKind)> {
+        let mut seen = Vec::new();
+        let found = raw_mentions(text, |kind| {
+            seen.push(kind.clone());
+            Some(String::new())
+        });
+        found
+            .into_iter()
+            .zip(seen)
+            .map(|((range, _), kind)| (range, kind))
+            .collect()
+    }
+
+    fn at(name: &str, discriminator: Option<&str>) -> RawKind {
+        RawKind::At {
+            name: name.into(),
+            discriminator: discriminator.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn raw_mentions_wait_for_the_word_to_end() {
+        assert!(raw("hi @bob").is_empty());
+        assert_eq!(raw("hi @bob "), vec![(3..7, at("bob", None))]);
+        assert_eq!(raw("@bob#1234"), vec![(0..9, at("bob", Some("1234")))]);
+        assert_eq!(raw("@old name#0"), vec![(0..11, at("old name", Some("0")))]);
+        assert_eq!(
+            raw("#general "),
+            vec![(0..8, RawKind::Channel("general".into()))]
+        );
+        assert_eq!(
+            raw("#\"my \\\"room\\\"\""),
+            vec![(0..14, RawKind::Channel("my \"room\"".into()))]
+        );
+        assert_eq!(raw(":blob:"), vec![(0..6, RawKind::Emoji("blob".into()))]);
+    }
+
+    #[test]
+    fn raw_mentions_need_a_space_or_a_void_before_and_skip_code() {
+        assert!(raw("mail@bob ").is_empty());
+        assert!(raw("`@bob `").is_empty());
+        assert_eq!(raw("<@1>@bob "), vec![(4..8, at("bob", None))]);
+        assert_eq!(raw("a\n@bob "), vec![(2..6, at("bob", None))]);
+    }
+
+    #[test]
+    fn an_unresolved_match_is_skipped_and_a_resolved_one_becomes_its_token() {
+        let found = raw_mentions("@nobody @bob ", |kind| match kind {
+            RawKind::At { name, .. } if name == "bob" => Some("<@7>".into()),
+            _ => None,
+        });
+        assert_eq!(found, vec![(8..12, "<@7>".to_owned())]);
     }
 
     #[test]
@@ -282,6 +478,14 @@ mod tests {
         assert!(kinds("`<@123>`").is_empty());
         assert!(kinds("```\n<@123>\n```").is_empty());
         assert_eq!(kinds("`a` <@1>"), vec![(4..8, AtomKind::User(1))]);
+        assert!(kinds("bob@hereford.com @everyonex user@everyone").is_empty());
+        assert_eq!(
+            kinds("(@here) @everyone-free"),
+            vec![
+                (1..6, AtomKind::Text("@here".into())),
+                (8..17, AtomKind::Text("@everyone".into())),
+            ]
+        );
     }
 
     #[test]
