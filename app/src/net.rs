@@ -3472,7 +3472,7 @@ async fn save_download(url: &str, filename: &str) -> Option<String> {
     let folder = std::env::var_os("USERPROFILE")
         .map(|home| std::path::PathBuf::from(home).join("Downloads"))?;
     let _ = std::fs::create_dir_all(&folder);
-    let response = match dc_http::plain::client().get(url).send().await {
+    let response = match dc_http::plain::client_for(url).get(url).send().await {
         Ok(response) => response,
         Err(error) => {
             warn!("download failed: {error}");
@@ -3509,7 +3509,7 @@ async fn save_download(url: &str, filename: &str) -> Option<String> {
 /// The first source of a file that answers with success.
 async fn fetch_first(sources: &[String]) -> Option<Vec<u8>> {
     for source in sources {
-        match dc_http::plain::client().get(source).send().await {
+        match dc_http::plain::client_for(source).get(source).send().await {
             Ok(response) if response.status().is_success() => match response.bytes().await {
                 Ok(bytes) => return Some(bytes.to_vec()),
                 Err(error) => warn!("attachment download failed: {error}"),

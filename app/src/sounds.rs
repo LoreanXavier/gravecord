@@ -616,7 +616,9 @@ pub(crate) fn fetch_url_limited(url: &str, max_bytes: usize) -> Result<Vec<u8>, 
 /// A file from a URL and its `Content-Type` (empty when the answer names none).
 pub(crate) fn fetch_url_typed(url: &str, max_bytes: usize) -> Result<(Vec<u8>, String), String> {
     static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
-    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    // One client for Discord's hosts (the bare one these requests always used) and one, plain, for any other.
+    static DISCORD: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    static OTHER: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
     let runtime = RUNTIME
         .get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()
@@ -627,9 +629,14 @@ pub(crate) fn fetch_url_typed(url: &str, max_bytes: usize) -> Result<(Vec<u8>, S
         })
         .as_ref()
         .ok_or("no runtime")?;
-    let client = CLIENT
+    let client = if dc_http::plain::is_discord_url(url) {
+        &DISCORD
+    } else {
+        &OTHER
+    };
+    let client = client
         .get_or_init(|| {
-            dc_http::plain::builder()
+            dc_http::plain::builder_for(url)
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(20))
                 .build()

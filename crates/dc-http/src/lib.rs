@@ -154,6 +154,20 @@ fn pool(identity: &Identity) -> Result<reqwest::Client, Error> {
     Ok(reqwest::Client::builder()
         .user_agent(pin::USER_AGENT)
         .default_headers(fixed_headers(identity)?)
+        // Ten hops as reqwest's default, but never off Discord: the header set above would go along.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() > 10 {
+                attempt.error("too many redirects")
+            } else if attempt
+                .previous()
+                .last()
+                .is_some_and(|previous| plain::pinned_may_follow(previous, attempt.url()))
+            {
+                attempt.follow()
+            } else {
+                attempt.error("redirect away from Discord refused")
+            }
+        }))
         .tcp_nodelay(true)
         .pool_max_idle_per_host(32)
         .connect_timeout(Duration::from_secs(10))
@@ -922,6 +936,53 @@ mod tests {
         }
         // The redirect was followed without telling the next address where it came from.
         assert!(heads[1].starts_with("GET /next"));
+    }
+
+    /// The pinned client follows a redirect on its own host, and refuses one to another host that is not Discord's,
+    /// which then receives nothing.
+    #[tokio::test]
+    async fn the_pinned_client_never_follows_a_redirect_off_discord() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (elsewhere, reached) = third_party().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let elsewhere = elsewhere.clone();
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 4096];
+                    loop {
+                        let mut seen = Vec::new();
+                        while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                            match stream.read(&mut buffer).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(read) => seen.extend_from_slice(&buffer[..read]),
+                            }
+                        }
+                        let head = String::from_utf8_lossy(&seen).into_owned();
+                        let answer = if head.starts_with("GET /away") {
+                            format!(
+                                "HTTP/1.1 302 Found\r\nlocation: {elsewhere}/next\r\ncontent-length: 0\r\n\r\n"
+                            )
+                        } else if head.starts_with("GET /here") {
+                            "HTTP/1.1 302 Found\r\nlocation: /done\r\ncontent-length: 0\r\n\r\n"
+                                .to_owned()
+                        } else {
+                            "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}".to_owned()
+                        };
+                        if stream.write_all(answer.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let client = Client::new(Token::new("fixture-token"), identity())
+            .unwrap()
+            .with_api_base(format!("http://{address}"));
+        assert!(client.get("/here").await.is_ok());
+        assert!(client.get("/away").await.is_err());
+        assert!(reached.lock().unwrap().is_empty());
     }
 
     /// What a failed request's error shows in a log line: the path, never the query.
