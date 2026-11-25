@@ -13659,6 +13659,12 @@ impl Render for Root {
                     this.menu = None;
                     cx.notify();
                     cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.slash.launcher.is_some() {
+                    // The Apps launcher is a popout (`POPOUT_CLOSE` of module 92960, before the chat's own Escape);
+                    // its field's Cancel never comes, the key stops here.
+                    this.slash.launcher = None;
+                    cx.notify();
+                    cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.picker.is_some() {
                     if this.skin_menu {
                         this.skin_menu = false;

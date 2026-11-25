@@ -213,12 +213,27 @@ pub(super) fn menu_row_focus_is_gone(menu_open: bool, row_had_focus: bool) -> bo
     row_had_focus && !menu_open
 }
 
-/// Whether the message box gives up focus: a dialog is open, or the box is not drawn.
 /// The field focused when the last frame was built is still focused, and that frame did not draw it inside the window.
 pub(super) fn field_is_undrawn(still_focused: bool, drawn_in_window: bool) -> bool {
     still_focused && !drawn_in_window
 }
 
+/// Where a field that just took focus gives it back: what had focus before it (the focus lock of module 315710
+/// keeps `document.activeElement` from when it mounted). `None` when nothing new is to be kept: the field is not a
+/// newcomer, or focus came from the field itself.
+pub(super) fn field_return<H: PartialEq, A: Clone>(
+    kept: Option<&H>,
+    field: &H,
+    before: &A,
+    before_handle: Option<&H>,
+) -> Option<A> {
+    if kept == Some(field) || before_handle == Some(field) {
+        return None;
+    }
+    Some(before.clone())
+}
+
+/// Whether the message box gives up focus: a dialog is open, or the box is not drawn.
 pub(super) fn blurs_composer(anchor: &Anchor, modal: bool, reachable: bool) -> bool {
     matches!(anchor, Anchor::Composer) && (modal || !reachable)
 }
@@ -278,6 +293,9 @@ pub(in crate::ui) struct State {
     pub(super) explainer: super::explainer::Explainer,
     /// The focus stops of lists and controls, and the groups the arrow keys move in.
     pub(in crate::ui) stops: super::Stops,
+    /// The last text field that took focus, with what had focus before it: where focus goes back when the field's
+    /// popout or dialog closes without giving it back itself.
+    field_return: Option<(FocusHandle, Anchor)>,
 }
 
 impl Root {
@@ -426,6 +444,8 @@ impl Root {
                 self.thread_browser.is_some(),
                 self.guild_menu,
                 self.mentions_filter_open,
+                // The Apps launcher's focus lock gives focus back to what had it (module 315710).
+                self.slash.launcher.is_some(),
             ]
             .into_iter()
             .filter(|open| *open)
@@ -582,14 +602,30 @@ impl Root {
         self.keys.seen = now;
         self.keys.picker_search = self.picker.as_ref().map(|picker| picker.search_handle(cx));
         self.keys.anchor = self.anchor_now(window, cx);
+        if let Anchor::Other(field) = &self.keys.anchor
+            && is_field(field)
+            && let Some(back) = field_return(
+                self.keys.field_return.as_ref().map(|(kept, _)| kept),
+                field,
+                &anchor_before,
+                match &anchor_before {
+                    Anchor::Other(handle) => Some(handle),
+                    _ => None,
+                },
+            )
+        {
+            self.keys.field_return = Some((field.clone(), back));
+        }
         self.watch_undrawn_field(window, cx);
     }
 
     /// A text field keeps focus after whatever drew it is gone (a closed launcher, a page the call's Full Screen
-    /// covers). A focus handle that is not drawn receives no keys: Escape, the shortcuts and typing all stop. In the
-    /// official client the browser moves focus to the body when the focused element leaves the page, and the keys reach
-    /// the document again. Once the frame built now is drawn, a field still focused but not in it gives focus to the
-    /// window. The inline edit box is left alone: its row can scroll out of a virtual list and come back.
+    /// covers). A focus handle that is not drawn receives no keys: Escape, the shortcuts and typing all stop. The
+    /// official popouts and dialogs hold a focus lock (module 315710) that, when they unmount with focus inside, gives
+    /// focus back on the next animation frame to what had it when they opened, if that is still on the page; else
+    /// focus is on the body and the keys reach the document. Once the frame built now is drawn, a field still focused
+    /// but not in it gives focus back the same way. The inline edit box is left alone: its row can scroll out of a
+    /// virtual list and come back.
     fn watch_undrawn_field(&self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(focused) = window.focused(cx) else {
             return;
@@ -606,10 +642,25 @@ impl Root {
         }
         cx.on_next_frame(window, move |this, window, cx| {
             let still = window.focused(cx).as_ref() == Some(&focused);
-            if field_is_undrawn(still, this.focus.contains_focused(window, cx)) {
-                window.focus(&this.focus, cx);
-                cx.notify();
+            if !field_is_undrawn(still, this.focus.contains_focused(window, cx)) {
+                return;
             }
+            let back = this
+                .keys
+                .field_return
+                .take()
+                .filter(|(field, _)| *field == focused)
+                .map(|(_, anchor)| anchor);
+            if let Some(anchor) = back {
+                this.restore_anchor(&anchor, window, cx);
+            }
+            // `isConnected`: what had focus must still be drawn, or the window takes it.
+            let gone = window.focused(cx).as_ref() == Some(&focused)
+                || !this.focus.contains_focused(window, cx);
+            if gone {
+                window.focus(&this.focus, cx);
+            }
+            cx.notify();
         });
     }
 
@@ -1120,6 +1171,30 @@ mod tests {
             Restore::Composer
         );
         assert_eq!(restore_target(&Anchor::Edit, false, false), Restore::Keep);
+    }
+
+    #[test]
+    fn a_field_gives_focus_back_to_what_had_it_when_it_took_it() {
+        // The launcher's search takes focus from the composer: the composer is kept.
+        assert_eq!(
+            field_return(None, &"launcher", &"composer", None),
+            Some("composer")
+        );
+        // Frames later the same field is still focused: what was kept stays.
+        assert_eq!(
+            field_return(
+                Some(&"launcher"),
+                &"launcher",
+                &"launcher",
+                Some(&"launcher")
+            ),
+            None
+        );
+        // Another field takes over from the first: it gives focus back to that one.
+        assert_eq!(
+            field_return(Some(&"launcher"), &"picker", &"launcher", Some(&"launcher")),
+            Some("launcher")
+        );
     }
 
     #[test]
