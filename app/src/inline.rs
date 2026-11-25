@@ -434,6 +434,16 @@ fn paint_decorations(
     }
 }
 
+/// `text` as one shaped line takes it: each line break a space, as CSS collapses a newline in a line of text, and the
+/// byte length unchanged, so runs measured on `text` still cover it. gpui's `shape_line` stops on a `\n`.
+pub(crate) fn one_line(text: &str) -> SharedString {
+    if text.contains(['\n', '\r']) {
+        SharedString::from(text.replace(['\n', '\r'], " "))
+    } else {
+        SharedString::from(text.to_owned())
+    }
+}
+
 fn shape(piece: &Piece, text: &str, window: &Window) -> ShapedLine {
     let run = run_for(piece, text.len());
     window.text_system().shape_line(
@@ -1664,8 +1674,24 @@ impl Laid {
 
 #[cfg(test)]
 mod tests {
-    use super::{Position, Selection, spread_ligatures, words};
+    use super::{Position, Selection, one_line, spread_ligatures, words};
     use gpui::px;
+
+    #[test]
+    fn one_line_turns_line_breaks_into_spaces_and_keeps_the_byte_length() {
+        for text in [
+            "Çağrı\nbaşladı",
+            "a\r\nb",
+            "\u{2068}İsim\u{2069}\n🎉",
+            "no break",
+        ] {
+            let line = one_line(text);
+            assert!(!line.contains('\n') && !line.contains('\r'));
+            assert_eq!(line.len(), text.len());
+        }
+        assert_eq!(one_line("a\r\nb").as_ref(), "a  b");
+        assert_eq!(one_line("Çağrı\nbaşladı").as_ref(), "Çağrı başladı");
+    }
 
     #[test]
     fn line_end_spaces_hang_but_nonbreaking_spaces_and_boxes_do_not() {

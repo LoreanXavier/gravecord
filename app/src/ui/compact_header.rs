@@ -9,7 +9,7 @@
 
 use crate::inline::FirstLineIndent;
 use dc_state::Id;
-use gpui::{Font, FontWeight, Pixels, SharedString, TextRun, Window, px};
+use gpui::{Font, FontWeight, Pixels, TextRun, Window, px};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -50,7 +50,7 @@ fn width(window: &Window, font: &Font, text: &str, size: f32, weight: f32) -> f3
     f32::from(
         window
             .text_system()
-            .shape_line(SharedString::from(text.to_owned()), px(size), &[run], None)
+            .shape_line(crate::inline::one_line(text), px(size), &[run], None)
             .width,
     )
 }

@@ -323,7 +323,7 @@ fn measure_label(window: &mut Window, text: &str, size: f32, weight: f32) -> f32
     f32::from(
         window
             .text_system()
-            .shape_line(SharedString::from(text.to_owned()), px(size), &[run], None)
+            .shape_line(crate::inline::one_line(text), px(size), &[run], None)
             .width,
     )
 }

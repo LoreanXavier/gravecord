@@ -3168,7 +3168,7 @@ fn label_width(window: &Window, text: &str) -> f32 {
     f32::from(
         window
             .text_system()
-            .shape_line(SharedString::from(text.to_owned()), px(14.), &[run], None)
+            .shape_line(crate::inline::one_line(text), px(14.), &[run], None)
             .width,
     )
 }
