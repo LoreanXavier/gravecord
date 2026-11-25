@@ -21,22 +21,49 @@ impl Theme {
         }
     }
 
-    /// Whether the palette has a token of this name (`color` panics for one it has not).
+    /// Whether the palette has a token of this name (`color` falls back to transparent for one it has not).
     pub fn has(self, name: &str) -> bool {
-        self.table()
-            .binary_search_by(|(key, _)| (*key).cmp(name))
-            .is_ok()
+        self.get(name).is_some()
     }
 
-    /// `0xRRGGBBAA` of a token. Unknown names are a programming error: they come from code, not from data.
-    pub fn color(self, name: &str) -> u32 {
+    /// `0xRRGGBBAA` of a token, if the palette has it.
+    pub fn get(self, name: &str) -> Option<u32> {
         let table = self.table();
-        let found = table.binary_search_by(|(key, _)| (*key).cmp(name));
-        match found {
-            Ok(index) => table[index].1,
-            Err(_) => panic!("unknown design token {name}"),
-        }
+        let index = table.binary_search_by(|(key, _)| (*key).cmp(name)).ok()?;
+        Some(table[index].1)
     }
+
+    /// `0xRRGGBBAA` of a token. Unknown names are a programming error: they come from code, not from data, so a
+    /// debug build stops on one. A release build warns once per name and draws it transparent, as CSS draws a
+    /// background or border whose `var()` does not resolve, instead of taking the client down.
+    pub fn color(self, name: &str) -> u32 {
+        self.get(name).unwrap_or_else(|| {
+            debug_assert!(false, "unknown design token {name}");
+            unknown(name)
+        })
+    }
+}
+
+/// What an unknown token resolves to outside debug builds.
+pub const UNKNOWN_TOKEN: u32 = 0x0000_0000;
+
+/// The colour of an unknown token, warned about the first time the name is asked for.
+fn unknown(name: &str) -> u32 {
+    if first_unknown(name) {
+        tracing::warn!(token = name, "unknown design token, drawn transparent");
+    }
+    UNKNOWN_TOKEN
+}
+
+fn first_unknown(name: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    WARNED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(name.to_owned())
 }
 
 pub mod emoji_data;
@@ -81,7 +108,24 @@ pub fn emoji_prefix(text: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Theme, emoji_file, emoji_prefix};
+    use super::{Theme, UNKNOWN_TOKEN, emoji_file, emoji_prefix, first_unknown, unknown};
+
+    /// The release path of `color` for a name no palette has: transparent, and warned about only the first time.
+    #[test]
+    fn an_unknown_token_falls_back_to_transparent_and_warns_once() {
+        assert_eq!(Theme::Dark.get("--bg-brand"), None);
+        assert_eq!(unknown("--bg-brand"), UNKNOWN_TOKEN);
+        assert_eq!(unknown("--bg-brand"), UNKNOWN_TOKEN);
+        assert!(!first_unknown("--bg-brand"));
+        assert!(first_unknown("--border-faint-test-only"));
+        assert!(!first_unknown("--border-faint-test-only"));
+    }
+
+    #[test]
+    fn get_and_color_agree_on_a_known_token() {
+        let value = Theme::Light.get("--text-default").unwrap();
+        assert_eq!(Theme::Light.color("--text-default"), value);
+    }
 
     #[test]
     fn emoji_names_resolve() {
@@ -134,7 +178,9 @@ mod tests {
         assert_ne!(Theme::Light.color(name), Theme::Darker.color(name));
     }
 
+    /// Debug builds stop on an unknown token; release builds fall back (`an_unknown_token_falls_back_...`).
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "unknown design token")]
     fn unknown_token_panics() {
         Theme::Dark.color("--nope");
