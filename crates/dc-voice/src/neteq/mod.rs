@@ -931,6 +931,85 @@ mod tests {
         assert!(stats.fec_recovered >= 1, "{stats:?}");
     }
 
+    /// A steady voiced tone, as Opus packets the way a peer sends them.
+    fn tone_packets(count: usize) -> Vec<Vec<u8>> {
+        let mut encoder = encoder();
+        (0..count)
+            .map(|k| {
+                let pcm: Vec<f32> = (0..960)
+                    .map(|i| {
+                        ((k * 960 + i) as f32 * std::f32::consts::TAU * 210.0 / 48_000.0).sin()
+                            * 0.3
+                    })
+                    .collect();
+                let mut out = [0u8; 1275];
+                let n = encoder.encode_float(&pcm, &mut out).unwrap();
+                out[..n].to_vec()
+            })
+            .collect()
+    }
+
+    /// A ping-spiky path: 60 ms one way, a reordered pair every 25 packets, three single losses, one packet so late its
+    /// turn has passed, and a 120 ms spike that releases its packets at once. Pulled every 10 ms on the receiver's own
+    /// clock, the stream never runs dry: the losses come back from FEC or are concealed, the late packet is thrown
+    /// away, the burst is absorbed, and no block is digital silence (`NetEqImpl` conceals rather than underruns).
+    #[test]
+    fn gaps_reordering_late_arrivals_and_a_spike_are_concealed_without_underruns() {
+        let packets = tone_packets(400);
+        let lost = [80usize, 160, 240];
+        let mut arrivals: Vec<(f64, usize)> = (0..packets.len())
+            .filter(|k| !lost.contains(k))
+            .map(|k| {
+                let mut at = k as f64 * 20.0 + 60.0;
+                if k % 25 == 7 {
+                    at += 25.0; // after the next one
+                }
+                if k == 200 {
+                    at += 300.0; // long after its turn
+                }
+                if (300..306).contains(&k) {
+                    // Held back by the spike, released together with packet 306.
+                    at = at.max(306.0 * 20.0 + 60.0);
+                }
+                (at, k)
+            })
+            .collect();
+        arrivals.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut neteq = NetEq::new(false).unwrap();
+        let mut out = [0.0f32; OUTPUT_SIZE];
+        let mut blocks = Vec::new();
+        let mut next = 0;
+        let mut now = 0.0;
+        while now < packets.len() as f64 * 20.0 + 600.0 {
+            while next < arrivals.len() && arrivals[next].0 <= now {
+                let k = arrivals[next].1;
+                neteq.insert_packet(k as u16, (k * 960) as u32, &packets[k]);
+                next += 1;
+            }
+            neteq.get_audio(&mut out);
+            blocks.push((out.iter().map(|s| s * s).sum::<f32>() / OUTPUT_SIZE as f32).sqrt());
+            now += 10.0;
+        }
+        let stats = neteq.stats();
+        assert_eq!(stats.underrun_samples, 0, "{stats:?}");
+        assert_eq!(stats.packets_lost, 3, "{stats:?}");
+        assert!(
+            stats.packets_late >= 1,
+            "the late packet is discarded: {stats:?}"
+        );
+        assert!(
+            stats.fec_recovered >= 1,
+            "a loss comes back from FEC: {stats:?}"
+        );
+        let first = blocks.iter().position(|rms| *rms > 0.05).unwrap();
+        let last = blocks.iter().rposition(|rms| *rms > 0.05).unwrap();
+        let silent = blocks[first..=last]
+            .iter()
+            .filter(|rms| **rms == 0.0)
+            .count();
+        assert_eq!(silent, 0, "no digital silence inside the speech: {stats:?}");
+    }
+
     #[test]
     fn a_flush_starts_the_stream_again() {
         let packets = packets(10);

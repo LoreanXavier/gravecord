@@ -8,6 +8,7 @@
 //! `crates/platform/src/audio.rs` (`output_config`), MIT OR Apache-2.0. Dropped: echo
 //! cancellation, noise suppression, input gate, the
 //! microphone preview, macOS permission prompts, PulseAudio buffer sizing and diagnostics.
+use crate::capture::Captured;
 use crate::playout::{CallPlayout, PlayoutReader};
 use crate::{Frame, Stereo};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -296,7 +297,7 @@ impl Audio {
     /// Starts call audio: `capture` receives processed microphone frames while speaker playback pulls directly from
     /// `playout` inside the device callback.
     pub fn start(
-        capture: mpsc::SyncSender<Frame>,
+        capture: mpsc::SyncSender<Captured>,
         playout: Arc<CallPlayout>,
     ) -> Result<Self, &'static str> {
         let gate = Arc::new(Gate::default());
@@ -319,7 +320,7 @@ impl Audio {
     }
     /// Starts the microphone preview (loopback mic test): channel-fed loopback, no call input watcher or recorder.
     pub(crate) fn start_preview(
-        capture: mpsc::SyncSender<Frame>,
+        capture: mpsc::SyncSender<Captured>,
         playback: mpsc::Receiver<Stereo>,
     ) -> Result<Self, &'static str> {
         let gate = Arc::new(Gate::default());
@@ -339,7 +340,7 @@ impl Audio {
     /// every 20 ms independently of the network loop and measures them.
     #[cfg(feature = "sim")]
     pub(crate) fn start_simulated(
-        capture: mpsc::SyncSender<Frame>,
+        capture: mpsc::SyncSender<Captured>,
         playout: Arc<CallPlayout>,
         session: String,
     ) -> Result<Self, &'static str> {
@@ -389,7 +390,7 @@ impl Drop for Audio {
 
 fn run(
     gate: &Arc<Gate>,
-    capture: &mpsc::SyncSender<Frame>,
+    capture: &mpsc::SyncSender<Captured>,
     mut driver: PlaybackDriver,
     call: bool,
 ) {
@@ -398,6 +399,10 @@ fn run(
     let mut input_retry_at = Instant::now();
     let mut devices = prefs().generation.load(Ordering::Acquire);
     // Echo cancellation and noise suppression run here, between the device rings and the voice loop.
+    // The worker hands frames to the voice loop every 5 ms: on a high-resolution timer, since `park_timeout` waits
+    // out the 15.6 ms Windows tick, and out of power throttling while a game is in front (as the media clock is).
+    let waiter = dc_media::throttle::Waiter::new();
+    let _unthrottled = dc_media::throttle::Guard::acquire();
     let mut processor = crate::process::Processor::new();
     // What goes out: voice activity or push to talk, and the level for the meters.
     let mut voice = crate::gate::Gate::new();
@@ -492,7 +497,7 @@ fn run(
                     }
                 }
             }
-            std::thread::park_timeout(Duration::from_millis(10));
+            waiter.sleep(Duration::from_millis(10));
             continue;
         };
         if gate.input_failed.swap(false, Ordering::AcqRel) && active.input_stream.is_some() {
@@ -560,7 +565,6 @@ fn run(
                 }
             }
         }
-        let preview_mode = matches!(driver, PlaybackDriver::Preview { .. });
         let call_loopback = match &mut driver {
             PlaybackDriver::Call {
                 loopback_send: Some(send),
@@ -591,12 +595,14 @@ fn run(
             if let Some(recorder) = &mut recorder {
                 recorder.record(crate::recorder::Track::Sent, &frame);
             }
-            if active_capture && gate_open {
-                // A full channel means the voice loop is behind; drop rather than block.
-                let _ = capture.try_send(frame);
-            } else if preview_mode && active_capture {
-                // Keep Preview's Playback::Loopback ring continuously primed across pauses so onset never cuts out.
-                let _ = capture.try_send([0.0; 960]);
+            if active_capture {
+                // Every frame, with the gate's verdict: the voice loop paces its packets on these frames and ends a
+                // spurt where the gate closes (`capture.rs`). A full channel means the loop is behind; drop rather
+                // than block.
+                let _ = capture.try_send(Captured {
+                    frame,
+                    open: gate_open,
+                });
             }
             if active_loopback && let Some(send) = call_loopback.as_deref_mut() {
                 let loopback_frame = if gate_open {
@@ -619,7 +625,7 @@ fn run(
             (captured, played, loudest) = (0, 0, 0.0);
             tally_at = now + Duration::from_secs(5);
         }
-        std::thread::park_timeout(Duration::from_millis(5));
+        waiter.sleep(Duration::from_millis(5));
     }
     // The call is over: whatever the last five minutes held is written.
     if let Some(done) = recorder.take() {
@@ -633,7 +639,7 @@ fn run(
 #[cfg(feature = "sim")]
 fn run_simulated(
     gate: &Arc<Gate>,
-    capture: &mpsc::SyncSender<Frame>,
+    capture: &mpsc::SyncSender<Captured>,
     playout: &CallPlayout,
     session: &str,
 ) {
@@ -646,7 +652,7 @@ fn run_simulated(
             && let Some(hz) = plan.tone_hz
         {
             let frame = crate::sim::tone(hz, plan.level, &mut phase);
-            if capture.try_send(frame).is_ok() {
+            if capture.try_send(Captured { frame, open: true }).is_ok() {
                 crate::sim::sent(session);
             }
         }
@@ -1189,7 +1195,7 @@ pub struct Preview {
 
 /// Opens the microphone (and the speaker, for `loopback`).
 pub fn preview(loopback: bool) -> Result<Preview, &'static str> {
-    let (capture_send, capture) = mpsc::sync_channel::<Frame>(8);
+    let (capture_send, capture) = mpsc::sync_channel::<Captured>(8);
     let (playback, playback_receive) = mpsc::sync_channel::<Stereo>(8);
     let audio = Audio::start_preview(capture_send, playback_receive)?;
     audio.set_ready(true);
@@ -1202,7 +1208,13 @@ pub fn preview(loopback: bool) -> Result<Preview, &'static str> {
         .spawn(move || {
             while !forward_stop.load(Ordering::Acquire) {
                 match capture.recv_timeout(Duration::from_millis(100)) {
-                    Ok(frame) if forward_loopback.load(Ordering::Acquire) => {
+                    Ok(captured) if forward_loopback.load(Ordering::Acquire) => {
+                        // Silence while the gate is closed keeps the playback ring primed across pauses.
+                        let frame = if captured.open {
+                            captured.frame
+                        } else {
+                            [0.0; 960]
+                        };
                         let _ = playback.try_send(crate::to_stereo(&frame));
                     }
                     Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}

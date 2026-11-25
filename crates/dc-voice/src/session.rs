@@ -12,7 +12,7 @@ use crate::{
     DisconnectReason, Event, Frame, RtcState,
     activity::{self, LOCAL_THRESHOLD_DB},
     audio::Audio,
-    capture::CapturePacer,
+    capture::{Captured, SendPacer, Step},
     clock,
     dave::Dave,
     playout::CallPlayout,
@@ -825,12 +825,13 @@ pub(crate) async fn run(
     let mut connected = false;
     let mut resuming = false;
     let mut resume_attempts = 0u8;
-    let mut speaking = false;
-    let mut silence = 0u8;
 
     let mut encoder = encoder()?;
     let mut sequence: u16 = rand::random();
-    let mut timestamp: u32 = rand::random();
+    // The RTP timestamp runs on the microphone's frames (`capture.rs`).
+    let mut send_pacer = SendPacer::new(rand::random());
+    let mut send_steps: Vec<Step> = Vec::with_capacity(32);
+    let mut sent_voice: Vec<Frame> = Vec::with_capacity(16);
     let mut packet = [0u8; MAX_PACKET + 1];
     let mut encoded = [0u8; 1275];
     let mut stereo = [0.0f32; 1920];
@@ -846,13 +847,10 @@ pub(crate) async fn run(
     let mut signal_count = 0u16;
 
     // Devices open only once the call is secured (or waiting alone), never before.
-    let (capture_send, capture) = std_mpsc::sync_channel::<Frame>(8);
+    // 320 ms of frames: a loop busy with a burst of traffic sends what queued once it is free.
+    let (capture_send, capture) = std_mpsc::sync_channel::<Captured>(16);
     let mut capture_sender_end = Some(capture_send);
     let mut audio: Option<Audio> = None;
-    let mut capture_pacer = CapturePacer::default();
-    let mut capture_at = Instant::now();
-    let mut capture_enabled = false;
-    let mut capture_reset = true;
     let mut was_playout_active = false;
     let mut local_activity = 0u8;
     let mut speakers_at = Instant::now();
@@ -1212,62 +1210,59 @@ pub(crate) async fn run(
                     audio.set_controls(control.self_mute, control.self_deaf);
                     audio.set_loopback(control.loopback);
                 }
-                // Preserve ordinary callback batches. Only a real stall (four packet
-                // intervals) discards queued speech; mute and security gates always flush.
-                let resumed_capture = enabled && (!capture_enabled || capture_reset);
-                let stalled = !resumed_capture && now.duration_since(capture_at) >= Duration::from_millis(80);
-                capture_at = now;
-                capture_enabled = enabled;
-                capture_reset = false;
+                // Every frame the worker captured goes out in order, on the microphone's timeline (`capture.rs`): a
+                // late frame is only late, and a tick lost to a busy loop only bunches the frames up.
                 let muted = control.self_mute || control.self_deaf;
+                send_steps.clear();
                 let latest = if waiting {
-                    capture_pacer.preview(&capture)
+                    send_pacer.idle(&capture, now.into_std())
                 } else {
-                    capture_pacer.next(&capture, enabled && !muted, stalled)
+                    send_pacer.tick(&capture, enabled && !muted, now.into_std(), &mut send_steps)
                 };
-                local_activity = if (enabled || waiting) && !muted && !stalled {
+                local_activity = if (enabled || waiting) && !muted {
                     activity::hold_at(latest.as_ref().map_or(0.0, activity::energy), local_activity, LOCAL_THRESHOLD_DB)
                 } else {
                     0
                 };
                 let active = enabled && !muted && latest.is_some();
-                if active && !speaking {
-                    if !resuming {
-                        text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::speaking(true, ssrc)).await?;
-                    }
-                    speaking = true;
-                }
-                // Five frames of Opus silence close a burst, as Serein sends them.
-                if !active && speaking && silence == 0 {
-                    silence = 5;
-                }
                 let local_audio_level = if active {
                     latest.as_ref().map_or(0.0, |frame| activity::energy(frame).min(1.0))
                 } else {
                     0.0
                 };
-                if enabled && (active || silence > 0) {
-                    let data = if let Some(frame) = latest.filter(|_| active) {
-                        outbound_audio_frames += 1;
-                        for (sample, pair) in frame.iter().zip(stereo.as_chunks_mut::<2>().0) {
-                            let sample = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
-                            pair[0] = sample;
-                            pair[1] = sample;
+                sent_voice.clear();
+                for step in send_steps.drain(..) {
+                    let (data, timestamp) = match step {
+                        Step::Speaking(on) => {
+                            if !resuming {
+                                text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::speaking(on, ssrc)).await?;
+                            }
+                            continue;
                         }
-                        soft_clip.apply(&mut stereo);
-                        let length = encoder.encode_float(&stereo, &mut encoded).map_err(|_| "Opus encoding failed")?;
-                        let encrypted = dave
-                            .encrypt(davey::MediaType::AUDIO, davey::Codec::OPUS, &encoded[..length])
-                            .map_err(|_| "DAVE audio encryption failed")?
-                            .into_owned();
-                        local_audio_encrypt_ok += 1;
-                        encrypted
-                    } else {
-                        silence -= 1;
-                        // Encode silence so Opus LBRR clears the final syllable of the finished spurt.
-                        let silence_pcm = [0.0f32; rtp::FRAME_SAMPLES as usize * 2];
-                        let _ = encoder.encode_float(&silence_pcm, &mut encoded);
-                        davey::OPUS_SILENCE_PACKET.to_vec()
+                        _ if !enabled => continue,
+                        Step::Voice { frame, timestamp } => {
+                            outbound_audio_frames += 1;
+                            sent_voice.push(frame);
+                            for (sample, pair) in frame.iter().zip(stereo.as_chunks_mut::<2>().0) {
+                                let sample = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
+                                pair[0] = sample;
+                                pair[1] = sample;
+                            }
+                            soft_clip.apply(&mut stereo);
+                            let length = encoder.encode_float(&stereo, &mut encoded).map_err(|_| "Opus encoding failed")?;
+                            let encrypted = dave
+                                .encrypt(davey::MediaType::AUDIO, davey::Codec::OPUS, &encoded[..length])
+                                .map_err(|_| "DAVE audio encryption failed")?
+                                .into_owned();
+                            local_audio_encrypt_ok += 1;
+                            (encrypted, timestamp)
+                        }
+                        Step::Silence { timestamp } => {
+                            // Encode silence so Opus LBRR clears the final syllable of the finished spurt.
+                            let silence_pcm = [0.0f32; rtp::FRAME_SAMPLES as usize * 2];
+                            let _ = encoder.encode_float(&silence_pcm, &mut encoded);
+                            (davey::OPUS_SILENCE_PACKET.to_vec(), timestamp)
+                        }
                     };
                     let header = rtp::header(sequence, timestamp, ssrc);
                     let wire = transport.as_mut().ok_or("Missing voice transport key")?.seal(&header, &data, now)?;
@@ -1290,17 +1285,7 @@ pub(crate) async fn run(
                         tally[4] += 1;
                     }
                     sequence = sequence.wrapping_add(1);
-                    if !active && silence == 0 {
-                        if !resuming {
-                            text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::speaking(false, ssrc)).await?;
-                        }
-                        speaking = false;
-                    }
-                    if active {
-                        silence = 0;
-                    }
                 }
-                timestamp = timestamp.wrapping_add(rtp::FRAME_SAMPLES);
                 let playout_active = enabled && !control.self_deaf;
                 if was_playout_active && !playout_active {
                     playout.clear();
@@ -1309,14 +1294,13 @@ pub(crate) async fn run(
                 }
                 was_playout_active = playout_active;
                 // Combined voice track for the clip buffer (off when no live stream tap is attached): local mic plus consented remote speakers.
-                let local_clips = latest.filter(|_| enabled && active);
                 let remote_clips = if playout_active {
                     playout.pop_clips_20ms()
                 } else {
                     playout.clear_clips_tap();
                     None
                 };
-                match (local_clips, remote_clips) {
+                match (sent_voice.first().copied(), remote_clips) {
                     (Some(mut mixed), Some(remote)) => {
                         for (sample, r) in mixed.iter_mut().zip(remote.iter()) {
                             *sample = (*sample + *r).clamp(-1.0, 1.0);
@@ -1326,6 +1310,10 @@ pub(crate) async fn run(
                     (Some(local), None) => dc_clips::recorder().push_voice(&local),
                     (None, Some(remote)) => dc_clips::recorder().push_voice(&remote),
                     (None, None) => {}
+                }
+                // A tick that carried more than one frame: the rest of the microphone goes in too.
+                for local in sent_voice.iter().skip(1) {
+                    dc_clips::recorder().push_voice(local);
                 }
                 // Video never gates audio: every step here fails alone.
                 secure = enabled && dave.media_secure();
@@ -2066,7 +2054,6 @@ pub(crate) async fn run(
                                         dave.ready = true;
                                     } else {
                                         deadline = Some(Instant::now() + NEGOTIATION);
-                                        capture_reset = true;
                                         playout.clear();
                                     }
                                 }
@@ -2089,7 +2076,6 @@ pub(crate) async fn run(
                                         deadline = None;
                                     } else if was_group_member {
                                         deadline = Some(Instant::now() + RENEGOTIATION);
-                                        capture_reset = true;
                                         playout.clear();
                                     }
                                 }
@@ -2102,7 +2088,6 @@ pub(crate) async fn run(
                                 if !signal::dave_version_allowed(DaveAt::Transition, version, credentials.stage) {
                                     return Ok(refuse(&mut ws, close::DAVE_DOWNGRADE_REFUSED, DaveAt::Transition.as_str()).await);
                                 }
-                                capture_reset = true;
                                 let id = signal::transition(data)?;
                                 dave.prepare_protocol(id);
                                 if id == 0 {
@@ -2126,7 +2111,6 @@ pub(crate) async fn run(
                                 if dave.execute(id).is_err() {
                                     ready_announced = false;
                                     waiting_announced = false;
-                                    capture_reset = true;
                                     playout.clear();
                                     if id != 0 {
                                         text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::invalid_commit_welcome(id)).await?;
@@ -2145,7 +2129,6 @@ pub(crate) async fn run(
                                     return Ok(refuse(&mut ws, close::DAVE_DOWNGRADE_REFUSED, DaveAt::Epoch.as_str()).await);
                                 }
                                 if signal::number(data, "epoch")? == 1 {
-                                    capture_reset = true;
                                     dave.reinitialize()?;
                                     deadline = Some(Instant::now() + RENEGOTIATION);
                                     send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(dave.key_package()?.into())).await?;
@@ -2162,7 +2145,7 @@ pub(crate) async fn run(
                                 if dave.ready || dave.waiting {
                                     deadline = None;
                                 }
-                                text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::speaking(speaking, ssrc)).await?;
+                                text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::speaking(send_pacer.speaking(), ssrc)).await?;
                             }
                             Some(VoiceOp::Video) => {
                                 // Another participant's sources: their audio SSRC, and their camera if they send one.
@@ -2229,7 +2212,6 @@ pub(crate) async fn run(
                                     Err(_) => {
                                         ready_announced = false;
                                         waiting_announced = false;
-                                        capture_reset = true;
                                         playout.clear();
                                         dave.reset()?;
                                         deadline = Some(Instant::now() + RENEGOTIATION);
@@ -2259,7 +2241,6 @@ pub(crate) async fn run(
                                 if dave.ready {
                                     deadline = None;
                                 } else {
-                                    capture_reset = true;
                                     playout.clear();
                                     deadline = Some(Instant::now() + RENEGOTIATION);
                                 }
