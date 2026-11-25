@@ -20,7 +20,7 @@ use std::sync::{
     mpsc,
 };
 use std::time::{Duration, Instant};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Samples per second of everything the engine renders.
 const RATE: usize = 48_000;
@@ -30,6 +30,8 @@ const HOP: usize = WINDOW / 2;
 const SEARCH: usize = 480;
 /// How much rendered audio waits for the speaker: 100 ms.
 const AHEAD: usize = RATE / 10;
+/// How long a paused or finished player keeps its speaker stream open.
+const IDLE_CLOSE: Duration = Duration::from_secs(5);
 
 /// A decoded voice message: mono samples at 48 kHz.
 #[derive(Debug)]
@@ -79,8 +81,13 @@ pub struct Status {
     pub playing: bool,
     /// Played to its end; cleared by the next play or seek.
     pub ended: bool,
-    /// Seconds into the message.
+    /// Seconds into the message that are being heard now: what was rendered, less what waits in the ring and in the
+    /// device (as an `<audio>` element's `currentTime`). It does not go back before the point a play or seek started
+    /// from while that point's audio is still on its way out.
     pub position: f64,
+    /// The speaker's output latency in seconds (from the speaker's callback until its newest sample is heard), 0 when
+    /// silent or not yet known.
+    pub output_latency: f64,
     /// Samples rendered since the message was started, at 48 kHz after the speed change.
     pub rendered: u64,
     /// Why it could not play.
@@ -320,12 +327,83 @@ struct Worker {
     paced_at: Instant,
     owed: f64,
     error: Option<String>,
+    /// Where the last play or seek started, in seconds.
+    start: f64,
+    /// Since when nothing has played, to let the speaker go after [`IDLE_CLOSE`].
+    idle_since: Option<Instant>,
 }
 
-/// The speaker: a ring the callback reads.
+/// What the speaker's callback and the worker share.
+#[derive(Default)]
+struct Shared {
+    /// Samples pushed before the last flush: the callback drops what it has not played of them.
+    discard_until: AtomicU64,
+    /// Samples the callback has taken from the ring, played or dropped.
+    taken: AtomicU64,
+    /// When the callback last ran (nanoseconds since the sink opened), and how long from then until the newest sample
+    /// it took is heard: the device's own delay (`playback - callback`) and the buffer it filled.
+    callback_at: AtomicU64,
+    heard_in: AtomicU64,
+    /// The stream reported an error (the device went away): open a new one.
+    failed: AtomicBool,
+}
+
+/// The speaker: a ring the callback reads. It stays open across pauses and seeks, as an `<audio>` element's output
+/// does; a flush only tells the callback to drop what was queued.
 struct Sink {
     _stream: cpal::Stream,
     ring: rtrb::Producer<f32>,
+    /// Samples pushed since the sink opened.
+    pushed: u64,
+    shared: Arc<Shared>,
+    opened: Instant,
+    /// The device it plays on, to follow a change of the system default between plays.
+    device: Option<String>,
+}
+
+impl Sink {
+    fn push(&mut self, sample: f32) {
+        if self.ring.push(sample).is_ok() {
+            self.pushed += 1;
+        }
+    }
+
+    /// Drops everything queued: the callback skips to what is pushed next, fading out what was sounding.
+    fn flush(&mut self) {
+        self.shared
+            .discard_until
+            .store(self.pushed, Ordering::Release);
+    }
+
+    /// Samples queued that will still be played.
+    fn pending(&self) -> usize {
+        let from = self
+            .shared
+            .taken
+            .load(Ordering::Acquire)
+            .max(self.shared.discard_until.load(Ordering::Acquire));
+        self.pushed.saturating_sub(from) as usize
+    }
+
+    /// The device's output latency: from a callback until the newest sample it took is heard.
+    fn latency(&self) -> f64 {
+        self.shared.heard_in.load(Ordering::Acquire) as f64 / 1e9
+    }
+
+    /// Seconds until what the callback has taken so far is heard, now.
+    fn unheard(&self) -> f64 {
+        unheard_at(
+            self.shared.heard_in.load(Ordering::Acquire),
+            self.shared.callback_at.load(Ordering::Acquire),
+            self.opened.elapsed().as_nanos() as u64,
+        )
+    }
+}
+
+/// Seconds until the newest sample a callback took is heard, `now` (nanoseconds, as `callback_at`): it was `heard_in`
+/// away at the callback, and time has passed since.
+fn unheard_at(heard_in: u64, callback_at: u64, now: u64) -> f64 {
+    heard_in.saturating_sub(now.saturating_sub(callback_at)) as f64 / 1e9
 }
 
 impl Worker {
@@ -347,6 +425,8 @@ impl Worker {
             paced_at: Instant::now(),
             owed: 0.,
             error: None,
+            start: 0.,
+            idle_since: None,
         }
     }
 
@@ -394,7 +474,18 @@ impl Worker {
                 } else {
                     from.max(0.)
                 };
+                // A play from silence follows a change of the system's default speaker; a play over a playing
+                // message stays on the open stream.
+                if !self.playing
+                    && self
+                        .sink
+                        .as_ref()
+                        .is_some_and(|sink| sink.device != default_device())
+                {
+                    self.sink = None;
+                }
                 self.stretch.seek((start * RATE as f64) as usize);
+                self.start = start;
                 self.key = Some(key);
                 self.clip = Some(clip);
                 self.ended = false;
@@ -407,6 +498,10 @@ impl Worker {
             Command::Pause => {
                 if self.playing {
                     info!(rendered = self.rendered, "voice message paused");
+                    // What was rendered but not heard is dropped: resume from what was heard.
+                    let heard = self.heard_position();
+                    self.stretch.seek((heard * RATE as f64) as usize);
+                    self.start = heard;
                 }
                 self.playing = false;
                 self.flush();
@@ -415,6 +510,7 @@ impl Worker {
                 if let Some(clip) = &self.clip {
                     let seconds = seconds.clamp(0., clip.seconds());
                     self.stretch.seek((seconds * RATE as f64) as usize);
+                    self.start = seconds;
                     self.ended = false;
                     self.flush();
                 }
@@ -431,28 +527,49 @@ impl Worker {
                 self.clip = None;
                 self.key = None;
                 self.ended = false;
-                self.flush();
+                // Nothing is loaded: the speaker is let go.
+                self.sink = None;
             }
         }
     }
 
-    /// Drops what is waiting for the speaker (after a seek or a pause).
+    /// Drops what is waiting for the speaker (after a seek or a pause). The stream stays open.
     fn flush(&mut self) {
-        // The ring has one writer and the callback is its only reader, so the way to empty it is to start over.
-        self.sink = None;
+        if let Some(sink) = &mut self.sink {
+            sink.flush();
+        }
     }
 
     fn pending(&self) -> usize {
-        self.sink
-            .as_ref()
-            .map_or(0, |sink| sink.ring.buffer().capacity() - sink.ring.slots())
+        self.sink.as_ref().map_or(0, Sink::pending)
+    }
+
+    /// Seconds into the message being heard now: rendered, less what waits in the ring and in the device.
+    fn heard_position(&self) -> f64 {
+        let Some(clip) = &self.clip else {
+            return 0.;
+        };
+        heard_seconds(
+            self.stretch.position,
+            self.pending(),
+            self.sink.as_ref().map_or(0., Sink::unheard),
+            self.speed,
+            self.start,
+            clip.seconds(),
+        )
     }
 
     fn render(&mut self) {
         if !self.playing {
             self.paced_at = Instant::now();
+            // Paused or ended a while: the speaker is let go (a resume soon after keeps the open stream).
+            let idle = *self.idle_since.get_or_insert_with(Instant::now);
+            if self.sink.is_some() && idle.elapsed() >= IDLE_CLOSE {
+                self.sink = None;
+            }
             return;
         }
+        self.idle_since = None;
         let Some(clip) = self.clip.clone() else {
             return;
         };
@@ -466,6 +583,14 @@ impl Worker {
                 self.owed -= HOP as f64;
             }
         } else {
+            if self
+                .sink
+                .as_ref()
+                .is_some_and(|sink| sink.shared.failed.load(Ordering::Acquire))
+            {
+                warn!("voice message speaker stream failed; reopening");
+                self.sink = None;
+            }
             if self.sink.is_none() {
                 match open_sink() {
                     Ok(sink) => self.sink = Some(sink),
@@ -483,7 +608,7 @@ impl Worker {
                 self.rendered += hop.len() as u64;
                 if let Some(sink) = &mut self.sink {
                     for sample in hop {
-                        let _ = sink.ring.push((sample * gain).clamp(-1., 1.));
+                        sink.push((sample * gain).clamp(-1., 1.));
                     }
                 }
             }
@@ -499,18 +624,17 @@ impl Worker {
     fn publish(&self) {
         let position = match &self.clip {
             Some(clip) if self.ended => clip.seconds(),
-            Some(clip) => {
-                let ahead = self.pending() as f64 * f64::from(self.speed) / RATE as f64;
-                ((self.stretch.position / RATE as f64) - ahead).clamp(0., clip.seconds())
-            }
+            Some(_) => self.heard_position(),
             None => 0.,
         };
+        let output_latency = self.sink.as_ref().map_or(0., Sink::latency);
         if let Ok(mut status) = self.status.lock() {
             *status = Status {
                 key: self.key.clone(),
                 playing: self.playing,
                 ended: self.ended,
                 position,
+                output_latency,
                 rendered: self.rendered,
                 error: self.error.clone(),
                 play_seq: self.play_seq,
@@ -527,49 +651,51 @@ fn open_sink() -> Result<Sink, &'static str> {
         .default_output_device()
         .ok_or("No speaker is available")?;
     let config = output_config(&device)?;
-    let channels = usize::from(config.channels());
-    let step = RATE as f64 / f64::from(config.sample_rate());
-    let (producer, mut consumer) = rtrb::RingBuffer::<f32>::new(RATE);
+    let channels = usize::from(config.channels()).max(1);
+    let device_rate = f64::from(config.sample_rate());
+    let (producer, consumer) = rtrb::RingBuffer::<f32>::new(RATE);
+    let shared = Arc::new(Shared::default());
+    let opened = Instant::now();
+    let mut feed = Feed::new(consumer, shared.clone(), RATE as f64 / device_rate);
     let stream_config = config.config();
-    let mut phase = 0f64;
-    let (mut previous, mut next) = (0f32, 0f32);
-    let mut primed = false;
-    let mut fill = move |data: &mut [f32]| {
-        for frame in data.chunks_mut(channels.max(1)) {
-            if !primed {
-                previous = consumer.pop().unwrap_or(0.);
-                next = consumer.pop().unwrap_or(previous);
-                primed = true;
-            }
-            let value = previous + (next - previous) * phase as f32;
-            phase += step;
-            while phase >= 1. {
-                phase -= 1.;
-                previous = next;
-                next = consumer.pop().unwrap_or(0.);
-            }
-            frame.fill(value);
-        }
+    let timing = shared.clone();
+    let mut fill = move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+        feed.fill(data, channels);
+        // The device's delay until this buffer starts sounding, and the buffer itself.
+        let stamp = info.timestamp();
+        let delay = stamp.playback.duration_since(stamp.callback)
+            + Duration::from_secs_f64((data.len() / channels) as f64 / device_rate);
+        timing
+            .heard_in
+            .store(delay.as_nanos() as u64, Ordering::Release);
+        timing
+            .callback_at
+            .store(opened.elapsed().as_nanos() as u64, Ordering::Release);
+    };
+    let failed = shared.clone();
+    let on_error = move |error: cpal::Error| {
+        warn!("voice message speaker stream error: {error}");
+        failed.failed.store(true, Ordering::Release);
     };
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => device.build_output_stream(
             stream_config,
-            move |data: &mut [f32], _| fill(data),
-            |_| {},
+            move |data: &mut [f32], info| fill(data, info),
+            on_error,
             None,
         ),
         cpal::SampleFormat::I16 => {
             let mut scratch: Vec<f32> = Vec::new();
             device.build_output_stream(
                 stream_config,
-                move |data: &mut [i16], _| {
+                move |data: &mut [i16], info| {
                     scratch.resize(data.len(), 0.);
-                    fill(&mut scratch);
+                    fill(&mut scratch, info);
                     for (slot, value) in data.iter_mut().zip(&scratch) {
                         *slot = (value.clamp(-1., 1.) * f32::from(i16::MAX)) as i16;
                     }
                 },
-                |_| {},
+                on_error,
                 None,
             )
         }
@@ -582,7 +708,123 @@ fn open_sink() -> Result<Sink, &'static str> {
     Ok(Sink {
         _stream: stream,
         ring: producer,
+        pushed: 0,
+        shared,
+        opened,
+        device: device_name(&device),
     })
+}
+
+fn device_name(device: &cpal::Device) -> Option<String> {
+    Some(device.to_string())
+}
+
+/// The system's default speaker now.
+fn default_device() -> Option<String> {
+    cpal::default_host()
+        .default_output_device()
+        .as_ref()
+        .and_then(device_name)
+}
+
+/// The second of the source being heard: the stretch's read point (source samples), less what waits in the ring
+/// (`pending`, output samples) and in the device (`unheard` seconds), both at `speed`; held at the point the last play
+/// or seek started from until its audio is out, and within the clip.
+fn heard_seconds(
+    read: f64,
+    pending: usize,
+    unheard: f64,
+    speed: f32,
+    start: f64,
+    duration: f64,
+) -> f64 {
+    let ahead = (pending as f64 / RATE as f64 + unheard) * f64::from(speed);
+    (read / RATE as f64 - ahead).clamp(start.min(duration), duration)
+}
+
+/// Fades out what was sounding when a flush cuts it: 5 ms.
+const FADE_SECONDS: f64 = 0.005;
+
+/// The callback's side of the ring: linear resampling to the device rate, dropping what a flush discarded and fading
+/// out over [`FADE_SECONDS`] what was sounding, so a pause or seek makes no click.
+struct Feed {
+    consumer: rtrb::Consumer<f32>,
+    shared: Arc<Shared>,
+    step: f64,
+    phase: f64,
+    previous: f32,
+    next: f32,
+    primed: bool,
+    taken: u64,
+    last: f32,
+    fade_from: f32,
+    fade_left: usize,
+    fade_frames: usize,
+}
+
+impl Feed {
+    fn new(consumer: rtrb::Consumer<f32>, shared: Arc<Shared>, step: f64) -> Self {
+        Self {
+            consumer,
+            shared,
+            step,
+            phase: 0.,
+            previous: 0.,
+            next: 0.,
+            primed: false,
+            taken: 0,
+            last: 0.,
+            fade_from: 0.,
+            fade_left: 0,
+            fade_frames: ((RATE as f64 / step) * FADE_SECONDS).round().max(1.) as usize,
+        }
+    }
+
+    fn pop(&mut self) -> f32 {
+        match self.consumer.pop() {
+            Ok(sample) => {
+                self.taken += 1;
+                sample
+            }
+            Err(_) => 0.,
+        }
+    }
+
+    fn fill(&mut self, data: &mut [f32], channels: usize) {
+        let discard = self.shared.discard_until.load(Ordering::Acquire);
+        if self.taken < discard {
+            while self.taken < discard && self.consumer.pop().is_ok() {
+                self.taken += 1;
+            }
+            // What was sounding fades out under what comes next.
+            self.fade_from = self.last;
+            self.fade_left = self.fade_frames;
+            self.primed = false;
+            self.phase = 0.;
+        }
+        for frame in data.chunks_mut(channels) {
+            if !self.primed {
+                self.previous = self.pop();
+                self.next = self.pop();
+                self.primed = true;
+            }
+            let mut value = self.previous + (self.next - self.previous) * self.phase as f32;
+            self.phase += self.step;
+            while self.phase >= 1. {
+                self.phase -= 1.;
+                self.previous = self.next;
+                self.next = self.pop();
+            }
+            if self.fade_left > 0 {
+                let old = self.fade_left as f32 / self.fade_frames as f32;
+                value = value * (1. - old) + self.fade_from * old;
+                self.fade_left -= 1;
+            }
+            self.last = value;
+            frame.fill(value);
+        }
+        self.shared.taken.store(self.taken, Ordering::Release);
+    }
 }
 
 #[cfg(test)]
@@ -693,5 +935,57 @@ mod tests {
         engine.stop();
         std::thread::sleep(Duration::from_millis(40));
         assert_eq!(engine.status().key, None);
+    }
+
+    /// A pause or seek on the open stream: what was queued before it is dropped, nothing more, and what was sounding
+    /// fades into what comes next instead of being cut (no click); the stream is never reopened for it.
+    #[test]
+    fn a_flush_drops_the_queue_on_the_open_stream_and_fades_without_a_click() {
+        let (mut producer, consumer) = rtrb::RingBuffer::<f32>::new(RATE);
+        let shared = Arc::new(Shared::default());
+        let mut feed = Feed::new(consumer, shared.clone(), 1.);
+        for _ in 0..2000 {
+            producer.push(0.5).unwrap();
+        }
+        let mut out = vec![0f32; 400];
+        feed.fill(&mut out, 1);
+        assert!(out[10..].iter().all(|s| (*s - 0.5).abs() < 1e-6));
+        // Seek: the 1600 samples of the old place still queued are dropped, the new place follows.
+        let before = 2000u64;
+        shared.discard_until.store(before, Ordering::Release);
+        for _ in 0..2000 {
+            producer.push(-0.25).unwrap();
+        }
+        let mut after = vec![0f32; 1000];
+        feed.fill(&mut after, 1);
+        let mut previous = out[399];
+        let mut largest_step = 0f32;
+        for sample in &after {
+            largest_step = largest_step.max((sample - previous).abs());
+            previous = *sample;
+        }
+        assert!(largest_step < 0.01, "a step of {largest_step} is a click");
+        let fade = feed.fade_frames;
+        assert!(after[fade + 2..].iter().all(|s| (*s + 0.25).abs() < 1e-6));
+        // Everything before the flush was taken (dropped), and only what played after it counts beyond that.
+        let taken = shared.taken.load(Ordering::Acquire);
+        assert!(taken > before && taken <= before + 1002, "{taken}");
+    }
+
+    #[test]
+    fn the_position_is_what_is_heard_not_what_was_rendered() {
+        // Two seconds read, 100 ms in the ring and 50 ms in the device: 1.85 s is being heard.
+        let heard = heard_seconds(2. * RATE as f64, RATE / 10, 0.05, 1., 0., 10.);
+        assert!((heard - 1.85).abs() < 1e-9, "{heard}");
+        // At double speed the same queue is twice as much of the source.
+        let fast = heard_seconds(2. * RATE as f64, RATE / 10, 0.05, 2., 0., 10.);
+        assert!((fast - 1.7).abs() < 1e-9, "{fast}");
+        // Right after a seek to 1.95 s, the new audio is not out yet: the position stays at the seek point.
+        let sought = heard_seconds(2. * RATE as f64, RATE / 10, 0.05, 1., 1.95, 10.);
+        assert!((sought - 1.95).abs() < 1e-9, "{sought}");
+        // The device's part runs down between callbacks: 40 ms away at the callback, 15 ms later 25 ms remain.
+        let unheard = unheard_at(40_000_000, 1_000_000_000, 1_015_000_000);
+        assert!((unheard - 0.025).abs() < 1e-9, "{unheard}");
+        assert_eq!(unheard_at(40_000_000, 1_000_000_000, 2_000_000_000), 0.);
     }
 }
