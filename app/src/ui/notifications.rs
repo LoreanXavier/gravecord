@@ -9,6 +9,35 @@ use gpui::Context;
 use serde_json::Value;
 use std::time::Instant;
 
+/// The image key of a notification's icon while it is fetched.
+pub(super) const ICON_PREFIX: &str = "notify-icon:";
+/// How long a notification waits for its icon before it is shown without one.
+const ICON_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Module 119622: the avatar drawn into a square canvas of its shorter side and clipped to the inscribed circle.
+pub(super) fn circle_icon(image: &image::RgbaImage) -> image::RgbaImage {
+    let side = image.width().min(image.height());
+    let radius = side as f32 / 2.;
+    image::RgbaImage::from_fn(side, side, |x, y| {
+        let mut pixel = *image.get_pixel(x, y);
+        let (dx, dy) = (x as f32 + 0.5 - radius, y as f32 + 0.5 - radius);
+        // The canvas clip is antialiased: a pixel on the edge keeps the part of it inside the circle.
+        let coverage = (radius - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0., 1.);
+        pixel[3] = (pixel[3] as f32 * coverage).round() as u8;
+        pixel
+    })
+}
+
+/// Decodes the avatar, cuts it and writes it where the toast can read it.
+fn write_circle_icon(bytes: &[u8], name: &str) -> Option<std::path::PathBuf> {
+    let image = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let dir = std::env::temp_dir().join("gravecord-notifications");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(name);
+    circle_icon(&image).save(&path).ok()?;
+    Some(path)
+}
+
 /// `Q` of module 411238: `name (#channel, parent)`, each part isolated.
 fn message_title(name: &str, channel: &str, parent: Option<&str>) -> String {
     let parent = parent
@@ -294,12 +323,93 @@ impl Root {
         let body = self.notification_body(message);
         // The game overlay's text toast (module 348639 `MESSAGE_CREATE`), when the overlay is up.
         self.overlay_text_notice(channel, &author, title.clone(), body.clone(), cx);
-        self.notification_runtime.show(Notice {
-            channel,
-            message: id,
-            title,
-            body,
+        // Module 534765 passes the author's avatar with `isUserAvatar`, and module 119622 waits for it before it shows
+        // the notification: the server avatar first, then the account's, then the default one.
+        let guild = self
+            .stores
+            .guilds
+            .iter()
+            .find(|guild| {
+                guild.channels.iter().any(|known| known.id == channel)
+                    || guild.threads.iter().any(|thread| thread.id == channel)
+            })
+            .map(|guild| guild.id);
+        let url = guild
+            .and_then(|guild| {
+                self.stores
+                    .members
+                    .get(guild, author.id)
+                    .and_then(|member| member.avatar_url(guild))
+            })
+            .unwrap_or_else(|| match &author.avatar {
+                Some(hash) => super::cdn::user_avatar(author.id, hash, 128, false),
+                None => format!(
+                    "https://cdn.discordapp.com/embed/avatars/{}.png",
+                    author.default_avatar_index()
+                ),
+            });
+        self.show_with_icon(
+            Notice {
+                channel,
+                message: id,
+                title,
+                body,
+            },
+            url,
+            cx,
+        );
+    }
+
+    /// Shows `notice` once its icon is fetched and cut to a circle, or without one after `ICON_WAIT` or a failed fetch.
+    fn show_with_icon(&mut self, notice: Notice, url: String, cx: &mut Context<Self>) {
+        let key = format!("{ICON_PREFIX}{}", notice.message);
+        // One file per avatar: every notification of the same author reuses it.
+        let name = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            url.hash(&mut hasher);
+            format!("{:016x}.png", hasher.finish())
+        };
+        self.notify_icons.insert(key.clone(), (notice, name));
+        let _ = self.requests.send(crate::net::Request::Image {
+            key: key.clone(),
+            url,
         });
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ICON_WAIT).await;
+            let _ = this.update(cx, |this, _| {
+                if let Some((notice, _)) = this.notify_icons.remove(&key) {
+                    this.notification_runtime.show(notice);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The icon of a waiting notification arrived (`Some`) or failed (`None`).
+    pub(super) fn notification_icon(
+        &mut self,
+        key: &str,
+        bytes: Option<Vec<u8>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((notice, name)) = self.notify_icons.remove(key) else {
+            return;
+        };
+        let Some(bytes) = bytes else {
+            self.notification_runtime.show(notice);
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let icon = cx
+                .background_executor()
+                .spawn(async move { write_circle_icon(&bytes, &name) })
+                .await;
+            let _ = this.update(cx, |this, _| {
+                this.notification_runtime.show_with_icon(notice, icon);
+            });
+        })
+        .detach();
     }
 
     fn notification_sound(&mut self, sound: &'static str, cx: &mut Context<Self>) {
@@ -434,5 +544,15 @@ mod tests {
             "Sent a voice message"
         );
         assert_eq!(fallback_body(&json!({"content":"**hello**"})), "hello");
+    }
+
+    #[test]
+    fn the_icon_is_the_inscribed_circle_of_the_shorter_side() {
+        let wide = image::RgbaImage::from_pixel(40, 20, image::Rgba([10, 20, 30, 255]));
+        let icon = circle_icon(&wide);
+        assert_eq!(icon.dimensions(), (20, 20));
+        assert_eq!(icon.get_pixel(10, 10)[3], 255);
+        assert_eq!(icon.get_pixel(0, 0)[3], 0);
+        assert_eq!(icon.get_pixel(10, 10)[0], 10);
     }
 }

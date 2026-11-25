@@ -482,10 +482,21 @@ impl Editor {
         let at = self.index_for_window_point(position);
         let selection = self.buffer.selection();
         if selection.is_empty() || at < selection.start || at > selection.end {
+            // Blink selects a misspelling only when the pointer is on its glyphs: a click in the empty part of the
+            // field, past the end of a line, puts the caret there even when a misspelled word ends the line.
+            let hit = {
+                let laid = self.laid.borrow();
+                let local = position - laid.bounds.map_or(Point::default(), |bounds| bounds.origin);
+                move |range: &Range<usize>| {
+                    laid.selection_bounds(range.clone())
+                        .iter()
+                        .any(|bounds| bounds.contains(&local))
+                }
+            };
             let word = self
                 .spell_marks(false)
                 .into_iter()
-                .find(|range| range.start <= at && at <= range.end);
+                .find(|range| range.start <= at && at <= range.end && hit(range));
             match word {
                 Some(range) => {
                     self.buffer.set_caret(range.start);

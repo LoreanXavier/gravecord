@@ -217,6 +217,28 @@ impl Root {
             })
     }
 
+    /// Whether the sidebar lists the channel at all (module 808728): every non-category channel type (`JT` of
+    /// module 95701, voice included) is left out without View Channel, unless it is the selected one. A category
+    /// with channels shows only while one of them does; an empty one stays.
+    pub(super) fn sidebar_can_view(&self, guild: &Guild, channel: &Channel) -> bool {
+        if channel.kind == ChannelKind::Category {
+            let mut children = guild.channels.iter().filter(|child| {
+                child.kind != ChannelKind::Category && child.parent_id == Some(channel.id)
+            });
+            let mut any = false;
+            let visible = children.any(|child| {
+                any = true;
+                self.sidebar_can_view(guild, child)
+            });
+            return visible || !any;
+        }
+        let Some(me) = self.stores.me() else {
+            return true;
+        };
+        self.channel == Some(channel.id)
+            || permissions::can_in_channel(guild, channel, me, permissions::VIEW_CHANNEL)
+    }
+
     pub(super) fn followed_sidebar_row(&self, guild: &Guild, channel: &Channel) -> bool {
         let Some(settings) = self.stores.guild_settings.guilds.get(&guild.id) else {
             return true;

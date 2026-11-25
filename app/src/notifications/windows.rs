@@ -18,10 +18,11 @@ use windows::{
 fn show(
     notifier: &ToastNotifier,
     notice: Notice,
+    icon: Option<&std::path::Path>,
     updates: &UnboundedSender<Update>,
 ) -> windows::core::Result<ToastNotification> {
     let xml = XmlDocument::new()?;
-    xml.LoadXml(&HSTRING::from(toast_xml(&notice.title, &notice.body)))?;
+    xml.LoadXml(&HSTRING::from(toast_xml(&notice.title, &notice.body, icon)))?;
     let toast = ToastNotification::CreateToastNotification(&xml)?;
     toast.SetTag(&HSTRING::from(format!("{:x}", notice.message)))?;
     toast.SetGroup(&HSTRING::from(format!("{:x}", notice.channel)))?;
@@ -87,12 +88,12 @@ pub(super) fn run(
                         taskbar.flash(enabled);
                     }
                 }
-                Command::Show(notice) => {
+                Command::Show(notice, icon) => {
                     let Some(notifier) = &notifier else {
                         continue;
                     };
                     let channel = notice.channel;
-                    match show(notifier, notice, &updates) {
+                    match show(notifier, notice, icon.as_deref(), &updates) {
                         Ok(toast) => {
                             let queue = shown.entry(channel).or_default();
                             queue.push_back(toast);

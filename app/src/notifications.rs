@@ -111,7 +111,9 @@ pub struct Notice {
     pub body: String,
 }
 pub(super) enum Command {
-    Show(Notice),
+    /// The notice, and the author's avatar cut to a circle (module 119622 `isUserAvatar`) as a PNG file the toast
+    /// can read.
+    Show(Notice, Option<std::path::PathBuf>),
     Clear(Id),
     Window(usize),
     Badge(i64, crate::branding::IconSet),
@@ -222,12 +224,15 @@ impl Runtime {
         }
     }
     pub fn show(&self, notice: Notice) {
+        self.show_with_icon(notice, None);
+    }
+    pub fn show_with_icon(&self, notice: Notice, icon: Option<std::path::PathBuf>) {
         if self.capture {
             record("toast");
             return;
         }
         if let Some(sender) = &self.sender
-            && sender.try_send(Command::Show(notice)).is_err()
+            && sender.try_send(Command::Show(notice, icon)).is_err()
         {
             tracing::debug!("notification worker queue unavailable");
         }
@@ -355,7 +360,7 @@ pub fn set_switch(key: &str, on: bool, user: Option<Id>) -> bool {
     true
 }
 
-pub(super) fn toast_xml(title: &str, body: &str) -> String {
+pub(super) fn toast_xml(title: &str, body: &str, icon: Option<&std::path::Path>) -> String {
     fn escape(value: &str) -> String {
         if value.contains('\0') {
             return String::new();
@@ -370,8 +375,17 @@ pub(super) fn toast_xml(title: &str, body: &str) -> String {
             .replace('"', "&quot;")
             .replace('\'', "&apos;")
     }
+    // The notification's `icon` becomes the toast's app logo, as the desktop shell shows a web notification's icon.
+    let image = icon
+        .map(|path| {
+            format!(
+                "<image placement=\"appLogoOverride\" src=\"{}\"/>",
+                escape(&format!("file:///{}", path.display()).replace('\\', "/"))
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual><audio silent=\"true\"/></toast>",
+        "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text>{image}</binding></visual><audio silent=\"true\"/></toast>",
         escape(title),
         escape(body)
     )
@@ -411,12 +425,21 @@ mod tests {
     }
     #[test]
     fn toast_text_cannot_insert_xml_or_enable_system_audio() {
-        let xml = toast_xml("A & B", "</text><audio silent=\"false\"/>");
+        let xml = toast_xml("A & B", "</text><audio silent=\"false\"/>", None);
         assert!(xml.contains("A &amp; B"));
         assert!(xml.contains("&lt;/text&gt;"));
         assert_eq!(xml.matches("<audio").count(), 1);
         assert!(xml.contains("<audio silent=\"true\"/>"));
-        assert!(!toast_xml("private\0title", "body").contains("private"));
+        assert!(!toast_xml("private\0title", "body", None).contains("private"));
+    }
+    #[test]
+    fn an_icon_becomes_the_app_logo_with_its_path_escaped() {
+        let path = std::path::Path::new("C:/Temp/a&b/1.png");
+        let xml = toast_xml("t", "b", Some(path));
+        assert!(xml.contains(
+            "<image placement=\"appLogoOverride\" src=\"file:///C:/Temp/a&amp;b/1.png\"/>"
+        ));
+        assert!(!toast_xml("t", "b", None).contains("<image"));
     }
     #[test]
     fn local_switches_preserve_official_defaults_and_inversions() {

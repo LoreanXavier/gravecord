@@ -757,6 +757,8 @@ pub struct Root {
     notification_sounds: crate::notifications::SoundThrottle,
     rows: Vec<Row>,
     list: ListState,
+    /// Desktop notifications waiting for their icon (`notifications::ICON_PREFIX`), with the icon's file name.
+    notify_icons: std::collections::HashMap<String, (crate::notifications::Notice, String)>,
     composer: Entity<Editor>,
     /// The composer's `@`, `#` and `:` suggestions.
     autocomplete: autocomplete::State,
@@ -1566,6 +1568,7 @@ impl Root {
             notification_sounds: Default::default(),
             rows: Vec::new(),
             list: ListState::new(0, ListAlignment::Bottom, px(1000.)),
+            notify_icons: Default::default(),
             composer,
             autocomplete: autocomplete::State::default(),
             slash: slash::State::default(),
@@ -3523,6 +3526,12 @@ impl Root {
                     self.warm_gifs();
                 }
                 cx.notify();
+            }
+            Update::ImageFailed { key, .. } if key.starts_with(notifications::ICON_PREFIX) => {
+                self.notification_icon(&key, None, cx);
+            }
+            Update::Image { key, bytes } if key.starts_with(notifications::ICON_PREFIX) => {
+                self.notification_icon(&key, Some(bytes), cx);
             }
             Update::ImageFailed { key, failure } => {
                 if key.starts_with(profile_effects::ART_PREFIX) {
@@ -6839,6 +6848,7 @@ impl Root {
                 let mut rows = Vec::new();
                 for row in ordered
                     .into_iter()
+                    .filter(|row| self.sidebar_can_view(guild, row))
                     .filter(|row| self.followed_sidebar_row(guild, row))
                     .filter(|row| self.view_as_role_shows(guild, row))
                     // Selected channels and mentions precede mute/collapse filtering (791513.eA).
