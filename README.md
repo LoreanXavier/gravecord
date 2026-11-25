@@ -49,10 +49,12 @@ analytics service, so there is nothing of yours that we receive, keep or could s
     - content Discord shows from other sites, loaded as the official app loads it: Spotify players and cover art,
       Twitch and YouTube previews, GIF previews, and hCaptcha when Discord asks for a captcha
   - YouTube, Twitch and TikTok players load only when you press Play.
-  - **Other sites get nothing of your Discord identity.** Requests to any host that is not Discord's use a separate,
-    plain connection: a generic browser user agent and none of the Discord client's headers (no client information,
-    no system language or time zone, no Discord referer or origin), no cookies and no token. Such a site sees your IP
-    address and the address that was asked for.
+  - **Other sites get nothing of your Discord identity.** Requests gravecord makes to any host that is not Discord's
+    use a separate, plain connection: a generic browser user agent and none of the Discord client's headers (no
+    client information, no system language or time zone, no Discord referer), no cookies and no token. Such a site
+    sees your IP address and the address that was asked for. Two official headers remain, as in the official app:
+    video and Spotify players in a web view send the referer `https://discord.com/`, and the Spotify connection for
+    Listen Along sends the origin `https://discordapp.com` ([PRIVACY.md](PRIVACY.md)).
 - **What Discord receives:**
   - What it needs to work: your messages, actions and presence.
   - The same client-information header the official app sends: Windows version, system language, client version.

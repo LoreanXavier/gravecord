@@ -13,7 +13,8 @@ code of this repository. If you find something this page does not mention, pleas
   Discord.
 - **Other sites get none of your Discord identity.** The requests gravecord makes to hosts that are not Discord's
   carry no token, no client information, no language or time zone and no Discord referer. They see your IP address
-  and what was asked for. The one Spotify connection that keeps Discord's origin is listed below.
+  and what was asked for. The Spotify connection that keeps Discord's origin, and the web view players that send
+  Discord's referer, are listed below.
 - **Plugins are opt-in.** Every built-in plugin but one is off by default, and that one talks only to Discord.
   The few plugins that use other services are listed below with what they send.
 
@@ -52,7 +53,11 @@ code of this repository. If you find something this page does not mention, pleas
 - Like any download, they show your IP address to the site, and the site sees the address that was asked for.
 - One exception keeps an official header: the Spotify connection for playback state and Listen Along (`dealer.spotify.com`)
   sends the origin `https://discordapp.com`, as the official app's connection does. It sends the plain user agent.
-- Requests to Discord itself are unchanged: they carry the same headers as the official app's.
+- Requests to Discord itself are unchanged: they carry the same headers as the official app's. If Discord answers
+  one with a redirect to a site that is not Discord's, gravecord does not follow it, so those headers never reach
+  another site that way.
+- Pages in a web view are not covered by this: the Spotify, YouTube, Twitch and TikTok players load with the referer
+  `https://discord.com/`, as the official app's players do, because the providers refuse players without one.
 
 **Links you click** open in your browser, and gravecord sends nothing itself. That includes the Report a Bug page,
 which opens GitHub's issue form.
