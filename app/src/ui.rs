@@ -13676,8 +13676,9 @@ impl Render for Root {
                     this.close_role_popout(cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.profile.is_some() {
-                    this.profile = None;
-                    cx.notify();
+                    // Every popout of the chain closes: a profile opened from a role mention's list takes the
+                    // list with it (`keyboard::layers::is_popout`).
+                    this.close_popout_chain(keyboard::Layer::Profile, cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.settings.is_some() {
                     this.settings_escape(cx);

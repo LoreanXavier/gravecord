@@ -3,7 +3,8 @@
 //! Official rule: every popout, select list, picker and menu is a layer with `onRequestClose` (the layer stack of
 //! module 82038, the popout layer `ZP` in module 549587, the menus of module 165862). A mouse press anywhere outside
 //! the top layer closes that layer only; the press is not delivered to what is under it. Escape closes the same top
-//! layer. Modal dialogs close on a press on their backdrop (`ModalRoot` `onClose`), which `modal::modal` already does
+//! layer. The popouts of `is_popout` follow the official `Popout` instead: the press goes on, and a popout opened from
+//! a row of another popout is its child (see `is_popout`). Modal dialogs close on a press on their backdrop (`ModalRoot` `onClose`), which `modal::modal` already does
 //! for every dialog built with it.
 //!
 //! `Root::open_layers` lists what is open from bottom to top, `Root::close_layer` closes one the way Escape does, and
@@ -11,7 +12,10 @@
 
 use super::super::Root;
 use super::super::settings::Choice;
-use gpui::{Context, InteractiveElement, IntoElement as _, MouseDownEvent, Styled as _};
+use gpui::{
+    Bounds, Context, InteractiveElement, IntoElement as _, MouseDownEvent, Pixels, Point,
+    Styled as _,
+};
 
 /// How a layer answers a press outside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,7 +25,7 @@ pub(in crate::ui) enum Kind {
 }
 
 /// Every popover-like layer, in the order they stack (later is above).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::ui) enum Layer {
     PlusMenu,
     Picker,
@@ -165,6 +169,107 @@ const ESCAPE_HERE: &[Layer] = &[
     Layer::FolderMenu,
     Layer::AudioMenu,
 ];
+
+/// The layers built on the official `Popout` (module 453903) without `clickTrap`: the role member list of a role
+/// mention (module 593284) and the user popout (module 342296). Menus (module 318009, `blockPointerEvents`) and the
+/// other popovers keep the trapping rule above.
+///
+/// A `Popout` listens for presses on the whole document and closes on one that is not inside its own trigger, where
+/// "inside" follows the chain of layers (module 623646 `H`): a press inside a popout opened from a row of another
+/// popout is inside both. It never stops the press, so a press outside closes the popout and still reaches what is
+/// under it, and a press on its own trigger toggles it closed (`handleClick`). Escape closes every open popout at once
+/// (`POPOUT_CLOSE` through module 390435, and a child unmounts with the row it was opened from).
+pub(in crate::ui) fn is_popout(layer: Layer) -> bool {
+    matches!(layer, Layer::RolePopout | Layer::Profile)
+}
+
+/// Which popout each open popout was opened from, and where the popout cards were last drawn.
+#[derive(Default)]
+pub(in crate::ui) struct Links {
+    parents: std::collections::HashMap<Layer, Layer>,
+    cards: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<Layer, Bounds<Pixels>>>>,
+}
+
+impl Links {
+    pub(in crate::ui) fn parent(&self, child: Layer) -> Option<Layer> {
+        self.parents.get(&child).copied()
+    }
+
+    /// `child` just opened while `open` (bottom to top, `child` among them) was on screen: it belongs to the popout
+    /// it was opened from, which is the top layer under it when that is a popout (a press anywhere else would have
+    /// closed that popout first).
+    fn adopt(&mut self, child: Layer, open: &[Layer]) {
+        let under = open.iter().rev().find(|layer| **layer != child).copied();
+        match under {
+            Some(parent) if is_popout(parent) && is_popout(child) => {
+                self.parents.insert(child, parent);
+            }
+            _ => {
+                self.parents.remove(&child);
+            }
+        }
+    }
+
+    /// The popouts opened from `layer`, and from them, in the order they must close.
+    fn descendants(&self, layer: Layer) -> Vec<Layer> {
+        let mut out = Vec::new();
+        let mut frontier = vec![layer];
+        while let Some(parent) = frontier.pop() {
+            for (child, of) in &self.parents {
+                if *of == parent && !out.contains(child) {
+                    out.push(*child);
+                    frontier.push(*child);
+                }
+            }
+        }
+        out
+    }
+
+    fn forget(&mut self, layer: Layer) {
+        self.parents.remove(&layer);
+        self.cards.borrow_mut().remove(&layer);
+    }
+
+    fn card(&self, layer: Layer) -> Option<Bounds<Pixels>> {
+        self.cards.borrow().get(&layer).copied()
+    }
+}
+
+/// What a press outside the top layer did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ui) enum Outside {
+    /// Nothing: the layer is not the top one, or another layer already answered this press.
+    Ignored,
+    /// The layer closed and the press stops here.
+    Trapped,
+    /// The layer closed (with the popouts it was opened from that the press was outside of) and the press goes on.
+    Delivered,
+}
+
+/// Where a press lands for a popout chain, from the top popout down: `Trapped` on the top popout's own trigger
+/// (`handleClick` toggles it closed), otherwise the popouts the press is outside of close from the top until one
+/// holds the press, and the press goes on (`Delivered`). `inside(layer)` tells whether the press is inside that
+/// popout's card; `on_trigger` whether it is on the top popout's trigger. Returns the layers to close.
+fn chain_press(
+    top: Layer,
+    parent: impl Fn(Layer) -> Option<Layer>,
+    inside: impl Fn(Layer) -> bool,
+    on_trigger: bool,
+) -> (Vec<Layer>, Outside) {
+    let mut close = vec![top];
+    if on_trigger {
+        return (close, Outside::Trapped);
+    }
+    let mut at = top;
+    while let Some(up) = parent(at) {
+        if inside(up) {
+            break;
+        }
+        close.push(up);
+        at = up;
+    }
+    (close, Outside::Delivered)
+}
 
 /// A submenu is a layer only while the menu it hangs off is open.
 fn submenu_is_open(submenu: bool, menu: bool) -> bool {
@@ -311,7 +416,115 @@ impl Root {
             Layer::ComponentSelect => self.close_component_select(cx),
             Layer::InteractionSelect => self.close_interaction_selects(),
         }
+        self.drop_popout_links(layer);
         cx.notify();
+    }
+
+    /// A popout went away: the popouts opened from it go with it (their trigger was a row of it), and its links are
+    /// forgotten. Safe to call for any layer.
+    pub(in crate::ui) fn drop_popout_links(&mut self, layer: Layer) {
+        if !is_popout(layer) {
+            return;
+        }
+        for child in self.keys.links.descendants(layer) {
+            match child {
+                Layer::Profile => self.profile = None,
+                Layer::RolePopout => self.role_popout = None,
+                _ => {}
+            }
+            self.keys.links.forget(child);
+        }
+        self.keys.links.forget(layer);
+    }
+
+    /// A popout just opened: it remembers the popout it was opened from, if any (call after setting its state).
+    pub(in crate::ui) fn link_popout(&mut self, layer: Layer) {
+        let open = self.open_layers();
+        self.keys.links.adopt(layer, &open);
+    }
+
+    /// The popout `layer` was opened from.
+    pub(in crate::ui) fn popout_parent(&self, layer: Layer) -> Option<Layer> {
+        self.keys.links.parent(layer)
+    }
+
+    /// Escape on a popout: every popout of its chain closes (`POPOUT_CLOSE` reaches them all, and a child unmounts
+    /// with its parent).
+    pub(in crate::ui) fn close_popout_chain(&mut self, layer: Layer, cx: &mut Context<Self>) {
+        let mut root = layer;
+        while let Some(up) = self.keys.links.parent(root) {
+            root = up;
+        }
+        self.close_layer(root, cx);
+        if self.layer_open(layer) {
+            self.close_layer(layer, cx);
+        }
+    }
+
+    /// The trigger a popout was opened from, in window coordinates.
+    fn popout_trigger(&self, layer: Layer) -> Option<Bounds<Pixels>> {
+        match layer {
+            Layer::Profile => self.profile.as_ref().map(|popout| popout.anchor),
+            Layer::RolePopout => self.role_popout_anchor(),
+            _ => None,
+        }
+    }
+
+    /// A probe for a popout card: it records where the card was drawn, so a press can be told inside or outside it.
+    pub(in crate::ui) fn popout_card_probe(&self, layer: Layer) -> gpui::AnyElement {
+        let cards = self.keys.links.cards.clone();
+        gpui::canvas(
+            move |bounds, _, _| {
+                cards.borrow_mut().insert(layer, bounds);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .into_any_element()
+    }
+
+    /// A press at `position` outside `layer`'s card. Popouts follow the official chain rule (`is_popout`); every
+    /// other layer closes when it is the top one and traps the press.
+    pub(in crate::ui) fn press_outside_at(
+        &mut self,
+        layer: Layer,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Outside {
+        if !is_popout(layer) {
+            return if self.press_outside(layer, cx) {
+                Outside::Trapped
+            } else {
+                Outside::Ignored
+            };
+        }
+        if self.keys.outside_closed_this_press || !is_top(&self.open_layers(), layer) {
+            return Outside::Ignored;
+        }
+        self.keys.outside_closed_this_press = true;
+        let on_trigger = self
+            .popout_trigger(layer)
+            .is_some_and(|trigger| trigger.contains(&position));
+        let links = &self.keys.links;
+        let (close, outcome) = chain_press(
+            layer,
+            |child| links.parent(child),
+            |card| {
+                links
+                    .card(card)
+                    .is_some_and(|bounds| bounds.contains(&position))
+            },
+            on_trigger,
+        );
+        for each in close {
+            if self.layer_open(each) {
+                self.close_layer(each, cx);
+            }
+        }
+        outcome
     }
 
     /// A settings select's list is open: its choice key ends in `/open` (the add-game popout's own key is a layer of
@@ -517,7 +730,9 @@ pub(in crate::ui) fn outside<E: InteractiveElement>(
     cx: &mut Context<Root>,
 ) -> E {
     element.on_mouse_down_out(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-        if this.press_outside(layer, cx) && event.button != gpui::MouseButton::Right {
+        if this.press_outside_at(layer, event.position, cx) == Outside::Trapped
+            && event.button != gpui::MouseButton::Right
+        {
             cx.stop_propagation();
         }
     }))
@@ -560,6 +775,45 @@ mod tests {
     #[test]
     fn escape_here_is_a_subset_of_the_layers() {
         assert!(ESCAPE_HERE.iter().all(|layer| ALL.contains(layer)));
+    }
+
+    #[test]
+    fn a_popout_opened_from_a_popout_row_is_its_child_and_goes_with_it() {
+        let mut links = Links::default();
+        links.adopt(Layer::Profile, &[Layer::RolePopout, Layer::Profile]);
+        assert_eq!(links.parent(Layer::Profile), Some(Layer::RolePopout));
+        assert_eq!(links.descendants(Layer::RolePopout), vec![Layer::Profile]);
+        // Opened from the page (nothing under it), or over a menu, it has no parent.
+        links.adopt(Layer::Profile, &[Layer::Profile]);
+        assert_eq!(links.parent(Layer::Profile), None);
+        links.adopt(Layer::Profile, &[Layer::Menu, Layer::Profile]);
+        assert_eq!(links.parent(Layer::Profile), None);
+        assert!(links.descendants(Layer::RolePopout).is_empty());
+    }
+
+    #[test]
+    fn a_press_closes_the_popouts_it_is_outside_of_and_goes_on() {
+        let parent = |layer: Layer| (layer == Layer::Profile).then_some(Layer::RolePopout);
+        // Inside the member list, outside the profile opened from it: the profile closes, the press reaches the row.
+        assert_eq!(
+            chain_press(Layer::Profile, parent, |l| l == Layer::RolePopout, false),
+            (vec![Layer::Profile], Outside::Delivered)
+        );
+        // Outside both: both close, and the press still reaches the page.
+        assert_eq!(
+            chain_press(Layer::Profile, parent, |_| false, false),
+            (vec![Layer::Profile, Layer::RolePopout], Outside::Delivered)
+        );
+        // On the row that opened the profile: it toggles closed and the row does not open it again.
+        assert_eq!(
+            chain_press(Layer::Profile, parent, |l| l == Layer::RolePopout, true),
+            (vec![Layer::Profile], Outside::Trapped)
+        );
+        // A popout on its own.
+        assert_eq!(
+            chain_press(Layer::RolePopout, |_| None, |_| false, false),
+            (vec![Layer::RolePopout], Outside::Delivered)
+        );
     }
 
     #[test]

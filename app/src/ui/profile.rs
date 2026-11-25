@@ -19,6 +19,9 @@ pub(crate) struct Popout {
     pub left: bool,
     /// "Message @name" on someone else's popout.
     pub message: Option<super::profile_other::PopoutMessage>,
+    /// The space between the trigger and a popout opened to its right: `Popout`'s default 8, or the 14 a row of a
+    /// role mention's member list asks for (module 593284 `P`).
+    pub gap: f32,
 }
 
 pub(super) fn profile_key(user: Id) -> String {
@@ -170,7 +173,15 @@ impl Root {
             anchor,
             left,
             message,
+            gap: 8.,
         });
+        self.link_popout(super::keyboard::Layer::Profile);
+        if self.popout_parent(super::keyboard::Layer::Profile)
+            == Some(super::keyboard::Layer::RolePopout)
+            && let Some(popout) = self.profile.as_mut()
+        {
+            popout.gap = 14.;
+        }
         self.request_profile_images(user);
         self.prefetch_known_wishlist(user);
         cx.notify();
@@ -591,8 +602,12 @@ impl Root {
             // at 1024, card 708 to 1008; popouts/pt-member-game the same).
             point(popout.anchor.left() - px(316.), popout.anchor.top())
         } else {
-            point(popout.anchor.right() + px(8.), popout.anchor.top() - px(1.))
+            point(
+                popout.anchor.right() + px(popout.gap),
+                popout.anchor.top() - px(1.),
+            )
         };
+        let card = card.child(self.popout_card_probe(super::keyboard::Layer::Profile));
         let card = super::keyboard::outside(card, super::keyboard::Layer::Profile, cx);
         Some(
             deferred(

@@ -266,6 +266,9 @@ pub(in crate::ui) struct State {
     pub(in crate::ui) keyboard_modality: bool,
     /// One top popover layer already closed on the current mouse press (`capture_any_mouse_down` resets it).
     pub(in crate::ui) outside_closed_this_press: bool,
+    /// Which popout each open popout was opened from, and where the cards of the popouts that can parent another
+    /// were last drawn (`layers::Links`).
+    pub(in crate::ui) links: super::layers::Links,
     /// The server before the current one, for `TOGGLE_PREVIOUS_GUILD`.
     pub(super) previous_guild: Option<Id>,
     pub(super) current_guild: Option<Id>,

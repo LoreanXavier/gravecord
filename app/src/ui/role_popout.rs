@@ -143,14 +143,22 @@ impl Root {
             role,
             anchor,
         });
+        self.link_popout(super::keyboard::Layer::RolePopout);
         self.request_role_popout_images();
         cx.notify();
     }
 
     pub(super) fn close_role_popout(&mut self, cx: &mut Context<Self>) {
         if self.role_popout.take().is_some() {
+            // The profile opened from one of its rows goes with it.
+            self.drop_popout_links(super::keyboard::Layer::RolePopout);
             cx.notify();
         }
+    }
+
+    /// The mention the open list was opened from.
+    pub(super) fn role_popout_anchor(&self) -> Option<Bounds<Pixels>> {
+        self.role_popout.as_ref().map(|open| open.anchor)
     }
 
     /// The member ids arrived: the ones the store lacks are asked of the gateway, as `requestMembersById` does.
@@ -210,15 +218,29 @@ impl Root {
             .guild(guild)
             .and_then(|guild| guild.role_color(&member.roles))
             .map_or_else(|| color("--channels-default"), gpui::rgb);
+        // `selected: isShown` (module 593284 `P`): the row whose profile is open keeps
+        // `--interactive-background-selected` (`.selected_J1Adu_ .childContainer_J1Adu_`, stylesheet of module 996205).
+        let selected = self
+            .profile
+            .as_ref()
+            .is_some_and(|popout| popout.user == user.id)
+            && self.popout_parent(super::keyboard::Layer::Profile)
+                == Some(super::keyboard::Layer::RolePopout);
         let item = div()
             .h(px(ROW - 2.))
+            .when(selected, |row| {
+                row.bg(color("--interactive-background-selected"))
+            })
             .w(px(WIDTH - 2. - 16.))
             .pl(px(8.))
             .pr(px(8.))
             .rounded(px(8.))
             .flex()
             .items_center()
-            .hover(|style| style.bg(color("--interactive-background-hover")))
+            // `clickable_J1Adu_` (and its hover) only while not selected.
+            .when(!selected, |row| {
+                row.hover(|style| style.bg(color("--interactive-background-hover")))
+            })
             .child(self.member_avatar(user, status, false, false, cx))
             .child(
                 div()
@@ -364,7 +386,8 @@ impl Root {
                             .id("role-popout-card")
                             .occlude()
                             .popout("role-popout", PopKind::Translate, side)
-                            .child(popout),
+                            .child(popout)
+                            .child(self.popout_card_probe(super::keyboard::Layer::RolePopout)),
                         super::keyboard::Layer::RolePopout,
                         cx,
                     )),

@@ -829,8 +829,9 @@ impl Root {
         let at: Point<Pixels> = if popout.left {
             point(popout.anchor.left() - px(320.), popout.anchor.top())
         } else {
-            point(popout.anchor.right() + px(8.), popout.anchor.top())
+            point(popout.anchor.right() + px(popout.gap), popout.anchor.top())
         };
+        let card = card.child(self.popout_card_probe(super::keyboard::Layer::Profile));
         let card = super::keyboard::outside(card, super::keyboard::Layer::Profile, cx);
         Some(
             deferred(
