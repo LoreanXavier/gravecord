@@ -605,12 +605,10 @@ fn run(
                 });
             }
             if active_loopback && let Some(send) = call_loopback.as_deref_mut() {
-                let loopback_frame = if gate_open {
-                    crate::to_stereo(&frame)
-                } else {
-                    [0.0; 1920]
-                };
-                let _ = send.push(loopback_frame);
+                // Mic Test plays what the processors made of the microphone, whatever voice activity or push to talk
+                // would send: the official engine's loopback (`setLoopback`, module 31595) takes the processing
+                // options only, and the input mode belongs to the call's connection (`setInputMode`).
+                let _ = send.push(crate::to_stereo(&frame));
             }
         }
         if now >= tally_at {
@@ -1208,16 +1206,14 @@ pub fn preview(loopback: bool) -> Result<Preview, &'static str> {
         .spawn(move || {
             while !forward_stop.load(Ordering::Acquire) {
                 match capture.recv_timeout(Duration::from_millis(100)) {
-                    Ok(captured) if forward_loopback.load(Ordering::Acquire) => {
-                        // Silence while the gate is closed keeps the playback ring primed across pauses.
-                        let frame = if captured.open {
-                            captured.frame
-                        } else {
-                            [0.0; 960]
-                        };
-                        let _ = playback.try_send(crate::to_stereo(&frame));
+                    Ok(captured) => {
+                        if let Some(frame) =
+                            mic_test_playback(&captured, forward_loopback.load(Ordering::Acquire))
+                        {
+                            let _ = playback.try_send(frame);
+                        }
                     }
-                    Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
@@ -1230,8 +1226,15 @@ pub fn preview(loopback: bool) -> Result<Preview, &'static str> {
     })
 }
 
+/// What Mic Test plays of one microphone frame: every processed frame while it runs, the gate's verdict aside. Outside
+/// a call there is no connection and so no input mode, and the official loopback is not gated by one (`setLoopback`
+/// of module 31595 takes the processing options only; `setInputMode` belongs to the connection).
+fn mic_test_playback(captured: &Captured, testing: bool) -> Option<Stereo> {
+    testing.then(|| crate::to_stereo(&captured.frame))
+}
+
 impl Preview {
-    /// Mic Test: hear what would be sent (`setLoopback("mic_test", …)`).
+    /// Mic Test: hear the processed microphone (`setLoopback("mic_test", …)`).
     pub fn set_loopback(&self, on: bool) {
         self.loopback.store(on, Ordering::Release);
     }
@@ -1346,6 +1349,26 @@ mod tests {
                 RING - ring.slots()
             );
         }
+    }
+
+    #[test]
+    fn mic_test_plays_the_processed_microphone_whether_or_not_the_gate_is_open() {
+        let voice = Captured {
+            frame: [0.25; 960],
+            open: true,
+        };
+        let below_threshold = Captured {
+            frame: [0.05; 960],
+            open: false,
+        };
+        // Push to talk not held, or under the sensitivity: still heard while testing.
+        assert_eq!(
+            mic_test_playback(&below_threshold, true),
+            Some([0.05; 1920])
+        );
+        assert_eq!(mic_test_playback(&voice, true), Some([0.25; 1920]));
+        // Not testing: nothing plays.
+        assert_eq!(mic_test_playback(&voice, false), None);
     }
 
     #[test]
