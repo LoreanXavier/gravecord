@@ -972,6 +972,11 @@ impl Editor {
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // A release outside the field never reaches `on_mouse_up`: a move with the button up ends the drag, so the
+        // selection stays where the button was let go, as Blink's does.
+        if self.dragging && event.pressed_button != Some(MouseButton::Left) {
+            self.dragging = false;
+        }
         if self.dragging {
             let at = self.index_for_window_point(event.position);
             self.buffer.select_to(at);
