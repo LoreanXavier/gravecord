@@ -1,7 +1,9 @@
 //! Profile frames (collectible type 3): the frame a profile carries comes from its `collectibles` (module 851767,
 //! the server profile's own first when that server is in view: `t?.profileFrame ?? e.profileFrame` of module 527212),
 //! its layers from the frame item of `GET /collectibles-products/<sku>` (module 892118 reads `inner_width` and the
-//! three overflows). Module 744808 draws them in `profileFrameContainer_v8co33` over the whole profile card:
+//! three overflows). Module 744808 draws them in `profileFrameContainer_v8co33`, an absolute box the size of the
+//! profile card it is the last child of (`outer_P1YEjQ` of the popout and the DM sidebar, `main.profile_s3DB6Y` of the
+//! modal, never the whole modal):
 //!
 //! * the frame box (`profileFrame_v8co33`) is the card's height and its width plus the scaled horizontal overflow on
 //!   each side, the scale being the card's width over `inner_width` (`--custom-profile-frame-layer-scale`);
@@ -9,7 +11,13 @@
 //! * a `rail` is a picture the box's height with the picture's width the box's (`background-size: 100% auto`) placed
 //!   at the top, centre or bottom, and left out when `responsive` and the card is wider than 300:480;
 //! * a `border` is the picture repeated down the box (`ceil(height / picture height) + 1` copies);
-//! * `front` layers sit over the card's content, `back` ones under it.
+//! * `front` layers sit over the card's content (`z-index: 4`), `back` ones under the card itself (`z-index: -1`
+//!   in a card that makes no stacking context), so the card's background hides them;
+//! * the card makes room for what hangs out of it (`.custom-profile-frame` margins of the scaled overflows): all
+//!   around in the DM sidebar (`themeContainer_S_xUx6`, scale 304 over `inner_width`, none in a window 510px tall or
+//!   shorter), below only in the popout (`themeContainer_NOlkhE`, scale 300, 304 when themed), none in the modal,
+//!   whose card also drops its bottom staples (`u5` of module 927071);
+//! * a framed popout or sidebar card loses its `--shadow-border` ring (`box-shadow: unset`).
 //!
 //! The modal hides frames below a 785px tall window, the popout below 480px and the DM sidebar below 510px
 //! (`@media (max-height)` rules of the same stylesheet).
@@ -165,6 +173,65 @@ impl Frame {
         let side = self.overflow_horizontal * self.scale(width);
         (-side, width + 2. * side)
     }
+
+    /// The room a framed card keeps around itself on `surface` (top, each side, bottom): the `.custom-profile-frame`
+    /// margins of `themeContainer_S_xUx6` (sidebar) and `themeContainer_NOlkhE` (popout), the overflows scaled by
+    /// `--custom-profile-frame-layer-scale`. `themed` is `custom-user-profile-theme` (the popout scales by 304 then).
+    pub(super) fn margins(&self, surface: FrameSurface, themed: bool) -> FrameMargins {
+        let scale = |width: f32| self.scale(width);
+        match surface {
+            FrameSurface::Sidebar => {
+                let s = scale(304.);
+                FrameMargins {
+                    top: self.overflow_top * s,
+                    side: self.overflow_horizontal * s,
+                    bottom: self.overflow_bottom * s,
+                }
+            }
+            FrameSurface::Popout => FrameMargins {
+                bottom: self.overflow_bottom * scale(popout_scale_width(themed)),
+                ..FrameMargins::default()
+            },
+            FrameSurface::Modal => FrameMargins::default(),
+        }
+    }
+}
+
+/// The width `themeContainer_NOlkhE` scales a popout frame's overflows by: 300, 304 on a themed profile.
+fn popout_scale_width(themed: bool) -> f32 {
+    if themed { 304. } else { 300. }
+}
+
+impl Frame {
+    /// What a framed popout gives up of its `max-height: calc(100vh - 20px)`: its scaled top and bottom overflows.
+    pub(super) fn popout_height_cut(&self, themed: bool) -> f32 {
+        (self.overflow_top + self.overflow_bottom) * self.scale(popout_scale_width(themed))
+    }
+}
+
+/// `--custom-profile-frame-drop-shadow-opacity` of the client theme (`629972.css`): the black of a framed popout's
+/// `20px 20px 30px` shadow.
+pub(super) fn drop_shadow_opacity(theme: dc_tokens::Theme) -> f32 {
+    match theme {
+        dc_tokens::Theme::Light => 0.13,
+        dc_tokens::Theme::Dark => 0.2,
+        dc_tokens::Theme::Darker => 0.4,
+        dc_tokens::Theme::Midnight => 0.6,
+    }
+}
+
+/// The margins of a framed card ([`Frame::margins`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct FrameMargins {
+    pub top: f32,
+    pub side: f32,
+    pub bottom: f32,
+}
+
+/// The layers `surface` draws: the modal's card leaves out bottom staples (`filterLayer: u5` of module 927071).
+pub(super) fn layer_drawn(surface: FrameSurface, layer: &Layer) -> bool {
+    surface != FrameSurface::Modal
+        || !(layer.kind == LayerKind::Staple && layer.anchor == Anchor::Bottom)
 }
 
 /// The copies of a border picture (`natural` width x height) down a `width` x `height` box (module 744808).
@@ -235,6 +302,23 @@ impl Root {
         }
     }
 
+    /// The margins `user`'s card keeps on `surface` while its frame is drawn ([`Frame::margins`]); none without one,
+    /// while it loads, or in a window too short for `surface` (the sidebar's `@media (max-height: 510px)` sets them
+    /// back to 0 with the frame).
+    pub(super) fn profile_frame_margins(
+        &self,
+        user: Id,
+        surface: FrameSurface,
+        themed: bool,
+        window_height: f32,
+    ) -> Option<FrameMargins> {
+        if !frame_shown(surface, window_height) {
+            return None;
+        }
+        let frame = self.profile_frame(user)?;
+        Some(frame.margins(surface, themed))
+    }
+
     /// A frame product arrived: keep it and ask for its layers.
     pub(super) fn profile_frame_fetched(
         &mut self,
@@ -249,8 +333,9 @@ impl Root {
         cx.notify();
     }
 
-    /// The layers of `user`'s frame over a card `width` wide (and `height` tall when known): the ones under its
-    /// content and the ones over it, each an absolute box to be a child of the card (`relative`). Nothing while the
+    /// The layers of `user`'s frame over a card `width` wide (and `height` tall when known): the ones under the card
+    /// and the ones over it, each an absolute box for a `relative` box exactly the card's (the back ones before the
+    /// card, so its background covers them; the front ones after it), outside any clipping. Nothing while the
     /// product or a picture is still loading, and nothing in a window too short for `surface`.
     pub(super) fn profile_frame_layers(
         &self,
@@ -270,7 +355,9 @@ impl Root {
         let scale = frame.scale(width);
         let (left, box_width) = frame.frame_box(width);
         for layer in &frame.layers {
-            if height.is_some_and(|height| rail_hidden(layer, width, height)) {
+            if !layer_drawn(surface, layer)
+                || height.is_some_and(|height| rail_hidden(layer, width, height))
+            {
                 continue;
             }
             let Some(picture) = self.images.get(&layer_key(&frame.sku, &layer.id)).cloned() else {
@@ -396,6 +483,55 @@ mod tests {
         assert!(rail_hidden(rail, 600., 700.));
         assert!(!rail_hidden(rail, 300., 600.));
         assert!(!rail_hidden(&frame.layers[0], 600., 700.));
+    }
+
+    #[test]
+    fn the_card_keeps_room_for_its_frame_per_surface() {
+        let frame = parse_frame(&product()).unwrap();
+        // Sidebar: 304 over 1200 on every side (304, 56 and 148 of the fixture).
+        let sidebar = frame.margins(FrameSurface::Sidebar, false);
+        let s = 304. / 1200.;
+        assert_eq!(
+            sidebar,
+            FrameMargins {
+                top: 304. * s,
+                side: 56. * s,
+                bottom: 148. * s
+            }
+        );
+        // Popout: below only, 300 unthemed and 304 themed.
+        let popout = frame.margins(FrameSurface::Popout, false);
+        assert_eq!((popout.top, popout.side), (0., 0.));
+        assert_eq!(popout.bottom, 148. * 300. / 1200.);
+        assert_eq!(frame.margins(FrameSurface::Popout, true).bottom, 148. * s);
+        assert_eq!(
+            frame.margins(FrameSurface::Modal, true),
+            FrameMargins::default()
+        );
+        // `max-height: calc(100vh - 20px - top - bottom)` of a framed popout.
+        assert_eq!(frame.popout_height_cut(false), (304. + 148.) * 0.25);
+        assert_eq!(drop_shadow_opacity(dc_tokens::Theme::Darker), 0.4);
+    }
+
+    #[test]
+    fn the_modal_card_drops_bottom_staples_only() {
+        let staple = |anchor| Layer {
+            id: "s".into(),
+            kind: LayerKind::Staple,
+            front: true,
+            anchor,
+            responsive: false,
+        };
+        assert!(!layer_drawn(FrameSurface::Modal, &staple(Anchor::Bottom)));
+        assert!(layer_drawn(FrameSurface::Modal, &staple(Anchor::Top)));
+        assert!(layer_drawn(FrameSurface::Sidebar, &staple(Anchor::Bottom)));
+        assert!(layer_drawn(FrameSurface::Popout, &staple(Anchor::Bottom)));
+        let border = Layer {
+            kind: LayerKind::Border,
+            anchor: Anchor::Bottom,
+            ..staple(Anchor::Bottom)
+        };
+        assert!(layer_drawn(FrameSurface::Modal, &border));
     }
 
     #[test]

@@ -1708,7 +1708,8 @@ impl Root {
         }
         if self.sidebar_redesign() {
             if self.fetched.contains_key(&format!("profile:{}", user.id)) {
-                320.
+                // `aside_HbUF2J` is as wide as its card: 8px around it, and a framed card's side margins.
+                320. + 2. * self.sidebar_frame_margins(user.id, self.viewport.1).side
             } else {
                 0.
             }
@@ -2081,13 +2082,23 @@ impl Root {
             .map_or(super::theme() == dc_tokens::Theme::Light, |theme| {
                 theme.light()
             });
-        // The frame of module 744808 over the redesigned sidebar card, in windows taller than 510px.
+        // The frame of module 744808 around the redesigned sidebar card (the last child of `outer_P1YEjQ`, which
+        // keeps the scaled overflows as margins and drops its ring), in windows taller than 510px.
+        let window_height = f32::from(window.viewport_size().height);
+        let frame_margins = self.profile_frame_margins(
+            user_id,
+            super::profile_frames::FrameSurface::Sidebar,
+            false,
+            window_height,
+        );
+        let framed = frame_margins.is_some();
+        let margins = frame_margins.unwrap_or_default();
         let (frame_back, frame_front) = self.profile_frame_layers(
             user_id,
             304.,
             None,
             super::profile_frames::FrameSurface::Sidebar,
-            f32::from(window.viewport_size().height),
+            window_height,
         );
         let card = div()
             .id("dm-profile-card")
@@ -2097,20 +2108,22 @@ impl Root {
             }))
             .relative()
             .w(px(304.))
-            .max_h_full()
+            .flex_1()
+            .min_h(px(0.))
             .flex()
             .flex_col()
             .p(px(2.))
             .rounded(px(8.))
-            .children(frame_back)
-            // `box-shadow: var(--shadow-border)`: a 1px ring outside the card.
-            .shadow(vec![gpui::BoxShadow {
-                color: hsla(0., 0., if light_ring { 0. } else { 1. }, 0.08),
-                offset: gpui::point(px(0.), px(0.)),
-                blur_radius: px(0.),
-                spread_radius: px(1.),
-                inset: false,
-            }])
+            // `box-shadow: var(--shadow-border)`: a 1px ring outside the card, `unset` on a framed one.
+            .when(!framed, |card| {
+                card.shadow(vec![gpui::BoxShadow {
+                    color: hsla(0., 0., if light_ring { 0. } else { 1. }, 0.08),
+                    offset: gpui::point(px(0.), px(0.)),
+                    blur_radius: px(0.),
+                    spread_radius: px(1.),
+                    inset: false,
+                }])
+            })
             // `linear-gradient(primary 105px, secondary calc(100% - 72px))`.
             .bg(linear_gradient(
                 180.,
@@ -2131,19 +2144,46 @@ impl Root {
                     .children(footer)
                     .children(effect)
                     .child(banner_buttons),
-            )
+            );
+        // The card's own box (the frame's containing block), stretched down the aside less its margins; the back
+        // layers paint before the card and the front ones after, and none is clipped.
+        let framed_card = div()
+            .relative()
+            .w(px(304.))
+            .mt(px(margins.top))
+            .mb(px(margins.bottom))
+            .mx(px(margins.side))
+            .flex()
+            .flex_col()
+            .children(frame_back)
+            .child(card)
             .children(frame_front);
         div()
             .parity("dm-profile")
             .flex_none()
-            .w(px(320.))
+            .w(px(320. + 2. * margins.side))
             .h_full()
             .p(px(8.))
             .bg(color("--background-base-lower"))
             .flex()
             .justify_center()
-            .child(card)
+            .child(framed_card)
             .into_any_element()
+    }
+
+    /// The margins of the redesigned sidebar's card for `user`'s frame (zero without one).
+    fn sidebar_frame_margins(
+        &self,
+        user: Id,
+        window_height: f32,
+    ) -> super::profile_frames::FrameMargins {
+        self.profile_frame_margins(
+            user,
+            super::profile_frames::FrameSurface::Sidebar,
+            false,
+            window_height,
+        )
+        .unwrap_or_default()
     }
 
     /// The classic sidebar (`oM` without the redesign). No capture of it exists; its numbers are the stylesheet's:
@@ -2385,6 +2425,22 @@ impl Root {
             return "profile demo: no DM open".to_owned();
         };
         let variant = words.first().copied().unwrap_or("themed");
+        // `frame <sku>`: the profile answer carries that profile frame (collectible type 3); its product comes from
+        // a `fetched frame-product:<sku>` step or the network as usual.
+        if variant == "frame" {
+            let key = format!("profile:{user}");
+            let mut body = self
+                .fetched
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let sku = words.get(1).copied().unwrap_or_default();
+            body["user_profile"]["collectibles"] = serde_json::json!([{"type": 3, "sku_id": sku}]);
+            self.fetched.insert(key, body);
+            self.request_profile_frame(user);
+            cx.notify();
+            return format!("profile demo: frame {sku}");
+        }
         // `bio <text>`: the profile answer carries that bio (View Full Bio of module 442228); `failed`: the profile
         // read failed (module 559506).
         if variant == "bio" {
