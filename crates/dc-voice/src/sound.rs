@@ -21,7 +21,7 @@ use symphonia::core::{
     meta::MetadataOptions,
     probe::Hint,
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// A sound file this long or longer is not a UI sound; decoding stops there.
 const MAX_SECONDS: usize = 30;
@@ -243,7 +243,7 @@ pub fn render(sound: &Decoded, rate: u32, channels: usize, gain: f32) -> Vec<f32
 }
 
 /// Plays `sound` once on `output` at `volume` (the factor `Ak` takes, 1 for most), on its own thread. Returns at once;
-/// a missing speaker is logged at debug level and the handle reports finished.
+/// a missing speaker or a failed stream is logged as a warning and the handle reports finished.
 pub fn play(sound: Arc<Decoded>, volume: f32, output: Output, handle: &Handle) {
     spawn_play(sound, volume, output, false, handle);
 }
@@ -262,7 +262,7 @@ fn spawn_play(sound: Arc<Decoded>, volume: f32, output: Output, looped: bool, ha
             let handle = handle.clone();
             move || {
                 if let Err(error) = run(&sound, volume, output, looped, &handle) {
-                    debug!("sound not played: {error}");
+                    warn!(?output, "sound not played: {error}");
                 }
                 handle.finished.store(true, Ordering::Release);
             }
@@ -392,7 +392,7 @@ where
                     Ordering::Release,
                 );
             },
-            |_| {},
+            |error| warn!("sound playback failed: {error}"),
             None,
         )
         .map_err(|_| "Could not open speaker device")

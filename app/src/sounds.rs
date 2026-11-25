@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Where the build serves its assets.
 const ASSET_ROOT: &str = "https://discord.com/assets/";
@@ -450,10 +450,10 @@ fn play_inner(sound: &str, volume: f32, output: Output, looped: bool) -> Handle 
                     start_playback(decoded, &waiting);
                 }
             }
-            Err(error) => debug!(file, "sound unavailable: {error}"),
+            Err(error) => warn!(file, "sound unavailable: {error}"),
         });
     if spawned.is_err() {
-        debug!("could not start the sound loader");
+        warn!("could not start the sound loader");
     }
     handle
 }
