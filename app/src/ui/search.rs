@@ -1078,6 +1078,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn overlapping_words_merge_and_empty_words_match_nothing() {
         assert_eq!(match_ranges("abcdef", &["abc", "cde", ""]), [0..5]);
         assert!(match_ranges("abc", &[]).is_empty());

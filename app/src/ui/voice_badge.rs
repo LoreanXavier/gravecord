@@ -126,6 +126,7 @@ pub(crate) fn avatar_stack_overflow_text(count: usize) -> String {
 }
 
 /// Module 342952 (`RGr9tj`): screen-reader overflow text `"and N others"`.
+#[cfg_attr(not(feature = "capture"), allow(dead_code))]
 pub(crate) fn avatar_stack_sr_label(count: usize) -> String {
     dc_intl::format("RGr9tj", &[("count", (count as f64).into())])
 }
@@ -728,6 +729,8 @@ impl Root {
                 div()
                     .id(probe.clone())
                     .parity("voice-badge-overflow")
+                    // Module 342952 `R8Z8Qr`: the button's label, "View all (N)".
+                    .aria_label(SharedString::from(avatar_stack_button_aria(count)))
                     .relative()
                     .h(px(24.))
                     .min_w(px(24.))
