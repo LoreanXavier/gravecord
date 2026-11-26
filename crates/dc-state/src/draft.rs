@@ -351,6 +351,67 @@ fn migrate(from: u64, state: Value, user: Option<&str>) -> Value {
     }
 }
 
+impl crate::Stores {
+    /// Whether the client knows the channel (`ChannelStore.getChannel(id) != null`): a server channel, a thread or a
+    /// private channel.
+    fn draft_channel_known(&self, channel: Id) -> bool {
+        self.private_channels
+            .iter()
+            .any(|known| known.id == channel)
+            || self.guilds.iter().any(|guild| {
+                guild.channels.iter().any(|known| known.id == channel)
+                    || guild.threads.iter().any(|known| known.id == channel)
+            })
+    }
+
+    /// The DraftStore's gateway and session actions.
+    pub(crate) fn drafts_dispatch(&mut self, name: &str, data: &Value) {
+        let unavailable = self.unavailable_guilds.len();
+        match name {
+            "READY" => {
+                if let Some(user) = self.current_user.as_ref().map(|user| user.id) {
+                    let mut drafts = std::mem::take(&mut self.drafts);
+                    let dms_pending = !data["private_channels"]
+                        .as_array()
+                        .is_some_and(|channels| !channels.is_empty());
+                    if dms_pending {
+                        drafts.connection_open(user, unavailable, &|_| true);
+                        drafts.prune_pending = true;
+                    } else {
+                        drafts.connection_open(user, unavailable, &|channel| {
+                            self.draft_channel_known(channel)
+                        });
+                    }
+                    self.drafts = drafts;
+                }
+            }
+            "READY_SUPPLEMENTAL" if self.drafts.prune_pending => {
+                let mut drafts = std::mem::take(&mut self.drafts);
+                drafts.prune_pending = false;
+                drafts.guild_delete(unavailable, &|channel| self.draft_channel_known(channel));
+                self.drafts = drafts;
+            }
+            "GUILD_DELETE" => {
+                let mut drafts = std::mem::take(&mut self.drafts);
+                drafts.guild_delete(unavailable, &|channel| self.draft_channel_known(channel));
+                self.drafts = drafts;
+            }
+            "CHANNEL_DELETE" | "THREAD_DELETE" => {
+                if let Some(channel) = crate::id(&data["id"]) {
+                    self.drafts.channel_delete(channel);
+                }
+            }
+            "LOGOUT" => self.drafts.logout(data["isSwitchingAccount"] == true),
+            "MULTI_ACCOUNT_REMOVE_ACCOUNT" => {
+                if let Some(user) = crate::id(&data["userId"]) {
+                    self.drafts.remove_account(user);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,66 +569,5 @@ mod tests {
         assert_eq!(store.get_draft(1, DraftType::ChannelMessage), "mine");
         store.remove_account(ME);
         assert_eq!(store.get_draft(1, DraftType::ChannelMessage), "");
-    }
-}
-
-impl crate::Stores {
-    /// Whether the client knows the channel (`ChannelStore.getChannel(id) != null`): a server channel, a thread or a
-    /// private channel.
-    fn draft_channel_known(&self, channel: Id) -> bool {
-        self.private_channels
-            .iter()
-            .any(|known| known.id == channel)
-            || self.guilds.iter().any(|guild| {
-                guild.channels.iter().any(|known| known.id == channel)
-                    || guild.threads.iter().any(|known| known.id == channel)
-            })
-    }
-
-    /// The DraftStore's gateway and session actions.
-    pub(crate) fn drafts_dispatch(&mut self, name: &str, data: &Value) {
-        let unavailable = self.unavailable_guilds.len();
-        match name {
-            "READY" => {
-                if let Some(user) = self.current_user.as_ref().map(|user| user.id) {
-                    let mut drafts = std::mem::take(&mut self.drafts);
-                    let dms_pending = !data["private_channels"]
-                        .as_array()
-                        .is_some_and(|channels| !channels.is_empty());
-                    if dms_pending {
-                        drafts.connection_open(user, unavailable, &|_| true);
-                        drafts.prune_pending = true;
-                    } else {
-                        drafts.connection_open(user, unavailable, &|channel| {
-                            self.draft_channel_known(channel)
-                        });
-                    }
-                    self.drafts = drafts;
-                }
-            }
-            "READY_SUPPLEMENTAL" if self.drafts.prune_pending => {
-                let mut drafts = std::mem::take(&mut self.drafts);
-                drafts.prune_pending = false;
-                drafts.guild_delete(unavailable, &|channel| self.draft_channel_known(channel));
-                self.drafts = drafts;
-            }
-            "GUILD_DELETE" => {
-                let mut drafts = std::mem::take(&mut self.drafts);
-                drafts.guild_delete(unavailable, &|channel| self.draft_channel_known(channel));
-                self.drafts = drafts;
-            }
-            "CHANNEL_DELETE" | "THREAD_DELETE" => {
-                if let Some(channel) = crate::id(&data["id"]) {
-                    self.drafts.channel_delete(channel);
-                }
-            }
-            "LOGOUT" => self.drafts.logout(data["isSwitchingAccount"] == true),
-            "MULTI_ACCOUNT_REMOVE_ACCOUNT" => {
-                if let Some(user) = crate::id(&data["userId"]) {
-                    self.drafts.remove_account(user);
-                }
-            }
-            _ => {}
-        }
     }
 }
