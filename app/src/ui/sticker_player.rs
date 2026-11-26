@@ -401,7 +401,8 @@ impl Cache {
         if advance.image.is_none() {
             self.misses += 1;
         }
-        if let (Some(ArtKind::Lottie(source)), true) = (&art, can_start) {
+        // A file whose frames failed to render (its layers did not parse) shows its still and is not asked again.
+        if let (Some(ArtKind::Lottie(source)), true) = (&art, can_start && !clip.failed) {
             let wanted: Vec<usize> = (0..LOOKAHEAD.min(count))
                 .map(|ahead| (playhead + ahead) % count)
                 .filter(|index| !clip.frames.contains_key(index) && !clip.pending.contains(index))
@@ -1268,6 +1269,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_clip_whose_frames_failed_asks_for_no_more() {
+        let (mut cache, _) = lottie_cache();
+        let now = Instant::now();
+        let Some(Job::Render { frames, .. }) =
+            cache.advance(7, Format::Lottie, 32, Play::Run, now).job
+        else {
+            panic!("a render job");
+        };
+        cache.accept_frames(
+            (7, 32),
+            frames.into_iter().map(|index| (index, None)).collect(),
+        );
+        assert!(
+            cache
+                .advance(7, Format::Lottie, 32, Play::Run, now)
+                .job
+                .is_none()
+        );
+        assert_eq!(cache.jobs, 0);
+    }
     #[test]
     fn a_clip_shows_the_frame_at_the_frozen_time_and_matches_the_source() {
         let (mut cache, source) = lottie_cache();

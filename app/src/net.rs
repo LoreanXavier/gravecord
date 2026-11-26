@@ -586,6 +586,11 @@ fn injected_image_status() -> u16 {
 /// Pictures drawn from vector files (Lottie, Rive) at once, each on a blocking thread. Without a limit a picker of
 /// forty stickers starts forty threads that each render a frame.
 static IMAGE_DRAWS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
+/// Lottie stills drawn at once. Parsing and preparing one file holds some 30 MB for a moment, and the segment heap kept
+/// the pages that six at once had freed committed: a sticker picker opening took the process from 120 to 440 MB. Two at
+/// a time draw a picker's forty stills in about 150 ms instead of 90, and the picker fills in as soon (one at a time
+/// left some cells blank 100 ms longer).
+static LOTTIE_STILLS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 /// Content-addressed CDN assets cached raw on disk under `img-cache` when the start cache is active.
 pub(crate) fn disk_cacheable_raw_image(key: &str, url: &str) -> bool {
     crate::ui::start_cache::enabled()
@@ -3394,7 +3399,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                                 && !key.starts_with("stickeranim:") =>
                         {
                             // Lottie sticker art: one frame at twice the picker's cell, drawn off the UI thread.
-                            let _slot = IMAGE_DRAWS.acquire().await;
+                            let _slot = LOTTIE_STILLS.acquire().await;
                             match tokio::task::spawn_blocking(move || {
                                 crate::lottie::first_frame_png(&bytes, 192)
                             })

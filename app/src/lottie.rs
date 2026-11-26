@@ -14,7 +14,9 @@ pub static RENDERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-type Prepared = (rasterlottie::PreparedAnimation, Animation);
+/// A prepared animation. It holds its own copy of the parsed file (expressions resolved), which is what its frames are
+/// drawn from; the parsed file itself is dropped once it is prepared.
+type Prepared = rasterlottie::PreparedAnimation;
 
 /// Render workers. A file always goes to the same worker (`id % WORKERS`), because a prepared animation is not
 /// `Send`: it is parsed there once and every later batch for that file reuses it.
@@ -84,9 +86,8 @@ fn render_task(kept: &mut Vec<Kept>, task: &Task) -> Reply {
         }
         None => {
             let started = std::time::Instant::now();
-            let built = parse(&task.json).and_then(|animation| {
-                Some((Renderer::default().prepare(&animation).ok()?, animation))
-            });
+            let built = parse(&task.json)
+                .and_then(|animation| Renderer::default().prepare(&animation).ok());
             PARSE_US.fetch_add(started.elapsed().as_micros() as u64, Relaxed);
             PARSES.fetch_add(1, Relaxed);
             built.map(|prepared| {
@@ -108,7 +109,8 @@ fn render_task(kept: &mut Vec<Kept>, task: &Task) -> Reply {
         .map(|index| {
             let started = std::time::Instant::now();
             let frame = result.and_then(|at| {
-                let (prepared, animation) = &kept[at].prepared;
+                let prepared = &kept[at].prepared;
+                let animation = prepared.animation();
                 let frame_at = animation.in_point + (*index).min(task.frames - 1) as f32;
                 let rendered = prepared
                     .render_frame(frame_at, config_for(animation, task.size))
@@ -156,6 +158,36 @@ pub fn frame_png(json: &[u8], size: u32, frame: Option<f32>) -> Option<Vec<u8>> 
         .write_image(&pixels, width, height, image::ExtendedColorType::Rgba8)
         .ok()?;
     Some(png)
+}
+
+/// The top-level fields of a Lottie file, as `rasterlottie::Animation` names them; the layers and assets are skipped
+/// without being kept.
+#[derive(serde::Deserialize)]
+struct Header {
+    #[serde(rename = "fr")]
+    frame_rate: f32,
+    #[serde(rename = "ip")]
+    in_point: f32,
+    #[serde(rename = "op")]
+    out_point: f32,
+    #[serde(rename = "w")]
+    width: u32,
+    #[serde(rename = "h")]
+    height: u32,
+}
+
+impl Header {
+    /// The header of a file [`parse`] would take: no larger than [`MAX_JSON`], with a canvas of 1 to
+    /// [`MAX_DIMENSION`] pixels a side.
+    fn read(json: &[u8]) -> Option<Self> {
+        if json.len() > MAX_JSON {
+            return None;
+        }
+        let header: Header = serde_json::from_slice(json).ok()?;
+        ((1..=MAX_DIMENSION).contains(&header.width)
+            && (1..=MAX_DIMENSION).contains(&header.height))
+        .then_some(header)
+    }
 }
 
 fn parse(json: &[u8]) -> Option<Animation> {
@@ -217,14 +249,17 @@ pub struct Source {
 }
 
 impl Source {
+    /// The file's frame count and rate, from its top-level fields only. Parsing the whole animation here (as the
+    /// worker does again when it renders) took some 30 MB for a moment per sticker, on as many threads as a picker
+    /// opened stickers at once. A file whose layers do not parse is caught by the worker, whose frames then fail.
     pub fn parse(json: &[u8]) -> Option<Self> {
-        let animation = parse(json)?;
-        let frames = (animation.duration_frames().floor() as usize).max(1);
-        (animation.frame_rate > 0.).then(|| Self {
+        let header = Header::read(json)?;
+        let frames = ((header.out_point - header.in_point).max(0.).floor() as usize).max(1);
+        (header.frame_rate > 0.).then(|| Self {
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             json: std::sync::Arc::new(json.to_vec()),
             frames,
-            frame_rate: animation.frame_rate,
+            frame_rate: header.frame_rate,
         })
     }
 
@@ -315,6 +350,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_header_reads_what_the_whole_file_says() {
+        let source = Source::parse(SQUARE.as_bytes()).expect("parses");
+        let animation = parse(SQUARE.as_bytes()).expect("parses");
+        assert_eq!(
+            source.frame_count(),
+            (animation.duration_frames().floor() as usize).max(1)
+        );
+        assert_eq!(source.frame_rate(), animation.frame_rate);
+        assert!(Source::parse(b"not json").is_none());
+        assert!(Source::parse(br#"{"fr":30,"ip":0,"op":30,"w":0,"h":100}"#).is_none());
+        assert!(Source::parse(br#"{"fr":30,"ip":0,"op":30,"w":100,"h":2000}"#).is_none());
+        assert!(Source::parse(br#"{"fr":0,"ip":0,"op":30,"w":100,"h":100}"#).is_none());
+        // Layers that do not parse pass the header; the worker's frames then fail.
+        let broken = br#"{"fr":30,"ip":0,"op":30,"w":100,"h":100,"layers":5}"#;
+        assert!(parse(broken).is_none());
+        let source = Source::parse(broken).expect("the header reads");
+        assert!(source.render(0, 50).is_none());
+    }
     #[test]
     fn bad_input_is_refused() {
         assert!(first_frame_png(b"not json", 50).is_none());
