@@ -997,26 +997,44 @@ async fn cycle() -> Result<()> {
     set_state(State::Downloading {
         version: version.clone(),
     });
-    let path = download(&client, &manifest, &dir, &|done, total| {
-        // A step per percent is enough for the page; every chunk would wake the window thousands of times.
-        let percent = |bytes: u64| bytes.saturating_mul(100) / total.max(1);
-        let step = status().progress.map(|(before, _)| percent(before));
-        if step != Some(percent(done)) || done == total {
-            set_status(|status| status.progress = Some((done, total)));
-        }
-    })
+    let path = fetch_verified(
+        &client,
+        &manifest,
+        &dir,
+        &crate::release_key::PUBLIC_KEY,
+        &|done, total| {
+            // A step per percent is enough for the page; every chunk would wake the window thousands of times.
+            let percent = |bytes: u64| bytes.saturating_mul(100) / total.max(1);
+            let step = status().progress.map(|(before, _)| percent(before));
+            if step != Some(percent(done)) || done == total {
+                set_status(|status| status.progress = Some((done, total)));
+            }
+        },
+    )
     .await?;
-    // The digest came from the same answer as the address; the signature did not. A setup whose signed manifest does
-    // not name this version and these bytes is deleted and never run.
-    if let Err(error) = verify_signed(&path, &manifest.version, &crate::release_key::PUBLIC_KEY) {
-        let _ = std::fs::remove_file(&path);
-        return Err(error);
-    }
     if let Ok(mut ready) = READY.lock() {
         *ready = Some(Ready { manifest, path });
     }
     set_state(State::Ready { version });
     Ok(())
+}
+
+/// [`download`], then [`verify_signed`] against `public_key`: the setup the app may run. The digest came from the same
+/// answer as the address; the signature did not. A setup whose signed manifest does not name this version and these
+/// bytes is deleted and never run.
+pub async fn fetch_verified(
+    client: &reqwest::Client,
+    manifest: &Manifest,
+    dir: &Path,
+    public_key: &[u8; 32],
+    progress: &dyn Fn(u64, u64),
+) -> Result<PathBuf> {
+    let path = download(client, manifest, dir, progress).await?;
+    if let Err(error) = verify_signed(&path, &manifest.version, public_key) {
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(path)
 }
 
 /// Checks the update manifest a setup carries after its payload (`dc_release`), written and signed by

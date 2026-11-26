@@ -80,15 +80,11 @@ fn setup(options: Options, exe: &Path) -> anyhow::Result<i32> {
             Some(chosen) => paths::resolve_from_disk(chosen).map_err(anyhow::Error::msg)?,
             None => default_dir,
         };
-        let mut plan = install::Plan::new(dir);
-        plan.desktop_shortcut = options.desktop;
-        plan.register = !options.no_register;
-        if let Some(name) = &options.reg_key {
-            plan.reg_key = name.clone();
-        }
-        if let Some(name) = &options.shortcut_name {
-            plan.shortcut_name = name.clone();
-        }
+        // An update over an install keeps its key, shortcut names and desktop shortcut: the app's updater names
+        // only the folder.
+        let old = install::read_manifest(&dir);
+        let desktop = winsys::desktop_dir().ok();
+        let plan = install::Plan::silent(dir, old.as_ref(), desktop.as_deref(), &options);
         close_running(&plan.dir.join("gravecord.exe"), true)?;
         install::install(&archive, &stub, &plan, &mut |_, _| {})?;
         if options.launch {

@@ -129,7 +129,11 @@ renames it to the stamped version. A missing release is a normal "no update". Ov
 An update downloads into `%LOCALAPPDATA%\gravecord\update\`, is checked against GitHub's digest and its signed manifest, and waits
 behind the title bar's green download button. The click runs it as `gravecord-setup-<version>.exe --silent --launch --dir
 <install folder>` and quits the app. That is the installer's own silent update above: it closes the running app, stages
-and swaps with rollback, and starts the new version (`--launch`). A hash mismatch, a wrong size, another host, a
+and swaps with rollback, and starts the new version (`--launch`). Since the app names only the folder, a setup run
+over an install keeps what its `install.manifest` records: the registry key, the shortcut name, whether there is a
+desktop shortcut and whether it was registered at all (`Plan::keeping`). `--reg-key`, `--shortcut-name`, `--desktop`
+and `--no-register` still override it, and shortcuts or keys the new record no longer lists are removed. The setup
+window does the same, with its desktop checkbox starting as the install chose. A hash mismatch, a wrong size, another host, a
 downgrade or an equal version are refused and the file is deleted. A portable folder or a development build never updates.
 
 Open on startup writes the per-user `Run` value `gravecord` under `HKCU\Software\Microsoft\Windows\CurrentVersion`

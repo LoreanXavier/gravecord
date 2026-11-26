@@ -26,6 +26,72 @@ impl Plan {
             shortcut_name: paths::DEFAULT_SHORTCUT.into(),
         }
     }
+
+    /// The plan for `dir` that keeps what the install already there chose: its registry key, its shortcut name,
+    /// its desktop shortcut and whether it was registered at all. With no record it is [`Plan::new`].
+    /// `desktop_dir` is the Desktop folder, where a shortcut counts as the desktop one.
+    ///
+    /// The app's updater runs setup with the folder alone (`--silent --launch --dir`), so an update must not move
+    /// an install made with `--reg-key`, `--shortcut-name`, `--desktop` or `--no-register` onto the defaults: that
+    /// would leave its desktop shortcut out of the record, or point the default Apps & features entry and Start
+    /// Menu shortcut at another install.
+    pub fn keeping(dir: PathBuf, old: Option<&Manifest>, desktop_dir: Option<&Path>) -> Self {
+        let mut plan = Self::new(dir);
+        let Some(old) = old else {
+            return plan;
+        };
+        let on_desktop = |link: &Path| {
+            desktop_dir.is_some_and(|desktop| {
+                link.parent()
+                    .is_some_and(|parent| paths::same_path(parent, desktop))
+            })
+        };
+        plan.register = !old.reg_keys.is_empty() || !old.shortcuts.is_empty();
+        if let Some(key) = old.reg_keys.first() {
+            plan.reg_key = key.clone();
+        }
+        plan.desktop_shortcut = old.shortcuts.iter().any(|link| on_desktop(link));
+        // The Start Menu shortcut names the install; a record with only a desktop one still gives its name.
+        let named = old
+            .shortcuts
+            .iter()
+            .find(|link| !on_desktop(link))
+            .or(old.shortcuts.first())
+            .and_then(|link| link.file_stem())
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| paths::plain_name(stem));
+        if let Some(name) = named {
+            plan.shortcut_name = name.to_owned();
+        }
+        plan
+    }
+
+    /// The plan of a silent run: [`Plan::keeping`], then what the command line says. `--no-register` turns the
+    /// registration off; `--reg-key`, `--shortcut-name` and `--desktop` name what to create, so they turn it on.
+    pub fn silent(
+        dir: PathBuf,
+        old: Option<&Manifest>,
+        desktop_dir: Option<&Path>,
+        options: &paths::Options,
+    ) -> Self {
+        let mut plan = Self::keeping(dir, old, desktop_dir);
+        if let Some(name) = &options.reg_key {
+            plan.reg_key = name.clone();
+            plan.register = true;
+        }
+        if let Some(name) = &options.shortcut_name {
+            plan.shortcut_name = name.clone();
+            plan.register = true;
+        }
+        if options.desktop {
+            plan.desktop_shortcut = true;
+            plan.register = true;
+        }
+        if options.no_register {
+            plan.register = false;
+        }
+        plan
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -275,14 +341,31 @@ pub fn install(
     progress(900, "Replacing files");
     commit(&staged)?;
 
-    // Files of an earlier version that this one no longer ships.
-    if let Some(old) = old {
+    // Files of an earlier version that this one no longer ships, and shortcuts and keys the new record no longer
+    // lists (a run that named others): the record is the whole of what the uninstaller will remove.
+    if let Some(old) = &old {
         for file in old.files.iter().filter(|f| !manifest.files.contains(f)) {
             if let Some(relative) = paths::safe_relative(file) {
                 let _ = std::fs::remove_file(plan.dir.join(relative));
             }
         }
         prune_empty(&plan.dir, &old.files);
+        for link in old.shortcuts.iter().filter(|link| {
+            !manifest
+                .shortcuts
+                .iter()
+                .any(|kept| paths::same_path(kept, link))
+        }) {
+            let _ = std::fs::remove_file(link);
+        }
+        for key in old.reg_keys.iter().filter(|key| {
+            !manifest
+                .reg_keys
+                .iter()
+                .any(|kept| kept.eq_ignore_ascii_case(key))
+        }) {
+            let _ = winsys::unregister_uninstall(key);
+        }
     }
 
     if plan.register {
@@ -481,6 +564,141 @@ mod tests {
         assert!(dir.join("keep-me.txt").exists(), "foreign file survives");
         assert!(!dir.join(MANIFEST).exists());
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    fn options(args: &[&str]) -> paths::Options {
+        paths::parse_args(args.iter().map(|arg| (*arg).to_owned())).unwrap()
+    }
+
+    fn record(reg: &[&str], links: &[&str]) -> Manifest {
+        Manifest {
+            version: "0.3.0".into(),
+            files: vec!["gravecord.exe".into(), UNINSTALLER.into()],
+            reg_keys: reg.iter().map(|key| (*key).to_owned()).collect(),
+            shortcuts: links.iter().map(PathBuf::from).collect(),
+        }
+    }
+
+    #[test]
+    fn the_updaters_silent_run_keeps_a_default_install_with_its_desktop_shortcut() {
+        let base = scratch("keep-default");
+        let desktop = base.join("Desktop");
+        std::fs::create_dir_all(&desktop).unwrap();
+        let start = base
+            .join("Start Menu")
+            .join("Programs")
+            .join("gravecord.lnk");
+        let old = record(
+            &["gravecord"],
+            &[
+                start.to_str().unwrap(),
+                desktop.join("gravecord.lnk").to_str().unwrap(),
+            ],
+        );
+        // Exactly what `updater::setup_args` passes.
+        let args = options(&["--silent", "--launch", "--dir", r"C:\x\gravecord"]);
+        let plan = Plan::silent(base.join("gravecord"), Some(&old), Some(&desktop), &args);
+        assert!(plan.register);
+        assert!(
+            plan.desktop_shortcut,
+            "the desktop shortcut stays in the record"
+        );
+        assert_eq!(plan.reg_key, "gravecord");
+        assert_eq!(plan.shortcut_name, "gravecord");
+        // Without one, none is added.
+        let old = record(&["gravecord"], &[start.to_str().unwrap()]);
+        let plan = Plan::silent(base.join("gravecord"), Some(&old), Some(&desktop), &args);
+        assert!(plan.register && !plan.desktop_shortcut);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_updaters_silent_run_keeps_a_custom_installs_names() {
+        let base = scratch("keep-custom");
+        let desktop = base.join("Desktop");
+        std::fs::create_dir_all(&desktop).unwrap();
+        let old = record(
+            &["gravecord-uptest"],
+            &[
+                desktop.join("gravecord uptest.lnk").to_str().unwrap(),
+                base.join("Programs")
+                    .join("gravecord uptest.lnk")
+                    .to_str()
+                    .unwrap(),
+            ],
+        );
+        let args = options(&["--silent", "--launch", "--dir", r"C:\x\uptest"]);
+        let plan = Plan::silent(base.join("uptest"), Some(&old), Some(&desktop), &args);
+        assert!(plan.register && plan.desktop_shortcut);
+        assert_eq!(plan.reg_key, "gravecord-uptest", "not the default key");
+        assert_eq!(
+            plan.shortcut_name, "gravecord uptest",
+            "not the default shortcut"
+        );
+        // An install made with --no-register stays unregistered.
+        let plan = Plan::silent(
+            base.join("uptest"),
+            Some(&record(&[], &[])),
+            Some(&desktop),
+            &args,
+        );
+        assert!(!plan.register);
+        // No record: a fresh install with the defaults, as before.
+        let plan = Plan::silent(base.join("uptest"), None, Some(&desktop), &args);
+        assert!(plan.register && !plan.desktop_shortcut);
+        assert_eq!(
+            (plan.reg_key.as_str(), plan.shortcut_name.as_str()),
+            ("gravecord", "gravecord")
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_command_line_still_overrides_what_the_record_chose() {
+        let old = record(&["gravecord-a"], &[r"C:\nowhere\Programs\gravecord a.lnk"]);
+        let args = options(&[
+            "--silent",
+            "--dir",
+            r"C:\x\a",
+            "--reg-key",
+            "gravecord-b",
+            "--shortcut-name",
+            "gravecord b",
+            "--desktop",
+        ]);
+        let plan = Plan::silent(PathBuf::from(r"C:\x\a"), Some(&old), None, &args);
+        assert_eq!(plan.reg_key, "gravecord-b");
+        assert_eq!(plan.shortcut_name, "gravecord b");
+        assert!(plan.register && plan.desktop_shortcut);
+        let args = options(&["--silent", "--dir", r"C:\x\a", "--no-register"]);
+        assert!(!Plan::silent(PathBuf::from(r"C:\x\a"), Some(&old), None, &args).register);
+        // A damaged record never names a shortcut outside the plain-name rule.
+        let odd = record(&[], &[r"C:\nowhere\a\..\b:c.lnk"]);
+        let plan = Plan::keeping(PathBuf::from(r"C:\x\a"), Some(&odd), None);
+        assert_eq!(plan.shortcut_name, paths::DEFAULT_SHORTCUT);
+    }
+
+    #[test]
+    fn shortcuts_the_new_record_drops_are_removed_with_it() {
+        let base = scratch("drop-links");
+        let dir = base.join("gravecord");
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = base.join("old shortcut.lnk");
+        std::fs::write(&link, "lnk").unwrap();
+        let mut old = record(&[], &[link.to_str().unwrap()]);
+        old.version = "1".into();
+        std::fs::write(dir.join(MANIFEST), old.render()).unwrap();
+        // An explicitly unregistered run: the new record lists no shortcut, so the old one goes.
+        install(
+            &archive(&["gravecord.exe"]),
+            b"stub",
+            &plan_in(&dir),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert!(!link.exists());
+        assert!(read_manifest(&dir).unwrap().shortcuts.is_empty());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -439,6 +439,8 @@ enum Route {
     /// Serves the body and honours `Range: bytes=N-`.
     Ranged(Vec<u8>),
     Redirect(String),
+    /// Announces the whole body, sends the first `.1` bytes and closes the connection.
+    Truncated(Vec<u8>, usize),
 }
 
 struct Server {
@@ -520,6 +522,10 @@ fn handle(
         Some(Route::Redirect(to)) => {
             let extra = format!("Location: {to}\r\n");
             let _ = stream.write_all(head("302 Found", &extra, 0).as_bytes());
+        }
+        Some(Route::Truncated(body, sent)) => {
+            let _ = stream.write_all(head("200 OK", "", body.len()).as_bytes());
+            let _ = stream.write_all(&body[..*sent]);
         }
         Some(Route::Body(body)) => {
             let _ = stream.write_all(head("200 OK", "", body.len()).as_bytes());
@@ -984,4 +990,98 @@ fn only_a_setup_signed_with_the_release_key_for_the_offered_version_passes() {
     assert!(check(&forged, &public).is_err());
     // The release key built into the app is a valid Ed25519 key.
     assert!(ed25519_dalek::VerifyingKey::from_bytes(&crate::release_key::PUBLIC_KEY).is_ok());
+}
+
+#[tokio::test]
+async fn a_truncated_download_keeps_its_part_and_the_next_try_resumes_it() {
+    let data: Vec<u8> = (0..120_000u32).map(|n| (n % 239) as u8).collect();
+    let json = feed_json("0.5.0", "gravecord-setup.exe", &data);
+    let cut = Server::start(HashMap::from([
+        ("/update.json", Route::Body(json.clone().into_bytes())),
+        (
+            "/gravecord-setup.exe",
+            Route::Truncated(data.clone(), 50_000),
+        ),
+    ]));
+    let feed = cut.url("/update.json");
+    let client = client_for(&feed);
+    let manifest = offered(&client, &feed).await;
+    let dir = Scratch::new("truncated");
+    assert!(
+        download(&client, &manifest, &dir.0, &|_, _| {})
+            .await
+            .is_err()
+    );
+    let part = dir.0.join("gravecord-setup-0.5.0.exe.part");
+    assert_eq!(std::fs::read(&part).unwrap(), data[..50_000]);
+    assert!(!dir.0.join("gravecord-setup-0.5.0.exe").exists());
+    // The app closed mid-download and started again: the same file, asked from where it stopped.
+    let whole = Server::start(HashMap::from([
+        ("/update.json", Route::Body(json.into_bytes())),
+        ("/gravecord-setup.exe", Route::Ranged(data.clone())),
+    ]));
+    let feed = whole.url("/update.json");
+    let client = client_for(&feed);
+    let manifest = offered(&client, &feed).await;
+    let path = download(&client, &manifest, &dir.0, &|_, _| {})
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), data);
+    assert!(
+        whole
+            .requests()
+            .contains(&"/gravecord-setup.exe range=50000".to_owned())
+    );
+    assert!(!part.exists());
+}
+
+#[tokio::test]
+async fn a_setup_with_the_right_digest_but_a_bad_signature_is_deleted_and_never_ready() {
+    let key = test_key();
+    let public = key.verifying_key().to_bytes();
+    let other = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let dir = Scratch::new("badsig");
+    for (name, setup) in [
+        (
+            "other key",
+            signed_setup(b"stub and payload", "0.5.0", &other),
+        ),
+        (
+            "other version",
+            signed_setup(b"stub and payload", "0.4.9", &key),
+        ),
+        ("unsigned", b"stub and payload".to_vec()),
+    ] {
+        // GitHub's digest is of the file as served, so it matches: only the signature can refuse it.
+        let json = feed_json("0.5.0", "gravecord-setup.exe", &setup);
+        let server = Server::start(HashMap::from([
+            ("/update.json", Route::Body(json.into_bytes())),
+            ("/gravecord-setup.exe", Route::Body(setup)),
+        ]));
+        let feed = server.url("/update.json");
+        let client = client_for(&feed);
+        let manifest = offered(&client, &feed).await;
+        assert!(
+            fetch_verified(&client, &manifest, &dir.0, &public, &|_, _| {})
+                .await
+                .is_err(),
+            "{name}"
+        );
+        let left: Vec<_> = std::fs::read_dir(&dir.0).unwrap().flatten().collect();
+        assert!(left.is_empty(), "{name}: nothing may be left: {left:?}");
+    }
+    // The same flow with a good signature gives the file.
+    let setup = signed_setup(b"stub and payload", "0.5.0", &key);
+    let json = feed_json("0.5.0", "gravecord-setup.exe", &setup);
+    let server = Server::start(HashMap::from([
+        ("/update.json", Route::Body(json.into_bytes())),
+        ("/gravecord-setup.exe", Route::Body(setup.clone())),
+    ]));
+    let feed = server.url("/update.json");
+    let client = client_for(&feed);
+    let manifest = offered(&client, &feed).await;
+    let path = fetch_verified(&client, &manifest, &dir.0, &public, &|_, _| {})
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), setup);
 }

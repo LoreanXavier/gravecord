@@ -270,8 +270,12 @@ impl App {
         *self.shared.status.lock().unwrap() = "Preparing".into();
         self.repaint();
 
-        let mut plan = Plan::new(self.dir.clone());
+        // Over an install, its key and shortcut names stay; the checkbox decides the desktop shortcut.
+        let old = install::read_manifest(&self.dir);
+        let desktop = winsys::desktop_dir().ok();
+        let mut plan = Plan::keeping(self.dir.clone(), old.as_ref(), desktop.as_deref());
         plan.desktop_shortcut = self.desktop;
+        plan.register |= self.desktop;
         let shared = self.shared.clone();
         let stub = self.stub.clone();
         let window = self.hwnd.0 as isize;
@@ -935,9 +939,14 @@ pub fn run(start: Start) -> i32 {
         scale: Scale(96),
         fonts: Fonts::new(Scale(96)),
         page: Page::Welcome,
-        dir: start.dir,
         updating,
-        desktop: false,
+        // Over an install the box starts as it chose, so an update keeps its desktop shortcut.
+        desktop: screenshot_page.is_none() && updating && {
+            let old = install::read_manifest(&start.dir);
+            let desktop = winsys::desktop_dir().ok();
+            Plan::keeping(start.dir.clone(), old.as_ref(), desktop.as_deref()).desktop_shortcut
+        },
+        dir: start.dir,
         // A screenshot never depends on what this machine has installed.
         webview_missing: match screenshot_page {
             Some(page) => page == ShotPage::Webview,
