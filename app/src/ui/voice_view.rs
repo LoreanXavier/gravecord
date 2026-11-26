@@ -4419,10 +4419,12 @@ impl Root {
                                             / INVITE_ROW_TIMEOUT.as_secs_f32())
                                         .clamp(0., 1.);
                                         paint_invite_ring(bounds, progress, window);
-                                        if progress < 1.
-                                            && window.is_window_active()
-                                            && !cx.reduce_motion()
-                                        {
+                                        if invite_ring_wants_frame(
+                                            progress,
+                                            window.content_mask().bounds.intersects(&bounds),
+                                            window.is_window_active(),
+                                            cx.reduce_motion(),
+                                        ) {
                                             window.request_animation_frame();
                                         }
                                     },
@@ -5057,6 +5059,14 @@ fn paint_ring_circle(cx: Pixels, cy: Pixels, radius: f32, stroke: Rgba, window: 
     }
 }
 
+/// Whether the invite row's ring asks for the next frame: while it runs, in a focused window without reduced motion,
+/// and only where it can be seen. Scrolled out of the channel list (below the voice panel, say) it is painted but
+/// clipped away, and asking for frames there redrew the whole window at the display's rate for ten seconds after
+/// every join; the frame that scrolls it back draws it at its time and goes on from there.
+fn invite_ring_wants_frame(progress: f32, visible: bool, active: bool, reduced: bool) -> bool {
+    progress < 1. && visible && active && !reduced
+}
+
 /// `timer_MRjIbW`: 2px ring (`r = 11`) of `--border-normal` with `--border-strong` walking clockwise from 12 o'clock.
 fn paint_invite_ring(bounds: Bounds<Pixels>, progress: f32, window: &mut Window) {
     const RADIUS: f32 = 11.;
@@ -5415,6 +5425,17 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_invite_ring_asks_for_frames_only_while_seen_and_running() {
+        assert!(invite_ring_wants_frame(0.3, true, true, false));
+        // Clipped away by the channel list: no frames.
+        assert!(!invite_ring_wants_frame(0.3, false, true, false));
+        // Done, in a window without focus, or with reduced motion.
+        assert!(!invite_ring_wants_frame(1., true, true, false));
+        assert!(!invite_ring_wants_frame(0.3, true, false, false));
+        assert!(!invite_ring_wants_frame(0.3, true, true, true));
+    }
+
     use super::*;
 
     #[test]
