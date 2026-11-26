@@ -14361,6 +14361,8 @@ impl Render for Root {
             .children(self.clip_upload_dialog(cx))
             // Not in the pinned client: Quoter's dialog (`plugin_hooks/quoter.rs`).
             .children(self.quoter_dialog(window, cx))
+            // Not in the pinned client: GifMaker's dialog (`plugin_hooks/gif_maker.rs`).
+            .children(self.gif_maker_dialog(window, cx))
             // Not in the pinned client: UserPFP's Custom Avatar dialog (`plugin_hooks/userpfp.rs`).
             .children(self.userpfp_dialog(window, cx))
             // Not in the pinned client: ZipPreview's file dialog (`plugin_hooks/zip_preview.rs`).

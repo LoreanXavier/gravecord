@@ -147,8 +147,13 @@ impl<'a> Face<'a> {
         text.chars().map(|c| self.advance(c, size)).sum()
     }
 
+    /// The face's ascent at `size` (where `textBaseline = "top"` puts the baseline under the top).
+    pub(crate) fn ascent(&self, size: f32) -> f32 {
+        f32::from(self.face.ascender()) * self.scale(size)
+    }
+
     /// The outlines of `text` with its baseline's start at `x`, `y`.
-    fn outline(&self, text: &str, size: f32, x: f32, y: f32) -> Option<Path> {
+    pub(crate) fn outline(&self, text: &str, size: f32, x: f32, y: f32) -> Option<Path> {
         let mut builder = PathBuilder::new();
         let scale = self.scale(size);
         let mut pen_x = x;

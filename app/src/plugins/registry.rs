@@ -1525,6 +1525,104 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "GifMaker",
+        name: "GifMaker",
+        description: "Create and caption GIFs from any media in chat or the GIF picker.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/gifMaker/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "lastWidth",
+                label: "Last Width",
+                description: "The width the last GIF was made at",
+                kind: Kind::Number {
+                    default: 256.,
+                    min: 32.,
+                    max: 1024.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "lastHeight",
+                label: "Last Height",
+                description: "The height the last GIF was made at",
+                kind: Kind::Number {
+                    default: 256.,
+                    min: 32.,
+                    max: 1024.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "lastCaptionMode",
+                label: "Last Caption Mode",
+                description: "The caption the last GIF was made with",
+                kind: Kind::Select {
+                    options: &[
+                        ("None", Lit::Str("none")),
+                        ("Caption", Lit::Str("caption")),
+                        ("Bubble", Lit::Str("speechbubble")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "lastCaptionText",
+                label: "Last Caption Text",
+                description: "The caption's text the last GIF was made with",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 500,
+                },
+            },
+            Setting {
+                key: "lastCaptionSize",
+                label: "Last Caption Size",
+                description: "The caption's font size the last GIF was made with",
+                kind: Kind::Number {
+                    default: 40.,
+                    min: 10.,
+                    max: 100.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "lastBubbleTipBase",
+                label: "Last Bubble Tip Base",
+                description: "Where the bubble's tip started on the last GIF",
+                kind: Kind::Number {
+                    default: 0.1,
+                    min: 0.,
+                    max: 0.8,
+                    step: 0.01,
+                },
+            },
+            Setting {
+                key: "maxWidth",
+                label: "Max Width",
+                description: "Maximum auto-fit width.",
+                kind: Kind::Number {
+                    default: 1024.,
+                    min: 32.,
+                    max: 4096.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "maxHeight",
+                label: "Max Height",
+                description: "Maximum auto-fit height.",
+                kind: Kind::Number {
+                    default: 576.,
+                    min: 32.,
+                    max: 4096.,
+                    step: 1.,
+                },
+            },
+        ],
+    },
+    Def {
         id: "GifPaste",
         name: "GifPaste",
         description: "Picking a GIF puts its link in the message box instead of sending it.",

@@ -38,6 +38,8 @@ mod full_search_context;
 pub(in crate::ui) use full_search_context::{full_search_context, full_search_context_items};
 mod full_vc_pfp;
 mod game_activity_toggle;
+mod gif_maker;
+pub(in crate::ui) use gif_maker::gif_maker_picker;
 mod gif_provider_switcher;
 pub(in crate::ui) use gif_provider_switcher::{
     gif_provider, gif_provider_badge, gif_provider_placeholder,

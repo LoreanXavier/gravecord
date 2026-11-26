@@ -128,6 +128,8 @@ pub(super) enum Action {
     PluginTranslate,
     /// Not in the pinned client: Quoter's "Quote" (`plugin_hooks/quoter.rs`).
     PluginQuote,
+    /// Not in the pinned client: GifMaker's "Make GIF" (`plugin_hooks/gif_maker.rs`).
+    PluginMakeGif,
     /// Not in the pinned client: ExpressionManager's sticker rows (`plugin_hooks/expression_manager.rs`).
     PluginCloneSticker,
     PluginCopyStickerLink,
@@ -1185,6 +1187,8 @@ impl Root {
             Action::PluginTranslate => self.translate_plus_start(message, found.content.clone()),
             // Not in the pinned client: Quoter (`plugin_hooks/quoter.rs`).
             Action::PluginQuote => self.quoter_open(&found, cx),
+            // Not in the pinned client: GifMaker (`plugin_hooks/gif_maker.rs`).
+            Action::PluginMakeGif => self.gif_maker_open_message(&found, cx),
             // Not in the pinned client: ExpressionManager (`plugin_hooks/expression_manager.rs`).
             Action::PluginCloneSticker => self.expression_manager_act(
                 super::context_menu::Act::PluginCloneSticker,
@@ -1743,6 +1747,7 @@ impl Root {
                             | Action::PluginOpenStickerLink
                             | Action::PluginTranslate
                             | Action::PluginQuote
+                            | Action::PluginMakeGif
                             | Action::PluginToggleDeletedHighlight
                             | Action::PluginToggleDiffView
                             | Action::PluginClearMessageHistory
@@ -1772,14 +1777,19 @@ impl Root {
         })
         // Not in the pinned client: Translate+ gives its row the icon after the label as well (`icon` and
         // `leadingAccessory`).
-        // Quoter's row does the same (`plugin_hooks/quoter.rs`).
+        // Quoter's and GifMaker's rows do the same (`plugin_hooks/quoter.rs`, `plugin_hooks/gif_maker.rs`).
         .when(
-            matches!(run, Action::PluginTranslate | Action::PluginQuote),
+            matches!(
+                run,
+                Action::PluginTranslate | Action::PluginQuote | Action::PluginMakeGif
+            ),
             |this| {
                 this.child(
                     svg()
                         .path(if run == Action::PluginQuote {
                             "icons/plugin_quote.svg"
+                        } else if run == Action::PluginMakeGif {
+                            "icons/gif.svg"
                         } else {
                             "icons/plugin_translate.svg"
                         })
@@ -2375,6 +2385,8 @@ impl Root {
             return search_result_items(open.own, saved);
         }
         let mut items = message_items_saved(open.own, saved);
+        // Not in the pinned client: GifMaker's Make GIF (`plugin_hooks/gif_maker.rs`).
+        self.gif_maker_items(&mut items, open.message);
         // Not in the pinned client: Quoter's Quote (`plugin_hooks/quoter.rs`).
         Self::quoter_items(&mut items, saved.empty);
         // Not in the pinned client: FullSearchContext's Copy Author ID (`plugin_hooks/full_search_context.rs`).

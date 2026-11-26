@@ -1059,6 +1059,11 @@ impl Root {
                 let chosen = gif.clone();
                 let starred = gif.clone();
                 let link = gif.url.clone();
+                let picked = (
+                    gif.picture.clone(),
+                    format!("gif:{}", gif.id),
+                    (gif.width, gif.height),
+                );
                 let query = query.clone();
                 let favorite = favorites.iter().any(|known| known.url == gif.url);
                 let group = SharedString::from(format!("gif-group-{}", gif.id));
@@ -1148,6 +1153,12 @@ impl Root {
                         gpui::MouseButton::Right,
                         cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                             this.context.gif_link = Some(link.clone());
+                            // Not in the pinned client: GifMaker's Edit GIF (`plugin_hooks/gif_maker.rs`).
+                            super::plugin_hooks::gif_maker_picker(
+                                &picked.0,
+                                picked.1.clone(),
+                                picked.2,
+                            );
                             this.open_context_menu(
                                 super::context_menu::Target::PickerGif,
                                 event.position,

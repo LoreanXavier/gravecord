@@ -19,6 +19,7 @@ pub(crate) mod clip_upload;
 pub(crate) mod custom_rpc;
 pub(crate) mod experiments;
 mod experiments_table;
+pub(crate) mod gif_maker;
 pub(crate) mod gif_provider;
 pub(crate) mod quoter;
 mod registry;

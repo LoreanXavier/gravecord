@@ -444,6 +444,8 @@ pub(super) enum Act {
     PluginViewPermissions,
     /// Not in the pinned client: MessageLogger's Clear Message Log (`plugin_hooks/message_logger.rs`).
     PluginClearMessageLog,
+    /// Not in the pinned client: GifMaker's Make GIF and Edit GIF (`plugin_hooks/gif_maker.rs`).
+    PluginMakeGif,
     /// Not in the pinned client: ExpressionManager's rows (`plugin_hooks/expression_manager.rs`).
     PluginCloneSticker,
     PluginEditExpression,
@@ -513,7 +515,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 198] = [
+    pub(super) const ALL: [Act; 200] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -681,6 +683,8 @@ impl Act {
         Act::PluginCopyStickerLink,
         Act::PluginOpenStickerLink,
         Act::PluginRemoveFromRecents,
+        Act::PluginMakeGif,
+        Act::ViewAsRole,
         Act::ConnectSpotify,
         Act::PlayOnSpotify,
         Act::EditTags,
@@ -916,6 +920,7 @@ impl Act {
             Act::CopyContact => 196,
             Act::SendSms => 197,
             Act::ViewAsRole => 198,
+            Act::PluginMakeGif => 199,
         }
     }
 }
@@ -1007,7 +1012,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginDeleteExpression
         | Act::PluginCopyStickerLink
         | Act::PluginOpenStickerLink
-        | Act::PluginRemoveFromRecents => Wired,
+        | Act::PluginRemoveFromRecents
+        | Act::PluginMakeGif => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -5910,6 +5916,8 @@ impl Root {
         let items = self.with_message_logger_row(items, target);
         // Not in the pinned client: ExpressionManager's expression rows (`plugin_hooks/expression_manager.rs`).
         let items = self.with_expression_manager_rows(items, target);
+        // Not in the pinned client: GifMaker's row (`plugin_hooks/gif_maker.rs`).
+        let items = self.with_gif_maker_row(items, target);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -6248,6 +6256,8 @@ impl Root {
                 let shift = window.modifiers().shift;
                 self.expression_manager_act(act, target, shift, cx);
             }
+            // Not in the pinned client: GifMaker (`plugin_hooks/gif_maker.rs`).
+            (Act::PluginMakeGif, target) => self.gif_maker_open_target(target, cx),
             // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`).
             (Act::PluginClearMessageLog, target) => {
                 if let Some(channel) = self.message_logger_menu_channel(target) {
