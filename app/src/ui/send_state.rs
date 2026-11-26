@@ -838,14 +838,17 @@ impl Root {
         }
     }
 
-    /// Whether the message list shows its bottom: scrolled to the end (or too short to scroll) with the newest
-    /// messages loaded. A send made while reading history does not arrive with motion.
+    /// Whether the message list shows its bottom with the newest messages loaded: held at its end (no scroll since
+    /// the rows were last built, or scrolled to the end by a send or a jump), or measured to be at the end. A list
+    /// whose position is unknown counts as away from it. A send made while reading history does not arrive with
+    /// motion.
     fn shows_present(&self) -> bool {
         let latest_loaded = self
             .channel
             .and_then(|channel| self.stores.windows.get(&channel))
             .is_none_or(|window| !window.has_more_after);
-        latest_loaded && self.list.is_scrolled_to_end() != Some(false)
+        let held_at_end = self.list.logical_scroll_top().item_ix >= self.list.item_count();
+        latest_loaded && (held_at_end || self.list.is_scrolled_to_end() == Some(true))
     }
 
     /// The row at `index`, drawn as Phoenix's `MessageArrival` while its message arrives (`motion/arrival.rs`).

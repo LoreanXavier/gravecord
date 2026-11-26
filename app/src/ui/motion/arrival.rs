@@ -22,8 +22,9 @@ use std::collections::HashMap;
 /// `MessageArrival`'s `grow` and `fade`: 300 ms, curve 4 of Phoenix's motion layer (`ease-in-out`).
 pub const ARRIVAL: Css = Css::new(300., Ease::EaseInOut).full_motion();
 
-/// How long a recorded arrival waits for its row to be drawn before it is forgotten (a send whose row never shows).
-const UNSEEN_MS: f64 = 2000.;
+/// How long a recorded arrival is kept. A run takes 300 ms; one whose row stopped being drawn (a channel switch) or
+/// never was is forgotten after this, so it cannot replay later.
+const FORGET_MS: f64 = 2000.;
 
 #[derive(Clone, Copy)]
 struct Arrival {
@@ -31,8 +32,6 @@ struct Arrival {
     key: u64,
     /// When the send was recorded, on the motion clock.
     recorded: f64,
-    /// Whether a row has read it yet.
-    seen: bool,
 }
 
 #[derive(Default)]
@@ -56,13 +55,14 @@ pub fn begin(message: Id) {
     with(|arrivals| {
         arrivals
             .by_message
-            .retain(|_, arrival| arrival.seen || now - arrival.recorded < UNSEEN_MS);
+            .retain(|_, arrival| now - arrival.recorded < FORGET_MS);
+        let live: Vec<u64> = arrivals.by_message.values().map(|a| a.key).collect();
+        arrivals.heights.retain(|key, _| live.contains(key));
         arrivals.by_message.insert(
             message,
             Arrival {
                 key: key(&("message-arrival", message)),
                 recorded: now,
-                seen: false,
             },
         );
     });
@@ -85,11 +85,7 @@ pub fn is_arriving(message: Id) -> bool {
 /// The progress of the row of `message` this frame, from 0 to 1 and eased, or `None` when the row is not arriving.
 /// A finished run is forgotten, so the row is drawn plain from then on.
 pub fn progress(message: Id) -> Option<f32> {
-    let arrival = with(|arrivals| {
-        let arrival = arrivals.by_message.get_mut(&message)?;
-        arrival.seen = true;
-        Some(*arrival)
-    })?;
+    let arrival = with(|arrivals| arrivals.by_message.get(&message).copied())?;
     let t = value_from(arrival.key, 0., 1., ARRIVAL);
     if t >= 1. {
         with(|arrivals| {
@@ -281,9 +277,25 @@ mod tests {
         reset_for_tests();
         frame(0., false);
         begin(1);
-        frame(UNSEEN_MS + 1., false);
+        frame(FORGET_MS + 1., false);
         begin(2);
         assert!(!is_arriving(1));
         assert!(is_arriving(2));
+    }
+
+    #[test]
+    fn a_run_left_halfway_is_forgotten_and_does_not_replay() {
+        reset_motion();
+        reset_for_tests();
+        frame(0., false);
+        begin(1);
+        let _ = progress(1);
+        frame(100., false);
+        assert!(progress(1).is_some_and(|t| t > 0. && t < 1.));
+        // The channel changes: the row is not drawn again until much later.
+        frame(FORGET_MS + 200., false);
+        begin(2);
+        assert!(!is_arriving(1));
+        assert_eq!(progress(1), None);
     }
 }
