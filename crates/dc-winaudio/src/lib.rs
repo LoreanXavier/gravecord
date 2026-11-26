@@ -1,10 +1,13 @@
 //! Windows-only audio and network pieces of the voice stack, kept out of `dc-voice` so that crate stays free of
-//! `unsafe`: other applications' audio session volumes (global attenuation) and qWAVE packet priority.
+//! `unsafe`: other applications' audio session volumes (global attenuation), qWAVE packet priority and the notifications
+//! of audio endpoint changes.
 //!
 //! The attenuation's decisions and bookkeeping are plain Rust over a [`attenuation::Backend`]; only
 //! `wasapi.rs` and `qos.rs` call into Windows.
 
 pub mod attenuation;
+#[cfg(windows)]
+mod endpoints;
 pub mod qos;
 #[cfg(windows)]
 mod wasapi;
@@ -74,4 +77,20 @@ pub fn recover_attenuation(journal: &Path) -> usize {
 /// At quit: restores everything the attenuation holds and stops its thread.
 pub fn shutdown() {
     attenuation().shutdown();
+}
+
+/// Calls `changed` whenever Windows reports an audio endpoint added, removed, enabled or disabled, renamed, or made
+/// the default, for as long as the returned registration lives (build and drop it on one thread). An error where
+/// that is not available: the caller lists the devices on a timer instead.
+#[cfg(windows)]
+pub fn watch_endpoints(
+    changed: impl Fn() + Send + Sync + 'static,
+) -> Result<endpoints::EndpointWatch, String> {
+    endpoints::EndpointWatch::new(changed)
+}
+
+#[cfg(not(windows))]
+pub fn watch_endpoints(changed: impl Fn() + Send + Sync + 'static) -> Result<(), String> {
+    let _ = changed;
+    Err("endpoint notifications need Windows".to_owned())
 }

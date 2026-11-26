@@ -830,7 +830,8 @@ impl Root {
         self.voice.extra.devices.dont_switch();
     }
 
-    /// Lists the devices every two seconds from the first connection on, for as long as the app runs.
+    /// From the first connection on, for as long as the app runs, compares the watcher's latest list every two seconds
+    /// (a lock and a compare; the watcher lists the devices only when Windows reports a change).
     fn start_voice_polling(&mut self, cx: &mut Context<Self>) {
         if self.voice.extra.polling {
             return;

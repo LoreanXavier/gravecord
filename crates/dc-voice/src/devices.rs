@@ -1,8 +1,10 @@
 //! New audio devices during a call, and the suggestion to switch to one: `ConnectedDeviceStore` (module 868162) and the
 //! connected device manager (286980, opened as the "New Audio Device Detected" modal by 596339 `Nf`).
 //!
-//! The official client hears about devices from the OS (`MEDIA_ENGINE_DEVICES`); here a thread lists the devices every
-//! two seconds through cpal and [`ConnectedDevices::update`] does what the store's handler does with each list. The
+//! The official client hears about devices from the OS (`MEDIA_ENGINE_DEVICES`); here a thread lists the devices
+//! through cpal when Windows reports an endpoint change (`IMMNotificationClient`, `dc_winaudio::watch_endpoints`), or
+//! every two seconds where that is not available, and [`ConnectedDevices::update`] does what the store's handler does
+//! with each list. The
 //! rules are ported as they read:
 //! - the first list only records what exists;
 //! - a device that disappeared clears every pending suggestion;
@@ -17,7 +19,7 @@
 //! not-certified kind.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 /// The system's devices by the names cpal gives them, and the default ones.
@@ -309,7 +311,7 @@ impl ConnectedDevices {
     }
 }
 
-/// A thread that lists the devices every two seconds. Cheap to read.
+/// A thread that lists the devices when they change. Cheap to read.
 pub struct DeviceWatch {
     latest: Arc<Mutex<DeviceList>>,
 }
@@ -323,10 +325,48 @@ impl DeviceWatch {
     }
 }
 
-/// How often the devices are listed.
+/// How often the devices are listed where endpoint notifications are not available, and how often the app reads the
+/// latest list.
 pub const POLL: Duration = Duration::from_secs(2);
+/// How long after a notification the devices are listed: one plug or one default change arrives as several
+/// notifications in a row (added, state changed, default changed for each role, properties).
+const SETTLE: Duration = Duration::from_millis(150);
 
-/// The process-wide watcher; the first call lists the devices and starts the thread.
+/// Raised by the endpoint notifications, waited on by the listing thread.
+#[derive(Default)]
+struct Changes {
+    pending: Mutex<bool>,
+    condvar: Condvar,
+}
+
+impl Changes {
+    fn raise(&self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            *pending = true;
+        }
+        self.condvar.notify_one();
+    }
+
+    /// Waits for a change, then for the burst it belongs to to settle.
+    fn wait(&self) {
+        let Ok(pending) = self.pending.lock() else {
+            std::thread::sleep(POLL);
+            return;
+        };
+        let Ok(mut pending) = self.condvar.wait_while(pending, |pending| !*pending) else {
+            return;
+        };
+        *pending = false;
+        drop(pending);
+        std::thread::sleep(SETTLE);
+        if let Ok(mut pending) = self.pending.lock() {
+            *pending = false;
+        }
+    }
+}
+
+/// The process-wide watcher; the first call lists the devices and starts the thread. The thread sleeps until Windows
+/// reports a change; without notifications it lists the devices every [`POLL`].
 pub fn watch() -> &'static DeviceWatch {
     static WATCH: OnceLock<DeviceWatch> = OnceLock::new();
     WATCH.get_or_init(|| {
@@ -335,8 +375,19 @@ pub fn watch() -> &'static DeviceWatch {
         let _ = std::thread::Builder::new()
             .name("dc-voice-devices".into())
             .spawn(move || {
+                let changes = Arc::new(Changes::default());
+                let raised = changes.clone();
+                // Lives as long as the thread: notifications stop when it is dropped.
+                let notifications = dc_winaudio::watch_endpoints(move || raised.raise());
+                if let Err(error) = &notifications {
+                    tracing::warn!("audio device changes are polled: {error}");
+                }
                 loop {
-                    std::thread::sleep(POLL);
+                    if notifications.is_ok() {
+                        changes.wait();
+                    } else {
+                        std::thread::sleep(POLL);
+                    }
                     let list = DeviceList::read();
                     if let Ok(mut slot) = shared.lock() {
                         *slot = list;
@@ -350,6 +401,28 @@ pub fn watch() -> &'static DeviceWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_wakes_the_listing_thread_once_its_burst_settles() {
+        let changes = Arc::new(Changes::default());
+        let waiter = {
+            let changes = changes.clone();
+            std::thread::spawn(move || {
+                let started = std::time::Instant::now();
+                changes.wait();
+                started.elapsed()
+            })
+        };
+        std::thread::sleep(Duration::from_millis(30));
+        // A plug: several notifications in a row.
+        for _ in 0..4 {
+            changes.raise();
+        }
+        let waited = waiter.join().unwrap();
+        assert!(waited >= Duration::from_millis(30) + SETTLE);
+        // The burst was consumed: nothing is pending for the next wait.
+        assert!(!*changes.pending.lock().unwrap());
+    }
 
     fn list(inputs: &[&str], outputs: &[&str], default_in: &str, default_out: &str) -> DeviceList {
         DeviceList {

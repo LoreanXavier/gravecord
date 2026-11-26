@@ -12,6 +12,8 @@ tracing.workspace = true
 
 # The same features cpal 0.18 already turns on, so this adds no build work.
 [target.'cfg(windows)'.dependencies]
+# `#[implement]` of the endpoint notification client expands to `windows_core` paths.
+windows-core = "0.62"
 windows = { version = "0.62", features = [
     "Win32_Media",
     "Win32_Media_Audio",
