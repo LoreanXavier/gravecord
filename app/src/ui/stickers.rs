@@ -104,6 +104,10 @@ impl Stickers {
     pub(crate) fn take_staged(&mut self) -> Option<Id> {
         self.staged.take()
     }
+
+    pub(crate) fn has_staged(&self) -> bool {
+        self.staged.is_some()
+    }
 }
 
 /// Module 378058 `zg`: the picture's address for a sticker.

@@ -326,6 +326,7 @@ mod search;
 mod search_feedback;
 mod search_filters;
 mod search_pager;
+mod send_rules;
 mod send_state;
 mod server_access;
 mod server_audit;
@@ -1503,7 +1504,7 @@ impl Root {
                     return;
                 }
                 this.last_typing_sent = None;
-                this.send(content.clone());
+                this.send_typed(content.clone(), cx);
             }
             EditorEvent::Edited => {
                 if this.pref_on("chat_emoji_convert_emoticons", true)
@@ -5190,19 +5191,10 @@ impl Root {
             return true;
         }
         if keys.key == "up" && plain && self.composer.read(cx).text().is_empty() {
-            let me = self.stores.current_user.as_ref().map(|user| user.id);
+            // `handleEditLastMessage(getLastEditableMessage(channel))` (module 699344).
             let last = self
                 .channel
-                .and_then(|channel| self.stores.messages.get(&channel))
-                .and_then(|messages| {
-                    messages.iter().rev().find(|message| {
-                        Some(message.author.id) == me
-                                && message.kind == 0
-                                // Not in the pinned client: MessageLogger leaves deleted messages out
-                                // (`getLastEditableMessage`, `plugin_hooks/message_logger.rs`).
-                                && !plugin_hooks::message_logger_deleted(message.id)
-                    })
-                })
+                .and_then(|channel| self.last_editable_message(channel))
                 .map(|message| (message.id, message.content.clone()));
             if let Some((id, content)) = last {
                 self.begin_edit(id, &content, window, cx);
@@ -5357,6 +5349,25 @@ impl Root {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// A message typed in the composer: the send path's text rules (module 751258 `S`) first; one that acted sends
+    /// nothing of its own. Commands and plugins send through [`Self::send`] directly, as the pinned client's
+    /// `sendMessage` skips the rules.
+    fn send_typed(&mut self, content: String, cx: &mut Context<Self>) {
+        let content = match self.send_rules(&content, cx) {
+            Some(instead) => {
+                if instead.is_empty()
+                    && self.pending_files.is_empty()
+                    && !self.sticker_ui.has_staged()
+                {
+                    self.replying = None;
+                }
+                instead
+            }
+            None => content,
+        };
+        self.send(content);
     }
 
     fn send(&mut self, content: String) {

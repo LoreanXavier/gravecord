@@ -1,4 +1,4 @@
-//! The composer's suggestion popup for `@`, `#`, `#!` and `:`. The rules (what is offered, in which order, what
+//! The composer's suggestion popup for `@`, `#`, `#!`, `:` and a first word `+:` (the reaction shortcut). The rules (what is offered, in which order, what
 //! goes into the text) live in `dc_state::autocomplete`, ported from modules 84046, 31498, 997625 and 927659; the
 //! rows and sizes are from `design/dom/channel/autocomplete-*-darker-cozy.json`.
 
@@ -143,6 +143,10 @@ fn lines(open: &Open) -> Vec<Line> {
                 // A voice channel's query keeps the `!` it starts with out of the title.
                 3 => Some(title("rMUL3+", "CYnO4s", query, &format!("#!{query}"))),
                 4 => Some(title("UhnmJD", "nIfr0Y", query, &format!("#{query}"))),
+                // `REACTIONS`: "Add reaction +:query" (`getQuery`).
+                5 if open.trigger.kind == Kind::Reaction => {
+                    Some(title("o1Nmpc", "sMOuuS", query, &format!("+:{query}")))
+                }
                 5 => Some(title("ksAVYt", "sMOuuS", query, &format!(":{query}"))),
                 6 => Some(title("uferGG", "fT+Yjp", query, &format!(":{query}"))),
                 _ => None,
@@ -209,7 +213,8 @@ impl Root {
             Kind::Mention => self.mention_entries(&trigger.query),
             Kind::Channel => self.channel_entries(&trigger.query, false),
             Kind::VoiceChannel => self.channel_entries(&trigger.query, true),
-            Kind::Emoji => self.emoji_entries(&trigger.query),
+            Kind::Emoji => self.emoji_entries(&trigger.query, true),
+            Kind::Reaction => self.reaction_entries(&trigger.query),
             Kind::Command => Vec::new(),
         };
         self.request_autocomplete_images(&entries);
@@ -394,7 +399,21 @@ impl Root {
             .collect()
     }
 
-    fn emoji_entries(&self, query: &str) -> Vec<Entry> {
+    /// `REACTIONS` of module 496533: with `addReactionShortcut` (the chat input), and Add Reactions here or a DM, the
+    /// emoji for the query (`queryEmojiResults` with the reaction intention, at most 50, no stickers); an empty query
+    /// finds none.
+    fn reaction_entries(&self, query: &str) -> Vec<Entry> {
+        let allowed = self.guild.is_none()
+            || self
+                .current_channel()
+                .is_some_and(|channel| self.can_in_channel(channel, permissions::ADD_REACTIONS));
+        if !allowed || query.is_empty() {
+            return Vec::new();
+        }
+        self.emoji_entries(query, false)
+    }
+
+    fn emoji_entries(&self, query: &str, stickers: bool) -> Vec<Entry> {
         let now = picker::now_ms();
         let scores = self.emoji_frecency().scores(now);
         let tone = self.skin_tone;
@@ -472,8 +491,9 @@ impl Root {
         }
         // `queryResults` of module 496533: with stickers on, at most 10 emoji are searched and the list keeps
         // `max(6, 10 - stickers)` of them after `max(4, 8 - emoji)` stickers; off, 50 emoji.
-        let stickers_on =
-            self.pref_on("chat_stickers_autocomplete", false) && query.chars().count() > 1;
+        let stickers_on = stickers
+            && self.pref_on("chat_stickers_autocomplete", false)
+            && query.chars().count() > 1;
         let limit = if stickers_on { 10 } else { EMOJI_LIMIT };
         let mut emoji: Vec<Entry> = found
             .into_iter()
@@ -699,6 +719,31 @@ impl Root {
                 composer.replace_range(start..end, "", cx);
             });
             self.choose_sticker(id, false, cx);
+            let focus = gpui::Focusable::focus_handle(self.composer.read(cx), cx);
+            window.focus(&focus, cx);
+            cx.notify();
+            return;
+        }
+        // `REACTIONS.onSelect`: `sendMessage("+:name:")`, which the send path's reaction rule takes.
+        if open.trigger.kind == Kind::Reaction
+            && let Entry::Emoji { name, .. } = entry
+        {
+            // The typed pluses go with it: one in the pinned client, more with BetterPlusReacts.
+            let pluses = self
+                .composer
+                .read(cx)
+                .text()
+                .get(open.trigger.start..)
+                .unwrap_or("")
+                .chars()
+                .take_while(|ch| *ch == '+')
+                .count()
+                .max(1);
+            let content = format!("{}:{name}:", "+".repeat(pluses));
+            self.composer
+                .update(cx, |composer, _| composer.set_text(""));
+            self.last_typing_sent = None;
+            self.send_typed(content, cx);
             let focus = gpui::Focusable::focus_handle(self.composer.read(cx), cx);
             window.focus(&focus, cx);
             cx.notify();

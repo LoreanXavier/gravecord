@@ -157,6 +157,8 @@ pub enum Kind {
     VoiceChannel,
     Emoji,
     Command,
+    /// `+:` at the start of the text: the emoji to react to the last message with (`REACTIONS`, module 496533).
+    Reaction,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,6 +194,10 @@ pub fn detect(text: &str, caret: usize, private: bool) -> Option<Trigger> {
         && rest.chars().count() > 1
     {
         return Some(make(Kind::Emoji, 1));
+    }
+    // `REACTIONS` (sentinel `+:`) matches only the text's first word (`currentWordIsAtStart`).
+    if word.starts_with("+:") && before[..start].trim().is_empty() {
+        return Some(make(Kind::Reaction, 2));
     }
     if word.starts_with('#') && !private {
         return Some(match word.strip_prefix("#!") {
@@ -752,6 +758,18 @@ mod tests {
         assert_eq!(detect("/me hi @lo", 10, false).unwrap().kind, Kind::Mention);
         assert_eq!(detect("/me hi", 6, false).unwrap().query, "me hi");
         assert_eq!(detect("a /shr", 6, false), None);
+        let react = detect("+:thu", 5, false).unwrap();
+        assert_eq!(
+            (react.kind, react.query.as_str(), react.start),
+            (Kind::Reaction, "thu", 0)
+        );
+        assert_eq!(detect("+:", 2, true).unwrap().kind, Kind::Reaction);
+        assert_eq!(
+            detect("hi +:thu", 8, false),
+            None,
+            "only the first word reacts"
+        );
+        assert_eq!(detect("++:thu", 6, false), None);
     }
 
     #[test]
