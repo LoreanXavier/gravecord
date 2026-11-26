@@ -2773,6 +2773,10 @@ impl Root {
                 if self.valid_user_fetched(&key, &body, cx) {
                     return;
                 }
+                // Not in the pinned client: ValidReply's fetched message (`plugin_hooks/valid_reply.rs`).
+                if self.valid_reply_fetched(&key, &body, cx) {
+                    return;
+                }
                 // Not in the pinned client: DownloadAllAttachments' outcome (`plugin_hooks/download_all.rs`).
                 if self.download_all_answered(&key, &body, cx) {
                     return;
@@ -5443,7 +5447,10 @@ impl Root {
                 .and_then(|list| list.iter().rev().find(|known| known.id == id))
             {
                 Some(found) => Reference::Loaded(Box::new(found.clone())),
-                None => Reference::NotLoaded { channel, id },
+                // Not in the pinned client: ValidReply's fetched message (`plugin_hooks/valid_reply.rs`).
+                None => {
+                    Self::valid_reply_reference(id).unwrap_or(Reference::NotLoaded { channel, id })
+                }
             },
         )
     }
@@ -10590,6 +10597,12 @@ impl Root {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.jump_to_message_id(channel, id, true, None);
                             cx.notify();
+                        }))
+                        // Not in the pinned client: ValidReply's fetch (`plugin_hooks/valid_reply.rs`).
+                        .on_hover(cx.listener(move |this, over: &bool, _, _| {
+                            if *over {
+                                this.valid_reply_hovered(channel, id);
+                            }
                         }))
                         .child(self.reply_missing(message.id, false, compact))
                         .into_any_element(),

@@ -95,6 +95,7 @@ mod usrbg;
 pub(in crate::ui) use usrbg::{usrbg_banner, usrbg_voice_background};
 mod unlocked_avatar_zoom;
 pub(in crate::ui) use unlocked_avatar_zoom::crop_max_zoom;
+mod valid_reply;
 mod valid_user;
 mod view_icons;
 mod voice_messages;

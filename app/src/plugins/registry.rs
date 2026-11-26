@@ -3095,6 +3095,15 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "ValidReply",
+        name: "ValidReply",
+        description: "Fixes \"Message could not be loaded\" upon hovering over the reply",
+        origin: Origin::Vencord,
+        source: "src/plugins/validReply/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "ValidUser",
         name: "ValidUser",
         description: "Fix mentions for unknown users showing up as '@unknown-user' (hover over a mention to fix it)",
