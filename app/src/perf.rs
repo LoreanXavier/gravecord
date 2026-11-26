@@ -31,6 +31,23 @@ static ALLOCATOR: CountingAlloc = CountingAlloc;
 
 static HEAP_LIVE: AtomicUsize = AtomicUsize::new(0);
 static HEAP_PEAK: AtomicUsize = AtomicUsize::new(0);
+/// Bytes allocated so far by size: under 16 KiB, under 256 KiB, under 1 MiB, 1 MiB and more.
+static CLASSES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+fn count_class(size: usize) {
+    let class = match size {
+        0..16_384 => 0,
+        16_384..262_144 => 1,
+        262_144..1_048_576 => 2,
+        _ => 3,
+    };
+    CLASSES[class].fetch_add(size as u64, Ordering::Relaxed);
+}
+
+fn classes() -> String {
+    let mb = |class: usize| CLASSES[class].load(Ordering::Relaxed) / 1_048_576;
+    format!("alloc_mb=[{} {} {} {}]", mb(0), mb(1), mb(2), mb(3))
+}
 
 /// With `GRAVECORD_HEAP_PROFILE=1` the allocator remembers a sample of live allocations with the stack that made
 /// them: one for about every `INTERVAL` bytes allocated, and every allocation of at least that size, until it is
@@ -119,6 +136,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
         if !pointer.is_null() {
             let now = HEAP_LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
             HEAP_PEAK.fetch_max(now, Ordering::Relaxed);
+            count_class(layout.size());
             track_big(pointer, layout.size());
         }
         pointer
@@ -129,6 +147,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
         if !pointer.is_null() {
             let now = HEAP_LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
             HEAP_PEAK.fetch_max(now, Ordering::Relaxed);
+            count_class(layout.size());
             track_big(pointer, layout.size());
         }
         pointer
@@ -149,6 +168,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
             HEAP_LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
             let now = HEAP_LIVE.fetch_add(new_size, Ordering::Relaxed) + new_size;
             HEAP_PEAK.fetch_max(now, Ordering::Relaxed);
+            count_class(new_size);
             track_big(moved, new_size);
         }
         moved
@@ -695,6 +715,87 @@ pub fn summary(samples: &mut [f64], limit: f64) -> String {
         at(0.95),
         samples[samples.len() - 1],
     )
+}
+
+/// The heaps of the process: bytes committed and bytes handed out, all heaps together (`HeapSummary`).
+pub fn heap_summary() -> (u64, u64) {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Memory::{GetProcessHeaps, HEAP_SUMMARY, HeapSummary};
+    let mut heaps = vec![HANDLE::default(); 64];
+    let count = unsafe { GetProcessHeaps(&mut heaps) } as usize;
+    let (mut committed, mut allocated) = (0u64, 0u64);
+    for heap in heaps.iter().take(count.min(heaps.len())) {
+        let mut summary = HEAP_SUMMARY {
+            cb: std::mem::size_of::<HEAP_SUMMARY>() as u32,
+            ..Default::default()
+        };
+        if unsafe { HeapSummary(*heap, 0, &mut summary) }.as_bool() {
+            committed += summary.cbCommitted as u64;
+            allocated += summary.cbAllocated as u64;
+        }
+    }
+    (committed, allocated)
+}
+
+/// `perf watch begin` / `perf watch end`: what the private bytes were made of at their highest point in between,
+/// sampled every 10 ms on a thread of its own.
+static WATCH: std::sync::Mutex<
+    Option<(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::thread::JoinHandle<String>,
+    )>,
+> = std::sync::Mutex::new(None);
+
+pub fn watch_begin() {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    let handle = std::thread::spawn(move || {
+        let mut best = 0u64;
+        let mut last = 0u64;
+        let mut series = Vec::new();
+        let mut line = String::new();
+        while !flag.load(Ordering::Relaxed) {
+            let (_, private, _) = memory();
+            if private.abs_diff(last) > 8 * 1024 * 1024 {
+                last = private;
+                let (heap_committed, heap_allocated) = heap_summary();
+                series.push(format!(
+                    "{}ms:{}/{}/{}/{} {}",
+                    since_process_start_ms(),
+                    private >> 20,
+                    heap_committed >> 20,
+                    heap_allocated >> 20,
+                    HEAP_LIVE.load(Ordering::Relaxed) >> 20,
+                    classes()
+                ));
+            }
+            if private > best + 4 * 1024 * 1024 {
+                best = private;
+                let (heap_committed, heap_allocated) = heap_summary();
+                let (image, mapped, committed_private) = committed();
+                line = format!(
+                    "private={private} rust_live={} heap_committed={heap_committed} heap_allocated={heap_allocated} commit_private={committed_private} commit_mapped={mapped} commit_image={image}",
+                    HEAP_LIVE.load(Ordering::Relaxed)
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        format!(
+            "{line} | series private/heap_committed/heap_allocated/rust MB: {}",
+            series.join(" ")
+        )
+    });
+    if let Ok(mut slot) = WATCH.lock() {
+        *slot = Some((stop, handle));
+    }
+}
+
+pub fn watch_end() -> String {
+    let Some((stop, handle)) = WATCH.lock().ok().and_then(|mut slot| slot.take()) else {
+        return "not watching".to_owned();
+    };
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap_or_default()
 }
 
 #[cfg(test)]

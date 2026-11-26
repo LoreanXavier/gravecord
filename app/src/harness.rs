@@ -2751,6 +2751,15 @@ pub async fn run(
             }
             // Measurements, see `perf.rs`: `perf sample <label>` (process counters), `perf caches` (sizes of the app's
             // own caches), `perf start` (when the content and the loading screen's end showed).
+            ["perf", "watch", "begin"] => crate::perf::watch_begin(),
+            ["perf", "watch", "end", label @ ..] => {
+                let _ = writeln!(
+                    output,
+                    "perf watch {}: {}",
+                    label.join(" "),
+                    crate::perf::watch_end()
+                );
+            }
             ["perf", "sample", label @ ..] => {
                 let renders = crate::perf::RENDERS.load(std::sync::atomic::Ordering::Relaxed);
                 let (working, private, private_peak) = crate::perf::memory();
