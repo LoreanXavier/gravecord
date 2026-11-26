@@ -1221,6 +1221,9 @@ impl Root {
                         playable,
                         cx,
                     )
+                    // Module 265705 `E`: the GIFV `<video>`'s `aria-label`, `alt` or "GIF".
+                    .role(gpui::Role::Video)
+                    .aria_label(dc_intl::t("I5gL2H"))
                     .group(group.clone())
                     .when(playable, |this| {
                         this.children(self.inline_video(message.id, index, embed, cx))

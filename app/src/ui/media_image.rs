@@ -762,6 +762,14 @@ impl Root {
 
         div()
             .id(SharedString::from(format!("{id_prefix}-{}", attachment.id)))
+            // The `<img>`'s or `<video>`'s `alt` (module 548146 `k` and `w`: the attachment's description) is its
+            // accessible name.
+            .role(if attachment.is_video() {
+                gpui::Role::Video
+            } else {
+                gpui::Role::Image
+            })
+            .when_some(attachment.description.clone(), |this, alt| this.aria_label(alt))
             .group(group.clone())
             .relative()
             .w(w)
