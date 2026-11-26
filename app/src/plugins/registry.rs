@@ -2588,6 +2588,34 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "ShowHiddenThings",
+        name: "ShowHiddenThings",
+        description: "Displays various hidden & moderator-only things regardless of permissions.",
+        origin: Origin::Vencord,
+        source: "src/plugins/showHiddenThings/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "showTimeouts",
+                label: "Show Timeouts",
+                description: "Show member timeout icons in chat.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showInvitesPaused",
+                label: "Show Invites Paused",
+                description: "Show the invites paused tooltip in the server list.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showModView",
+                label: "Show Mod View",
+                description: "Show the member mod view context menu item in all servers.",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "SilentMessageToggle",
         name: "SilentMessageToggle",
         description: "Adds a button to the chat bar to toggle sending a silent message.",

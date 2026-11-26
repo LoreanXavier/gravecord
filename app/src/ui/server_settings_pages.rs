@@ -1077,9 +1077,12 @@ impl Root {
                 .as_deref()
                 .and_then(|until| chrono::DateTime::parse_from_rfc3339(until).ok())
                 .is_some_and(|until| until.timestamp_millis() > now);
-        let allowed = self.stores.me().is_some_and(|me| {
-            dc_state::permissions::can_in_guild(known, me, dc_state::permissions::MANAGE_GUILD)
-        });
+        // Not in the pinned client: ShowHiddenThings' showInvitesPaused makes `Fi` answer yes
+        // (`plugin_hooks/show_hidden_things.rs`).
+        let allowed = paused && super::plugin_hooks::show_hidden_invites_paused()
+            || self.stores.me().is_some_and(|me| {
+                dc_state::permissions::can_in_guild(known, me, dc_state::permissions::MANAGE_GUILD)
+            });
         (paused, allowed)
     }
 

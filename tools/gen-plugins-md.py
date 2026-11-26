@@ -70,7 +70,7 @@ def balanced(text, start):
 
 
 def top_level_entries(block):
-    """`key: { ... }` entries at the top of an object literal."""
+    """`key: { ... }` and `key: helper(...)` entries at the top of an object literal."""
     inner, depth, i, out = block[1:-1], 0, 0, []
     while i < len(inner):
         c = inner[i]
@@ -82,6 +82,11 @@ def top_level_entries(block):
                     out.append((m.group(1), body))
                     i += len(body)
                     continue
+            if depth == 0 and c == '(':
+                # `key: helper(...)`: the helper's name, for the caller to look up.
+                m = re.search(r'(\w+)\s*:\s*(\w+)\s*$', inner[:i])
+                if m:
+                    out.append((m.group(1), m.group(2) + '('))
             depth += 1
         elif c in '})]':
             depth -= 1
@@ -127,6 +132,12 @@ for dp, dn, fn in os.walk(ROOT):
                         settings.append((key, 'BOOLEAN', 'true'))
             if s:
                 for key, body in top_level_entries(balanced(holder, s.end() - 1)):
+                    # A setting made by a helper of the file (`showTimeouts: opt("...")`, ShowHiddenThings): the
+                    # helper's own object gives the type and default.
+                    helper = re.match(r'\s*(\w+)\(', body)
+                    made = helper and re.search(r'const\s+' + helper.group(1) + r'\s*=[^{]*\(\{', holder)
+                    if made and not re.search(r'type:\s*OptionType', body):
+                        body = balanced(holder, made.end() - 1)
                     kind = re.search(r'type:\s*OptionType\.(\w+)', body)
                     # A select marks its default option with `default: true`; take that option's value.
                     picked = re.search(r'value:\s*([^,}\n]+?),\s*default:\s*true', body)
@@ -158,6 +169,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'ShowHiddenThings': "plugin_hooks/show_hidden_things.rs: showTimeouts drops the moderator test of the chat timeout clock (showCommunicationDisabledStyles, 549587), showInvitesPaused the Manage Server test of the rail tooltip's Invites paused line (347951 `Fi`, read only while paused), showModView makes the Mod View gate (985925) answer yes in every server, so the user menu offers Open in Mod View everywhere. The pinned pieces were ported in 1ee62c8d. GAP: the user popout's Mod View button (348434, `PRESS_MOD_VIEW`, which the original also shows on yourself) is not ported, so that part has nothing to act on; the highest-role fix is not needed here (Mod View reads the member's roles itself).",
     'AltKrispSwitch': "plugin_hooks/alt_krisp_switch.rs: the voice panel's Noise Suppression popout switch turns the suppressor off to None instead of Standard (shouldCancelSuppression drops the popout's Standard dispatch); the suppressor here is DeepFilterNet in Krisp's place, so the switch goes between None and DeepFilterNet. The settings page's select is unchanged, as the original only acts on the popout's section.",
     'ClipUpload': "plugin_hooks/clip_upload.rs + plugins/clip_upload.rs: the composer's + menu ends with Upload Clip File (CloudUploadIcon), which opens the original's dialog: Select File (MP4/M4V up to 500 MB) and Parse clip metadata from file (the clip box's game name, users and game id fill Title, Participants and Game/Application when empty), File name, Title, Participants (friends who are not bots, by label, with the consent line), Created at (datetime-local, Created at must be a valid date.), Message, Game/Application (games running, seen and candidates, or a custom id) and Spoiler/Remix/Thumbnail; Upload stamps a copy with the empty clip box (dc_clips::mp4::replace_metadata, the box updateClipMetadata writes), reserves it with is_clip and the clip fields, puts it and sends the message with the pending reply's reference (Checking clip file. / Clip uploaded. / the error toast). GAP: the FFmpeg conversion retry on not a valid clip (no FFmpeg here: a refused file ends with the original's not compatible text), the clip button on a clip attached in the composer (clips are shared from the gallery here), selects drawn as lists under their fields.",
     'CustomRPC': "plugin_hooks/custom_rpc.rs + plugins/custom_rpc.rs: a local activity of its own (LOCAL_ACTIVITY_UPDATE from the CustomRPC socket, after the games') while enablePresence is on, built as createActivity builds it (type, ids, lines and links, stream link, timestamps None/Since open/Your time/Custom with the repeating span, pictures turned into asset ids by fetchAssetIds, buttons with metadata, party); the card shows the original's notices with their buttons, help lines with links, the activity as the profile draws it, presets (saved, loaded, deleted in the store) and the whole form with each field's check and message. GAP: the toolbox toggle (no toolbox).",
@@ -265,6 +277,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'ShowHiddenThings': '`every_switch_is_on_by_default_and_off_with_the_plugin`; replay by use (C:/Projects/gravecord-plugins-verify/sht1..sht4) with the account made a non-moderator by GUILD_UPDATE: timeout clock off/on (a_chat_off, c_chat_on), rail Invites paused line off/on (b_rail_off, d_rail_on), user menu Open in Mod View with showModView off/on (sht4); showModView and showInvitesPaused stored false and kept after a restart',
     'AltKrispSwitch': '`the_switch_turns_to_none_only_while_on`; replay by use: the popout switch off stores None (2) and keeps it after a restart, plugin off stores Standard (1)',
     'ClipUpload': '`names_read_as_the_original_reads_them`, `metadata_is_read_after_the_footer`, `dates_round_trip_through_the_field`, `bodies_carry_the_clip_fields`, `a_picked_file_is_stamped_in_a_copy`; frames pending (live runs held)',
     'CustomRPC': '`activities_read_as_create_activity_builds_them`, `checks_read_as_the_form_writes_them`, `fields_check_as_the_form_checks`; frames pending (live runs held)',
@@ -455,7 +468,6 @@ PLANNED = {
     'LimitlessScreenshare': 'resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style).',
     'Quoter': 'a quote image made from a message.',
     'SedEnhanced': "the pinned client's own sed rule first: a message `s/a/b` edits your last message (the `searchReplace` rule of the send path, module 857069), which the port does not have yet (GAP: main app); SedEnhanced only widens that rule's syntax and regex.",
-    'ShowHiddenThings': "the pinned client's own pieces first: the chat timeout icon by a timed-out member's name (showCommunicationDisabledStyles) and the invites-paused tooltip on the server rail are not drawn by the port yet (GAPs in the official UI), so showTimeouts and showInvitesPaused would unlock nothing; showModView lifts the user menu's Open in Mod View permission check, which the port does not apply yet either (it shows the row in every server).",
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
     'ValidReply': "the pinned client's \"Message could not be loaded\" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar.",
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',

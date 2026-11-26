@@ -236,8 +236,10 @@ impl Root {
             .get(guild, author)
             .is_some_and(|member| member.timeout_until.is_some())
             && self.is_in_timeout(guild, author)
-            && self.my_permission(guild, None, dc_state::permissions::MODERATE_MEMBERS)
-            && self.outranks(guild, author)
+            // Not in the pinned client: ShowHiddenThings' showTimeouts (`plugin_hooks/show_hidden_things.rs`).
+            && (super::plugin_hooks::show_hidden_timeouts()
+                || self.my_permission(guild, None, dc_state::permissions::MODERATE_MEMBERS)
+                    && self.outranks(guild, author))
     }
 
     /// Module 549587 `e6` before the author: `ClockWarningIcon` (`xxs`, 12px) in `--icon-feedback-critical`

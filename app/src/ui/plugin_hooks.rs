@@ -73,6 +73,10 @@ pub(in crate::ui) use search_fix::search_fix;
 pub(in crate::ui) use server_info::server_info_on;
 mod server_list_indicators;
 mod show_connections;
+mod show_hidden_things;
+pub(in crate::ui) use show_hidden_things::{
+    show_hidden_invites_paused, show_hidden_mod_view, show_hidden_timeouts,
+};
 mod silent_message_toggle;
 mod spotify_crack;
 pub(in crate::ui) use spotify_crack::spotify_no_auto_pause;
