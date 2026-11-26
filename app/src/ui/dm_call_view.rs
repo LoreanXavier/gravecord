@@ -115,6 +115,12 @@ pub struct Person {
     pub video: bool,
 }
 
+thread_local! {
+    /// The last look of everyone in a call area, so someone who left is drawn as they were while they go.
+    static LAST_PEOPLE: std::cell::RefCell<std::collections::HashMap<Id, Person>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 /// Where the dragged height of the call area is kept (`callHeaderHeight` of the unsynced settings).
 const CALL_HEIGHT_KEY: &str = "call_header_height";
 
@@ -318,7 +324,7 @@ impl Root {
                 self.vv.focus.grid();
                 self.video.ended_focus = None;
             }
-            self.dm_call_avatars(&people, width, cx)
+            self.dm_call_avatars(channel, &people, width, cx)
         };
         let header = self.header_with(cx, true).into_any_element();
         let people_ring_me = self
@@ -568,16 +574,50 @@ impl Root {
     /// user context menu (left-click has no `onClick`).
     fn dm_call_avatars(
         &mut self,
+        channel: Id,
         people: &[Person],
         width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let small = (80. + 16.) * people.len() as f32 > width;
         let size = if small { 40. } else { 80. };
-        let avatars: Vec<AnyElement> = people
+        // Module 493387's `TransitionGroup`: who joins scales in, who leaves shrinks and puffs away
+        // (`motion/call_avatars.rs`); someone who left is drawn as they last were.
+        let ids: Vec<Id> = people.iter().map(|person| person.user).collect();
+        let row = super::motion::call_avatars::frame(
+            channel,
+            &ids,
+            super::motion::now(),
+            super::motion::reduced(),
+        );
+        if super::motion::call_avatars::moving(&row) {
+            super::motion::keep_animating();
+        }
+        LAST_PEOPLE.with(|last| {
+            let mut last = last.borrow_mut();
+            for person in people {
+                last.insert(person.user, person.clone());
+            }
+            last.retain(|id, _| row.iter().any(|(shown, _)| shown == id));
+        });
+        let dark = super::theme() != dc_tokens::Theme::Light;
+        let sheet = if dark {
+            super::motion::call_avatars::SPRITE_WHITE
+        } else {
+            super::motion::call_avatars::SPRITE_GREY
+        };
+        if row.iter().any(|(_, pose)| pose.sprite.is_some()) {
+            self.request_image(sheet.to_owned(), sheet.to_owned());
+        }
+        let sprite_image = self.images.get(sheet).cloned();
+        let avatars: Vec<AnyElement> = row
             .iter()
-            .map(|person| {
-                let id = person.user;
+            .filter_map(|(id, pose)| {
+                let id = *id;
+                let present = people.iter().find(|person| person.user == id).cloned();
+                let person = present
+                    .clone()
+                    .or_else(|| LAST_PEOPLE.with(|last| last.borrow().get(&id).cloned()))?;
                 let user = self
                     .stores
                     .users
@@ -587,33 +627,75 @@ impl Root {
                     .unwrap_or_default();
                 let (key, url) = avatar_source(&user);
                 self.request_image(key, url);
-                let face = self.call_avatar(&user, person, size);
+                let face = self.call_avatar(&user, &person, size);
+                // `transition__P3YRS` (relative, the animated width) holds the scaled avatar and, while leaving,
+                // `spriteWrapper__P3YRS` (inset 0, the sprite centred).
+                let content = div()
+                    .size(px(size))
+                    .flex_none()
+                    .when(pose.scale != 1., |this| {
+                        this.paint_scale(pose.scale, gpui::point(0.5, 0.5))
+                    })
+                    .when(pose.opacity < 1., |this| this.opacity(pose.opacity))
+                    .child(face);
+                let sprite = pose.sprite.map(|x| {
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .relative()
+                                .size(px(super::motion::call_avatars::SPRITE_FRAME))
+                                .flex_none()
+                                .overflow_hidden()
+                                .children(sprite_image.clone().map(|sheet| {
+                                    gpui::img(sheet)
+                                        .absolute()
+                                        .top_0()
+                                        .left(px(x))
+                                        .w(px(super::motion::call_avatars::SPRITE_SHEET))
+                                        .h(px(super::motion::call_avatars::SPRITE_FRAME))
+                                })),
+                        )
+                });
+                let slot = div()
+                    .id(gpui::SharedString::from(format!("dm-call-avatar-{id}")))
+                    .mx(px(8.))
+                    .relative()
+                    .flex_none()
+                    .w(px(size * pose.width))
+                    .child(content)
+                    .children(sprite);
+                if present.is_none() {
+                    return Some(slot.into_any_element());
+                }
                 // Not in the pinned client: Discord's native client names the person above the avatar on hover
                 // (`dm-call-avatar-item`), with the app's ordinary tooltip.
                 let name = user.display_name().to_owned();
-                let avatar = div()
-                    .id(gpui::SharedString::from(format!("dm-call-avatar-{id}")))
-                    .mx(px(8.))
-                    .on_mouse_up(
-                        gpui::MouseButton::Right,
-                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.open_tile_menu(
-                                super::call_menus::Subject::User(id),
-                                false,
-                                event.position,
-                                cx,
-                            );
-                        }),
+                let slot = slot.on_mouse_up(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.open_tile_menu(
+                            super::call_menus::Subject::User(id),
+                            false,
+                            event.position,
+                            cx,
+                        );
+                    }),
+                );
+                Some(
+                    self.with_tip(
+                        format!("dm-call-avatar-tip-{id}"),
+                        Tip::body(super::tooltip::Body::Text(name.into()), Side::Top),
+                        slot,
+                        cx,
                     )
-                    .child(face);
-                self.with_tip(
-                    format!("dm-call-avatar-tip-{id}"),
-                    Tip::body(super::tooltip::Body::Text(name.into()), Side::Top),
-                    avatar,
-                    cx,
+                    .into_any_element(),
                 )
-                .into_any_element()
             })
             .collect();
         div()
