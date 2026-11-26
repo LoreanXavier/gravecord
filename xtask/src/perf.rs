@@ -4,7 +4,9 @@
 //! steps print to the run's log (`app/src/perf.rs`). Every run is one process doing the same scripted steps: start,
 //! idle, typing, scrolling, then laps of the main destinations. The budgets are the project plan section 8.5.
 //!
-//! Scenarios: `all` (default), `start`, `idle`, `typing`, `scroll`, `soak`. The report goes to `design/perf/<label>.md`.
+//! Scenarios: `all` (default), `start`, `idle`, `typing`, `scroll`, `soak`, `states` (idle shown, minimised and in a
+//! simulated call, first openings, switches, twenty channel visits) and `idle10` (ten minutes of idle). The report goes
+//! to `design/perf/<label>.md`.
 //! The real server is only selected, scrolled and read: no write is sent from a harness run.
 //!
 //! `--replay <folder>` runs every scenario against a local replay of Discord (`replay.rs`) instead of the real servers:
@@ -98,12 +100,13 @@ fn parse(args: &[&str]) -> Result<Options> {
                 }
             }
             other => bail!(
-                "usage: cargo xtask perf [--release] [--runs N] [--laps N] [--scenario all|start|idle|typing|scroll|soak|stickers|hitch|anim] [--label L] [--no-build] [--no-wait] [--idle-secs N] [--timeout-min N] [--exe PATH] [--replay FOLDER [--ready-delay-ms N] [--no-latency]] [--record FOLDER], got {other}"
+                "usage: cargo xtask perf [--release] [--runs N] [--laps N] [--scenario all|start|idle|typing|scroll|soak|stickers|hitch|anim|states|idle10] [--label L] [--no-build] [--no-wait] [--idle-secs N] [--timeout-min N] [--exe PATH] [--replay FOLDER [--ready-delay-ms N] [--no-latency]] [--record FOLDER], got {other}"
             ),
         }
     }
     if ![
-        "all", "start", "idle", "typing", "scroll", "soak", "stickers", "hitch", "anim",
+        "all", "start", "idle", "typing", "scroll", "soak", "stickers", "hitch", "anim", "states",
+        "idle10",
     ]
     .contains(&options.scenario.as_str())
     {
@@ -162,7 +165,112 @@ fn lap(number: usize) -> String {
     out
 }
 
+/// The composer's emoji button, the user panel's settings button and the header's member list button, in the 1280 x
+/// 720 window of a harness run; two text channel rows of the recording's server (#chat and #welcome, both with a
+/// recorded page).
+const EMOJI_BUTTON: &str = "1203 683";
+const SETTINGS_BUTTON: &str = "338 683";
+const MEMBERS_BUTTON: &str = "1000 55";
+const CHANNEL_ROW_A: &str = "150 514";
+const CHANNEL_ROW_B: &str = "150 168";
+
+/// The text channels of the recording's two servers that `channel click` opens (rules, Guide resources such as #faq and
+/// voice left out), then the account's DMs: the destinations of the `states` scenario's channel visits.
+const VISIT_CHANNELS: [(&str, &str); 10] = [
+    ("36 157", REAL_CHANNEL),
+    ("36 157", "1554856413585612810"),
+    ("36 157", "1554931092534857748"),
+    ("36 157", "1554961229863198870"),
+    ("36 157", "1557407062093471835"),
+    ("36 157", "1557409318884876360"),
+    ("36 157", "1558585365303001108"),
+    ("36 157", "1560671290241581279"),
+    ("36 157", "1562202338624536596"),
+    ("36 109", "1568692565136375900"),
+];
+
+/// Twenty channel visits: the servers' ten text channels, the four DMs, then the first six again. The recording holds a
+/// page of messages for #chat, #welcome, the fixture's #general and three of the DMs; the others open empty.
+fn channel_visits() -> String {
+    const DMS: usize = 4;
+    let servers = |steps: &mut String, visits: &[(&str, &str)]| {
+        let mut rail = "";
+        for (rail_click, channel) in visits {
+            if rail != *rail_click {
+                steps.push_str(&format!("click {rail_click}; wait 1200; "));
+                rail = rail_click;
+            }
+            steps.push_str(&format!("channel click {channel}; wait 1500; "));
+        }
+    };
+    let mut steps = String::new();
+    servers(&mut steps, &VISIT_CHANNELS);
+    steps.push_str("go home; wait 1000; ");
+    for index in 0..DMS {
+        steps.push_str(&format!("go dm {index}; wait 1500; "));
+    }
+    servers(
+        &mut steps,
+        &VISIT_CHANNELS[..20 - VISIT_CHANNELS.len() - DMS],
+    );
+    steps
+}
+
+/// The `states` scenario: idle CPU with the window shown and minimised (each window with the threads that used the
+/// CPU), the first opening of the emoji picker, the settings and the member list, channel and
+/// server switches, then the memory after twenty channel visits.
+fn states_script(options: &Options) -> String {
+    let ms = options.idle_secs * 1000;
+    let window = |label: &str| {
+        format!(
+            "perf sample {label}0; perf threads begin; wait {ms}; perf sample {label}1; perf threads end; "
+        )
+    };
+    let mut steps = String::from("perf start; perf sample start; wait 3000; perf timeline; ");
+    steps.push_str("click 36 109; wait 2500; ");
+    steps.push_str(&window("vis"));
+    steps.push_str("window minimize; wait 2500; ");
+    steps.push_str(&window("min"));
+    steps.push_str("window restore; wait 2500; ");
+    steps.push_str(&format!(
+        "frames click {EMOJI_BUTTON} emoji_open; frames watch 1500 emoji_first; key escape; wait 800; \
+         frames click {EMOJI_BUTTON} emoji_reopen; frames watch 1000 emoji_second; key escape; wait 800; \
+         frames click {SETTINGS_BUTTON} settings_open; frames watch 1500 settings_first; key escape; wait 1000; \
+         frames click {MEMBERS_BUTTON} members_open; frames watch 1500 members_first; frames click {MEMBERS_BUTTON} members_close; wait 800; \
+         click 36 157; wait 1500; channel click {REAL_CHANNEL}; wait 2500; \
+         frames alternate 10 {CHANNEL_ROW_A} {CHANNEL_ROW_B} channel_switch; \
+         click 36 109; wait 1500; frames alternate 10 36 109 36 157 server_switch; click 36 109; wait 1500; "
+    ));
+    steps.push_str("perf sample ch0; perf caches ch0; ");
+    steps.push_str(&channel_visits());
+    steps.push_str("click 36 109; wait 3000; perf sample ch20; perf caches ch20; perf heap; ");
+    steps.push_str("perf sample end; perf caches end; perf heap");
+    steps
+}
+
+/// The `states` scenario's second process: idle in a simulated voice call (`callsim`, whose simulator lives until the
+/// process ends, so it has a process of its own).
+fn voice_script(options: &Options) -> String {
+    let ms = options.idle_secs * 1000;
+    format!(
+        "perf start; perf sample start; wait 3000; click 36 109; wait 2500; perf sample pre0; perf threads begin;          wait {ms}; perf sample pre1; perf threads end; callsim start guild; wait 1000; callsim join; wait 5000;          perf sample voice0; perf threads begin; wait {ms}; perf sample voice1; perf threads end;          perf sample end; perf caches end; perf heap"
+    )
+}
+
+/// The `idle10` scenario: the memory and CPU of ten minutes of idle after the start, the fixture's channel open.
+fn idle10_script() -> String {
+    "perf start; perf sample start; wait 3000; perf timeline; click 36 109; wait 3000; perf sample i0; perf caches i0; \
+     wait 600000; perf sample i1; perf caches i1; perf heap; perf ws; perf sample end; perf caches end; perf heap"
+        .to_owned()
+}
+
 fn script(options: &Options) -> String {
+    if options.scenario == "states" {
+        return states_script(options);
+    }
+    if options.scenario == "idle10" {
+        return idle10_script();
+    }
     let all = options.scenario == "all";
     let mut steps = String::from(
         "perf start; perf sample start; perf caches start; perf heap; perf ws; perf badge; ",
@@ -516,8 +624,22 @@ fn metrics(log: &str) -> BTreeMap<String, f64> {
             }
         }
     }
-    // CPU over each idle window, as a share of one core.
-    for (from, to) in [("idle0", "idle1"), ("idle1", "idle2"), ("home0", "home1")] {
+    // CPU over each idle window, as a share of one core: the fixed pairs, and every `<label>0` .. `<label>1` pair.
+    let mut windows: Vec<(String, String)> =
+        [("idle0", "idle1"), ("idle1", "idle2"), ("home0", "home1")]
+            .iter()
+            .map(|(from, to)| ((*from).to_owned(), (*to).to_owned()))
+            .collect();
+    for label in samples.keys() {
+        if let Some(stem) = label.strip_suffix('1')
+            && !["idle", "home"].contains(&stem)
+            && samples.contains_key(&format!("{stem}0"))
+        {
+            windows.push((format!("{stem}0"), label.clone()));
+        }
+    }
+    for (from, to) in &windows {
+        let (from, to) = (from.as_str(), to.as_str());
         if let (Some(a), Some(b)) = (samples.get(from), samples.get(to)) {
             let cpu = b["cpu_ms"] - a["cpu_ms"];
             let wall = (b["wall_ms"] - a["wall_ms"]).max(1.);
@@ -580,6 +702,10 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
             .map(|(name, script)| (name.to_owned(), script))
             .collect(),
         "anim" => vec![("anim".to_owned(), anim_script())],
+        "states" => vec![
+            ("states".to_owned(), states_script(&options)),
+            ("voice".to_owned(), voice_script(&options)),
+        ],
         _ if options.record.is_some() => {
             vec![("run".to_owned(), script(&options) + &record_extras())]
         }
