@@ -288,6 +288,18 @@ pub enum Request {
     /// Translate, the Toki Pona translator and the two dictionaries, none with authorization. The answer comes under
     /// `key` as `Update::Fetched` (`{src, text}`, or `null` when the Toki Pona call failed, as the original then shows
     /// nothing).
+    /// Not in the pinned client: a call to a plugin's own web service (Decor's decorations, Streaks' counts), never to a
+    /// Discord host, with the service's own token as the bearer when it has one (never the account's). `exchange`
+    /// marks the call that trades an OAuth2 code for that token. The answer comes under `key` as `Update::Fetched`
+    /// with `{ok, status, body}`: `body` is the answer's JSON, else its text (`null` when there was none).
+    PluginService {
+        key: String,
+        method: reqwest::Method,
+        url: String,
+        bearer: Option<String>,
+        body: ServiceBody,
+        exchange: bool,
+    },
     PluginTranslate {
         key: String,
         text: String,
@@ -948,6 +960,7 @@ impl Request {
             Request::FetchZip { .. } => "FetchZip",
             Request::GifProvider { .. } => "GifProvider",
             Request::PluginTranslate { .. } => "PluginTranslate",
+            Request::PluginService { .. } => "PluginService",
             Request::PluginRpcAssets { .. } => "PluginRpcAssets",
             Request::PluginCloneSticker { .. } => "PluginCloneSticker",
             Request::PluginClipUpload { .. } => "PluginClipUpload",
@@ -1019,6 +1032,16 @@ impl Request {
                 }
             }
             Request::System(_) => Inert::Allow,
+            // Not in the pinned client: a plugin service's reads pass; its writes and the token trade do not.
+            Request::PluginService {
+                method, exchange, ..
+            } => {
+                if *method == reqwest::Method::GET && !exchange {
+                    Inert::Allow
+                } else {
+                    Inert::Deny
+                }
+            }
             Request::Spotify(_)
             | Request::Presence { .. }
             | Request::VoiceState { .. }
@@ -1134,6 +1157,12 @@ pub(crate) fn inert_refuses(request: &Request, updates: &mpsc::UnboundedSender<U
             let _ = updates.send(Update::Fetched {
                 key: key.clone(),
                 body,
+            });
+        }
+        Request::PluginService { key, .. } => {
+            let _ = updates.send(Update::Fetched {
+                key: key.clone(),
+                body: json!({"ok": false, "status": 0, "body": null, "refused": true}),
             });
         }
         Request::PluginRpcAssets { key, keys, .. } => {
@@ -2855,6 +2884,19 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     });
                 });
             }
+            Request::PluginService {
+                key,
+                method,
+                url,
+                bearer,
+                body,
+                ..
+            } => {
+                tokio::spawn(async move {
+                    let body = plugin_service(method, &url, bearer, body).await;
+                    let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
             Request::PluginTranslate {
                 key,
                 text,
@@ -3565,6 +3607,87 @@ pub(crate) fn fetch_failure(key: &str, error: &dc_http::Error) -> Value {
         out["error"] = json!(true);
     }
     out
+}
+
+/// What a plugin service call sends (`Request::PluginService`).
+pub enum ServiceBody {
+    None,
+    /// `multipart/form-data`: text fields, and files read from disk at send time.
+    Form(Vec<(String, ServicePart)>),
+}
+
+pub enum ServicePart {
+    Text(String),
+    File {
+        path: std::path::PathBuf,
+        name: String,
+        mime: String,
+    },
+}
+
+/// Not in the pinned client: a plugin service call (`Request::PluginService`). A Discord address is refused, so a
+/// service token never reaches Discord and the account's never leaves for the service.
+async fn plugin_service(
+    method: reqwest::Method,
+    url: &str,
+    bearer: Option<String>,
+    body: ServiceBody,
+) -> Value {
+    if is_discord_url(url) || !url.starts_with("https://") {
+        warn!("plugin service call refused: not a service address");
+        return json!({"ok": false, "status": 0, "body": null});
+    }
+    let mut request = dc_http::plain::client()
+        .request(method, dc_proto::replay::rewrite(url).as_ref())
+        .header(reqwest::header::ACCEPT, "application/json, text/plain");
+    if let Some(bearer) = bearer {
+        request = request.bearer_auth(bearer);
+    }
+    request = match body {
+        ServiceBody::None => request,
+        ServiceBody::Form(parts) => {
+            let mut form = reqwest::multipart::Form::new();
+            for (name, part) in parts {
+                form = match part {
+                    ServicePart::Text(text) => form.text(name, text),
+                    ServicePart::File { path, name: file, mime } => {
+                        let Ok(Ok(bytes)) = tokio::task::spawn_blocking(move || std::fs::read(path)).await else {
+                            warn!("plugin service file not read");
+                            return json!({"ok": false, "status": 0, "body": null});
+                        };
+                        let Ok(part) =
+                            reqwest::multipart::Part::bytes(bytes).file_name(file).mime_str(&mime)
+                        else {
+                            return json!({"ok": false, "status": 0, "body": null});
+                        };
+                        form.part(name, part)
+                    }
+                };
+            }
+            request.multipart(form)
+        }
+    };
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            let bytes = response.bytes().await.map(|bytes| bytes.to_vec()).unwrap_or_default();
+            let body = serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_| {
+                if bytes.is_empty() {
+                    Value::Null
+                } else {
+                    Value::from(String::from_utf8_lossy(&bytes).into_owned())
+                }
+            });
+            if !status.is_success() {
+                warn!("plugin service call failed: {}", status.as_u16());
+            }
+            json!({"ok": status.is_success(), "status": status.as_u16(), "body": body})
+        }
+        Err(error) => {
+            warn!("plugin service call failed: {}", dc_http::redact::url(&error.to_string()));
+            json!({"ok": false, "status": 0, "body": null})
+        }
+    }
 }
 
 /// Whether a fetched body is the failure `fetch_failure` builds.

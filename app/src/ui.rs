@@ -2766,6 +2766,10 @@ impl Root {
                 if self.userpfp_fetched(&key, &body, cx) {
                     return;
                 }
+                // Not in the pinned client: Decor's service answers (`plugin_hooks/decor.rs`).
+                if self.decor_fetched(&key, &body, cx) {
+                    return;
+                }
                 // Not in the pinned client: USRBG's list (`plugin_hooks/usrbg.rs`).
                 if self.usrbg_fetched(&key, &body, cx) {
                     return;
@@ -14365,6 +14369,8 @@ impl Render for Root {
             .children(self.gif_maker_dialog(window, cx))
             // Not in the pinned client: UserPFP's Custom Avatar dialog (`plugin_hooks/userpfp.rs`).
             .children(self.userpfp_dialog(window, cx))
+            // Not in the pinned client: Decor's dialogs (`plugin_hooks/decor.rs`).
+            .children(self.decor_dialog(window, cx))
             // Not in the pinned client: ZipPreview's file dialog (`plugin_hooks/zip_preview.rs`).
             .children(self.zip_preview_dialog(window, cx))
             // Not in the pinned client: PermissionsViewer's dialog (`plugin_hooks/permissions_viewer.rs`).

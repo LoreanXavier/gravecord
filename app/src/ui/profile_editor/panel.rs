@@ -666,7 +666,9 @@ impl Root {
                     .child(avatar_tile)
                     .child(decoration_tile),
                 locked,
-            ));
+            ))
+            // Not in the pinned client: Decor's tile (`plugin_hooks/decor.rs`).
+            .children(self.decor_profile_section(guild_mode, cx));
         if nitro_groups {
             groups = groups
                 .child(section(

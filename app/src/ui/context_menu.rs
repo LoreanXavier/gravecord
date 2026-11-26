@@ -31,6 +31,8 @@ pub(super) enum Target {
     PinCategory(u16),
     /// Not in the pinned client: a GlobalBadges badge (`plugin_hooks/global_badges.rs` keeps which).
     PluginBadge,
+    /// Not in the pinned client: a decoration of Decor's Change Decoration (`plugin_hooks/decor.rs` keeps which).
+    PluginDecoration,
     /// Not in the pinned client: an entry of PermissionsViewer's dialog, a role or a member
     /// (`plugin_hooks/permissions_viewer.rs`).
     PluginPermissionRole {
@@ -440,6 +442,8 @@ pub(super) enum Act {
     /// Not in the pinned client: GlobalBadges' badge menu (`plugin_hooks/global_badges.rs`).
     PluginCopyBadgeName,
     PluginCopyBadgeLink,
+    PluginDecorCopyHash,
+    PluginDecorDelete,
     /// Not in the pinned client: PermissionsViewer's View Permissions (`plugin_hooks/permissions_viewer.rs`).
     PluginViewPermissions,
     /// Not in the pinned client: MessageLogger's Clear Message Log (`plugin_hooks/message_logger.rs`).
@@ -515,7 +519,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 200] = [
+    pub(super) const ALL: [Act; 202] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -675,6 +679,8 @@ impl Act {
         Act::PluginSetAvatar,
         Act::PluginCopyBadgeName,
         Act::PluginCopyBadgeLink,
+        Act::PluginDecorCopyHash,
+        Act::PluginDecorDelete,
         Act::PluginViewPermissions,
         Act::PluginClearMessageLog,
         Act::PluginCloneSticker,
@@ -921,6 +927,8 @@ impl Act {
             Act::SendSms => 197,
             Act::ViewAsRole => 198,
             Act::PluginMakeGif => 199,
+            Act::PluginDecorCopyHash => 200,
+            Act::PluginDecorDelete => 201,
         }
     }
 }
@@ -1005,6 +1013,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginSetAvatar
         | Act::PluginCopyBadgeName
         | Act::PluginCopyBadgeLink
+        | Act::PluginDecorCopyHash
+        | Act::PluginDecorDelete
         | Act::PluginViewPermissions
         | Act::PluginClearMessageLog
         | Act::PluginCloneSticker
@@ -4884,6 +4894,7 @@ impl Root {
             Target::Role { role, guild } => self.better_role_items(role, guild),
             Target::PinCategory(index) => self.pin_category_items(usize::from(index)),
             Target::PluginBadge => self.global_badge_items(),
+            Target::PluginDecoration => self.decor_menu_items(),
             Target::PluginPermissionRole { role, guild } => self.permission_role_items(role, guild),
             Target::PluginPermissionUser(_) => self.permission_user_items(),
             Target::Greet { .. } => self.greet_picker_items(),
@@ -6241,6 +6252,9 @@ impl Root {
             (Act::PluginSetAvatar, Target::User { user, .. }) => self.userpfp_open(user, cx),
             // Not in the pinned client: GlobalBadges (`plugin_hooks/global_badges.rs`).
             (Act::PluginCopyBadgeName, Target::PluginBadge) => self.global_badge_copy(false, cx),
+            // Not in the pinned client: Decor (`plugin_hooks/decor.rs`).
+            (Act::PluginDecorCopyHash, Target::PluginDecoration) => self.decor_menu_run(false, cx),
+            (Act::PluginDecorDelete, Target::PluginDecoration) => self.decor_menu_run(true, cx),
             // Not in the pinned client: PermissionsViewer (`plugin_hooks/permissions_viewer.rs`).
             (Act::PluginViewPermissions, target) => self.permissions_viewer_open(target, cx),
             // Not in the pinned client: ExpressionManager (`plugin_hooks/expression_manager.rs`).
@@ -7027,7 +7041,10 @@ impl Root {
                     | Target::PluginPermissionRole { role, .. }
                     | Target::CommandPermRole { role, .. } => role,
                     Target::PluginPermissionUser(user) => user,
-                    Target::PinCategory(_) | Target::Greet { .. } | Target::PluginBadge => return,
+                    Target::PinCategory(_)
+                    | Target::Greet { .. }
+                    | Target::PluginBadge
+                    | Target::PluginDecoration => return,
                     Target::ProfileWidget { .. }
                     | Target::AttachmentLink
                     | Target::AccountPanel

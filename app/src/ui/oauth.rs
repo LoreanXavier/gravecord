@@ -28,6 +28,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 pub(super) const GUILD_INSTALL: u64 = 0;
+/// The nonce of a grant the client asks for itself, with a redirect URI, whose answered location goes back to the one
+/// who asked (610056's `callback`) instead of an activity: `caller-<who>`.
+pub(super) const CALLER: &str = "caller-";
 pub(super) const USER_INSTALL: u64 = 1;
 /// `APPLICATIONS_COMMANDS` and `BOT`, the scopes that need a server chosen in a guild install.
 const COMMANDS: &str = "applications.commands";
@@ -828,6 +831,44 @@ impl Root {
         cx.notify();
     }
 
+    /// A grant asked for by the client itself (610056 with a `callback`): the application's install type decides the
+    /// GETs as for an activity, then the modal shows; the answered location's code goes back to `caller`
+    /// (`oauth_finish`).
+    pub(super) fn oauth_begin_caller(
+        &mut self,
+        caller: &str,
+        client_id: String,
+        redirect_uri: String,
+        scopes: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let nonce = format!("{CALLER}{caller}");
+        tracing::info!(caller, "a grant asked for by the client: the application's install type first");
+        let args = Args {
+            client_id: client_id.clone(),
+            response_type: "code".to_owned(),
+            redirect_uri: Some(redirect_uri),
+            code_challenge: None,
+            code_challenge_method: None,
+            state: None,
+            nonce: None,
+            scopes,
+            permissions: 0,
+            guild_id: None,
+            channel_id: None,
+            prompt: None,
+            integration_type: None,
+        };
+        self.activities.oauth = Some(Flow::new(nonce.clone(), args));
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("activity:oauth-public:{nonce}")),
+            method: reqwest::Method::GET,
+            route: format!("/applications/{client_id}/public"),
+            body: None,
+        });
+        cx.notify();
+    }
+
     fn oauth_send_gets(&mut self, integration: u64) {
         let Some(flow) = self.activities.oauth.as_mut() else {
             return;
@@ -1068,6 +1109,12 @@ impl Root {
                 }),
                 cx,
             );
+            return;
+        }
+        if let Some(caller) = flow.nonce.strip_prefix(CALLER) {
+            // Not in the pinned client: a plugin's sign-in to its service (`plugin_hooks/service_auth.rs`).
+            self.service_auth_answered(caller, result, cx);
+            cx.notify();
             return;
         }
         match &result {

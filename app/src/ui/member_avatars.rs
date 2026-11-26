@@ -611,6 +611,8 @@ impl Root {
             .iter()
             .filter_map(|(_, decoration)| decoration.as_ref()?.expires_at)
             .min_by(f64::total_cmp);
+        // Not in the pinned client: Decor asks who wears which of its decorations (`plugin_hooks/decor.rs`).
+        self.decor_prepare(members.iter().map(|(user, _)| *user), cx);
         for (_, decoration) in members {
             if let Some(decoration) = decoration {
                 self.request_image(
@@ -743,14 +745,26 @@ impl Root {
         };
         let equipped = self.equipped_decoration_in(user, guild);
         let deco_sku = equipped.as_ref().map_or(0, |d| d.sku_id);
-        let decoration = equipped.and_then(|decoration| {
-            let key = format!("avatar-decoration:{}", decoration.sku_id);
-            let cached = self.images.get(&key).cloned();
-            if cached.is_none() {
-                self.want_image(key, decoration.static_url(), cx);
+        // Not in the pinned client: a Decor decoration in place of the account's (`plugin_hooks/decor.rs`).
+        let decor = super::plugin_hooks::decor_decoration(user.id);
+        let deco_sku = decor.as_ref().map_or(deco_sku, |(key, _)| super::plugin_hooks::decor_tag(key));
+        let decoration = match decor {
+            Some((key, url)) => {
+                let cached = self.images.get(&key).cloned();
+                if cached.is_none() {
+                    self.want_image(key, url, cx);
+                }
+                cached
             }
-            cached
-        });
+            None => equipped.and_then(|decoration| {
+                let key = format!("avatar-decoration:{}", decoration.sku_id);
+                let cached = self.images.get(&key).cloned();
+                if cached.is_none() {
+                    self.want_image(key, decoration.static_url(), cx);
+                }
+                cached
+            }),
+        };
         let cache = self.member_avatars.clone();
         let user = user.id;
         let mut status = Status::parse(status, self.stores.presence.is_mobile_online(user));

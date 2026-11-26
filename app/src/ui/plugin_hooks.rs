@@ -25,6 +25,8 @@ mod call_timer;
 mod clip_upload;
 pub(in crate::ui) mod clips_enhancements;
 mod custom_rpc;
+mod decor;
+pub(in crate::ui) use decor::{decor_decoration, decor_tag};
 mod download_all;
 mod experiments;
 pub(in crate::ui) use experiments::experiments_on;
@@ -91,6 +93,7 @@ mod server_info;
 pub(in crate::ui) use search_fix::search_fix;
 pub(in crate::ui) use server_info::server_info_on;
 mod server_list_indicators;
+mod service_auth;
 mod show_connections;
 mod show_hidden_things;
 pub(in crate::ui) use show_hidden_things::{
@@ -768,6 +771,7 @@ pub(in crate::ui) fn has_own_section(id: &str) -> bool {
             | "SearchFix"
             | "CustomRPC"
             | "LimitlessScreenshare"
+            | "Decor"
     )
 }
 
@@ -789,6 +793,7 @@ impl super::Root {
             "GlobalBadges" => Some(self.global_badges_settings(cx)),
             "CustomRPC" => Some(self.custom_rpc_settings(cx)),
             "LimitlessScreenshare" => Some(self.limitless_screenshare_settings(cx)),
+            "Decor" => Some(self.decor_settings(cx)),
             "SearchFix" => Some(
                 gpui::div()
                     .text_size(gpui::px(14.))

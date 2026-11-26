@@ -872,6 +872,25 @@ impl Root {
                 cx.notify();
                 format!("demo-favorite: {:?}", self.favorite_emoji_keys())
             }
+            // `token <id> fake|clear`: a stand-in sign-in to a plugin's own service, in memory only
+            // (`plugin_hooks/service_auth.rs`); nothing is sent.
+            ["token", id, value @ ("fake" | "clear")] => self.script_service_token(id, *value == "fake", cx),
+            // `image-file <key> <path>`: a picture from a local file under `key`, as if the network had brought it
+            // (a capture-only stand-in for a plugin service's CDN, which the replay has not recorded).
+            ["image-file", key, path @ ..] => match std::fs::read(path.join(" ")) {
+                Ok(bytes) => {
+                    let key = (*key).to_owned();
+                    self.requested.insert(key.clone());
+                    self.update(crate::net::Update::Image { key, bytes }, cx);
+                    "image-file: delivered".to_owned()
+                }
+                Err(error) => format!("image-file: {error}"),
+            },
+            ["decor", "state"] => self.decor_state_line(),
+            ["decor", "open"] => {
+                self.decor_script_open(cx);
+                self.decor_state_line()
+            }
             // `effects`: what the plugins did since the last `effects` (`plugins::note`), `{}` when nothing.
             ["effects"] => {
                 let mut effects = plugins::effects();

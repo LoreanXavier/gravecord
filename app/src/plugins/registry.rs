@@ -378,6 +378,9 @@ pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[
     ("PinDMs", "dmSectionCollapsed", ""),
     // `hidden: !IS_DEV`: a development setting.
     ("UserPFP", "databaseSource", ""),
+    // `hidden: true`: the service's address, and the "Hold on" dialog's answer.
+    ("Decor", "baseUrl", ""),
+    ("Decor", "agreedToGuidelines", ""),
     // `hidden: true`: Quoter's dialog remembers its switches in these.
     ("Quoter", "grayscale", ""),
     ("Quoter", "showWatermark", ""),
@@ -1368,6 +1371,31 @@ pub(crate) const DEFS: &[Def] = &[
                     max: 9_007_199_254_740_991.,
                     step: 1.,
                 },
+            },
+        ],
+    },
+    Def {
+        id: "Decor",
+        name: "Decor",
+        description: "Create and use your own custom avatar decorations, or pick your favorite from the presets.",
+        origin: Origin::Vencord,
+        source: "src/plugins/decor/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "baseUrl",
+                label: "Base URL",
+                description: "Decor api url",
+                kind: Kind::Text {
+                    default: "https://decor.fieryflames.dev",
+                    max_len: 2000,
+                },
+            },
+            Setting {
+                key: "agreedToGuidelines",
+                label: "Agreed to Guidelines",
+                description: "Agreed to guidelines",
+                kind: Kind::Switch { default: false },
             },
         ],
     },
