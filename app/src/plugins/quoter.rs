@@ -597,7 +597,7 @@ mod tests {
             username: "ada",
             avatar: Some((&avatar, 4, 4)),
             grayscale: true,
-            watermark: Some("Made with Equicord"),
+            watermark: Some("Made with Gravecord"),
             emoji_ids: &[],
             emoji_images: &images,
         };

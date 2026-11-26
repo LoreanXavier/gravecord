@@ -2460,7 +2460,7 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "Watermark",
                 description: "Custom watermark text (max 32 characters)",
                 kind: Kind::Text {
-                    default: "Made with Equicord",
+                    default: "Made with Gravecord",
                     max_len: 32,
                 },
             },
