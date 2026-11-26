@@ -214,7 +214,7 @@ fn the_pinned_pool_is_taken_only_by_api_routes_and_the_host_check() {
             ] {
                 if let Some(rest) = trimmed.strip_prefix(prefix) {
                     current = rest
-                        .split(|c: char| c == '(' || c == '<')
+                        .split(['(', '<'])
                         .next()
                         .unwrap_or_default()
                         .to_owned();
