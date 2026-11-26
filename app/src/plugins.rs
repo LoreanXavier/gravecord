@@ -29,6 +29,7 @@ pub(crate) mod sed_enhanced;
 pub(crate) mod streaks;
 mod state;
 pub(crate) mod translate_plus;
+pub(crate) mod voice_message_transcriber;
 pub(crate) mod zip;
 pub(crate) mod zip_preview;
 

@@ -121,6 +121,8 @@ pub(in crate::ui) use unlocked_avatar_zoom::crop_max_zoom;
 mod valid_reply;
 mod valid_user;
 mod view_icons;
+mod voice_message_transcriber;
+pub(in crate::ui) use voice_message_transcriber::{transcriber_button, transcriber_embed};
 mod voice_messages;
 mod voice_stats;
 mod who_reacted;
@@ -774,6 +776,7 @@ pub(in crate::ui) fn has_own_section(id: &str) -> bool {
             | "LimitlessScreenshare"
             | "Decor"
             | "Streaks"
+            | "VoiceMessageTranscriber"
     )
 }
 
@@ -797,6 +800,7 @@ impl super::Root {
             "LimitlessScreenshare" => Some(self.limitless_screenshare_settings(cx)),
             "Decor" => Some(self.decor_settings(cx)),
             "Streaks" => Some(self.streaks_settings(cx)),
+            "VoiceMessageTranscriber" => Some(self.transcriber_settings(cx)),
             "SearchFix" => Some(
                 gpui::div()
                     .text_size(gpui::px(14.))

@@ -888,6 +888,7 @@ impl Root {
             },
             ["decor", "state"] => self.decor_state_line(),
             ["streaks", "state"] => self.streaks_state_line(),
+            ["transcriber", rest @ ..] => self.transcriber_script(rest),
             ["decor", "open"] => {
                 self.decor_script_open(cx);
                 self.decor_state_line()

@@ -14377,6 +14377,9 @@ impl Render for Root {
             .children(self.userpfp_dialog(window, cx))
             // Not in the pinned client: Decor's dialogs (`plugin_hooks/decor.rs`).
             .children(self.decor_dialog(window, cx))
+            // Not in the pinned client: VoiceMessageTranscriber's dialogs
+            // (`plugin_hooks/voice_message_transcriber.rs`).
+            .children(self.transcriber_layer(window, cx))
             // Not in the pinned client: ZipPreview's file dialog (`plugin_hooks/zip_preview.rs`).
             .children(self.zip_preview_dialog(window, cx))
             // Not in the pinned client: PermissionsViewer's dialog (`plugin_hooks/permissions_viewer.rs`).

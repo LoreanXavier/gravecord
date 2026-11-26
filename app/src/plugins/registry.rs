@@ -3646,6 +3646,57 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "VoiceMessageTranscriber",
+        name: "VoiceMessageTranscriber",
+        description: "On-device transcriptions for voice messages powered by Whisper",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/voiceMessageTranscriber.desktop/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "embed",
+                label: "Embed",
+                description: "Display transcription directly in the voice message attachment instead of a modal.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "maintainHorizontal",
+                label: "Maintain Horizontal",
+                description: "Maintain horizontal size for the embedded transcription box and expand vertically.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "selectedModel",
+                label: "Selected Model",
+                description: "Model size.",
+                kind: Kind::Select {
+                    options: &[
+                        ("Tiny (Fastest, lowest accuracy)", Lit::Str("onnx-community/whisper-tiny")),
+                        ("Base (Recommended)", Lit::Str("onnx-community/whisper-base")),
+                        ("Small", Lit::Str("onnx-community/whisper-small")),
+                        (
+                            "Large v3 Turbo (Best accuracy, GPU recommended)",
+                            Lit::Str("onnx-community/whisper-large-v3-turbo"),
+                        ),
+                    ],
+                    default: 1,
+                },
+            },
+            Setting {
+                key: "useGpu",
+                label: "Use GPU",
+                description: "Run the model on your GPU when supported. Much faster, and makes the larger models usable. Falls back to CPU if unavailable.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "quantized",
+                label: "Quantized",
+                description: "Use quantized models when running on CPU (smaller size, slight quality loss).",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "VoiceStats",
         name: "VoiceStats",
         description: "Shows how long you've spent in voice with each user in their profile.",

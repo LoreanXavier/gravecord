@@ -675,7 +675,7 @@ impl Root {
         let volume_control =
             self.voice_volume(&key, salt, volume, muted, playing, view.slider_open);
 
-        div()
+        let pill = div()
             .id(("voice-pill", salt))
             .parity("voice-pill")
             .relative()
@@ -699,7 +699,13 @@ impl Root {
                 &attachment.url,
                 salt,
             ))
-            .into_any_element()
+            // Not in the pinned client: VoiceMessageTranscriber's button and box
+            // (`plugin_hooks/voice_message_transcriber.rs`).
+            .children(super::plugin_hooks::transcriber_button(&key, &url, salt));
+        match super::plugin_hooks::transcriber_embed(&key, salt) {
+            Some(embed) => div().flex().flex_col().child(pill).child(embed).into_any_element(),
+            None => pill.into_any_element(),
+        }
     }
 
     fn voice_wave(&self, spec: WaveSpec<'_>) -> AnyElement {
