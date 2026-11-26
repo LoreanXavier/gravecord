@@ -557,6 +557,7 @@ mod guard {
         "link_destination",
         "message_items",
         "message_items_saved",
+        "search_result_items",
     ];
 
     /// Calls whose string argument is an id, a key, a pattern or a log line, never interface text.

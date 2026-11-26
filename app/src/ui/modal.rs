@@ -814,7 +814,14 @@ impl Root {
     /// "Pin It. Pin It Good." (`bKMaZX`): asks before `PUT /channels/{id}/messages/pins/{id}`.
     pub(super) fn pin_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let message = self.confirm_pin.clone()?;
-        let subtitle = match self.current_channel() {
+        // The message's own channel: a search result's may not be the open one.
+        let channel = self.current_guild().and_then(|guild| {
+            guild
+                .channels
+                .iter()
+                .find(|known| known.id == message.channel_id)
+        });
+        let subtitle = match channel {
             Some(channel) => format!(
                 "Hey, just double checking that you want to pin this message to #{} for posterity and greatness?",
                 channel.name

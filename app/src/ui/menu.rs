@@ -4,7 +4,7 @@
 use super::{Root, color, parse_block_text};
 use crate::net::Request;
 use crate::parity::Parity;
-use dc_state::Id;
+use dc_state::{Id, Message};
 use gpui::{
     AnyElement, ClipboardItem, Context, FontWeight, Hsla, IntoElement, Pixels, Point, SharedString,
     Window, anchored, deferred, div, img, prelude::*, px, svg,
@@ -103,6 +103,8 @@ pub(super) enum Action {
     Resend,
     CopyLink,
     CopyId,
+    /// "Copy Author ID" (`Muw4wm`) of a search result's menu (module 847342), in developer mode.
+    CopyAuthorId,
     Speak,
     /// "End Poll Now" (module 761304): the author of a poll that is still open.
     EndPoll,
@@ -340,6 +342,9 @@ pub(super) struct MenuExtra {
     pub selection: String,
     /// The confirmation of a bulk reaction removal, asked for by Remove All Reactions or by a row of Remove Reactions.
     pub reactions_confirm: Option<ReactionsConfirm>,
+    /// A message the menu is for that need not be in the open channel: a search result (module 36544
+    /// `handleContextMenu` passes the result's own message and channel).
+    pub foreign: Option<Message>,
 }
 
 /// What `ConfirmModal` of module 761304 (`eH.A.show`) is asked to remove: every reaction of the message, or those of
@@ -395,6 +400,73 @@ fn push_menu_group(items: &mut Vec<Item>, group: Vec<Item>) {
         items.push(Item::Separator);
     }
     items.extend(group);
+}
+
+/// The menu of a message search result (module 847342, opened by the search listbox's `handleContextMenu`, module
+/// 36544): the selection's Copy and Search with Google, then Pin or Unpin (979766), Mark Unread (20883), Copy Message
+/// Link (345254) and Delete (483768) in one group, the link rows (777933), and in developer mode Copy Message ID and
+/// Copy Author ID (50268). No quick reactions and nothing that writes in the composer.
+/// GAP: a search result records no link or picture under the pointer, so the link rows never show.
+pub(super) fn search_result_items(own: bool, saved: SavedState) -> Vec<Item> {
+    let mut items = Vec::new();
+    if saved.selection {
+        push_menu_group(
+            &mut items,
+            vec![Item::Entry(
+                "Copy",
+                "menu_copy_text",
+                Action::CopySelection,
+                false,
+            )],
+        );
+        push_menu_group(
+            &mut items,
+            vec![Item::Entry(
+                "Search with Google",
+                "search",
+                Action::SearchGoogle,
+                false,
+            )],
+        );
+    }
+    let mut actions = Vec::new();
+    if !saved.failed && !saved.no_pin {
+        actions.push(if saved.pinned {
+            Item::Entry("Unpin Message", "menu_pin_message", Action::Pin, false)
+        } else {
+            Item::Entry("Pin Message", "menu_pin_message", Action::Pin, false)
+        });
+    }
+    actions.push(Item::Entry(
+        "Mark Unread",
+        "menu_mark_unread",
+        Action::MarkUnread,
+        false,
+    ));
+    actions.push(Item::Entry(
+        "Copy Message Link",
+        "menu_copy_message_link",
+        Action::CopyLink,
+        false,
+    ));
+    if own || saved.delete_other {
+        actions.push(Item::Danger(
+            "Delete Message",
+            "menu_delete_message",
+            Action::Delete,
+        ));
+    }
+    push_menu_group(&mut items, actions);
+    if saved.developer {
+        push_menu_group(
+            &mut items,
+            vec![
+                Item::Entry("Copy Message ID", "menu_id", Action::CopyId, false),
+                Item::Entry("Copy Author ID", "menu_id", Action::CopyAuthorId, false),
+            ],
+        );
+    }
+    items
 }
 
 /// With the saved state: Remove Bookmark when bookmarked, no bookmark entry and Edit Reminder for a reminder.
@@ -830,6 +902,8 @@ pub(super) struct OpenMenu {
     pub anchor: Anchor,
     pub message: Id,
     pub own: bool,
+    /// The search result's menu (module 847342) instead of the chat's (761304).
+    pub search: bool,
 }
 
 pub(super) struct ReactionOp {
@@ -912,12 +986,9 @@ impl Root {
 
     pub(super) fn saved_flags(&self, message: Id) -> SavedState {
         let state = self
-            .channel
+            .menu_channel(message)
             .and_then(|channel| self.saved_state(channel, message));
-        let found = self
-            .channel
-            .and_then(|channel| self.stores.messages.get(&channel))
-            .and_then(|list| list.iter().find(|known| known.id == message));
+        let found = self.menu_message(message);
         let empty = found.is_some_and(|known| known.content.is_empty());
         let translate =
             found.is_some_and(|known| super::plugin_hooks::translate_plus(&known.content));
@@ -928,7 +999,12 @@ impl Root {
         };
         let pinned = found.is_some_and(|known| known.pinned);
         let reacted = found.is_some_and(|known| !known.reactions.is_empty());
-        let channel = self.current_channel();
+        let channel = self.menu_channel(message).and_then(|channel| {
+            self.current_guild()?
+                .channels
+                .iter()
+                .find(|known| known.id == channel)
+        });
         let channel_type = channel.map(|channel| match channel.kind {
             dc_state::ChannelKind::Text => 0,
             dc_state::ChannelKind::Voice => 2,
@@ -1091,11 +1167,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         self.last_menu = self.menu.take();
-        let found = self
-            .channel
-            .and_then(|channel| self.stores.messages.get(&channel))
-            .and_then(|messages| messages.iter().find(|known| known.id == message))
-            .cloned();
+        let found = self.menu_message(message).cloned();
         let Some(found) = found else {
             return;
         };
@@ -1157,6 +1229,11 @@ impl Root {
                 cx.write_to_clipboard(ClipboardItem::new_string(link));
                 self.show_success_toast(dc_intl::tr("Link Copied!").to_owned(), cx);
             }
+            Action::CopyAuthorId => {
+                let id_text = found.author.id.to_string();
+                super::actions::log_effect("Copy Author ID", "clipboard text", id_text.len());
+                cx.write_to_clipboard(ClipboardItem::new_string(id_text));
+            }
             Action::CopyId => {
                 let id_text = if super::hover_bar::shift_held() {
                     format!("{}-{message}", found.channel_id)
@@ -1197,7 +1274,8 @@ impl Root {
         let Some(open) = self.menu else {
             return self.script_context_run(label, window, cx);
         };
-        let action = message_items_saved(open.own, self.saved_flags(open.message))
+        let action = self
+            .open_menu_items(open, self.saved_flags(open.message))
             .into_iter()
             .find_map(|item| match item {
                 Item::Entry(name, _, action, _) | Item::Danger(name, _, action)
@@ -1229,13 +1307,8 @@ impl Root {
             self.delete_failed(message, cx);
             return;
         }
-        if let Some(channel) = self.channel {
-            let pinned = self
-                .stores
-                .messages
-                .get(&channel)
-                .and_then(|list| list.iter().find(|known| known.id == message))
-                .is_some_and(|known| known.pinned);
+        if let Some(channel) = self.menu_channel(message) {
+            let pinned = self.menu_message(message).is_some_and(|known| known.pinned);
             let request = match action {
                 Action::Delete => Request::Delete { channel, message },
                 Action::RemoveAllReactions => {
@@ -1453,17 +1526,12 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         self.menu = None;
-        if let Some(channel) = self.channel {
-            let already_me = self
-                .stores
-                .messages
-                .get(&channel)
-                .and_then(|list| list.iter().find(|known| known.id == message))
-                .is_some_and(|known| {
-                    known.reactions.iter().any(|reaction| {
-                        reaction.emoji_id.is_none() && reaction.name == surrogates && reaction.me
-                    })
-                });
+        if let Some(channel) = self.menu_channel(message) {
+            let already_me = self.menu_message(message).is_some_and(|known| {
+                known.reactions.iter().any(|reaction| {
+                    reaction.emoji_id.is_none() && reaction.name == surrogates && reaction.me
+                })
+            });
             let add = !already_me;
             if add {
                 self.track_reaction(surrogates);
@@ -1786,12 +1854,13 @@ impl Root {
         // Text selected: the menu opens with Copy instead of the quick reactions (selection-own-dm).
         // Not in the pinned client: MessageLogger takes the first section off a deleted message's menu.
         if !saved.no_react
+            && !open.search
             && self.menu_extra.selection.is_empty()
             && !saved.logged.is_some_and(|(deleted, _)| deleted)
         {
             rows.extend(self.quick_row(open.message, cx));
         }
-        for (index, item) in message_items_saved(open.own, saved).into_iter().enumerate() {
+        for (index, item) in self.open_menu_items(open, saved).into_iter().enumerate() {
             rows.push(match item {
                 Item::Separator => div()
                     .my(px(8.))
@@ -1914,7 +1983,7 @@ impl Root {
     ) -> Option<AnyElement> {
         self.menu?;
         let submenu = self.submenu?;
-        let channel = self.channel?;
+        let channel = self.menu_channel(submenu.message)?;
         let rows = match submenu.kind {
             SubmenuKind::Reminder => self.reminder_rows(channel, submenu.message, cx),
             SubmenuKind::Reaction => self.reaction_rows(channel, submenu.message, cx),
@@ -2126,11 +2195,7 @@ impl Root {
         let Some(target) = self.confirm_delete else {
             return self.reactions_confirm_modal(cx);
         };
-        let message = self
-            .channel
-            .and_then(|channel| self.stores.messages.get(&channel))
-            .and_then(|messages| messages.iter().find(|known| known.id == target))
-            .cloned()?;
+        let message = self.menu_message(target).cloned()?;
         let tip_spans = dc_markdown::parse(
             "You can hold down shift when clicking **delete message** to bypass this confirmation entirely.",
         );
@@ -2235,6 +2300,7 @@ impl Root {
         });
         self.menu_extra = MenuExtra {
             reactions_confirm: None,
+            foreign: None,
             hit,
             selection: if matches!(anchor, Anchor::Pointer(_)) {
                 self.selected_text()
@@ -2249,18 +2315,86 @@ impl Root {
             anchor,
             message,
             own,
+            search: false,
         });
         self.request_quick_reaction_images();
         self.request_reaction_images(message);
         cx.notify();
     }
 
+    /// The message a menu is for: the one it was opened with outside the open channel (a search result), else the
+    /// open channel's.
+    pub(super) fn menu_message(&self, message: Id) -> Option<&Message> {
+        if let Some(foreign) = self
+            .menu_extra
+            .foreign
+            .as_ref()
+            .filter(|known| known.id == message)
+        {
+            return Some(foreign);
+        }
+        self.channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .and_then(|list| list.iter().find(|known| known.id == message))
+    }
+
+    /// The channel of the message a menu is for.
+    pub(super) fn menu_channel(&self, message: Id) -> Option<Id> {
+        match self
+            .menu_extra
+            .foreign
+            .as_ref()
+            .filter(|known| known.id == message)
+        {
+            Some(foreign) => Some(foreign.channel_id),
+            None => self.channel,
+        }
+    }
+
+    /// The items of the open menu: the search result's or the chat's.
+    pub(super) fn open_menu_items(&self, open: OpenMenu, saved: SavedState) -> Vec<Item> {
+        if open.search {
+            return search_result_items(open.own, saved);
+        }
+        message_items_saved(open.own, saved)
+    }
+
+    /// A right press on a search result (module 36544 `handleContextMenu`): the result's menu (module 847342) for its
+    /// own message and channel, which need not be the open one.
+    pub(super) fn open_search_result_menu(
+        &mut self,
+        at: Point<Pixels>,
+        message: Message,
+        cx: &mut Context<Self>,
+    ) {
+        let own = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|me| me.id == message.author.id);
+        let id = message.id;
+        self.menu_hit = None;
+        self.close_all_context_menus();
+        self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
+        self.menu_extra = MenuExtra {
+            hit: None,
+            selection: self.selected_text(),
+            reactions_confirm: None,
+            foreign: Some(message),
+        };
+        self.menu = Some(OpenMenu {
+            anchor: Anchor::Pointer(at),
+            message: id,
+            own,
+            search: true,
+        });
+        cx.notify();
+    }
+
     /// The pictures of the emoji in Remove Reactions' rows.
     fn request_reaction_images(&mut self, message: Id) {
         let Some(reactions) = self
-            .channel
-            .and_then(|channel| self.stores.messages.get(&channel))
-            .and_then(|list| list.iter().find(|known| known.id == message))
+            .menu_message(message)
             .map(|known| known.reactions.clone())
         else {
             return;
