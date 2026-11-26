@@ -68,6 +68,11 @@ impl Clip {
         self.samples.len()
     }
 
+    /// The decoded samples: mono at 48 kHz.
+    pub fn samples(&self) -> &[f32] {
+        &self.samples
+    }
+
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }

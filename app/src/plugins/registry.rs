@@ -614,6 +614,58 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "BetterAudioPlayer",
+        name: "BetterAudioPlayer",
+        description: "Adds a spectrograph and oscilloscope visualizer to audio attachment players.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterAudioPlayer.desktop/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "oscilloscope",
+                label: "Oscilloscope",
+                description: "Enable oscilloscope visualizer.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "spectrograph",
+                label: "Spectrograph",
+                description: "Enable spectrograph visualizer.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "oscilloscopeSolidColor",
+                label: "Oscilloscope Solid Color",
+                description: "Use a solid color for the oscilloscope.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "oscilloscopeColor",
+                label: "Oscilloscope Color",
+                description: "Color for the oscilloscope (R, G, B or #hex).",
+                kind: Kind::Text {
+                    default: "255, 255, 255",
+                    max_len: 32,
+                },
+            },
+            Setting {
+                key: "spectrographSolidColor",
+                label: "Spectrograph Solid Color",
+                description: "Use a solid color for the spectrograph.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "spectrographColor",
+                label: "Spectrograph Color",
+                description: "Color for the spectrograph (R, G, B or #hex).",
+                kind: Kind::Text {
+                    default: "33, 150, 243",
+                    max_len: 32,
+                },
+            },
+        ],
+    },
+    Def {
         id: "BetterBlockedUsers",
         name: "BetterBlockedUsers",
         description: "Allows you to search in blocked users list, make names selectable in settings, skips blocked profile prompt, and groups blocked / ignored messages.",

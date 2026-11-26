@@ -5,6 +5,7 @@ mod alt_krisp_switch;
 pub(in crate::ui) use alt_krisp_switch::noise_popout_off;
 mod always_animate;
 mod better_activities;
+mod better_audio_player;
 mod better_forwards;
 mod better_plus_reacts;
 pub(in crate::ui) use better_forwards::{

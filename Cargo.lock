@@ -3465,6 +3465,7 @@ dependencies = [
  "rand 0.9.5",
  "rasterlottie",
  "raw-window-handle",
+ "realfft",
  "regex",
  "reqwest",
  "resvg",
