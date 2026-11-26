@@ -1171,6 +1171,11 @@ impl Root {
         let Some(found) = found else {
             return;
         };
+        // Not in the pinned client: FullSearchContext opens a result's channel first
+        // (`plugin_hooks/full_search_context.rs`).
+        if matches!(action, Action::Edit | Action::Reply) {
+            self.full_search_context_open(&found, cx);
+        }
         match action {
             Action::Edit => self.begin_edit(message, &found.content, window, cx),
             Action::Reply => self.begin_reply(found, window, cx),
@@ -2356,7 +2361,12 @@ impl Root {
         if open.search {
             return search_result_items(open.own, saved);
         }
-        message_items_saved(open.own, saved)
+        let mut items = message_items_saved(open.own, saved);
+        // Not in the pinned client: FullSearchContext's Copy Author ID (`plugin_hooks/full_search_context.rs`).
+        if self.menu_extra.foreign.is_some() {
+            super::plugin_hooks::full_search_context_items(&mut items);
+        }
+        items
     }
 
     /// A right press on a search result (module 36544 `handleContextMenu`): the result's menu (module 847342) for its
@@ -2386,7 +2396,9 @@ impl Root {
             anchor: Anchor::Pointer(at),
             message: id,
             own,
-            search: true,
+            // Not in the pinned client: FullSearchContext opens the chat's full menu
+            // (`plugin_hooks/full_search_context.rs`).
+            search: !super::plugin_hooks::full_search_context(),
         });
         cx.notify();
     }

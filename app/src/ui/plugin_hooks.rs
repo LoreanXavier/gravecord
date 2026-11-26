@@ -28,6 +28,8 @@ mod fix_youtube_embeds;
 pub(in crate::ui) use fix_youtube_embeds::{
     VideoDescription, toggle_video_description, video_description,
 };
+mod full_search_context;
+pub(in crate::ui) use full_search_context::{full_search_context, full_search_context_items};
 mod full_vc_pfp;
 mod game_activity_toggle;
 mod gif_provider_switcher;

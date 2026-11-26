@@ -1333,6 +1333,15 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "FullSearchContext",
+        name: "FullSearchContext",
+        description: "Makes the message context menu in message search results have all options you'd expect",
+        origin: Origin::Vencord,
+        source: "src/plugins/fullSearchContext/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "FullVCPFP",
         name: "FullVCPFP",
         description: "Makes avatars take up the entire vc tile",
