@@ -165,7 +165,7 @@ fn game_icon_url(game: &Value) -> Option<String> {
     }
 }
 
-fn preview_art() -> Arc<Image> {
+pub(super) fn preview_art() -> Arc<Image> {
     static DARK: LazyLock<Arc<Image>> = LazyLock::new(|| {
         Arc::new(Image::from_bytes(
             ImageFormat::Svg,

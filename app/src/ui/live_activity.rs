@@ -279,7 +279,7 @@ fn button_url(metadata: &Value, index: usize) -> Option<String> {
 }
 
 impl Root {
-    fn live_button_clicked(
+    pub(super) fn live_button_clicked(
         &mut self,
         user: Id,
         activity: &Value,
