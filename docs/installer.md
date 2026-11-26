@@ -118,8 +118,7 @@ The tray's Check For Updates action wakes the same worker used by automatic chec
 download or ready state are ignored; capture runs log the action without checking or downloading. The worker and
 menu routing are unit tested; an actual tray-triggered update remains unverified.
 
-The app asks GitHub's REST API for the release at launch and every hour (see `DECISIONS.md`, "Tester builds, the
-Nightly update channel and Report a Bug"): `https://api.github.com/repos/LoreanXavier/gravecord/releases/latest`, or
+The app asks GitHub's REST API for the release at launch and every hour: `https://api.github.com/repos/LoreanXavier/gravecord/releases/latest`, or
 `/releases/tags/nightly` on the Nightly channel. The release carries `gravecord-setup.exe` and nothing else of ours:
 `cargo xtask package` appends an Ed25519-signed update manifest (version, size and SHA-256 of the setup before it) to
 the setup, which the app checks against `app/src/release_key.rs` after the download. Publishing a stable release is

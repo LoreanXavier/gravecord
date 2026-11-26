@@ -1,8 +1,8 @@
 # PLUGINS.md
 
-Built-in equivalents of the Vencord/Equicord plugins the owner keeps on. Not part of the pinned client and not
-`FEATURES.md` rows. Framework: `app/src/plugins.rs` (registry, state, Backup & Restore) and the Gravecord settings
-group (`app/src/ui/settings/mods.rs`). Decisions: `DECISIONS.md`, "Built-in plugins". Written by
+Built-in equivalents of the Vencord/Equicord plugins the owner keeps on.
+Framework: `app/src/plugins.rs` (registry, state, Backup & Restore) and the Gravecord settings
+group (`app/src/ui/settings/mods.rs`). Written by
 `tools/gen-plugins-md.py`, which fails on a missing setting or a plugin without a reason.
 
 Plugins off is the pinned client: `cargo xtask plugins-off` captures every scenario of

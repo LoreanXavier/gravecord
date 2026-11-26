@@ -244,20 +244,11 @@ Plugin names are the ones the Plugins page shows. Plugins marked † can reach a
 
 gravecord is **pre-1.0 and Windows only**. 0.3.0 is its first public release.
 
-The project tracks its own progress (numbers from the last generated report in [PARITY.md](PARITY.md)):
-
-- **[FEATURES.md](FEATURES.md):** 5,230 rows, one per feature of the pinned build (actions, routes, settings, stores,
-  menus, keybinds, sounds, protocol). About 140 are marked done with a test reference. Many more are built but not yet
-  proven to the project's standard: a row only counts as done when it has a passing test reference.
 - **Parity:** no screen is formally green yet. Pixel differences and layout probes are measured per screen; matching
   probes alone do not count as full parity.
-- **[BLOCKED.md](BLOCKED.md):** 65 documented gaps, with the reason for each and, where there is one, what ships in its
-  place. Some entries are older than the work that has since closed them.
 - **[PLUGINS.md](PLUGINS.md):** the status of every built-in plugin.
 
 ### Known missing or incomplete
-
-See [BLOCKED.md](BLOCKED.md) for the full list with reasons.
 
 - **Login:** phone verification and suspended accounts lead to Discord's own pages, which are not built. A notice says
   so instead.
@@ -435,8 +426,6 @@ Run `target\release\gravecord.exe` from the repository root, so it finds `app\as
 | command | what it does |
 | - | - |
 | `package` | Builds the installer `gravecord-setup.exe` and a portable folder in `gravecord-dist` next to the repository. `--channel nightly` builds a tester build. |
-| `audit` | Checks `FEATURES.md`: every row's status and test reference. |
-| `report` | Regenerates the table in `PARITY.md`. |
 | `parity [--screen X]` | Layout-tree and pixel comparison of a screen against the official captures. |
 | `drift` | Re-captures screens and compares them with the official ones. |
 | `plugins-off` | Proves that the app with its plugins off matches the app without plugin code. |
@@ -500,15 +489,11 @@ xtask/            Rust tooling (cargo xtask)
 tools/            Node and Python scripts for extraction and captures
 tests/            parity maps, fixtures, drift and plugins-off scenarios
 patches/          the patch applied to GPUI
-docs/             installer and parity-system notes
+docs/             installer notes and screenshots
 ```
 
-The project's own records:
+More about the project:
 
-- [FEATURES.md](FEATURES.md): every feature row with its status.
-- [PARITY.md](PARITY.md): the generated progress report.
-- [BLOCKED.md](BLOCKED.md): the gaps and their substitutes.
-- [DECISIONS.md](DECISIONS.md): why things are the way they are.
 - [PLUGINS.md](PLUGINS.md): the built-in plugins.
 - [PRIVACY.md](PRIVACY.md): what is sent where, and what stays on your PC.
 

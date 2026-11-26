@@ -556,9 +556,9 @@ for name in enabled + extra:
 
 with open(OUT, 'w', encoding='utf-8', newline='\n') as out:
     out.write('# PLUGINS.md\n\n')
-    out.write('Built-in equivalents of the Vencord/Equicord plugins the owner keeps on. Not part of the pinned client and not\n')
-    out.write('`FEATURES.md` rows. Framework: `app/src/plugins.rs` (registry, state, Backup & Restore) and the Gravecord settings\n')
-    out.write('group (`app/src/ui/settings/mods.rs`). Decisions: `DECISIONS.md`, "Built-in plugins". Written by\n')
+    out.write('Built-in equivalents of the Vencord/Equicord plugins the owner keeps on.\n')
+    out.write('Framework: `app/src/plugins.rs` (registry, state, Backup & Restore) and the Gravecord settings\n')
+    out.write('group (`app/src/ui/settings/mods.rs`). Written by\n')
     out.write('`tools/gen-plugins-md.py`, which fails on a missing setting or a plugin without a reason.\n\n')
     out.write('Plugins off is the pinned client: `cargo xtask plugins-off` captures every scenario of\n')
     out.write('`tests/plugins-off/scenarios.txt` with the plugin code skipped, with the master switch off (every plugin on and\n')
