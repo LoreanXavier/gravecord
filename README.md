@@ -125,23 +125,27 @@ gravecord ships native ports of popular [Vencord](https://github.com/Vendicated/
 licence as gravecord), plus one user plugin. Each port names the original file it follows. Thanks to their authors
 and contributors.
 
-**Coverage:** 86 plugins are ported. A few more are things gravecord already does without a plugin. 16 are planned
-and not listed here. [PLUGINS.md](PLUGINS.md) has the full status table, with each plugin's source and settings.
+**Coverage:** 96 plugins are ported. 12 more are things gravecord already does without a plugin, and 239 are
+planned and not listed here. [PLUGINS.md](PLUGINS.md) has the full status table, with each plugin's source and settings.
 Plugin names are the ones the Plugins page shows. Plugins marked † can reach a site outside Discord once turned on; [PRIVACY.md](PRIVACY.md) says what each one sends.
 
 <details>
-<summary><b>The 86 ported plugins</b></summary>
+<summary><b>The 96 ported plugins</b></summary>
 
 | Plugin | From | What it does |
 | - | - | - |
 | AccountPanelServerProfile | Vencord | Right-click your account panel to view your profile in the current server. |
+| AltKrispSwitch | Equicord | The voice panel's noise suppression switch turns suppression off instead of falling back to Standard. |
 | AlwaysAnimate | Vencord | Plays animated avatars, server icons, nameplates and gradient role names without hovering. |
 | AlwaysTrust | Vencord | Opens links without the "Leaving Discord" prompt; deleting a server asks a simple confirmation instead of its typed name. |
 | AnonymiseFileNames | Vencord | Renames uploaded files as they are sent, with a per-file switch. |
 | BetterActivities † | Equicord | Shows activity icons in the member and DM lists, and every activity in profiles. |
+| BetterAudioPlayer | Equicord | Draws a waveform and frequency bars over audio players while they play. |
 | BetterBlockedUsers | Equicord | Groups blocked and ignored messages and opens a blocked person's profile without the prompt. |
 | BetterCommands | Equicord | Adds /refresh to reload the command list of the open channel or server. |
 | BetterForwards | Equicord | Lets you choose which attachments and embeds to forward, and shows where a forward came from. |
+| BetterGifAltText | Vencord | Gives GIFs without a description an alt text made from the words of their file name. |
+| BetterPlusReacts | Equicord | Each extra plus in `+:emoji:` reacts to a message one further back. |
 | BetterRoleContext | Vencord | Right-click a role header to edit the role, copy its colour, view its icon or members, or copy its id. |
 | BetterRoleDot | Vencord | Click a role dot to copy its colour; show role dots and coloured names together. |
 | BetterUploadButton | Vencord | Click the upload button to pick a file at once; right-click for its menu. |
@@ -157,11 +161,13 @@ Plugin names are the ones the Plugins page shows. Plugins marked † can reach a
 | CustomRPC | Vencord | Sets a fully custom Rich Presence activity on your profile. |
 | DisableCallIdle | Vencord | Stops a DM call from disconnecting you after three minutes alone. |
 | DownloadAllAttachments | Equicord | A hover bar button that saves every attachment of a message at once. |
+| Experiments | Vencord | Adds a Staff Only Experiments page where you can override experiment buckets and variants. |
 | ExpressionManager | Vencord | Clone stickers into your servers, and edit, delete or copy stickers and emoji from their menus. |
 | FavoriteEmojiFirst | Vencord | Puts your favourite emoji first in emoji autocomplete. |
 | FixImagesQuality | Vencord | Loads attachment pictures at their original resolution. |
 | FixYoutubeEmbeds | Vencord | Shows a YouTube embed's description, folded until clicked. |
 | FriendInvites | Vencord | Slash commands to create, view and revoke friend invite links. |
+| FullSearchContext | Vencord | Right-click a search result for the full message menu instead of the short one. |
 | FullVCPFP | Equicord | Makes avatars fill the whole call tile. |
 | GameActivityToggle | Vencord | A panel button that turns sharing your activity on and off. |
 | GifPaste | Vencord | Picking a GIF puts its link in the message box instead of sending it. |
@@ -189,15 +195,18 @@ Plugin names are the ones the Plugins page shows. Plugins marked † can reach a
 | PlatformIndicators | Equicord | Shows which clients people are on: desktop, mobile, web and others. |
 | PreviewMessage | Vencord | Shows your message as it will look before you send it. |
 | QuickMention | Vencord | A hover bar button that mentions the message's author. |
+| Quoter | Equicord | Turns a message into a quote picture you can save or send. |
 | ReadAllNotificationsButton | Vencord | A button that marks every server as read. |
 | RelationshipNotifier | Vencord | Tells you when a friend, group DM or server removes you. |
 | RevealAllSpoilers | Vencord | Ctrl-click a spoiler to open every spoiler of the message, Ctrl+Shift-click for the whole chat. |
 | ReverseImageSearch † | Vencord | Search a picture with an image search engine, opened in your browser. |
 | RoleColorEverywhere | Vencord | Uses role colours on mentions, role headers, voice channels and reaction lists. |
 | SearchFix | Equicord | Lets search go past Discord's 5,000-result limit by flipping the sort order. |
+| SedEnhanced | Equicord | Lets `s/find/replace` edits use more separators, regular expressions and replace-all. |
 | ServerInfo | Vencord | A Server Info dialog with friends, mutual, blocked and ignored members. |
 | ServerListIndicators | Vencord | Shows how many friends are online or how many servers you are in, under Home. |
 | ShowConnections | Vencord | Shows people's connected accounts as icons in profiles. |
+| ShowHiddenThings | Vencord | Shows timeout clocks, paused invites and Open in Mod View without moderator permissions. |
 | SilentMessageToggle | Vencord | A chat bar button that sends messages as @silent. |
 | SpotifyCrack | Vencord | Lets Listen Along work without Spotify Premium and keeps Spotify playing while you talk. |
 | SpotifyShareCommands | Vencord | /track, /album and /artist share what you are listening to. |
@@ -212,6 +221,7 @@ Plugin names are the ones the Plugins page shows. Plugins marked † can reach a
 | UserMessagesPronouns | Vencord | Shows people's pronouns next to their messages. |
 | UserPFP † | Equicord | Shows avatars from the UserPFP list, and lets you set local avatars for anyone. |
 | USRBG † | Vencord | Shows profile banners from USRBG. |
+| ValidReply | Vencord | Hover a reply whose message could not be loaded to fetch it, or to see that it was deleted. |
 | ValidUser | Vencord | Fixes @unknown-user mentions when you hover them. |
 | ViewIcons | Vencord | View avatars, banners, decorations and server icons at full size. |
 | VoiceDownload | Vencord | A download button on voice messages. |
@@ -223,7 +233,7 @@ Plugin names are the ones the Plugins page shows. Plugins marked † can reach a
 
 </details>
 
-**Already native, so no plugin is needed:**
+**Already native, so no plugin is needed (three of the 12):**
 
 - **ForceOwnerCrown:** the owner crown shows at any server size.
 - **NormalizeMessageLinks:** Copy Message Link writes plain `discord.com` links.
