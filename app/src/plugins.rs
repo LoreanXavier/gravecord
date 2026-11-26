@@ -26,6 +26,7 @@ pub(crate) mod limitless_screenshare;
 pub(crate) mod quoter;
 mod registry;
 pub(crate) mod sed_enhanced;
+pub(crate) mod streaks;
 mod state;
 pub(crate) mod translate_plus;
 pub(crate) mod zip;

@@ -887,6 +887,7 @@ impl Root {
                 Err(error) => format!("image-file: {error}"),
             },
             ["decor", "state"] => self.decor_state_line(),
+            ["streaks", "state"] => self.streaks_state_line(),
             ["decor", "open"] => {
                 self.decor_script_open(cx);
                 self.decor_state_line()

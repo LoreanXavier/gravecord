@@ -3460,6 +3460,7 @@ dependencies = [
  "flate2",
  "gpui",
  "gpui_platform",
+ "iana-time-zone",
  "image",
  "md-5",
  "openh264",

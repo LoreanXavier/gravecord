@@ -407,6 +407,8 @@ impl Root {
             super::plugin_hooks::PlatformPlace::Message,
             cx,
         ));
+        // Not in the pinned client: Streaks' badge (`plugin_hooks/streaks.rs`).
+        chips.extend(self.streaks_message_badge(message, cx));
         chips
     }
 

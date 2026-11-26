@@ -529,7 +529,9 @@ impl Root {
                                                 )
                                                 .ml(px(4.)),
                                             )
-                                        }),
+                                        })
+                                        // Not in the pinned client: Streaks' badge (`plugin_hooks/streaks.rs`).
+                                        .children(self.streaks_dm_badge(recipient.id, cx)),
                                 )
                                 // `activityStatusText_zln_tS` is `color: inherit`: the line takes the row's text colour.
                                 // Not in the pinned client: MessagePeek's last message in its place

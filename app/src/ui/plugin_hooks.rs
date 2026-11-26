@@ -104,6 +104,7 @@ mod spotify_crack;
 pub(in crate::ui) use spotify_crack::spotify_no_auto_pause;
 pub(crate) use spotify_crack::spotify_premium_forced;
 mod steam_status_sync;
+mod streaks;
 mod streaming_codec_disabler;
 pub(in crate::ui) use streaming_codec_disabler::sync_streaming_codecs;
 mod super_reaction_tweaks;
@@ -772,6 +773,7 @@ pub(in crate::ui) fn has_own_section(id: &str) -> bool {
             | "CustomRPC"
             | "LimitlessScreenshare"
             | "Decor"
+            | "Streaks"
     )
 }
 
@@ -794,6 +796,7 @@ impl super::Root {
             "CustomRPC" => Some(self.custom_rpc_settings(cx)),
             "LimitlessScreenshare" => Some(self.limitless_screenshare_settings(cx)),
             "Decor" => Some(self.decor_settings(cx)),
+            "Streaks" => Some(self.streaks_settings(cx)),
             "SearchFix" => Some(
                 gpui::div()
                     .text_size(gpui::px(14.))

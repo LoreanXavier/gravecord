@@ -54,6 +54,9 @@ impl Root {
     ) -> String {
         let (service, ready): (&'static str, fn(&mut Root, &mut Context<Root>)) = match id {
             "Decor" => (super::decor::SERVICE, |this, cx| this.decor_token_ready(cx)),
+            "Streaks" => (super::streaks::SERVICE, |this, cx| {
+                this.streaks_token_ready(cx)
+            }),
             _ => return format!("token: {id} has no service"),
         };
         let Some(me) = self.stores.current_user.as_ref().map(|me| me.id) else {
@@ -182,8 +185,10 @@ impl Root {
         let Some(code) = code else {
             return;
         };
-        if caller == super::decor::SERVICE {
-            self.decor_code(code, cx);
+        match caller {
+            super::decor::SERVICE => self.decor_code(code, cx),
+            super::streaks::SERVICE => self.streaks_code(code, cx),
+            _ => {}
         }
     }
 }

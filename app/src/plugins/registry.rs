@@ -3133,6 +3133,91 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "Streaks",
+        name: "Streaks",
+        description: "Shows a streak next to a user when you exchange DMs with them on consecutive days.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/streaks/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "showOnSelf",
+                label: "Show On Self",
+                description: "Show the streak on your own messages in DMs",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "showOutsideDMs",
+                label: "Show Outside DMs",
+                description: "Show streaks on messages outside DMs",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "eliteColor",
+                label: "Elite Color",
+                description: "Elite Streak Color (100+ days)",
+                kind: Kind::Text {
+                    default: "#9b39fe",
+                    max_len: 32,
+                },
+            },
+            Setting {
+                key: "diamondColor",
+                label: "Diamond Color",
+                description: "Diamond Streak Color (60+ days)",
+                kind: Kind::Text {
+                    default: "#f7409c",
+                    max_len: 32,
+                },
+            },
+            Setting {
+                key: "platinumColor",
+                label: "Platinum Color",
+                description: "Platinum Streak Color (45+ days)",
+                kind: Kind::Text {
+                    default: "#856bfe",
+                    max_len: 32,
+                },
+            },
+            Setting {
+                key: "goldColor",
+                label: "Gold Color",
+                description: "Gold Streak Color (30+ days)",
+                kind: Kind::Text {
+                    default: "#f75340",
+                    max_len: 32,
+                },
+            },
+            Setting {
+                key: "silverColor",
+                label: "Silver Color",
+                description: "Silver Streak Color (14+ days)",
+                kind: Kind::Text {
+                    default: "#f57b0b",
+                    max_len: 32,
+                },
+            },
+            Setting {
+                key: "bronzeColor",
+                label: "Bronze Color",
+                description: "Bronze Streak Color (7+ days)",
+                kind: Kind::Text {
+                    default: "#b08d57",
+                    max_len: 32,
+                },
+            },
+            Setting {
+                key: "defaultColor",
+                label: "Default Color",
+                description: "Default Streak Color (1+ days)",
+                kind: Kind::Text {
+                    default: "#f59e0b",
+                    max_len: 32,
+                },
+            },
+        ],
+    },
+    Def {
         id: "StreamingCodecDisabler",
         name: "StreamingCodecDisabler",
         description: "Disable video codecs of your choice for streaming and cameras.",

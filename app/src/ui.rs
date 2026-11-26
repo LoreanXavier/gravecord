@@ -2283,6 +2283,8 @@ impl Root {
                 self.stores.dispatch(&name, &data);
                 self.persist_drafts();
                 self.message_logger_after(&name, &data);
+                // Not in the pinned client: Streaks reports a DM message's day (`plugin_hooks/streaks.rs`).
+                self.streaks_dispatch(&name, &data, cx);
                 self.unread_notice_event(&name, &data);
                 match name.as_str() {
                     "READY" => crate::start_trace::took("dur_ready_dispatch", dispatching),
@@ -2768,6 +2770,10 @@ impl Root {
                 }
                 // Not in the pinned client: Decor's service answers (`plugin_hooks/decor.rs`).
                 if self.decor_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: Streaks' service answers (`plugin_hooks/streaks.rs`).
+                if self.streaks_fetched(&key, &body, cx) {
                     return;
                 }
                 // Not in the pinned client: USRBG's list (`plugin_hooks/usrbg.rs`).

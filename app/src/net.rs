@@ -3612,6 +3612,7 @@ pub(crate) fn fetch_failure(key: &str, error: &dc_http::Error) -> Value {
 /// What a plugin service call sends (`Request::PluginService`).
 pub enum ServiceBody {
     None,
+    Json(Value),
     /// `multipart/form-data`: text fields, and files read from disk at send time.
     Form(Vec<(String, ServicePart)>),
 }
@@ -3645,6 +3646,7 @@ async fn plugin_service(
     }
     request = match body {
         ServiceBody::None => request,
+        ServiceBody::Json(value) => request.json(&value),
         ServiceBody::Form(parts) => {
             let mut form = reqwest::multipart::Form::new();
             for (name, part) in parts {
