@@ -50,6 +50,8 @@ impl Root {
                     super::modal::Tone::Critical,
                     |this, _, cx| {
                         this.logout_confirm = false;
+                        // Not in the pinned client: BetterFolders (`plugin_hooks/better_folders.rs`).
+                        this.better_folders_logout(cx);
                         // A call is left first, so the voice server sees the disconnect, not a dropped socket.
                         this.leave_voice(cx);
                         cx.emit(RootEvent::LogOut);

@@ -236,11 +236,11 @@ pub(super) fn guild_folders_request(patch: &str) -> Option<crate::net::Request> 
     })
 }
 
-fn folder_color(value: Option<u64>) -> Option<Rgba> {
+pub(super) fn folder_color(value: Option<u64>) -> Option<Rgba> {
     value.map(|value| gpui::rgb(value as u32))
 }
 
-fn with_alpha(mut colour: Rgba, alpha: f32) -> Rgba {
+pub(super) fn with_alpha(mut colour: Rgba, alpha: f32) -> Rgba {
     colour.a = alpha;
     colour
 }
@@ -272,6 +272,8 @@ impl Root {
     /// `toggleGuildFolderExpand`.
     pub(super) fn toggle_folder(&mut self, folder: Id, cx: &mut Context<Self>) {
         self.stores.folders.toggle_expanded(folder);
+        // Not in the pinned client: BetterFolders' Close Others (`plugin_hooks/better_folders.rs`).
+        self.better_folders_toggled(folder);
         self.save_expanded();
         cx.notify();
     }
@@ -536,7 +538,7 @@ impl Root {
     }
 
     /// The default folder name: its servers' names in order (`defaultFolderName`).
-    fn folder_label(&self, folder: &Folder) -> String {
+    pub(super) fn folder_label(&self, folder: &Folder) -> String {
         match folder.name.as_deref().filter(|name| !name.is_empty()) {
             Some(name) => name.to_owned(),
             None => folder
@@ -552,7 +554,8 @@ impl Root {
     /// An open or closed folder: the header row (the pill, the folder button) and, below, its servers.
     fn rail_folder(&self, folder: &Folder, cx: &mut Context<Self>) -> AnyElement {
         let id = folder.id;
-        let expanded = self.stores.folders.is_expanded(id);
+        // Not in the pinned client: BetterFolders moves an open folder's servers out (`plugin_hooks/better_folders.rs`).
+        let (expanded, listed) = Self::better_folders_rail(self.stores.folders.is_expanded(id));
         let dragging = self.rail_folders.drag == Some((id, true));
         let selected = self
             .guild
@@ -572,7 +575,7 @@ impl Root {
         let row_key = format!("folder-{id}");
         let grow = motion::value(
             motion::key(&("folder-height", id)),
-            f32::from(expanded),
+            f32::from(listed),
             css(FOLDER_MS, Ease::Linear),
         );
         let slide = motion::value(

@@ -189,6 +189,8 @@ impl Root {
                         // Module 396655 `nO`: when unacknowledged Nitro offers are the entire Home badge, open Nitro.
                         let offers = this.unacknowledged_nitro_offer_count();
                         let other = this.home_badge_count().saturating_sub(offers);
+                        // Not in the pinned client: BetterFolders (`plugin_hooks/better_folders.rs`).
+                        this.better_folders_home(cx);
                         if offers > 0 && other == 0 {
                             this.open_nitro(cx);
                         } else {

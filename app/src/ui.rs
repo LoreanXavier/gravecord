@@ -2084,7 +2084,8 @@ impl Root {
             .occlude()
             .group("sidebar-resize")
             .absolute()
-            .left(px(self.combined_sidebar_width() - 4.))
+            // Not in the pinned client: BetterFolders' column moves it (`plugin_hooks/better_folders.rs`).
+            .left(px(self.combined_sidebar_width() - 4. + Self::better_folders_width()))
             .top(px(32.))
             .bottom(px(0.))
             .w(px(8.))
@@ -7818,7 +7819,8 @@ impl Root {
             .occlude()
             .left(px(8.))
             .bottom(px(8.))
-            .w(px(self.combined_sidebar_width() - 16.))
+            // Not in the pinned client: BetterFolders' column widens it (`plugin_hooks/better_folders.rs`).
+            .w(px(self.combined_sidebar_width() - 16. + Self::better_folders_width()))
             .rounded(px(8.))
             .bg(color("--background-base-low"))
             .border_1()
@@ -12462,6 +12464,8 @@ impl Render for Root {
         self.request_rail_dm_images();
         self.request_group_images();
         self.rail_folders_frame(cx);
+        // Not in the pinned client: BetterFolders' folder rules (`plugin_hooks/better_folders.rs`).
+        self.better_folders_frame(cx);
         self.channel_drag_frame(cx);
         self.accounts_frame(cx);
         self.prepare_nameplate_animations(window, cx);
@@ -14082,6 +14086,8 @@ impl Render for Root {
                     let rail = self
                         .regions
                         .place(regions::Kind::Rail, regions::style_of(regions::Kind::Rail));
+                    // Not in the pinned client: BetterFolders' column (`plugin_hooks/better_folders.rs`).
+                    let rail = self.better_folders_beside(rail, cx);
                     let sidebar_width = self.sidebar_width();
                     let sidebar = if self.guild.is_some() {
                         self.regions.place(

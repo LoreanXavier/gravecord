@@ -693,6 +693,77 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "BetterFolders",
+        name: "BetterFolders",
+        description: "Shows server folders on dedicated sidebar and adds folder related improvements",
+        origin: Origin::Vencord,
+        source: "src/plugins/betterFolders/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "sidebar",
+                label: "Sidebar",
+                description: "Display servers from folder on dedicated sidebar",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "sidebarAnim",
+                label: "Sidebar Animation",
+                description: "Animate opening the folder sidebar",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "closeAllFolders",
+                label: "Close All Folders",
+                description: "Close all folders when selecting a server not in a folder",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "closeAllHomeButton",
+                label: "Close All Home Button",
+                description: "Close all folders when clicking on the home button",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "closeOthers",
+                label: "Close Others",
+                description: "Close other folders when opening a folder",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "closeServerFolder",
+                label: "Close Server Folder",
+                description: "Close folder when selecting a server in that folder",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "forceOpen",
+                label: "Force Open",
+                description: "Force a folder to open when switching to a server of that folder",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "keepIcons",
+                label: "Keep Icons",
+                description: "Keep showing guild icons in the primary guild bar folder when it's open in the BetterFolders sidebar",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "showFolderIcon",
+                label: "Show Folder Icon",
+                description: "Show the folder icon above the folder guilds in the BetterFolders sidebar",
+                kind: Kind::Select {
+                    options: &[
+                        ("Never", Lit::Int(0)),
+                        ("Always", Lit::Int(1)),
+                        ("When more than one folder is expanded", Lit::Int(2)),
+                    ],
+                    default: 1,
+                },
+            },
+        ],
+    },
+    Def {
         id: "BetterForwards",
         name: "BetterForwards",
         description: "Message forward utilities including NSFW bypass and UI improvements.",

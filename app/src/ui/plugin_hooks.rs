@@ -6,6 +6,7 @@ pub(in crate::ui) use alt_krisp_switch::noise_popout_off;
 mod always_animate;
 mod better_activities;
 mod better_audio_player;
+mod better_folders;
 mod better_forwards;
 mod better_gif_alt_text;
 pub(in crate::ui) use better_gif_alt_text::better_gif_alt_text;
