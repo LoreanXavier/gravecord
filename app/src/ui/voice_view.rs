@@ -3510,6 +3510,7 @@ impl Root {
                     .children(self.soundboard_desktop_nux_popover(
                         soundboard_open,
                         soundboard_reason.is_none(),
+                        shown,
                         cx,
                     ))
                     .child(self.bar_tip(
@@ -5146,6 +5147,15 @@ fn video_tile_theme_stops(primary: u32, secondary: u32, modal_bg: Rgba) -> (Rgba
 /// Module 987933 (`554146.M.SOUNDBOARD_DESKTOP_NUX = 805`): dismissible content bit for Soundboard Desktop NUX.
 pub(crate) const SOUNDBOARD_DESKTOP_NUX: u16 = 805;
 
+/// Module 195118 as module 987933 opens it: `position: "top"`, `spacing: 14`, `autoInvert: true`, and
+/// `nudgeAlignIntoViewport` for a top or bottom popout.
+const SOUNDBOARD_NUX_POPOUT: super::reference_layer::Props = super::reference_layer::Props {
+    position: super::reference_layer::Side::Top,
+    spacing: 14.,
+    auto_invert: true,
+    nudge_align_into_viewport: true,
+};
+
 /// Module 987933: returns true when the Soundboard Desktop NUX coachmark popover should show.
 pub(crate) fn soundboard_nux_should_show(
     dismissed: bool,
@@ -5254,11 +5264,16 @@ impl Root {
     }
 
     /// Module 987933 (`SoundboardDesktopNuxCoachmark`): pink-gradient coachmark popover (`UaGc2V` / `lyhz2x` / `6EJvHt`)
-    /// anchored above the voice action bar Soundboard button (`533978`).
+    /// over the voice action bar Soundboard button (`533978`, `targetElementRef` is the 40px tray button). It is a
+    /// `Popout` (module 195118: `position: "top"`, `align: "center"`, `spacing: 14`, `autoInvert`,
+    /// `nudgeAlignIntoViewport` for a top popout) in the app layer, so the call area never clips it: it opens under
+    /// the button when a short call area leaves no room over it, and stays inside the window. Module 533978 drops it
+    /// while the call is idle.
     pub(super) fn soundboard_desktop_nux_popover(
         &self,
         soundboard_open: bool,
         soundboard_enabled: bool,
+        controls_shown: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let show = self.vv.soundboard_nux_preview
@@ -5268,49 +5283,21 @@ impl Root {
                     soundboard_open,
                     soundboard_enabled,
                 ));
-        if !show {
+        if !show || !controls_shown {
             return None;
         }
-        Some(self.render_soundboard_nux_card(true, cx))
+        Some(super::reference_layer::reference_layer(
+            SOUNDBOARD_NUX_POPOUT,
+            2,
+            self.render_soundboard_nux_card(cx),
+        ))
     }
 
-    /// Module 987933: standalone preview layer (when triggered outside an active call for QA/capture).
-    pub(in crate::ui) fn soundboard_nux_preview_layer(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if !self.vv.soundboard_nux_preview {
-            return None;
-        }
-        Some(
-            deferred(
-                div()
-                    .id("soundboard-nux-preview-backdrop")
-                    .occlude()
-                    .absolute()
-                    .inset_0()
-                    .bg(rgba(0x00000099))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.dismiss_soundboard_desktop_nux();
-                            cx.notify();
-                        }),
-                    )
-                    .child(self.render_soundboard_nux_card(false, cx)),
-            )
-            .with_priority(3)
-            .into_any_element(),
-        )
-    }
-
-    fn render_soundboard_nux_card(&self, anchored: bool, cx: &mut Context<Self>) -> AnyElement {
-        let mut card = div()
+    fn render_soundboard_nux_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let card = div()
             .id("soundboard-desktop-nux-card")
             .occlude()
+            .flex_none()
             .w(px(288.))
             .rounded(px(12.))
             .border_1()
@@ -5320,9 +5307,6 @@ impl Root {
             .flex()
             .flex_col()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
-        if anchored {
-            card = card.absolute().bottom(px(64.)).left(px(-116.));
-        }
         card.child(
             div()
                 .relative()

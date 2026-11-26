@@ -595,6 +595,16 @@ impl Root {
         if let ["group-manage", rest @ ..] = words {
             return self.script_group_manage(rest, cx);
         }
+        // `height <px>` / `height reset`: the call area as if its bottom edge was dragged to `px` (clamped as a drag
+        // is), or back to its own height. In memory only: the stored height is neither read nor written.
+        if let ["height", value] = words {
+            self.dmc.set_resized(value.parse::<f32>().ok());
+            cx.notify();
+            return match self.dmc.resized() {
+                Some(height) => format!("call area height {height}"),
+                None => "call area height reset".to_owned(),
+            };
+        }
         let channel = TEST_DM;
         let me = self.stores.current_user.as_ref().map(|user| user.id);
         let other = self

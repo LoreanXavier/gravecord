@@ -171,6 +171,20 @@ pub struct State {
     pub video: bool,
 }
 
+impl State {
+    /// Capture only: the height a drag would leave, or `None` for the area's own height, without touching storage.
+    #[cfg(feature = "capture")]
+    pub(super) fn set_resized(&mut self, height: Option<f32>) {
+        self.resized_read = true;
+        self.resized = height;
+    }
+
+    #[cfg(feature = "capture")]
+    pub(super) fn resized(&self) -> Option<f32> {
+        self.resized
+    }
+}
+
 impl Root {
     /// The people of the open DM's call: those with a voice state, then those being rung (`getUserParticipants` of
     /// module 568598: a voice state or `call.ringing.includes(user)`). Empty while the call is unavailable.

@@ -307,6 +307,7 @@ mod rail_folder_menu;
 mod rail_folders;
 mod reaction_tip;
 mod reactions_modal;
+mod reference_layer;
 pub(crate) mod regions;
 mod remediation;
 mod reminder_modal;
@@ -14587,7 +14588,6 @@ impl Render for Root {
             .children(self.conjure_workspace_layer(cx))
             .children(self.checkpoint_2026_layer(cx))
             .children(self.game_server_success_modal_layer(cx))
-            .children(self.soundboard_nux_preview_layer(cx))
             .children(self.spotify_premium_layer(cx))
             .children(self.lightbox_layer(cx))
             .children(self.video_fullscreen_layer(window, cx))
