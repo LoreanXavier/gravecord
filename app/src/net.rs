@@ -1220,24 +1220,19 @@ const DIVERSITY_COLUMNS: u32 = 10;
 const SHEET_CELL: u32 = 40;
 
 /// Every cell of a sheet as a PNG under `<prefix>:<index>`, scaled to 40px when the sheet is stored larger.
+///
+/// The emoji sheet is stored at 3360 by 3120: decoded whole it took 42 MB, twice over while it was converted. It is
+/// read one row of cells at a time instead, and each cell's PNG is kept at its length (an encoder's buffer grows to
+/// about twice what it holds, and 2,000 cells are kept for the rest of the run).
 fn sheet_cells(
     sheet: &[u8],
     count: u32,
     columns: u32,
     prefix: &str,
 ) -> image::ImageResult<Vec<(String, Vec<u8>)>> {
-    let sheet = image::load_from_memory_with_format(sheet, image::ImageFormat::Png)?.to_rgba8();
-    let scale = f64::from(sheet.width()) / f64::from(columns * SHEET_CELL);
-    let size = (f64::from(SHEET_CELL) * scale).round() as u32;
     let mut out = Vec::with_capacity(count as usize);
-    for index in 0..count {
-        let (column, row) = (index % columns, index / columns);
-        let (x, y) = (column * size, row * size);
-        if x + size > sheet.width() || y + size > sheet.height() {
-            break;
-        }
-        let mut cell = image::imageops::crop_imm(&sheet, x, y, size, size).to_image();
-        if size != SHEET_CELL {
+    let mut keep = |index: u32, mut cell: image::RgbaImage| -> image::ImageResult<()> {
+        if cell.width() != SHEET_CELL {
             cell = image::imageops::resize(
                 &cell,
                 SHEET_CELL,
@@ -1247,9 +1242,114 @@ fn sheet_cells(
         }
         let mut bytes = std::io::Cursor::new(Vec::new());
         cell.write_to(&mut bytes, image::ImageFormat::Png)?;
-        out.push((format!("{prefix}:{index}"), bytes.into_inner()));
+        let mut bytes = bytes.into_inner();
+        bytes.shrink_to_fit();
+        out.push((format!("{prefix}:{index}"), bytes));
+        Ok(())
+    };
+    let cell_size = |width: u32| {
+        let scale = f64::from(width) / f64::from(columns * SHEET_CELL);
+        (f64::from(SHEET_CELL) * scale).round() as u32
+    };
+    if let Some(mut rows) = SheetRows::new(sheet) {
+        let (width, height) = (rows.width, rows.height);
+        let size = cell_size(width);
+        let mut band: Option<(u32, image::RgbaImage)> = None;
+        for index in 0..count {
+            let (column, row) = (index % columns, index / columns);
+            let (x, y) = (column * size, row * size);
+            if x + size > width || y + size > height {
+                break;
+            }
+            if band.as_ref().is_none_or(|(at, _)| *at != row) {
+                band = Some((row, rows.next_band(size)?));
+            }
+            let Some((_, pixels)) = &band else {
+                break;
+            };
+            keep(
+                index,
+                image::imageops::crop_imm(pixels, x, 0, size, size).to_image(),
+            )?;
+        }
+        return Ok(out);
+    }
+    let sheet = image::load_from_memory_with_format(sheet, image::ImageFormat::Png)?.to_rgba8();
+    let size = cell_size(sheet.width());
+    for index in 0..count {
+        let (column, row) = (index % columns, index / columns);
+        let (x, y) = (column * size, row * size);
+        if x + size > sheet.width() || y + size > sheet.height() {
+            break;
+        }
+        keep(
+            index,
+            image::imageops::crop_imm(&sheet, x, y, size, size).to_image(),
+        )?;
     }
     Ok(out)
+}
+
+/// A PNG read from the top a band of rows at a time, as RGBA: the pixels `image` decodes it to (`png` with the
+/// `EXPAND` transformation, then RGB given an opaque alpha). Only 8-bit RGB and RGBA output that is not interlaced is
+/// read this way; anything else is decoded whole.
+struct SheetRows<'a> {
+    reader: png::Reader<std::io::Cursor<&'a [u8]>>,
+    width: u32,
+    height: u32,
+    alpha: bool,
+}
+
+impl<'a> SheetRows<'a> {
+    fn new(bytes: &'a [u8]) -> Option<Self> {
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        decoder.set_transformations(png::Transformations::EXPAND);
+        let reader = decoder.read_info().ok()?;
+        let (width, height) = (reader.info().width, reader.info().height);
+        let alpha = match reader.output_color_type() {
+            (png::ColorType::Rgba, png::BitDepth::Eight) => true,
+            (png::ColorType::Rgb, png::BitDepth::Eight) => false,
+            _ => return None,
+        };
+        if reader.info().interlaced {
+            return None;
+        }
+        Some(Self {
+            reader,
+            width,
+            height,
+            alpha,
+        })
+    }
+
+    /// The next `rows` rows of the picture.
+    fn next_band(&mut self, rows: u32) -> image::ImageResult<image::RgbaImage> {
+        fn decoding(
+            error: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+        ) -> image::ImageError {
+            image::ImageError::Decoding(image::error::DecodingError::new(
+                image::error::ImageFormatHint::Exact(image::ImageFormat::Png),
+                error,
+            ))
+        }
+        let mut band = Vec::with_capacity(self.width as usize * rows as usize * 4);
+        for _ in 0..rows {
+            let row = self
+                .reader
+                .next_row()
+                .map_err(decoding)?
+                .ok_or_else(|| decoding("the picture ended before its rows"))?;
+            if self.alpha {
+                band.extend_from_slice(row.data());
+            } else {
+                for pixel in row.data().as_chunks::<3>().0 {
+                    band.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+                }
+            }
+        }
+        image::RgbaImage::from_raw(self.width, rows, band)
+            .ok_or_else(|| decoding("a row is shorter than the picture"))
+    }
 }
 
 /// The composer's emoji button is one cell of this mask sprite, at -180px -36px in a 360x72 layout, 18px square.
@@ -4484,4 +4584,117 @@ async fn resolve_redirect(url: &str) -> String {
         };
     }
     current
+}
+
+#[cfg(test)]
+mod sheet_tests {
+    use super::{SHEET_CELL, sheet_cells};
+
+    /// The cells as they were cut before the sheets were read in bands: the whole sheet decoded, then cropped.
+    fn cut_whole(sheet: &[u8], count: u32, columns: u32) -> Vec<image::RgbaImage> {
+        let sheet = image::load_from_memory_with_format(sheet, image::ImageFormat::Png)
+            .unwrap()
+            .to_rgba8();
+        let scale = f64::from(sheet.width()) / f64::from(columns * SHEET_CELL);
+        let size = (f64::from(SHEET_CELL) * scale).round() as u32;
+        let mut out = Vec::new();
+        for index in 0..count {
+            let (column, row) = (index % columns, index / columns);
+            let (x, y) = (column * size, row * size);
+            if x + size > sheet.width() || y + size > sheet.height() {
+                break;
+            }
+            let mut cell = image::imageops::crop_imm(&sheet, x, y, size, size).to_image();
+            if size != SHEET_CELL {
+                cell = image::imageops::resize(
+                    &cell,
+                    SHEET_CELL,
+                    SHEET_CELL,
+                    image::imageops::FilterType::Triangle,
+                );
+            }
+            out.push(cell);
+        }
+        out
+    }
+
+    fn decoded(cells: &[(String, Vec<u8>)]) -> Vec<image::RgbaImage> {
+        cells
+            .iter()
+            .map(|(_, png)| {
+                image::load_from_memory_with_format(png, image::ImageFormat::Png)
+                    .unwrap()
+                    .to_rgba8()
+            })
+            .collect()
+    }
+
+    /// A sheet of `columns` by `rows` cells of `cell` pixels in the given PNG color type, with varied pixels.
+    fn sheet(columns: u32, rows: u32, cell: u32, color: png::ColorType, trns: bool) -> Vec<u8> {
+        let (width, height) = (columns * cell, rows * cell);
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, width, height);
+            encoder.set_color(color);
+            encoder.set_depth(png::BitDepth::Eight);
+            let channels = match color {
+                png::ColorType::Indexed => {
+                    let palette: Vec<u8> = (0..=255u8)
+                        .flat_map(|i| [i, i.wrapping_mul(7), 255 - i])
+                        .collect();
+                    encoder.set_palette(palette);
+                    if trns {
+                        let alpha: Vec<u8> = (0..=255u8).map(|i| i.wrapping_mul(13)).collect();
+                        encoder.set_trns(alpha);
+                    }
+                    1
+                }
+                png::ColorType::Rgb => 3,
+                _ => 4,
+            };
+            let mut writer = encoder.write_header().unwrap();
+            let data: Vec<u8> = (0..width * height * channels)
+                .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+                .collect();
+            writer.write_image_data(&data).unwrap();
+        }
+        bytes
+    }
+
+    #[test]
+    fn cells_read_in_bands_are_the_cells_of_the_whole_sheet() {
+        for (color, trns) in [
+            (png::ColorType::Indexed, true),
+            (png::ColorType::Indexed, false),
+            (png::ColorType::Rgb, false),
+            (png::ColorType::Rgba, false),
+        ] {
+            // Stored at twice the drawn size, as the emoji sheet is, and at the drawn size; more cells asked for than
+            // the sheet holds, so the cut stops where it ends.
+            for cell in [80, 40] {
+                let bytes = sheet(3, 2, cell, color, trns);
+                let cells = sheet_cells(&bytes, 8, 3, "sprite").unwrap();
+                assert_eq!(cells.len(), 6, "{color:?} {cell}");
+                assert_eq!(cells[5].0, "sprite:5");
+                assert_eq!(decoded(&cells), cut_whole(&bytes, 8, 3), "{color:?} {cell}");
+                assert!(cells.iter().all(|(_, png)| png.capacity() == png.len()));
+            }
+        }
+    }
+
+    /// The real sheets, when `GRAVECORD_TEST_SHEETS` names their files (`;` between them, each `path,count,columns`).
+    #[test]
+    fn the_emoji_sheets_cut_as_before() {
+        let Ok(list) = std::env::var("GRAVECORD_TEST_SHEETS") else {
+            return;
+        };
+        for item in list.split(';').filter(|item| !item.is_empty()) {
+            let mut parts = item.rsplitn(3, ',');
+            let columns: u32 = parts.next().unwrap().parse().unwrap();
+            let count: u32 = parts.next().unwrap().parse().unwrap();
+            let bytes = std::fs::read(parts.next().unwrap()).unwrap();
+            let cells = sheet_cells(&bytes, count, columns, "sprite").unwrap();
+            assert_eq!(decoded(&cells), cut_whole(&bytes, count, columns), "{item}");
+        }
+    }
 }

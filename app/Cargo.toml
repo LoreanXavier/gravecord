@@ -43,6 +43,8 @@ gpui = { path = "../vendor/zed/crates/gpui", default-features = false, features 
 gpui_platform = { path = "../vendor/zed/crates/gpui_platform" }
 crc32fast = "1.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp", "gif"] }
+# The emoji sheets are read a band of rows at a time (`net.rs::SheetRows`): the version `image` decodes PNGs with.
+png = "0.18"
 md-5 = "0.10"
 # The update setup file is verified against the SHA-256 in the feed (updater.rs).
 sha2 = "0.10"
