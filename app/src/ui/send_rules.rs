@@ -226,8 +226,13 @@ impl Root {
     /// `None` to send it as it is.
     pub(super) fn send_rules(&mut self, content: &str, cx: &mut Context<Self>) -> Option<String> {
         let channel = self.channel?;
-        if let Some(name) = reaction_name(content) {
-            return self.reaction_rule(channel, 1, name, cx);
+        // Not in the pinned client: BetterPlusReacts' rule (`plugin_hooks/better_plus_reacts.rs`).
+        let reaction = match super::plugin_hooks::better_plus_reacts_rule(content) {
+            Some(rule) => rule,
+            None => reaction_name(content).map(|name| (1, name.to_owned())),
+        };
+        if let Some((back, name)) = reaction {
+            return self.reaction_rule(channel, back, &name, cx);
         }
         // Not in the pinned client: SedEnhanced's rule (`plugin_hooks/sed_enhanced.rs`).
         if let Some(handled) = self.sed_enhanced_rule(channel, content, cx) {

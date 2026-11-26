@@ -188,7 +188,9 @@ impl Root {
             self.autocomplete.hidden = None;
         }
         let trigger = match (caret, &self.autocomplete.hidden) {
-            (Some(caret), None) => ac::detect(&text, caret, self.guild.is_none()),
+            (Some(caret), None) => ac::detect(&text, caret, self.guild.is_none())
+                // Not in the pinned client: BetterPlusReacts (`plugin_hooks/better_plus_reacts.rs`).
+                .or_else(|| super::plugin_hooks::better_plus_reacts_trigger(&text, caret)),
             _ => None,
         };
         // `/` has its own list, with its own rail and rows.

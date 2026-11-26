@@ -674,6 +674,15 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "BetterPlusReacts",
+        name: "BetterPlusReacts",
+        description: "The amount of plus before :emoji: is the message to add it to",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterPlusReacts/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "BetterQuickReact",
         name: "MoreQuickReactions",
         description: "Improves the quick react buttons in the message context menu.",

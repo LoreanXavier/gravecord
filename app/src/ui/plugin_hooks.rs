@@ -6,10 +6,12 @@ pub(in crate::ui) use alt_krisp_switch::noise_popout_off;
 mod always_animate;
 mod better_activities;
 mod better_forwards;
+mod better_plus_reacts;
 pub(in crate::ui) use better_forwards::{
     better_forwards_follow, better_forwards_on, better_forwards_self_forward,
     better_forwards_send_pressed,
 };
+pub(in crate::ui) use better_plus_reacts::{better_plus_reacts_rule, better_plus_reacts_trigger};
 mod better_role_context;
 pub(in crate::ui) use better_role_context::role_icon_format_setting;
 mod better_role_dot;
