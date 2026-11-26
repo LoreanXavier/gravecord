@@ -134,6 +134,7 @@ impl Root {
                     )),
                     message,
                     own,
+                    search: false,
                 });
             }
         }

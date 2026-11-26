@@ -667,8 +667,17 @@ impl Root {
     ) -> AnyElement {
         let avatar = self.images.get(&avatar_source(&message.author).0).cloned();
         let target = message.clone();
+        let menu_target = message.clone();
         div()
             .id(SharedString::from(format!("search-result-{}", message.id)))
+            // Module 36544 `handleContextMenu`: the result's own menu (module 847342).
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.open_search_result_menu(event.position, menu_target.clone(), cx);
+                }),
+            )
             .mb(px(8.))
             .rounded(px(8.))
             .border_1()

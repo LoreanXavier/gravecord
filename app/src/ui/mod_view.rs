@@ -246,6 +246,10 @@ impl Root {
         let (Some(me), Some(guild)) = (self.stores.me(), self.stores.guild(guild)) else {
             return false;
         };
+        // Not in the pinned client: ShowHiddenThings' showModView (`plugin_hooks/show_hidden_things.rs`).
+        if super::plugin_hooks::show_hidden_mod_view() {
+            return true;
+        }
         has_access(permissions::guild_permissions(guild, me))
     }
 

@@ -70,7 +70,7 @@ def balanced(text, start):
 
 
 def top_level_entries(block):
-    """`key: { ... }` entries at the top of an object literal."""
+    """`key: { ... }` and `key: helper(...)` entries at the top of an object literal."""
     inner, depth, i, out = block[1:-1], 0, 0, []
     while i < len(inner):
         c = inner[i]
@@ -82,6 +82,11 @@ def top_level_entries(block):
                     out.append((m.group(1), body))
                     i += len(body)
                     continue
+            if depth == 0 and c == '(':
+                # `key: helper(...)`: the helper's name, for the caller to look up.
+                m = re.search(r'(\w+)\s*:\s*(\w+)\s*$', inner[:i])
+                if m:
+                    out.append((m.group(1), m.group(2) + '('))
             depth += 1
         elif c in '})]':
             depth -= 1
@@ -127,6 +132,12 @@ for dp, dn, fn in os.walk(ROOT):
                         settings.append((key, 'BOOLEAN', 'true'))
             if s:
                 for key, body in top_level_entries(balanced(holder, s.end() - 1)):
+                    # A setting made by a helper of the file (`showTimeouts: opt("...")`, ShowHiddenThings): the
+                    # helper's own object gives the type and default.
+                    helper = re.match(r'\s*(\w+)\(', body)
+                    made = helper and re.search(r'const\s+' + helper.group(1) + r'\s*=[^{]*\(\{', holder)
+                    if made and not re.search(r'type:\s*OptionType', body):
+                        body = balanced(holder, made.end() - 1)
                     kind = re.search(r'type:\s*OptionType\.(\w+)', body)
                     # A select marks its default option with `default: true`; take that option's value.
                     picked = re.search(r'value:\s*([^,}\n]+?),\s*default:\s*true', body)
@@ -158,6 +169,11 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'BetterPlusReacts': "plugin_hooks/better_plus_reacts.rs: the send path's `+:emoji:` rule (ui/send_rules.rs, module 751258) takes more pluses, one per message back (`+:x:` the newest, `++:x:` the one before; no plus is no message, so `:x:` is sent as written), and the composer's Add reaction list opens for a first word of several pluses; choosing an emoji there keeps the typed pluses, so it reacts to the message they pick.",
+    'FullSearchContext': "plugin_hooks/full_search_context.rs: a right press on a search result opens the chat's full message menu (761304) for the result's own message and channel instead of the search's short one (847342), with Copy Author ID after Copy Message ID in developer mode; Reply and Edit first open the result's channel at the message. GAP: a result from a voice channel's chat opens the channel's call view, where the chat panel (and so the reply bar) is not open.",
+    'SedEnhanced': "plugin_hooks/sed_enhanced.rs, plugins/sed_enhanced.rs: the send path's `s/find/replace` rule (ui/send_rules.rs, module 751258) takes the original's wider pattern (separators `/|$#@!`, the closing one optional, modes `rgmisudyv`), edits the message replied to when it is yours (a reply to someone else's sends nothing) or else your last editable message; `r` (inverted by regexByDefault) makes the find a regular expression with `gmisudyv` as flags, `g` changes every match, JavaScript `$` forms expand, a pattern that does not compile sends nothing, an empty result without attachments deletes. GAP: expressions run on Rust's linear-time `regex`, without look-around or back references (such a pattern sends nothing).",
+    'ShowHiddenThings': "plugin_hooks/show_hidden_things.rs: showTimeouts drops the moderator test of the chat timeout clock (showCommunicationDisabledStyles, 549587), showInvitesPaused the Manage Server test of the rail tooltip's Invites paused line (347951 `Fi`, read only while paused), showModView makes the Mod View gate (985925) answer yes in every server, so the user menu offers Open in Mod View everywhere. The pinned pieces were ported in 1ee62c8d. GAP: the user popout's Mod View button (348434, `PRESS_MOD_VIEW`, which the original also shows on yourself) is not ported, so that part has nothing to act on; the highest-role fix is not needed here (Mod View reads the member's roles itself).",
+    'ValidReply': 'plugin_hooks/valid_reply.rs: the pointer entering a reply\'s "Message could not be loaded" bar (448368, ported in 1ee62c8d) fetches GET /channels/<c>/messages?limit=1&around=<id> once at a time; the first message of the answer is the reply\'s message and the bar shows it, another one means it is gone and the bar reads "Original message was deleted"; a failed fetch changes nothing. The fetched message is kept for the bar only.',
     'AltKrispSwitch': "plugin_hooks/alt_krisp_switch.rs: the voice panel's Noise Suppression popout switch turns the suppressor off to None instead of Standard (shouldCancelSuppression drops the popout's Standard dispatch); the suppressor here is DeepFilterNet in Krisp's place, so the switch goes between None and DeepFilterNet. The settings page's select is unchanged, as the original only acts on the popout's section.",
     'ClipUpload': "plugin_hooks/clip_upload.rs + plugins/clip_upload.rs: the composer's + menu ends with Upload Clip File (CloudUploadIcon), which opens the original's dialog: Select File (MP4/M4V up to 500 MB) and Parse clip metadata from file (the clip box's game name, users and game id fill Title, Participants and Game/Application when empty), File name, Title, Participants (friends who are not bots, by label, with the consent line), Created at (datetime-local, Created at must be a valid date.), Message, Game/Application (games running, seen and candidates, or a custom id) and Spoiler/Remix/Thumbnail; Upload stamps a copy with the empty clip box (dc_clips::mp4::replace_metadata, the box updateClipMetadata writes), reserves it with is_clip and the clip fields, puts it and sends the message with the pending reply's reference (Checking clip file. / Clip uploaded. / the error toast). GAP: the FFmpeg conversion retry on not a valid clip (no FFmpeg here: a refused file ends with the original's not compatible text), the clip button on a clip attached in the composer (clips are shared from the gallery here), selects drawn as lists under their fields.",
     'CustomRPC': "plugin_hooks/custom_rpc.rs + plugins/custom_rpc.rs: a local activity of its own (LOCAL_ACTIVITY_UPDATE from the CustomRPC socket, after the games') while enablePresence is on, built as createActivity builds it (type, ids, lines and links, stream link, timestamps None/Since open/Your time/Custom with the repeating span, pictures turned into asset ids by fetchAssetIds, buttons with metadata, party); the card shows the original's notices with their buttons, help lines with links, the activity as the profile draws it, presets (saved, loaded, deleted in the store) and the whole form with each field's check and message. GAP: the toolbox toggle (no toolbox).",
@@ -265,6 +281,11 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'BetterPlusReacts': '`pluses_count_the_messages_back`, `the_list_opens_for_several_pluses`; replay by use (C:/Projects/gravecord-plugins-verify/sed1, sed2): `++:thu` opens Add reaction (a_plus_list) and Enter reacts (React refused by inert), plugin off `++:thu` opens nothing (sed2/a_plus_off); enabled state survives a restart',
+    'FullSearchContext': "`copy_author_id_follows_copy_message_id`; replay by use (C:/Projects/gravecord-plugins-verify/fsc2, fsc3): a result from the voice channel's chat opens the short menu off (a_short_menu) and the full menu on (b_full_menu); Copy Author ID copies 18 bytes, Copy Message Link the result's channel (88 bytes), Reply opens that channel (c_after_reply); enabled state survives a restart",
+    'SedEnhanced': '`the_wider_pattern_matches_as_the_original`, `text_and_expressions_follow_the_original`, base `the_sed_rule_follows_the_pinned_pattern`, `text_replacement_is_javascripts`, `groups_expand_by_number_and_name`; replay by use (C:/Projects/gravecord-plugins-verify/sr1, sed1, sed2): off `s|world|there|g` is sent as text (sr1/b_pipe_sent_off), on it and `s/w(or)ld/[$1]/` (regexByDefault true) edit with nothing sent, `s/(/x/` sends nothing; regexByDefault stored and kept after a restart',
+    'ShowHiddenThings': '`every_switch_is_on_by_default_and_off_with_the_plugin`; replay by use (C:/Projects/gravecord-plugins-verify/sht1..sht4) with the account made a non-moderator by GUILD_UPDATE: timeout clock off/on (a_chat_off, c_chat_on), rail Invites paused line off/on (b_rail_off, d_rail_on), user menu Open in Mod View with showModView off/on (sht4); showModView and showInvitesPaused stored false and kept after a restart',
+    'ValidReply': '`the_first_message_of_the_answer_decides`; replay by use (C:/Projects/gravecord-plugins-verify/vr1..vr3): two not-loaded bars (vr1/a_bars); after a restart with the plugin kept on, hovering loads the real message and the unknown id reads deleted (vr2/b_both_hovered); plugin off nothing changes (vr3/c_off_hovered)',
     'AltKrispSwitch': '`the_switch_turns_to_none_only_while_on`; replay by use: the popout switch off stores None (2) and keeps it after a restart, plugin off stores Standard (1)',
     'ClipUpload': '`names_read_as_the_original_reads_them`, `metadata_is_read_after_the_footer`, `dates_round_trip_through_the_field`, `bodies_carry_the_clip_fields`, `a_picked_file_is_stamped_in_a_copy`; frames pending (live runs held)',
     'CustomRPC': '`activities_read_as_create_activity_builds_them`, `checks_read_as_the_form_writes_them`, `fields_check_as_the_form_checks`; frames pending (live runs held)',
@@ -447,17 +468,12 @@ PLANNED = {
     'BetterAudioPlayer': 'a spectrograph and oscilloscope in the audio attachment player (needs the decoded samples).',
     'BetterFolders': 'a second server sidebar for folders.',
     'BetterGifAltText': "a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree.",
-    'BetterPlusReacts': "the pinned client's own `+:emoji:` rule first: a message `+:emoji:` reacts to the last message (the send path's reaction shortcut and its autocomplete), which the port does not have yet (GAP: main app); BetterPlusReacts only lets more pluses pick an older message.",
     'Decor': 'its third-party avatar decorations service (decor-auth in the backup\'s data store is not copied).',
     'Experiments': 'the experiments and developer pages.',
-    'FullSearchContext': "the pinned client's own menu of a search result first: a right click on a result opens nothing here yet (the search listbox's short menu, `handleContextMenu`, is not ported: GAP, main app), and the app's message menu reads its message from the open channel's list, so a result from another channel needs that menu to take any message; FullSearchContext then swaps the short menu for the full one and adds Copy Author ID.",
     'GifMaker': 'a GIF encoder and its editor.',
     'LimitlessScreenshare': 'resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style).',
     'Quoter': 'a quote image made from a message.',
-    'SedEnhanced': "the pinned client's own sed rule first: a message `s/a/b` edits your last message (the `searchReplace` rule of the send path, module 857069), which the port does not have yet (GAP: main app); SedEnhanced only widens that rule's syntax and regex.",
-    'ShowHiddenThings': "the pinned client's own pieces first: the chat timeout icon by a timed-out member's name (showCommunicationDisabledStyles) and the invites-paused tooltip on the server rail are not drawn by the port yet (GAPs in the official UI), so showTimeouts and showInvitesPaused would unlock nothing; showModView lifts the user menu's Open in Mod View permission check, which the port does not apply yet either (it shows the row in every server).",
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
-    'ValidReply': "the pinned client's \"Message could not be loaded\" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar.",
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
 }
 

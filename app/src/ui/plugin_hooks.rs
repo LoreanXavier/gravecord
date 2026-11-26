@@ -6,10 +6,12 @@ pub(in crate::ui) use alt_krisp_switch::noise_popout_off;
 mod always_animate;
 mod better_activities;
 mod better_forwards;
+mod better_plus_reacts;
 pub(in crate::ui) use better_forwards::{
     better_forwards_follow, better_forwards_on, better_forwards_self_forward,
     better_forwards_send_pressed,
 };
+pub(in crate::ui) use better_plus_reacts::{better_plus_reacts_rule, better_plus_reacts_trigger};
 mod better_role_context;
 pub(in crate::ui) use better_role_context::role_icon_format_setting;
 mod better_role_dot;
@@ -26,6 +28,8 @@ mod fix_youtube_embeds;
 pub(in crate::ui) use fix_youtube_embeds::{
     VideoDescription, toggle_video_description, video_description,
 };
+mod full_search_context;
+pub(in crate::ui) use full_search_context::{full_search_context, full_search_context_items};
 mod full_vc_pfp;
 mod game_activity_toggle;
 mod gif_provider_switcher;
@@ -68,11 +72,16 @@ mod relationship_notifier;
 pub(in crate::ui) use relationship_notifier::relationship_removed_by_you;
 mod role_color_everywhere;
 mod search_fix;
+mod sed_enhanced;
 mod server_info;
 pub(in crate::ui) use search_fix::search_fix;
 pub(in crate::ui) use server_info::server_info_on;
 mod server_list_indicators;
 mod show_connections;
+mod show_hidden_things;
+pub(in crate::ui) use show_hidden_things::{
+    show_hidden_invites_paused, show_hidden_mod_view, show_hidden_timeouts,
+};
 mod silent_message_toggle;
 mod spotify_crack;
 pub(in crate::ui) use spotify_crack::spotify_no_auto_pause;
@@ -91,6 +100,7 @@ mod usrbg;
 pub(in crate::ui) use usrbg::{usrbg_banner, usrbg_voice_background};
 mod unlocked_avatar_zoom;
 pub(in crate::ui) use unlocked_avatar_zoom::crop_max_zoom;
+mod valid_reply;
 mod valid_user;
 mod view_icons;
 mod voice_messages;
