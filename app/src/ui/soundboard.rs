@@ -87,6 +87,13 @@ const MENU_LEFT: f32 = 507.;
 const MENU_TOP: f32 = 30.;
 const MENU_WIDTH: f32 = 155.7;
 const MENU_HEIGHT: f32 = 76.;
+
+/// The top of the call's picker in a window `window` px high: its bottom `PICKER_BOTTOM` over the window's, and never
+/// above the window's top edge.
+fn picker_top(window: f32) -> f32 {
+    (window - PICKER_BOTTOM - PICKER_HEIGHT).max(0.)
+}
+
 /// A section is "current" once its top is this close to the list's top (the official scroll spy's slack).
 const SPY_SLACK: f32 = 20.;
 
@@ -2090,22 +2097,22 @@ impl Root {
                     this.child(self.soundboard_menu(Some(left), cx))
                 })
         } else {
+            // Its bottom on the soundboard button's, unless the window is too short for the whole picker: then its
+            // top stays on the window's top edge (the layer's `autoInvert` overlap pins it there, module 623646).
+            let top = picker_top(f32::from(window.viewport_size().height));
             div()
                 .id("soundboard-popout")
                 .popout("soundboard-popout", PopKind::Fade, PopSide::Right)
                 .absolute()
                 .left(px(PICKER_LEFT))
-                .bottom(px(PICKER_BOTTOM))
+                .top(px(top))
                 .w(px(PICKER_WIDTH))
                 .h(px(PICKER_HEIGHT))
                 .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     // The volume menu hangs outside the picker's box but is part of it.
                     let on_menu = this.soundboard.picker.as_ref().is_some_and(|picker| {
                         let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
-                        let top = f32::from(window.viewport_size().height)
-                            - PICKER_BOTTOM
-                            - PICKER_HEIGHT
-                            + MENU_TOP;
+                        let top = picker_top(f32::from(window.viewport_size().height)) + MENU_TOP;
                         picker.menu
                             && (PICKER_LEFT + MENU_LEFT..PICKER_LEFT + MENU_LEFT + MENU_WIDTH)
                                 .contains(&x)
@@ -3052,6 +3059,14 @@ fn search_section(ctx: &Ctx, query: &str, guilds: &[(Id, String)], board: &Board
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_call_picker_never_rises_above_the_window() {
+        // 720px: its bottom 78px over the window's, its top at 122.
+        assert_eq!(picker_top(720.), 122.);
+        // 500px has no room for 520 + 78: the top stays on the window's edge.
+        assert_eq!(picker_top(500.), 0.);
+    }
 
     #[test]
     fn a_downloaded_sound_is_named_by_its_type() {
