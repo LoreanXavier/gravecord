@@ -248,6 +248,12 @@ pub(super) struct State {
     colors: RefCell<HashMap<String, TileColor>>,
     /// Module 987933 (`SOUNDBOARD_DESKTOP_NUX = 805`): preview override for capture/QA.
     pub soundboard_nux_preview: bool,
+    /// Module 533978: since when the call bar has offered the Soundboard tip (`ex` waits 300ms after that).
+    pub soundboard_nux_since: std::cell::Cell<Option<Instant>>,
+    /// A redraw is pending for the end of that wait.
+    pub soundboard_nux_timer: std::cell::Cell<bool>,
+    /// The tip was drawn last frame: it holds the call's idle off (`preventIdle("popup")`, module 246356).
+    pub soundboard_nux_up: std::cell::Cell<bool>,
     pub(super) background: super::call_background::State,
 }
 
@@ -287,6 +293,9 @@ impl Default for State {
             notices: Default::default(),
             colors: RefCell::new(HashMap::new()),
             soundboard_nux_preview: false,
+            soundboard_nux_since: std::cell::Cell::new(None),
+            soundboard_nux_timer: std::cell::Cell::new(false),
+            soundboard_nux_up: std::cell::Cell::new(false),
             background: Default::default(),
             hovered_controls: HashSet::new(),
         }
@@ -734,6 +743,7 @@ impl Root {
             || self.vv.menu.is_some()
             || self.audio_menu.as_ref().is_some_and(|menu| menu.call)
             || self.panel.popout.is_some()
+            || self.vv.soundboard_nux_up.get()
             || self.stream_zoom.box_hover
             || self.stream_zoom.held()
     }
@@ -3371,7 +3381,7 @@ impl Root {
                         return;
                     }
                     if !open {
-                        this.toggle_soundboard(window, cx);
+                        this.open_call_bar_soundboard(window, cx);
                     }
                     if this.panel.popout == Some(super::voice_panel::Popout::Soundboard) {
                         lottie_icon::click(&id);
@@ -3507,9 +3517,11 @@ impl Root {
                             this.soundboard_hover(*inside, cx);
                         })
                     })
+                    .child(self.anchor_probe(super::soundboard::CALL_BUTTON))
                     .children(self.soundboard_desktop_nux_popover(
-                        soundboard_open,
+                        soundboard_open || self.vv.activity_mini,
                         soundboard_reason.is_none(),
+                        self.stores.voice_members(guild, channel).len(),
                         shown,
                         cx,
                     ))
@@ -5147,15 +5159,6 @@ fn video_tile_theme_stops(primary: u32, secondary: u32, modal_bg: Rgba) -> (Rgba
 /// Module 987933 (`554146.M.SOUNDBOARD_DESKTOP_NUX = 805`): dismissible content bit for Soundboard Desktop NUX.
 pub(crate) const SOUNDBOARD_DESKTOP_NUX: u16 = 805;
 
-/// Module 195118 as module 987933 opens it: `position: "top"`, `spacing: 14`, `autoInvert: true`, and
-/// `nudgeAlignIntoViewport` for a top or bottom popout.
-const SOUNDBOARD_NUX_POPOUT: super::reference_layer::Props = super::reference_layer::Props {
-    position: super::reference_layer::Side::Top,
-    spacing: 14.,
-    auto_invert: true,
-    nudge_align_into_viewport: true,
-};
-
 /// Module 987933: returns true when the Soundboard Desktop NUX coachmark popover should show.
 pub(crate) fn soundboard_nux_should_show(
     dismissed: bool,
@@ -5263,135 +5266,55 @@ impl Root {
         }
     }
 
-    /// Module 987933 (`SoundboardDesktopNuxCoachmark`): pink-gradient coachmark popover (`UaGc2V` / `lyhz2x` / `6EJvHt`)
-    /// over the voice action bar Soundboard button (`533978`, `targetElementRef` is the 40px tray button). It is a
-    /// `Popout` (module 195118: `position: "top"`, `align: "center"`, `spacing: 14`, `autoInvert`,
-    /// `nudgeAlignIntoViewport` for a top popout) in the app layer, so the call area never clips it: it opens under
-    /// the button when a short call area leaves no room over it, and stays inside the window. Module 533978 drops it
-    /// while the call is idle.
+    /// Module 987933 (`SoundboardDesktopNuxCoachmark`) over the call bar's Soundboard button (module 533978), in the
+    /// app layer (`soundboard_nux.rs`). Module 533978 mounts it once the bar has been eligible for 300ms (two people
+    /// in the channel, the button usable, no bar popout open, the call not idle), and while it is up the call does
+    /// not go idle. The capture preview shows it at once.
     pub(super) fn soundboard_desktop_nux_popover(
         &self,
-        soundboard_open: bool,
+        popout_open: bool,
         soundboard_enabled: bool,
+        users: usize,
         controls_shown: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let show = self.vv.soundboard_nux_preview
-            || (self.stores.settings_loaded()
+        let vv = &self.vv;
+        let show = if vv.soundboard_nux_preview {
+            true
+        } else if !super::soundboard_nux::eligible(
+            users,
+            !soundboard_enabled,
+            popout_open,
+            !controls_shown,
+        ) {
+            vv.soundboard_nux_since.set(None);
+            false
+        } else {
+            let now = Instant::now();
+            let since = vv.soundboard_nux_since.get().unwrap_or(now);
+            vv.soundboard_nux_since.set(Some(since));
+            let waited = super::soundboard_nux::waited(since, now);
+            if !waited && !vv.soundboard_nux_timer.replace(true) {
+                let wait = super::soundboard_nux::DELAY.saturating_sub(now - since);
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(wait).await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.vv.soundboard_nux_timer.set(false);
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            waited
+                && self.stores.settings_loaded()
                 && soundboard_nux_should_show(
                     self.stores.content_dismissed(SOUNDBOARD_DESKTOP_NUX),
-                    soundboard_open,
+                    popout_open,
                     soundboard_enabled,
-                ));
-        if !show || !controls_shown {
-            return None;
-        }
-        Some(super::reference_layer::reference_layer(
-            SOUNDBOARD_NUX_POPOUT,
-            2,
-            self.render_soundboard_nux_card(cx),
-        ))
-    }
-
-    fn render_soundboard_nux_card(&self, cx: &mut Context<Self>) -> AnyElement {
-        let card = div()
-            .id("soundboard-desktop-nux-card")
-            .occlude()
-            .flex_none()
-            .w(px(288.))
-            .rounded(px(12.))
-            .border_1()
-            .border_color(color("--border-subtle"))
-            .bg(color("--background-surface-high"))
-            .overflow_hidden()
-            .flex()
-            .flex_col()
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
-        card.child(
-            div()
-                .relative()
-                .h(px(108.))
-                .w_full()
-                .bg(gpui::linear_gradient(
-                    135.,
-                    gpui::linear_color_stop(rgba(0xe060a8ff), 0.),
-                    gpui::linear_color_stop(rgba(0x5865f2ff), 1.),
-                ))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon("voice_soundboard", 40., "--white"))
-                .child(
-                    div()
-                        .id("soundboard-nux-close")
-                        .absolute()
-                        .top(px(8.))
-                        .right(px(8.))
-                        .size(px(26.))
-                        .rounded_full()
-                        .bg(rgba(0x00000055))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .aria_label(SharedString::from(dc_intl::t("cpT0Cq")))
-                        .child(icon("modal_close", 14., "--white"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.dismiss_soundboard_desktop_nux();
-                            cx.notify();
-                        })),
-                ),
-        )
-        .child(
-            div()
-                .p(px(16.))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .text_size(px(16.))
-                        .line_height(px(20.))
-                        .font_weight(FontWeight(700.))
-                        .text_color(color("--text-strong"))
-                        .child(dc_intl::t("UaGc2V")),
                 )
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .line_height(px(18.))
-                        .text_color(color("--text-muted"))
-                        .child(dc_intl::t("lyhz2x")),
-                )
-                .child(
-                    div()
-                        .id("soundboard-nux-open-cta")
-                        .mt(px(4.))
-                        .h(px(34.))
-                        .px(px(12.))
-                        .rounded(px(8.))
-                        .bg(color("--control-primary-background-default"))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(6.))
-                        .child(icon("voice_soundboard", 16., "--white"))
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--white"))
-                                .child(dc_intl::t("6EJvHt")),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.dismiss_soundboard_desktop_nux();
-                            this.panel.popout = Some(super::voice_panel::Popout::Soundboard);
-                            cx.notify();
-                        })),
-                ),
-        )
-        .into_any_element()
+        };
+        vv.soundboard_nux_up.set(show);
+        show.then(|| self.soundboard_nux_layer(cx))
     }
 
     #[cfg(feature = "capture")]

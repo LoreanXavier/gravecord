@@ -423,6 +423,7 @@ mod server_template;
 mod server_webhooks;
 mod settings;
 mod soundboard;
+mod soundboard_nux;
 mod stream_menus;
 mod stream_volume;
 mod subscription_pause;

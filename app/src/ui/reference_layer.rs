@@ -41,6 +41,8 @@ struct LayerStyle {
     top: Option<f32>,
     bottom: Option<f32>,
     left: f32,
+    /// How far the left edge was pushed back from the centred one (`nudge`, positive to the left).
+    nudge: f32,
 }
 
 impl LayerStyle {
@@ -85,6 +87,7 @@ fn position_style(
         props.nudge_align_into_viewport,
     )
     .ceil();
+    let nudge = centred.ceil() - left;
     let (top, bottom) = match (side, overlap) {
         // `overlap_vertical` pins the popout to the container edge on its own side.
         (Side::Top, true) => (Some(0.), None),
@@ -98,7 +101,12 @@ fn position_style(
             None,
         ),
     };
-    LayerStyle { top, bottom, left }
+    LayerStyle {
+        top,
+        bottom,
+        left,
+        nudge,
+    }
 }
 
 /// `g` of module 623646: the room left between the popout and the container edge it grows toward.
@@ -109,13 +117,25 @@ fn room(side: Side, style: LayerStyle, popout: Size<f32>, container: Size<f32>) 
     }
 }
 
+/// Where `calculateState` put a popout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Placement {
+    /// The side of the target it opened on.
+    pub side: Side,
+    /// Its top left corner in the container.
+    pub at: Point<f32>,
+    /// `nudge`: how far it was pushed left of its centred place (negative: right), which the caret makes up for
+    /// (`--custom-caret-edge-offset-horizontal-nudge`).
+    pub nudge: f32,
+}
+
 /// `calculateState` of module 623646: the side the popout opens on and its top left corner in the container.
 pub(super) fn place(
     props: Props,
     target: Bounds<f32>,
     popout: Size<f32>,
     container: Size<f32>,
-) -> (Side, Point<f32>) {
+) -> Placement {
     let wanted = props.position;
     let mut side = wanted;
     let mut style = position_style(wanted, false, props, target, popout, container);
@@ -148,20 +168,67 @@ pub(super) fn place(
         }
     }
     let top = style.top_edge(popout.height, container.height);
-    (side, point(style.left, top))
+    Placement {
+        side,
+        at: point(style.left, top),
+        nudge: style.nudge,
+    }
+}
+
+/// The caret of a popover (`PopoverCaret`, module 31188): one drawing for each side the popover can open on, placed
+/// centred on the popover's edge facing the target (`caret--center` of stylesheet `uDaE_S`), shifted back by the
+/// nudge, and overlapping that edge by `overlap` px.
+pub(super) struct Caret {
+    /// Under a popover that opened over its target, pointing down (`caret--bottom`).
+    pub down: AnyElement,
+    /// Over a popover that opened under its target, pointing up (`caret--top`).
+    pub up: AnyElement,
+    pub size: Size<f32>,
+    pub overlap: f32,
+}
+
+/// The caret's top left corner for a popover placed at `placement` with size `popout`.
+pub(super) fn caret_origin(
+    placement: Placement,
+    popout: Size<f32>,
+    caret: Size<f32>,
+    overlap: f32,
+) -> Point<f32> {
+    // `inset-inline-start: calc(50% + nudge)` and `margin-inline-start: -half width`.
+    let x = placement.at.x + popout.width / 2. + placement.nudge - caret.width / 2.;
+    let y = match placement.side {
+        // `caret--bottom`: `top: calc(100% - overlap)`.
+        Side::Top => placement.at.y + popout.height - overlap,
+        // `caret--top`: `bottom: calc(100% - overlap)`.
+        Side::Bottom => placement.at.y + overlap - caret.height,
+    };
+    point(x, y)
 }
 
 /// Draws `child` in a top layer (`deferred`, never clipped by the content it is declared in) placed against the
 /// element it is put in: that parent is the target, and must be positioned (`relative`).
-pub(super) fn reference_layer(props: Props, priority: usize, child: AnyElement) -> AnyElement {
-    deferred(ReferenceLayer { props, child })
-        .with_priority(priority)
-        .into_any_element()
+pub(super) fn reference_layer(
+    props: Props,
+    priority: usize,
+    child: AnyElement,
+    caret: Option<Caret>,
+) -> AnyElement {
+    deferred(ReferenceLayer {
+        props,
+        child,
+        caret,
+        side: Side::Top,
+    })
+    .with_priority(priority)
+    .into_any_element()
 }
 
 struct ReferenceLayer {
     props: Props,
     child: AnyElement,
+    caret: Option<Caret>,
+    /// The side placed in prepaint, for paint.
+    side: Side,
 }
 
 impl IntoElement for ReferenceLayer {
@@ -173,7 +240,7 @@ impl IntoElement for ReferenceLayer {
 }
 
 impl Element for ReferenceLayer {
-    type RequestLayoutState = LayoutId;
+    type RequestLayoutState = (LayoutId, Option<(LayoutId, LayoutId)>);
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -192,6 +259,16 @@ impl Element for ReferenceLayer {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let child = self.child.request_layout(window, cx);
+        let carets = self.caret.as_mut().map(|caret| {
+            (
+                caret.down.request_layout(window, cx),
+                caret.up.request_layout(window, cx),
+            )
+        });
+        let mut children = vec![child];
+        if let Some((down, up)) = carets {
+            children.extend([down, up]);
+        }
         // The layer fills its parent, the target; the popout inside it takes its own size.
         let style = Style {
             position: Position::Absolute,
@@ -199,8 +276,8 @@ impl Element for ReferenceLayer {
             inset: Edges::all(px(0.).into()),
             ..Style::default()
         };
-        let layout = window.request_layout(style, [child], cx);
-        (layout, child)
+        let layout = window.request_layout(style, children, cx);
+        (layout, (child, carets))
     }
 
     fn prepaint(
@@ -208,36 +285,34 @@ impl Element for ReferenceLayer {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        child: &mut Self::RequestLayoutState,
+        (child, carets): &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) {
         let laid = window.layout_bounds(*child);
         let viewport = window.viewport_size();
-        let f = |value: Pixels| f32::from(value);
         let target = Bounds {
-            origin: point(f(bounds.origin.x), f(bounds.origin.y)),
-            size: Size {
-                width: f(bounds.size.width),
-                height: f(bounds.size.height),
-            },
+            origin: point(f32::from(bounds.origin.x), f32::from(bounds.origin.y)),
+            size: plain(bounds.size),
         };
-        let (_, at) = place(
-            self.props,
-            target,
-            Size {
-                width: f(laid.size.width),
-                height: f(laid.size.height),
-            },
-            Size {
-                width: f(viewport.width),
-                height: f(viewport.height),
-            },
-        );
-        let origin = point(px(at.x), px(at.y));
+        let popout = plain(laid.size);
+        let placement = place(self.props, target, popout, plain(viewport));
+        self.side = placement.side;
+        let origin = point(px(placement.at.x), px(placement.at.y));
         window.with_element_offset(origin - laid.origin, |window| {
             self.child.prepaint(window, cx);
         });
+        if let (Some(caret), Some((down, up))) = (self.caret.as_mut(), *carets) {
+            let (element, layout) = match placement.side {
+                Side::Top => (&mut caret.down, down),
+                Side::Bottom => (&mut caret.up, up),
+            };
+            let laid_caret = window.layout_bounds(layout);
+            let at = caret_origin(placement, popout, caret.size, caret.overlap);
+            window.with_element_offset(point(px(at.x), px(at.y)) - laid_caret.origin, |window| {
+                element.prepaint(window, cx);
+            });
+        }
     }
 
     fn paint(
@@ -251,6 +326,20 @@ impl Element for ReferenceLayer {
         cx: &mut App,
     ) {
         self.child.paint(window, cx);
+        if let Some(caret) = self.caret.as_mut() {
+            match self.side {
+                Side::Top => caret.down.paint(window, cx),
+                Side::Bottom => caret.up.paint(window, cx),
+            }
+        }
+    }
+}
+
+/// A gpui size in plain pixels.
+pub(super) fn plain(value: gpui::Size<Pixels>) -> Size<f32> {
+    Size {
+        width: f32::from(value.width),
+        height: f32::from(value.height),
     }
 }
 
@@ -283,7 +372,7 @@ mod tests {
     #[test]
     fn it_opens_over_the_target_centred_when_there_is_room() {
         // A 40px button at (600, 700) in a 1280 x 900 window, a 240 x 200 popout: 14px over it, centred.
-        let (side, at) = place(
+        let Placement { side, at, .. } = place(
             TIP,
             bounds(600., 700., 40., 40.),
             size(240., 200.),
@@ -296,7 +385,7 @@ mod tests {
     #[test]
     fn it_inverts_under_the_target_when_only_that_side_has_room() {
         // The button 210px from the top: 210 - 14 - 200 < 0 over it, room under it.
-        let (side, at) = place(
+        let Placement { side, at, .. } = place(
             TIP,
             bounds(600., 210., 40., 40.),
             size(240., 200.),
@@ -310,7 +399,7 @@ mod tests {
     fn it_keeps_the_side_with_more_room_and_overlaps_when_neither_fits() {
         // 300px high window, the button in the middle: 120 - 14 - 200 = -94 over, 300 - (160 + 14 + 200) = -74
         // under. Under has more room; neither fits, so it pins to the bottom edge (overlap_vertical).
-        let (side, at) = place(
+        let Placement { side, at, .. } = place(
             TIP,
             bounds(600., 120., 40., 40.),
             size(240., 200.),
@@ -319,7 +408,7 @@ mod tests {
         assert_eq!(side, Side::Bottom);
         assert_eq!(at, point(500., 100.));
         // Over has more room: pinned to the top edge.
-        let (side, at) = place(
+        let Placement { side, at, .. } = place(
             TIP,
             bounds(600., 150., 40., 40.),
             size(240., 200.),
@@ -332,7 +421,7 @@ mod tests {
     #[test]
     fn it_is_nudged_12px_inside_the_container_horizontally() {
         // Centred, it would start at -80: pushed to 12.
-        let (_, at) = place(
+        let Placement { at, .. } = place(
             TIP,
             bounds(20., 700., 40., 40.),
             size(240., 200.),
@@ -340,7 +429,7 @@ mod tests {
         );
         assert_eq!(at.x, 12.);
         // Within 12px of the right edge: pushed so its right edge is 12px in.
-        let (_, at) = place(
+        let Placement { at, .. } = place(
             TIP,
             bounds(1150., 700., 40., 40.),
             size(240., 200.),
@@ -348,7 +437,7 @@ mod tests {
         );
         assert_eq!(at.x, 1280. - 12. - 240.);
         // The left edge rounds up.
-        let (_, at) = place(
+        let Placement { at, .. } = place(
             TIP,
             bounds(600.5, 700., 40., 40.),
             size(240., 200.),
@@ -363,7 +452,7 @@ mod tests {
             auto_invert: false,
             ..TIP
         };
-        let (side, at) = place(
+        let Placement { side, at, .. } = place(
             props,
             bounds(600., 150., 40., 40.),
             size(240., 200.),
@@ -371,5 +460,45 @@ mod tests {
         );
         assert_eq!(side, Side::Top);
         assert_eq!(at.y, 0.);
+    }
+
+    #[test]
+    fn the_caret_points_at_the_target_from_the_side_facing_it() {
+        let caret = size(22., 14.);
+        // Over the target: under the popover, centred, 1px into its bottom edge.
+        let placed = place(
+            TIP,
+            bounds(600., 700., 40., 40.),
+            size(240., 200.),
+            size(1280., 900.),
+        );
+        assert_eq!(placed.nudge, 0.);
+        assert_eq!(
+            caret_origin(placed, size(240., 200.), caret, 1.),
+            point(609., 685.)
+        );
+        // Under the target: over the popover, 1px into its top edge.
+        let placed = place(
+            TIP,
+            bounds(600., 210., 40., 40.),
+            size(240., 200.),
+            size(1280., 900.),
+        );
+        assert_eq!(
+            caret_origin(placed, size(240., 200.), caret, 1.),
+            point(609., 251.)
+        );
+        // Pushed 92px right of its centred place: the caret moves back over the target's centre.
+        let placed = place(
+            TIP,
+            bounds(20., 700., 40., 40.),
+            size(240., 200.),
+            size(1280., 900.),
+        );
+        assert_eq!(placed.nudge, -92.);
+        assert_eq!(
+            caret_origin(placed, size(240., 200.), caret, 1.).x,
+            12. + 120. - 92. - 11.
+        );
     }
 }

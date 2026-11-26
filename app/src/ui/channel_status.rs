@@ -112,7 +112,10 @@ pub(super) fn header_gradient(start: Rgba, end: Rgba) -> Arc<RenderImage> {
             return image.clone();
         }
         let image = Arc::new(RenderImage::new(vec![image::Frame::new(gradient_pixels(
-            start, end,
+            start,
+            end,
+            HEADER_WIDTH,
+            HEADER_HEIGHT,
         ))]));
         *cache.borrow_mut() = Some((key, image.clone()));
         image
@@ -161,12 +164,17 @@ fn from_oklab([l, a, b]: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-/// Premultiplied BGRA pixels, the layout the atlas takes.
-fn gradient_pixels(start: Rgba, end: Rgba) -> image::RgbaImage {
+/// Premultiplied BGRA pixels, the layout the atlas takes, `pixel_width` by `pixel_height`.
+pub(super) fn gradient_pixels(
+    start: Rgba,
+    end: Rgba,
+    pixel_width: u32,
+    pixel_height: u32,
+) -> image::RgbaImage {
     let (from, to) = (to_oklab(end), to_oklab(start));
     let alpha = start.a;
-    let (width, height) = (HEADER_WIDTH as f32, HEADER_HEIGHT as f32);
-    let mut pixels = image::RgbaImage::new(HEADER_WIDTH, HEADER_HEIGHT);
+    let (width, height) = (pixel_width as f32, pixel_height as f32);
+    let mut pixels = image::RgbaImage::new(pixel_width, pixel_height);
     for (x, y, pixel) in pixels.enumerate_pixels_mut() {
         // 270deg runs right to left: `end` at the right edge, `start` at the left one.
         let across = 1. - (x as f32 + 0.5) / width;

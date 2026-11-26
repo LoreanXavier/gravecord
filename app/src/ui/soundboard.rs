@@ -94,6 +94,9 @@ fn picker_top(window: f32) -> f32 {
     (window - PICKER_BOTTOM - PICKER_HEIGHT).max(0.)
 }
 
+/// The anchor probe on the call bar's Soundboard button (the `targetElementRef` of module 533978's picker).
+pub(super) const CALL_BUTTON: &str = "call-soundboard-button";
+
 /// A section is "current" once its top is this close to the list's top (the official scroll spy's slack).
 const SPY_SLACK: f32 = 20.;
 
@@ -643,6 +646,8 @@ pub(crate) struct Board {
     defaults_requested: bool,
     requested: HashSet<Id>,
     pub(super) picker: Option<Picker>,
+    /// The open picker came from the call bar's Soundboard button (module 533978), not the panel's.
+    pub(super) from_call_bar: bool,
     /// The picker "Add sound effect" of Gift Nitro opens (module 650588): the same picker over the default sounds
     /// only, its window position (the left and top of the button that opened it), and whether its keybind tip was
     /// closed.
@@ -764,8 +769,49 @@ impl Root {
             return;
         }
         self.toggle_panel_popout(Popout::Soundboard, cx);
+        self.soundboard.from_call_bar = false;
         if self.panel.popout == Some(Popout::Soundboard) {
             self.soundboard_open(window, cx);
+        }
+    }
+
+    /// The call bar's Soundboard button (and the tip's "Open Soundboard"): the picker opens over that button, in
+    /// the window the call bar is drawn in. A call popped out into its own window keeps the panel's place.
+    pub(super) fn open_call_bar_soundboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel.popout != Some(Popout::Soundboard) {
+            self.toggle_soundboard(window, cx);
+        }
+        if self.panel.popout == Some(Popout::Soundboard) {
+            self.soundboard.from_call_bar = !self.call_popped_out();
+        }
+    }
+
+    /// The call picker's top left corner in the window: over the call bar's button (module 533978: the picker
+    /// `Popout` of module 265872, `position: "top"`, `spacing: 16`, inverted and nudged into the window as module
+    /// 623646 places it) when it came from there, or beside the panel otherwise.
+    fn call_picker_origin(&self, viewport: gpui::Size<gpui::Pixels>) -> (f32, f32) {
+        let anchor = self
+            .soundboard
+            .from_call_bar
+            .then(|| self.tip_anchors.borrow().get(CALL_BUTTON).copied())
+            .flatten();
+        match anchor {
+            Some(bounds) => {
+                let placed = super::reference_layer::place(
+                    super::soundboard_nux::PICKER_POPOUT,
+                    gpui::Bounds {
+                        origin: point(f32::from(bounds.origin.x), f32::from(bounds.origin.y)),
+                        size: super::reference_layer::plain(bounds.size),
+                    },
+                    gpui::Size {
+                        width: PICKER_WIDTH,
+                        height: PICKER_HEIGHT,
+                    },
+                    super::reference_layer::plain(viewport),
+                );
+                (placed.at.x, placed.at.y)
+            }
+            None => (PICKER_LEFT, picker_top(f32::from(viewport.height))),
         }
     }
 
@@ -2097,25 +2143,26 @@ impl Root {
                     this.child(self.soundboard_menu(Some(left), cx))
                 })
         } else {
-            // Its bottom on the soundboard button's, unless the window is too short for the whole picker: then its
-            // top stays on the window's top edge (the layer's `autoInvert` overlap pins it there, module 623646).
-            let top = picker_top(f32::from(window.viewport_size().height));
+            // From the panel, its bottom on the panel button's, unless the window is too short for the whole picker:
+            // then its top stays on the window's top edge (the layer's `autoInvert` overlap pins it there, module
+            // 623646). From the call bar, over that bar's button.
+            let (left, top) = self.call_picker_origin(window.viewport_size());
             div()
                 .id("soundboard-popout")
                 .popout("soundboard-popout", PopKind::Fade, PopSide::Right)
                 .absolute()
-                .left(px(PICKER_LEFT))
+                .left(px(left))
                 .top(px(top))
                 .w(px(PICKER_WIDTH))
                 .h(px(PICKER_HEIGHT))
                 .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     // The volume menu hangs outside the picker's box but is part of it.
+                    let (left, top) = this.call_picker_origin(window.viewport_size());
                     let on_menu = this.soundboard.picker.as_ref().is_some_and(|picker| {
                         let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
-                        let top = picker_top(f32::from(window.viewport_size().height)) + MENU_TOP;
+                        let top = top + MENU_TOP;
                         picker.menu
-                            && (PICKER_LEFT + MENU_LEFT..PICKER_LEFT + MENU_LEFT + MENU_WIDTH)
-                                .contains(&x)
+                            && (left + MENU_LEFT..left + MENU_LEFT + MENU_WIDTH).contains(&x)
                             && (top..top + MENU_HEIGHT).contains(&y)
                     });
                     if !on_menu
