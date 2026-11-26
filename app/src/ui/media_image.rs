@@ -762,6 +762,22 @@ impl Root {
 
         div()
             .id(SharedString::from(format!("{id_prefix}-{}", attachment.id)))
+            // The `<img>`'s or `<video>`'s `alt` (module 548146 `k` and `w`: the attachment's description) is its
+            // accessible name.
+            .role(if attachment.is_video() {
+                gpui::Role::Video
+            } else {
+                gpui::Role::Image
+            })
+            // Not in the pinned client: BetterGifAltText (`plugin_hooks/better_gif_alt_text.rs`).
+            .when_some(
+                super::plugin_hooks::better_gif_alt_text(
+                    attachment.content_type.as_deref(),
+                    attachment.description.as_deref(),
+                    &attachment.url,
+                ),
+                |this, alt| this.aria_label(alt.into_owned()),
+            )
             .group(group.clone())
             .relative()
             .w(w)

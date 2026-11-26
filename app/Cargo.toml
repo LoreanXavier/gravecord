@@ -37,6 +37,8 @@ dc-detect.workspace = true
 dc-state.workspace = true
 dc-tokens.workspace = true
 dc-voice.workspace = true
+# BetterAudioPlayer's analyser (plugins/better_audio_player.rs); already in the tree through dc-voice.
+realfft.workspace = true
 dc-webhost.workspace = true
 dc-webauthn.workspace = true
 gpui = { path = "../vendor/zed/crates/gpui", default-features = false, features = ["windows-manifest"] }

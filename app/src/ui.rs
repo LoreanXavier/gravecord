@@ -12519,6 +12519,8 @@ impl Render for Root {
         self.message_logger_prepare();
         // Not in the pinned client: CustomRPC's activity (`plugin_hooks/custom_rpc.rs`).
         self.custom_rpc_prepare();
+        // Not in the pinned client: Experiments' bucket overrides (`plugin_hooks/experiments.rs`).
+        self.experiments_prepare();
         // Not in the pinned client: ClipUpload's participant pictures (`plugin_hooks/clip_upload.rs`).
         self.clip_upload_prepare();
         // Not in the pinned client: GlobalBadges' list, at start and every 30 minutes (`plugin_hooks/global_badges.rs`).
@@ -14351,6 +14353,8 @@ impl Render for Root {
             .children(self.voice_messages_dialog(cx))
             // Not in the pinned client: ClipUpload's dialog (`plugin_hooks/clip_upload.rs`).
             .children(self.clip_upload_dialog(cx))
+            // Not in the pinned client: Quoter's dialog (`plugin_hooks/quoter.rs`).
+            .children(self.quoter_dialog(window, cx))
             // Not in the pinned client: UserPFP's Custom Avatar dialog (`plugin_hooks/userpfp.rs`).
             .children(self.userpfp_dialog(window, cx))
             // Not in the pinned client: ZipPreview's file dialog (`plugin_hooks/zip_preview.rs`).

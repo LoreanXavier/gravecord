@@ -1223,6 +1223,19 @@ impl Root {
                         playable,
                         cx,
                     )
+                    // Module 265705 `E`: the GIFV `<video>`'s `aria-label`, `alt` or "GIF".
+                    .role(gpui::Role::Video)
+                    .aria_label(
+                        // Not in the pinned client: BetterGifAltText (`plugin_hooks/better_gif_alt_text.rs`).
+                        super::plugin_hooks::better_gif_alt_text(
+                            None,
+                            None,
+                            embed.url.as_deref().unwrap_or(""),
+                        )
+                        .map_or(SharedString::new_static(dc_intl::t("I5gL2H")), |alt| {
+                            SharedString::from(alt.into_owned())
+                        }),
+                    )
                     .group(group.clone())
                     .when(playable, |this| {
                         this.children(self.inline_video(message.id, index, embed, cx))

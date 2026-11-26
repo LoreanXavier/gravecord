@@ -5,7 +5,10 @@ mod alt_krisp_switch;
 pub(in crate::ui) use alt_krisp_switch::noise_popout_off;
 mod always_animate;
 mod better_activities;
+mod better_audio_player;
 mod better_forwards;
+mod better_gif_alt_text;
+pub(in crate::ui) use better_gif_alt_text::better_gif_alt_text;
 mod better_plus_reacts;
 pub(in crate::ui) use better_forwards::{
     better_forwards_follow, better_forwards_on, better_forwards_self_forward,
@@ -22,6 +25,8 @@ mod clip_upload;
 pub(in crate::ui) mod clips_enhancements;
 mod custom_rpc;
 mod download_all;
+mod experiments;
+pub(in crate::ui) use experiments::experiments_on;
 mod expression_manager;
 pub(crate) use expression_manager::sticker_url as expression_sticker_url;
 mod fix_youtube_embeds;
@@ -67,6 +72,7 @@ mod platform_indicators;
 mod plugin_commands;
 mod plugin_notifications;
 mod preview_message;
+mod quoter;
 mod read_all;
 mod relationship_notifier;
 pub(in crate::ui) use relationship_notifier::relationship_removed_by_you;

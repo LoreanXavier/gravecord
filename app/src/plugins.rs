@@ -12,11 +12,15 @@
 //! place it acts, so a switch takes effect on the next frame without a restart.
 
 mod backup;
+pub(crate) mod better_audio_player;
 pub(crate) mod better_forwards;
 pub(crate) mod clear_urls;
 pub(crate) mod clip_upload;
 pub(crate) mod custom_rpc;
+pub(crate) mod experiments;
+mod experiments_table;
 pub(crate) mod gif_provider;
+pub(crate) mod quoter;
 mod registry;
 pub(crate) mod sed_enhanced;
 mod state;

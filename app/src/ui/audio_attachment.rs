@@ -518,6 +518,8 @@ impl Root {
     ) -> AnyElement {
         let (key, salt) = embed_audio_key(message_id, embed_index, proxy_url);
         let (controls, _) = self.audio_controls(&key, proxy_url, salt, playable);
+        // Not in the pinned client: BetterAudioPlayer (`plugin_hooks/better_audio_player.rs`).
+        let visualiser = self.better_audio_player(&key);
         let over_hub = self.voice_hub.clone();
         let over_url = proxy_url.to_owned();
         div()
@@ -543,6 +545,7 @@ impl Root {
                 })
             })
             .child(controls)
+            .children(visualiser)
             .into_any_element()
     }
 
@@ -737,6 +740,8 @@ impl Root {
             })
             .child(metadata)
             .child(controls)
+            // Not in the pinned client: BetterAudioPlayer (`plugin_hooks/better_audio_player.rs`).
+            .children(self.better_audio_player(&key))
             .child(buttons)
             .into_any_element()
     }

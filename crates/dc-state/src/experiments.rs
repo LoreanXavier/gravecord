@@ -44,9 +44,16 @@ const USE_AS_ELIGIBILITY: u64 = 8;
 
 /// One account's user-kind assignments: hashed name to `(variantId, flags)`; and the legacy user experiments of
 /// READY's `experiments` (`ExperimentStore`, `[hash, revision, bucket, override, population, ...]`): hashed name to
-/// bucket.
+/// bucket. The third and fourth maps are the overrides set by hand, which win over both and outlive a READY: the apex
+/// store's client overrides (`APEX_EXPERIMENT_OVERRIDE_CREATE`, module 102609 `t$`) and `ExperimentStore`'s
+/// `userExperimentOverrides` (`EXPERIMENT_OVERRIDE_BUCKET`, module 343446).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Assignments(HashMap<u32, (i64, u64)>, HashMap<u32, i64>);
+pub struct Assignments(
+    HashMap<u32, (i64, u64)>,
+    HashMap<u32, i64>,
+    HashMap<u32, i64>,
+    HashMap<u32, i64>,
+);
 
 impl Assignments {
     /// From READY's `apex_experiments` for this user. Anything else in it is ignored.
@@ -64,7 +71,48 @@ impl Assignments {
                 })
                 .collect(),
             HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
         )
+    }
+
+    /// The same assignments with `previous`'s overrides, which a new READY leaves in place.
+    pub fn keep_overrides(mut self, previous: &Assignments) -> Self {
+        self.2 = previous.2.clone();
+        self.3 = previous.3.clone();
+        self
+    }
+
+    /// Sets or clears (`None`) the variant override of an apex experiment.
+    pub fn set_override(&mut self, name: &str, variant: Option<i64>) {
+        match variant {
+            Some(variant) => self.2.insert(hash(name), variant),
+            None => self.2.remove(&hash(name)),
+        };
+    }
+
+    /// Sets or clears (`None`) the bucket override of a legacy user experiment.
+    pub fn set_legacy_override(&mut self, name: &str, bucket: Option<i64>) {
+        match bucket {
+            Some(bucket) => self.3.insert(hash(name), bucket),
+            None => self.3.remove(&hash(name)),
+        };
+    }
+
+    /// Drops every override.
+    pub fn clear_overrides(&mut self) {
+        self.2.clear();
+        self.3.clear();
+    }
+
+    /// The variant the server assigned, overrides left out (`None` when it sent none).
+    pub fn assigned_variant(&self, name: &str) -> Option<i64> {
+        self.0.get(&hash(name)).map(|(variant, _)| *variant)
+    }
+
+    /// The bucket READY assigned to a legacy user experiment, overrides left out.
+    pub fn assigned_legacy_bucket(&self, name: &str) -> Option<i64> {
+        self.1.get(&hash(name)).copied()
     }
 
     /// Adds READY's legacy user experiments (`experiments`): each `[hash, revision, bucket, ...]`.
@@ -87,11 +135,17 @@ impl Assignments {
     /// The bucket of a legacy user experiment (`getUserExperimentBucket`), `None` without an assignment (the
     /// experiment's `defaultConfig`).
     pub fn legacy_bucket(&self, name: &str) -> Option<i64> {
+        if let Some(bucket) = self.3.get(&hash(name)) {
+            return (*bucket != NOT_ELIGIBLE).then_some(*bucket);
+        }
         self.1.get(&hash(name)).copied()
     }
 
     /// The variation the account is in, or `None` when `getConfig` would return the experiment's default.
     pub fn variant(&self, name: &str) -> Option<i64> {
+        if let Some(variant) = self.2.get(&hash(name)) {
+            return Some(*variant);
+        }
         self.0
             .get(&hash(name))
             .filter(|(_, flags)| flags & USE_AS_ELIGIBILITY == 0)
@@ -322,9 +376,11 @@ struct GuildExperiment {
     aa_mode: bool,
 }
 
-/// `ExperimentStore`'s guild experiments (module 343446), evaluated per guild as `getGuildExperimentDescriptor` does.
+/// `ExperimentStore`'s guild experiments (module 343446), evaluated per guild as `getGuildExperimentDescriptor` does;
+/// and its `guildExperimentOverrides` (`EXPERIMENT_OVERRIDE_BUCKET`): a bucket set by hand for every guild, which wins
+/// and outlives a READY.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct GuildExperiments(HashMap<u32, GuildExperiment>);
+pub struct GuildExperiments(HashMap<u32, GuildExperiment>, HashMap<u32, i64>);
 
 impl GuildExperiments {
     pub fn from_ready(list: &Value) -> Self {
@@ -374,7 +430,37 @@ impl GuildExperiments {
                     ))
                 })
                 .collect(),
+            HashMap::new(),
         )
+    }
+
+    /// The same experiments with `previous`'s overrides, which a new READY leaves in place.
+    pub fn keep_overrides(mut self, previous: &GuildExperiments) -> Self {
+        self.1 = previous.1.clone();
+        self
+    }
+
+    /// Sets or clears (`None`) the bucket override of a guild experiment, for every guild.
+    pub fn set_override(&mut self, name: &str, bucket: Option<i64>) {
+        match bucket {
+            Some(bucket) => self.1.insert(hash(name), bucket),
+            None => self.1.remove(&hash(name)),
+        };
+    }
+
+    /// Drops every override.
+    pub fn clear_overrides(&mut self) {
+        self.1.clear();
+    }
+
+    /// Whether READY carried the experiment (`getLoadedGuildExperiment`).
+    pub fn loaded(&self, name: &str) -> bool {
+        self.0.contains_key(&hash(name))
+    }
+
+    /// The guild's bucket as READY assigns it, overrides left out.
+    pub fn assigned_bucket(&self, name: &str, guild: &GuildFacts) -> Option<i64> {
+        self.evaluate(name, guild, 0)
     }
 
     /// `getGuildExperimentBucket`: the guild's bucket, `None` when it is not eligible (the experiment's default
@@ -394,6 +480,13 @@ impl GuildExperiments {
     }
 
     fn descriptor(&self, name: &str, guild: &GuildFacts, depth: u8) -> Option<i64> {
+        if let Some(bucket) = self.1.get(&hash(name)) {
+            return (*bucket != NOT_ELIGIBLE).then_some(*bucket);
+        }
+        self.evaluate(name, guild, depth)
+    }
+
+    fn evaluate(&self, name: &str, guild: &GuildFacts, depth: u8) -> Option<i64> {
         let experiment = self.0.get(&hash(name))?;
         if let Some(bucket) = experiment.overrides.get(&guild.id) {
             return (*bucket != NOT_ELIGIBLE).then_some(*bucket);
@@ -460,6 +553,50 @@ mod tests {
             store.bucket("2026-03_voice_badge", &GuildFacts::default()),
             None
         );
+    }
+
+    #[test]
+    fn overrides_win_and_outlive_a_new_ready() {
+        let ready = json!({"assignments": {"1": {"5": {"assignments": [[hash("2026-01_x"), 1, 0, 1, 1, null]]}}}});
+        let mut user =
+            Assignments::from_ready(&ready, "5").with_legacy(&json!([[hash("2021-01_y"), 0, 2]]));
+        assert_eq!(user.variant("2026-01_x"), Some(1));
+        user.set_override("2026-01_x", Some(3));
+        user.set_legacy_override("2021-01_y", Some(NOT_ELIGIBLE));
+        assert_eq!(user.variant("2026-01_x"), Some(3));
+        assert_eq!(user.assigned_variant("2026-01_x"), Some(1));
+        assert_eq!(user.legacy_bucket("2021-01_y"), None);
+        assert_eq!(user.assigned_legacy_bucket("2021-01_y"), Some(2));
+        let again = Assignments::from_ready(&ready, "5").keep_overrides(&user);
+        assert_eq!(again.variant("2026-01_x"), Some(3));
+        let mut cleared = again.clone();
+        cleared.set_override("2026-01_x", None);
+        assert_eq!(cleared.variant("2026-01_x"), Some(1));
+        cleared.clear_overrides();
+        assert_eq!(cleared.legacy_bucket("2021-01_y"), None);
+
+        let mut guilds = GuildExperiments::default();
+        let facts = GuildFacts {
+            id: 9,
+            ..GuildFacts::default()
+        };
+        assert_eq!(guilds.bucket("2023-02_z", &facts), None);
+        guilds.set_override("2023-02_z", Some(2));
+        assert_eq!(guilds.bucket("2023-02_z", &facts), Some(2));
+        assert_eq!(guilds.assigned_bucket("2023-02_z", &facts), None);
+        let kept = GuildExperiments::from_ready(&json!([])).keep_overrides(&guilds);
+        assert_eq!(
+            kept.bucket(
+                "2023-02_z",
+                &GuildFacts {
+                    id: 10,
+                    ..GuildFacts::default()
+                }
+            ),
+            Some(2)
+        );
+        guilds.clear_overrides();
+        assert_eq!(guilds.bucket("2023-02_z", &facts), None);
     }
 
     #[test]

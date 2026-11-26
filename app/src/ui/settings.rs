@@ -100,6 +100,9 @@ pub(super) enum Page {
     ConnectedApps,
     Developer,
     LogOut,
+    /// Not in the pinned client for an account that is not a developer: the Experiments plugin's page
+    /// (`plugin_hooks/experiments.rs`).
+    Experiments,
     /// The Gravecord group (`mods.rs`): built-in plugins, not in the pinned client.
     Mods,
     Plugins,
@@ -240,10 +243,19 @@ const GRAVECORD_SECTION: (Option<&str>, &[Entry]) = (
     ],
 );
 
+/// The developers' "Staff Only" section (`DEVELOPER_SECTION` of module 158935, after Games & Apps), which the
+/// Experiments plugin opens (`plugin_hooks/experiments.rs`).
+const STAFF_SECTION: (Option<&str>, &[Entry]) = (
+    Some("Staff Only"),
+    &[entry(Page::Experiments, "Experiments", "experiments")],
+);
+
 /// The sidebar's groups: the official ones with the Gravecord group before the last.
 fn sections() -> impl Iterator<Item = &'static (Option<&'static str>, &'static [Entry])> {
     let (head, tail) = SECTIONS.split_at(SECTIONS.len() - 1);
     head.iter()
+        // Not in the pinned client: Experiments (`plugin_hooks/experiments.rs`).
+        .chain(super::plugin_hooks::experiments_on().then_some(&STAFF_SECTION))
         .chain(std::iter::once(&GRAVECORD_SECTION))
         .chain(tail)
 }
@@ -2353,6 +2365,8 @@ impl Root {
                 None => self.account_page(cx),
             },
             Page::Clips => self.clips_page(window, cx),
+            // Not in the pinned client: Experiments (`plugin_hooks/experiments.rs`).
+            Page::Experiments => self.experiments_page(cx),
             Page::Mods => self.mods_page(cx),
             Page::Plugins => self.plugins_page(window, cx),
             Page::Backup => self.backup_page(cx),

@@ -3766,13 +3766,16 @@ impl Stores {
             .zip(incoming_user.as_ref())
             .is_some_and(|(prev, next)| prev.id == next.id);
         self.current_user = incoming_user;
+        // The overrides set by hand stay (they are the client's, kept in local storage by the official stores).
         self.experiments = experiments::Assignments::from_ready(
             &data["apex_experiments"],
             data["user"]["id"].as_str().unwrap_or_default(),
         )
-        .with_legacy(&data["experiments"]);
+        .with_legacy(&data["experiments"])
+        .keep_overrides(&self.experiments);
         self.guild_experiments =
-            experiments::GuildExperiments::from_ready(&data["guild_experiments"]);
+            experiments::GuildExperiments::from_ready(&data["guild_experiments"])
+                .keep_overrides(&self.guild_experiments);
         self.mfa_enabled = data["user"]["mfa_enabled"].as_bool().unwrap_or(false);
         self.account = Account::from_value(&data["user"]);
         self.account.age_gated_features = data["regional_feature_config"]["age_gated_features"]

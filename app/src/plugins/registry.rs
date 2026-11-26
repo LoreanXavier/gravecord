@@ -378,6 +378,10 @@ pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[
     ("PinDMs", "dmSectionCollapsed", ""),
     // `hidden: !IS_DEV`: a development setting.
     ("UserPFP", "databaseSource", ""),
+    // `hidden: true`: Quoter's dialog remembers its switches in these.
+    ("Quoter", "grayscale", ""),
+    ("Quoter", "showWatermark", ""),
+    ("Quoter", "saveAsGif", ""),
 ];
 
 /// Every plugin, in the order the Plugins page lists them (by name).
@@ -614,6 +618,58 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "BetterAudioPlayer",
+        name: "BetterAudioPlayer",
+        description: "Adds a spectrograph and oscilloscope visualizer to audio attachment players.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterAudioPlayer.desktop/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "oscilloscope",
+                label: "Oscilloscope",
+                description: "Enable oscilloscope visualizer.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "spectrograph",
+                label: "Spectrograph",
+                description: "Enable spectrograph visualizer.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "oscilloscopeSolidColor",
+                label: "Oscilloscope Solid Color",
+                description: "Use a solid color for the oscilloscope.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "oscilloscopeColor",
+                label: "Oscilloscope Color",
+                description: "Color for the oscilloscope (R, G, B or #hex).",
+                kind: Kind::Text {
+                    default: "255, 255, 255",
+                    max_len: 32,
+                },
+            },
+            Setting {
+                key: "spectrographSolidColor",
+                label: "Spectrograph Solid Color",
+                description: "Use a solid color for the spectrograph.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "spectrographColor",
+                label: "Spectrograph Color",
+                description: "Color for the spectrograph (R, G, B or #hex).",
+                kind: Kind::Text {
+                    default: "33, 150, 243",
+                    max_len: 32,
+                },
+            },
+        ],
+    },
+    Def {
         id: "BetterBlockedUsers",
         name: "BetterBlockedUsers",
         description: "Allows you to search in blocked users list, make names selectable in settings, skips blocked profile prompt, and groups blocked / ignored messages.",
@@ -672,6 +728,15 @@ pub(crate) const DEFS: &[Def] = &[
                 kind: Kind::Switch { default: false },
             },
         ],
+    },
+    Def {
+        id: "BetterGifAltText",
+        name: "BetterGifAltText",
+        description: "Change GIF alt text from simply being 'GIF' to containing the gif tags / filename",
+        origin: Origin::Vencord,
+        source: "src/plugins/betterGifAltText/index.ts",
+        default_on: false,
+        settings: &[],
     },
     Def {
         id: "BetterPlusReacts",
@@ -1257,6 +1322,15 @@ pub(crate) const DEFS: &[Def] = &[
             description: "Also download non-media attachments. Only enable this if you trust what people send you.",
             kind: Kind::Switch { default: false },
         }],
+    },
+    Def {
+        id: "Experiments",
+        name: "Experiments",
+        description: "Enable Access to Experiments & other dev-only features in Discord!",
+        origin: Origin::Vencord,
+        source: "src/plugins/experiments/index.tsx",
+        default_on: false,
+        settings: &[],
     },
     Def {
         id: "ExpressionCloner",
@@ -2372,6 +2446,43 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/quickMention/index.tsx",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "Quoter",
+        name: "Quoter",
+        description: "Adds the ability to create an inspirational quote image from a message.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/quoter/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "watermark",
+                label: "Watermark",
+                description: "Custom watermark text (max 32 characters)",
+                kind: Kind::Text {
+                    default: "Made with Gravecord",
+                    max_len: 32,
+                },
+            },
+            Setting {
+                key: "grayscale",
+                label: "Grayscale",
+                description: "Enable grayscale by default",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showWatermark",
+                label: "Show Watermark",
+                description: "Show watermark by default",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "saveAsGif",
+                label: "Save as GIF",
+                description: "Save as GIF by default",
+                kind: Kind::Switch { default: false },
+            },
+        ],
     },
     Def {
         id: "ReadAllNotificationsButton",
