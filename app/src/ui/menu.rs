@@ -126,6 +126,8 @@ pub(super) enum Action {
     SearchImage,
     /// Not in the pinned client: Translate+'s "Translate" (`plugin_hooks/translate_plus.rs`).
     PluginTranslate,
+    /// Not in the pinned client: Quoter's "Quote" (`plugin_hooks/quoter.rs`).
+    PluginQuote,
     /// Not in the pinned client: ExpressionManager's sticker rows (`plugin_hooks/expression_manager.rs`).
     PluginCloneSticker,
     PluginCopyStickerLink,
@@ -1181,6 +1183,8 @@ impl Root {
             Action::Reply => self.begin_reply(found, window, cx),
             // Not in the pinned client: Translate+ (`plugin_hooks/translate_plus.rs`).
             Action::PluginTranslate => self.translate_plus_start(message, found.content.clone()),
+            // Not in the pinned client: Quoter (`plugin_hooks/quoter.rs`).
+            Action::PluginQuote => self.quoter_open(&found, cx),
             // Not in the pinned client: ExpressionManager (`plugin_hooks/expression_manager.rs`).
             Action::PluginCloneSticker => self.expression_manager_act(
                 super::context_menu::Act::PluginCloneSticker,
@@ -1738,6 +1742,7 @@ impl Root {
                             | Action::PluginCopyStickerLink
                             | Action::PluginOpenStickerLink
                             | Action::PluginTranslate
+                            | Action::PluginQuote
                             | Action::PluginToggleDeletedHighlight
                             | Action::PluginToggleDiffView
                             | Action::PluginClearMessageHistory
@@ -1767,17 +1772,25 @@ impl Root {
         })
         // Not in the pinned client: Translate+ gives its row the icon after the label as well (`icon` and
         // `leadingAccessory`).
-        .when(run == Action::PluginTranslate, |this| {
-            this.child(
-                svg()
-                    .path("icons/plugin_translate.svg")
-                    .size(px(18.))
-                    .flex_none()
-                    .ml(px(8.))
-                    .text_color(icon_tint)
-                    .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
-            )
-        })
+        // Quoter's row does the same (`plugin_hooks/quoter.rs`).
+        .when(
+            matches!(run, Action::PluginTranslate | Action::PluginQuote),
+            |this| {
+                this.child(
+                    svg()
+                        .path(if run == Action::PluginQuote {
+                            "icons/plugin_quote.svg"
+                        } else {
+                            "icons/plugin_translate.svg"
+                        })
+                        .size(px(18.))
+                        .flex_none()
+                        .ml(px(8.))
+                        .text_color(icon_tint)
+                        .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
+                )
+            },
+        )
         .when(run == Action::OpenUrl, |this| {
             this.child(
                 svg()
@@ -2362,6 +2375,8 @@ impl Root {
             return search_result_items(open.own, saved);
         }
         let mut items = message_items_saved(open.own, saved);
+        // Not in the pinned client: Quoter's Quote (`plugin_hooks/quoter.rs`).
+        Self::quoter_items(&mut items, saved.empty);
         // Not in the pinned client: FullSearchContext's Copy Author ID (`plugin_hooks/full_search_context.rs`).
         if self.menu_extra.foreign.is_some() {
             super::plugin_hooks::full_search_context_items(&mut items);

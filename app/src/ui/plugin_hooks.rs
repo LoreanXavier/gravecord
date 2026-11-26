@@ -70,6 +70,7 @@ mod platform_indicators;
 mod plugin_commands;
 mod plugin_notifications;
 mod preview_message;
+mod quoter;
 mod read_all;
 mod relationship_notifier;
 pub(in crate::ui) use relationship_notifier::relationship_removed_by_you;

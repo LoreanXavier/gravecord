@@ -18,6 +18,7 @@ pub(crate) mod clear_urls;
 pub(crate) mod clip_upload;
 pub(crate) mod custom_rpc;
 pub(crate) mod gif_provider;
+pub(crate) mod quoter;
 mod registry;
 pub(crate) mod sed_enhanced;
 mod state;

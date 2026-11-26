@@ -378,6 +378,10 @@ pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[
     ("PinDMs", "dmSectionCollapsed", ""),
     // `hidden: !IS_DEV`: a development setting.
     ("UserPFP", "databaseSource", ""),
+    // `hidden: true`: Quoter's dialog remembers its switches in these.
+    ("Quoter", "grayscale", ""),
+    ("Quoter", "showWatermark", ""),
+    ("Quoter", "saveAsGif", ""),
 ];
 
 /// Every plugin, in the order the Plugins page lists them (by name).
@@ -2433,6 +2437,43 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/quickMention/index.tsx",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "Quoter",
+        name: "Quoter",
+        description: "Adds the ability to create an inspirational quote image from a message.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/quoter/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "watermark",
+                label: "Watermark",
+                description: "Custom watermark text (max 32 characters)",
+                kind: Kind::Text {
+                    default: "Made with Equicord",
+                    max_len: 32,
+                },
+            },
+            Setting {
+                key: "grayscale",
+                label: "Grayscale",
+                description: "Enable grayscale by default",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showWatermark",
+                label: "Show Watermark",
+                description: "Show watermark by default",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "saveAsGif",
+                label: "Save as GIF",
+                description: "Save as GIF by default",
+                kind: Kind::Switch { default: false },
+            },
+        ],
     },
     Def {
         id: "ReadAllNotificationsButton",
