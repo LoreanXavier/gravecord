@@ -349,6 +349,12 @@ impl Changes {
 
     /// Waits for a change, then for the burst it belongs to to settle.
     fn wait(&self) {
+        self.wait_settling(std::thread::sleep);
+    }
+
+    /// [`Self::wait`], with `settle` doing the wait of [`SETTLE`] (a test passes its own, so nothing depends on how
+    /// long a sleep really takes). Changes raised while it settles belong to the burst and are consumed with it.
+    fn wait_settling(&self, settle: impl FnOnce(Duration)) {
         let Ok(pending) = self.pending.lock() else {
             std::thread::sleep(POLL);
             return;
@@ -358,7 +364,7 @@ impl Changes {
         };
         *pending = false;
         drop(pending);
-        std::thread::sleep(SETTLE);
+        settle(SETTLE);
         if let Ok(mut pending) = self.pending.lock() {
             *pending = false;
         }
@@ -402,25 +408,48 @@ pub fn watch() -> &'static DeviceWatch {
 mod tests {
     use super::*;
 
+    /// The listing thread sleeps until a change is raised; it then settles for [`SETTLE`], and the rest of the burst
+    /// (raised while it settles) is consumed with it, leaving nothing pending for the next wait. The settle is a fake
+    /// that raises the burst itself, so the test reads events, not elapsed time.
     #[test]
     fn a_change_wakes_the_listing_thread_once_its_burst_settles() {
         let changes = Arc::new(Changes::default());
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
         let waiter = {
             let changes = changes.clone();
             std::thread::spawn(move || {
-                let started = std::time::Instant::now();
-                changes.wait();
-                started.elapsed()
+                let mut settled = Vec::new();
+                changes.wait_settling(|wait| {
+                    settled.push(wait);
+                    // The rest of the plug's notifications arrive while the thread settles.
+                    for _ in 0..3 {
+                        changes.raise();
+                    }
+                });
+                done_tx.send(settled).unwrap();
             })
         };
-        std::thread::sleep(Duration::from_millis(30));
-        // A plug: several notifications in a row.
-        for _ in 0..4 {
-            changes.raise();
-        }
-        let waited = waiter.join().unwrap();
-        assert!(waited >= Duration::from_millis(30) + SETTLE);
+        // Nothing was raised: the thread is still waiting. (A wrong early return would be seen here; a slow machine
+        // only makes this check weaker, never fail.)
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        changes.raise();
+        let settled = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the raise woke the listing thread");
+        waiter.join().unwrap();
+        assert_eq!(settled, vec![SETTLE], "it settled once, for SETTLE");
         // The burst was consumed: nothing is pending for the next wait.
+        assert!(!*changes.pending.lock().unwrap());
+    }
+
+    /// A change raised before the thread waits is not lost: the wait returns for it at once.
+    #[test]
+    fn a_change_raised_before_the_wait_is_not_lost() {
+        let changes = Changes::default();
+        changes.raise();
+        let mut settles = 0;
+        changes.wait_settling(|_| settles += 1);
+        assert_eq!(settles, 1);
         assert!(!*changes.pending.lock().unwrap());
     }
 
