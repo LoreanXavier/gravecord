@@ -252,7 +252,16 @@ fn attachment_item(attachment: &Attachment) -> Item {
                 attachment.height.unwrap_or(0),
                 size_label(attachment.size)
             ),
-            alt: attachment.description.clone().filter(|alt| !alt.is_empty()),
+            // Not in the pinned client: BetterGifAltText (`plugin_hooks/better_gif_alt_text.rs`).
+            alt: super::plugin_hooks::better_gif_alt_text(
+                attachment.content_type.as_deref(),
+                attachment
+                    .description
+                    .as_deref()
+                    .filter(|alt| !alt.is_empty()),
+                &attachment.url,
+            )
+            .map(std::borrow::Cow::into_owned),
         }),
     }
 }

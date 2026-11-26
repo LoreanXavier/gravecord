@@ -7,6 +7,8 @@ mod always_animate;
 mod better_activities;
 mod better_audio_player;
 mod better_forwards;
+mod better_gif_alt_text;
+pub(in crate::ui) use better_gif_alt_text::better_gif_alt_text;
 mod better_plus_reacts;
 pub(in crate::ui) use better_forwards::{
     better_forwards_follow, better_forwards_on, better_forwards_self_forward,

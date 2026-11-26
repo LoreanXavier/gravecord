@@ -769,7 +769,15 @@ impl Root {
             } else {
                 gpui::Role::Image
             })
-            .when_some(attachment.description.clone(), |this, alt| this.aria_label(alt))
+            // Not in the pinned client: BetterGifAltText (`plugin_hooks/better_gif_alt_text.rs`).
+            .when_some(
+                super::plugin_hooks::better_gif_alt_text(
+                    attachment.content_type.as_deref(),
+                    attachment.description.as_deref(),
+                    &attachment.url,
+                ),
+                |this, alt| this.aria_label(alt.into_owned()),
+            )
             .group(group.clone())
             .relative()
             .w(w)

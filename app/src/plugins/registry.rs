@@ -726,6 +726,15 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "BetterGifAltText",
+        name: "BetterGifAltText",
+        description: "Change GIF alt text from simply being 'GIF' to containing the gif tags / filename",
+        origin: Origin::Vencord,
+        source: "src/plugins/betterGifAltText/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "BetterPlusReacts",
         name: "BetterPlusReacts",
         description: "The amount of plus before :emoji: is the message to add it to",
