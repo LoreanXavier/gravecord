@@ -18,6 +18,7 @@ pub(crate) mod clip_upload;
 pub(crate) mod custom_rpc;
 pub(crate) mod gif_provider;
 mod registry;
+pub(crate) mod sed_enhanced;
 mod state;
 pub(crate) mod translate_plus;
 pub(crate) mod zip;

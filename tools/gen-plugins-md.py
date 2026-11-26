@@ -169,6 +169,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'SedEnhanced': "plugin_hooks/sed_enhanced.rs, plugins/sed_enhanced.rs: the send path's `s/find/replace` rule (ui/send_rules.rs, module 751258) takes the original's wider pattern (separators `/|$#@!`, the closing one optional, modes `rgmisudyv`), edits the message replied to when it is yours (a reply to someone else's sends nothing) or else your last editable message; `r` (inverted by regexByDefault) makes the find a regular expression with `gmisudyv` as flags, `g` changes every match, JavaScript `$` forms expand, a pattern that does not compile sends nothing, an empty result without attachments deletes. GAP: expressions run on Rust's linear-time `regex`, without look-around or back references (such a pattern sends nothing).",
     'ShowHiddenThings': "plugin_hooks/show_hidden_things.rs: showTimeouts drops the moderator test of the chat timeout clock (showCommunicationDisabledStyles, 549587), showInvitesPaused the Manage Server test of the rail tooltip's Invites paused line (347951 `Fi`, read only while paused), showModView makes the Mod View gate (985925) answer yes in every server, so the user menu offers Open in Mod View everywhere. The pinned pieces were ported in 1ee62c8d. GAP: the user popout's Mod View button (348434, `PRESS_MOD_VIEW`, which the original also shows on yourself) is not ported, so that part has nothing to act on; the highest-role fix is not needed here (Mod View reads the member's roles itself).",
     'ValidReply': 'plugin_hooks/valid_reply.rs: the pointer entering a reply\'s "Message could not be loaded" bar (448368, ported in 1ee62c8d) fetches GET /channels/<c>/messages?limit=1&around=<id> once at a time; the first message of the answer is the reply\'s message and the bar shows it, another one means it is gone and the bar reads "Original message was deleted"; a failed fetch changes nothing. The fetched message is kept for the bar only.',
     'AltKrispSwitch': "plugin_hooks/alt_krisp_switch.rs: the voice panel's Noise Suppression popout switch turns the suppressor off to None instead of Standard (shouldCancelSuppression drops the popout's Standard dispatch); the suppressor here is DeepFilterNet in Krisp's place, so the switch goes between None and DeepFilterNet. The settings page's select is unchanged, as the original only acts on the popout's section.",
@@ -278,6 +279,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'SedEnhanced': '`the_wider_pattern_matches_as_the_original`, `text_and_expressions_follow_the_original`, base `the_sed_rule_follows_the_pinned_pattern`, `text_replacement_is_javascripts`, `groups_expand_by_number_and_name`; replay by use (C:/Projects/gravecord-plugins-verify/sr1, sed1, sed2): off `s|world|there|g` is sent as text (sr1/b_pipe_sent_off), on it and `s/w(or)ld/[$1]/` (regexByDefault true) edit with nothing sent, `s/(/x/` sends nothing; regexByDefault stored and kept after a restart',
     'ShowHiddenThings': '`every_switch_is_on_by_default_and_off_with_the_plugin`; replay by use (C:/Projects/gravecord-plugins-verify/sht1..sht4) with the account made a non-moderator by GUILD_UPDATE: timeout clock off/on (a_chat_off, c_chat_on), rail Invites paused line off/on (b_rail_off, d_rail_on), user menu Open in Mod View with showModView off/on (sht4); showModView and showInvitesPaused stored false and kept after a restart',
     'ValidReply': '`the_first_message_of_the_answer_decides`; replay by use (C:/Projects/gravecord-plugins-verify/vr1..vr3): two not-loaded bars (vr1/a_bars); after a restart with the plugin kept on, hovering loads the real message and the unknown id reads deleted (vr2/b_both_hovered); plugin off nothing changes (vr3/c_off_hovered)',
     'AltKrispSwitch': '`the_switch_turns_to_none_only_while_on`; replay by use: the popout switch off stores None (2) and keeps it after a restart, plugin off stores Standard (1)',
@@ -469,7 +471,6 @@ PLANNED = {
     'GifMaker': 'a GIF encoder and its editor.',
     'LimitlessScreenshare': 'resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style).',
     'Quoter': 'a quote image made from a message.',
-    'SedEnhanced': "the pinned client's own sed rule first: a message `s/a/b` edits your last message (the `searchReplace` rule of the send path, module 857069), which the port does not have yet (GAP: main app); SedEnhanced only widens that rule's syntax and regex.",
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
 }

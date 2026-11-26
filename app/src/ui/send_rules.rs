@@ -229,6 +229,10 @@ impl Root {
         if let Some(name) = reaction_name(content) {
             return self.reaction_rule(channel, 1, name, cx);
         }
+        // Not in the pinned client: SedEnhanced's rule (`plugin_hooks/sed_enhanced.rs`).
+        if let Some(handled) = self.sed_enhanced_rule(channel, content, cx) {
+            return handled;
+        }
         let rule = search_replace(content)?;
         let Some(target) = self.last_editable_message(channel) else {
             return Some(String::new());

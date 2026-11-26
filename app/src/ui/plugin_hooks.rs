@@ -68,6 +68,7 @@ mod relationship_notifier;
 pub(in crate::ui) use relationship_notifier::relationship_removed_by_you;
 mod role_color_everywhere;
 mod search_fix;
+mod sed_enhanced;
 mod server_info;
 pub(in crate::ui) use search_fix::search_fix;
 pub(in crate::ui) use server_info::server_info_on;

@@ -2500,6 +2500,20 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "SedEnhanced",
+        name: "SedEnhanced",
+        description: "Expands on Discord's rudimentary `sed` support.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/sedEnhanced/index.ts",
+        default_on: false,
+        settings: &[Setting {
+            key: "regexByDefault",
+            label: "Regex By Default",
+            description: "Inverts the `r` flag, so using the `r` flag enables non-regex mode, and omitting it uses regex mode.",
+            kind: Kind::Switch { default: false },
+        }],
+    },
+    Def {
         id: "ServerInfo",
         name: "ServerInfo",
         description: "Allows you to view info about a server",
