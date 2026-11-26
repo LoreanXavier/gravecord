@@ -1,6 +1,8 @@
 //! Where the built-in plugins (`crate::plugins`) act on the chat. Not part of the pinned client.
 
 mod account_panel;
+mod alt_krisp_switch;
+pub(in crate::ui) use alt_krisp_switch::noise_popout_off;
 mod always_animate;
 mod better_activities;
 mod better_forwards;

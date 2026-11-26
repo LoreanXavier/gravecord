@@ -1192,7 +1192,12 @@ impl Root {
             .when(!locked, |this| {
                 this.cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.set_noise_cancellation(!on);
+                        match super::plugin_hooks::noise_popout_off().filter(|_| on) {
+                            // Not in the pinned client: AltKrispSwitch turns it off to None
+                            // (`plugin_hooks/alt_krisp_switch.rs`).
+                            Some(index) => this.set_noise_suppression_index(index),
+                            None => this.set_noise_cancellation(!on),
+                        }
                         cx.notify();
                     }))
             });

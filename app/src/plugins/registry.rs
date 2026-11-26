@@ -397,6 +397,15 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "AltKrispSwitch",
+        name: "AltKrispSwitch",
+        description: "Makes the Noise Suppression Popout switch between None and Krisp instead of Krisp and Standard",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/altKrispSwitch/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "AlwaysAnimate",
         name: "AlwaysAnimate",
         description: "Animates anything that can be animated",

@@ -1075,6 +1075,13 @@ impl Root {
         self.voice_commit();
     }
 
+    /// Not in the pinned client: the suppression select's index set directly (AltKrispSwitch's None,
+    /// `plugin_hooks/alt_krisp_switch.rs`).
+    pub(in crate::ui) fn set_noise_suppression_index(&mut self, index: usize) {
+        self.voice.stored.suppression = index;
+        self.voice_commit();
+    }
+
     pub(in crate::ui) fn voice_mic_testing(&self) -> bool {
         self.voice.mic_test.is_some()
     }
