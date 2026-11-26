@@ -257,6 +257,14 @@ fn voice_script(options: &Options) -> String {
     )
 }
 
+/// The `states` scenario's third process: the fixture's offline video attachment (`embeds demo video-att`, a 4 s clip
+/// at 3 frames a second) played where it is seen, then playing with the chat scrolled up past it. What a playing video
+/// redraws while nothing of it is on screen is the `voff` window's renders.
+fn video_script() -> String {
+    "perf start; wait 3000; click 36 109; wait 2500; embeds demo video-att; wait 2000;      perf sample vpre0; wait 1500; perf sample vpre1; click 607 533; wait 300; perf sample von0; wait 1500;      perf sample von1; scroll 800 300 -400; scroll 800 300 -400; wait 200; perf sample voff0; wait 1600;      perf sample voff1; embeds video state; perf sample end"
+        .to_owned()
+}
+
 /// The `idle10` scenario: the memory and CPU of ten minutes of idle after the start, the fixture's channel open.
 fn idle10_script() -> String {
     "perf start; perf sample start; wait 3000; perf timeline; click 36 109; wait 3000; perf sample i0; perf caches i0; \
@@ -705,6 +713,7 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
         "states" => vec![
             ("states".to_owned(), states_script(&options)),
             ("voice".to_owned(), voice_script(&options)),
+            ("video".to_owned(), video_script()),
         ],
         _ if options.record.is_some() => {
             vec![("run".to_owned(), script(&options) + &record_extras())]
