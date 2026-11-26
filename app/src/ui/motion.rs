@@ -664,6 +664,23 @@ pub fn current_view() -> Option<gpui::EntityId> {
     with(|motion| motion.view)
 }
 
+/// The view being built now and the frame it began rendering in: what something built now can later compare with
+/// [`view_frame`] to tell whether that view rendered again since (and so built it again, or left it out).
+pub fn building_view() -> Option<(gpui::EntityId, u64)> {
+    with(|motion| {
+        let view = motion.view?;
+        Some((
+            view,
+            motion.views.get(&view).map_or(0, |frames| frames.current),
+        ))
+    })
+}
+
+/// The frame `view` last began rendering in. A view gpui reuses from its cache keeps its frame.
+pub fn view_frame(view: gpui::EntityId) -> Option<u64> {
+    with(|motion| motion.views.get(&view).map(|frames| frames.current))
+}
+
 /// A key for the stores from anything hashable.
 pub fn key<H: Hash + ?Sized>(value: &H) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

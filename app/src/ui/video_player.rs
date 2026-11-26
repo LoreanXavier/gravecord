@@ -98,6 +98,11 @@ struct Entry {
     volume_hide_at: Option<Instant>,
     volume_track_bounds: Bounds<Pixels>,
     epoch: u64,
+    /// The view whose render built the player last, and the frame that render began in (`motion::building_view`).
+    /// The player is on screen while that view has not rendered again: a view gpui reuses from its cache shows it
+    /// still, one that rendered again without building it scrolled it away. `None`: built in the main view's own tree
+    /// (a region that is not a cached view, the lightbox), which is built again on every frame.
+    drawn_in: Option<(gpui::EntityId, u64)>,
 }
 
 impl Entry {
@@ -131,6 +136,7 @@ impl Entry {
             volume_hide_at: None,
             volume_track_bounds: Bounds::default(),
             epoch: 0,
+            drawn_in: None,
         }
     }
 
@@ -163,6 +169,10 @@ pub(super) struct VideoHub {
     volume_drag: Option<String>,
     pub(super) fullscreen: Option<FullscreenVideo>,
     epoch: u64,
+    /// The view being built and its render's frame, and the frame a view last rendered in: `motion`'s, replaced in
+    /// tests.
+    building_view: fn() -> Option<(gpui::EntityId, u64)>,
+    view_frame: fn(gpui::EntityId) -> Option<u64>,
     timer_generation: u64,
     timer_deadline: Option<Instant>,
     /// A display-refresh poll for the next frame of a playing video is registered.
@@ -190,6 +200,8 @@ impl VideoHub {
             volume_drag: None,
             fullscreen: None,
             epoch: 0,
+            building_view: super::motion::building_view,
+            view_frame: super::motion::view_frame,
             timer_generation: 0,
             timer_deadline: None,
             frame_poll: false,
@@ -366,6 +378,7 @@ impl VideoHub {
             .get_mut(key)
             .expect("inserted video entry is present");
         entry.epoch = epoch;
+        entry.drawn_in = (self.building_view)();
         entry
     }
 
@@ -583,12 +596,20 @@ impl VideoHub {
             || shown.any(|entry| entry.player.frame_due())
     }
 
-    /// The players the latest frame drew (their element asked for its entry during that frame).
+    /// The players on screen. One built in a cached region view is shown while that view has not rendered again:
+    /// the main view renders on every frame, also those where only another region redraws (a typing indicator, a
+    /// sticker) and the message list is reused from gpui's cache with its playing video on it, so a main view render
+    /// alone never takes it off screen. One built in the main view's own tree, which is built again on every frame, is
+    /// shown when the latest frame built it.
     fn shown_entries(&self) -> impl Iterator<Item = &Entry> {
+        let view_frame = self.view_frame;
         let epoch = self.epoch;
         self.entries
             .values()
-            .filter(move |entry| entry.epoch == epoch)
+            .filter(move |entry| match entry.drawn_in {
+                Some((view, frame)) => view_frame(view) == Some(frame),
+                None => entry.epoch == epoch,
+            })
     }
 
     /// Whether a video the latest frame drew plays: the display's refreshes are followed only for those.
@@ -2852,41 +2873,112 @@ mod tests {
         assert!(hub.controls_visible("k1", entry, false, t0 + Duration::from_secs(20)));
     }
 
+    thread_local! {
+        /// The views of the fake window: the view being built and the frame each view last rendered in.
+        static BUILDING: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+        static FRAMES: std::cell::RefCell<HashMap<gpui::EntityId, u64>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+
+    fn fake_building_view() -> Option<(gpui::EntityId, u64)> {
+        let view: gpui::EntityId = BUILDING.get()?.into();
+        Some((view, FRAMES.with(|frames| frames.borrow()[&view])))
+    }
+
+    fn fake_view_frame(view: gpui::EntityId) -> Option<u64> {
+        FRAMES.with(|frames| frames.borrow().get(&view).copied())
+    }
+
+    /// `view` renders in `frame`; with `video`, its render builds the player.
+    fn render(hub: &mut VideoHub, view: u64, frame: u64, video: Option<&str>) {
+        FRAMES.with(|frames| frames.borrow_mut().insert(view.into(), frame));
+        BUILDING.set(Some(view));
+        if let Some(src) = video {
+            hub.ensure_entry("att:1", src, (64, 64), false);
+        }
+        BUILDING.set(None);
+    }
+
+    /// The root view, rendered on every frame, and the message list's region, which gpui reuses from its cache
+    /// unless it is notified.
+    const ROOT: u64 = 1;
+    const MESSAGES: u64 = 2;
+
     /// A playing video scrolled out of view asks for no frame (an inline player redrew the whole page at its frame
     /// rate, and four times a second for its clock, while nothing of it was on screen); drawn again, it is followed
-    /// again. Paused, it asks for none either.
+    /// again. A frame that redraws only another region (a typing indicator, a sticker) renders the root without the
+    /// message list: the video stays on screen and keeps asking for its frames. Paused, it asks for none.
     #[test]
-    fn only_a_drawn_playing_video_asks_for_frames() {
+    fn a_shown_video_asks_for_frames_whatever_else_redraws_and_a_scrolled_away_one_does_not() {
         let mp4 = Arc::new(
             synthetic_mp4(64, 64, 10, &[[220, 40, 40], [40, 220, 40]], 1).expect("synthetic mp4"),
         );
         let src = "https://example.test/offscreen.mp4";
         let mut hub = VideoHub::new();
+        hub.building_view = fake_building_view;
+        hub.view_frame = fake_view_frame;
         hub.seed_bytes(src, mp4);
         let t0 = Instant::now();
         hub.prepare(t0);
-        hub.ensure_entry("att:1", src, (64, 64), false);
+        render(&mut hub, ROOT, 1, None);
+        render(&mut hub, MESSAGES, 1, Some(src));
         hub.play_or_toggle("att:1", t0);
         assert!(hub.any_shown_playing());
         // The clock is due once PLAYING_REDRAW_MAX passed since the last drawn frame.
         assert!(hub.playing_redraw_due(t0 + PLAYING_REDRAW_MAX));
 
-        // The next frame does not draw it: the list scrolled it away. It still plays.
-        let t1 = t0 + Duration::from_millis(20);
-        hub.prepare(t1);
+        // Frames 2 to 20 redraw only another region (the typing dots): the root renders, the list is reused.
+        let mut now = t0;
+        for frame in 2..=20 {
+            now += Duration::from_millis(16);
+            hub.prepare(now);
+            render(&mut hub, ROOT, frame, None);
+            assert!(
+                hub.any_shown_playing(),
+                "frame {frame}: the video stays followed"
+            );
+        }
+        assert!(hub.playing_redraw_due(now + PLAYING_REDRAW_MAX));
+
+        // The list renders again without the player: it was scrolled away. It still plays.
+        now += Duration::from_millis(16);
+        hub.prepare(now);
+        render(&mut hub, ROOT, 21, None);
+        render(&mut hub, MESSAGES, 21, None);
         assert!(hub.entries["att:1"].player.playing());
         assert!(!hub.any_shown_playing());
-        assert!(!hub.playing_redraw_due(t1 + PLAYING_REDRAW_MAX * 4));
+        assert!(!hub.playing_redraw_due(now + PLAYING_REDRAW_MAX * 4));
 
         // Scrolled back into view: followed again.
-        hub.ensure_entry("att:1", src, (64, 64), false);
+        now += Duration::from_millis(16);
+        hub.prepare(now);
+        render(&mut hub, ROOT, 22, None);
+        render(&mut hub, MESSAGES, 22, Some(src));
         assert!(hub.any_shown_playing());
-        assert!(hub.playing_redraw_due(t1 + PLAYING_REDRAW_MAX));
+        assert!(hub.playing_redraw_due(now + PLAYING_REDRAW_MAX));
 
         // Paused while shown: no frames.
-        hub.play_or_toggle("att:1", t1);
+        hub.play_or_toggle("att:1", now);
         assert!(!hub.any_shown_playing());
-        assert!(!hub.playing_redraw_due(t1 + PLAYING_REDRAW_MAX * 4));
+        assert!(!hub.playing_redraw_due(now + PLAYING_REDRAW_MAX * 4));
+    }
+
+    /// Built in the main view's own tree (no cached region: the default), a player is shown when the latest frame
+    /// built it, as every frame builds that tree again.
+    #[test]
+    fn a_player_in_the_main_views_tree_is_shown_when_the_latest_frame_built_it() {
+        let mut hub = VideoHub::new();
+        hub.building_view = || None;
+        hub.view_frame = fake_view_frame;
+        hub.prepare(Instant::now());
+        hub.ensure_entry("att:2", "https://example.test/main.mp4", (64, 64), false);
+        assert_eq!(hub.shown_entries().count(), 1);
+        // The next frame scrolled it away.
+        hub.prepare(Instant::now());
+        assert_eq!(hub.shown_entries().count(), 0);
+        // Built again.
+        hub.ensure_entry("att:2", "https://example.test/main.mp4", (64, 64), false);
+        assert_eq!(hub.shown_entries().count(), 1);
     }
 
     static VOLUME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
