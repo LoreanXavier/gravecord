@@ -25,6 +25,8 @@ mod clip_upload;
 pub(in crate::ui) mod clips_enhancements;
 mod custom_rpc;
 mod download_all;
+mod experiments;
+pub(in crate::ui) use experiments::experiments_on;
 mod expression_manager;
 pub(crate) use expression_manager::sticker_url as expression_sticker_url;
 mod fix_youtube_embeds;

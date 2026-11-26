@@ -1324,6 +1324,15 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "Experiments",
+        name: "Experiments",
+        description: "Enable Access to Experiments & other dev-only features in Discord!",
+        origin: Origin::Vencord,
+        source: "src/plugins/experiments/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "ExpressionCloner",
         name: "ExpressionManager",
         description: "Clone Emotes & Stickers. Adds context menu options to quickly clone, edit, or delete them. Also adds Copy & Save options for stickers",

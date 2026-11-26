@@ -12505,6 +12505,8 @@ impl Render for Root {
         self.message_logger_prepare();
         // Not in the pinned client: CustomRPC's activity (`plugin_hooks/custom_rpc.rs`).
         self.custom_rpc_prepare();
+        // Not in the pinned client: Experiments' bucket overrides (`plugin_hooks/experiments.rs`).
+        self.experiments_prepare();
         // Not in the pinned client: ClipUpload's participant pictures (`plugin_hooks/clip_upload.rs`).
         self.clip_upload_prepare();
         // Not in the pinned client: GlobalBadges' list, at start and every 30 minutes (`plugin_hooks/global_badges.rs`).
