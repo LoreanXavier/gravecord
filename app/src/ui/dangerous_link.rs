@@ -16,7 +16,6 @@ use gpui::{
     rgba,
 };
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 use std::sync::RwLock;
 
 /// The key the list comes back under.
@@ -26,13 +25,33 @@ pub(super) const BAD_DOMAINS_URL: &str =
 /// Module 117816, the modal's graphic (288 by 162, at most 15vh: 192 by 108 in a 720 tall window).
 const GRAPHIC: &str = "https://cdn.discordapp.com/assets/content/971d3a140aa11a3830346a83266ea28b2f4e586e9b4f02eed4315538f6a9ebbe.svg";
 
-static HASHES: RwLock<Option<HashSet<[u8; 32]>>> = RwLock::new(None);
+static HASHES: RwLock<Option<Hashes>> = RwLock::new(None);
 /// The list was asked for this session.
 static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The listed digests, sorted for a binary search: tens of thousands of them, which a hash set kept in about twice the
+/// room.
+pub(super) struct Hashes(Box<[[u8; 32]]>);
+
+impl Hashes {
+    fn contains(&self, digest: &[u8; 32]) -> bool {
+        self.0.binary_search(digest).is_ok()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 /// The list as the CDN serves it: an array of hex digests.
-pub(super) fn parse_hashes(body: &serde_json::Value) -> HashSet<[u8; 32]> {
-    body.as_array()
+pub(super) fn parse_hashes(body: &serde_json::Value) -> Hashes {
+    let mut hashes: Vec<[u8; 32]> = body
+        .as_array()
         .into_iter()
         .flatten()
         .filter_map(serde_json::Value::as_str)
@@ -44,7 +63,10 @@ pub(super) fn parse_hashes(body: &serde_json::Value) -> HashSet<[u8; 32]> {
             }
             Some(out)
         })
-        .collect()
+        .collect();
+    hashes.sort_unstable();
+    hashes.dedup();
+    Hashes(hashes.into_boxed_slice())
 }
 
 /// The host libdiscore checks, as the pinned client answered over CDP: a lower-case `http://` or `https://` prefix or
@@ -67,7 +89,7 @@ fn checked_host(url: &str) -> Option<String> {
 }
 
 /// `isBlockedDomain`: the listed domain the URL's host is, or sits under.
-pub(super) fn blocked_domain_in(hashes: &HashSet<[u8; 32]>, url: &str) -> Option<String> {
+pub(super) fn blocked_domain_in(hashes: &Hashes, url: &str) -> Option<String> {
     let host = checked_host(url)?;
     if host.is_empty() {
         return None;
@@ -306,7 +328,7 @@ impl Root {
 mod tests {
     use super::*;
 
-    fn list(domains: &[&str]) -> HashSet<[u8; 32]> {
+    fn list(domains: &[&str]) -> Hashes {
         let hex: Vec<serde_json::Value> = domains
             .iter()
             .map(|domain| {
