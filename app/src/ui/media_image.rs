@@ -774,7 +774,9 @@ impl Root {
             .child(inner_media)
             .when(!hidden, |this| {
                 let open_key = key.clone();
-                this.children(self.alt_text_overlay(attachment, cx))
+                // Not in the pinned client: where the viewer opens from (`motion/media_open.rs`).
+                this.child(self.anchor_probe(super::lightbox::source_key(&key)))
+                    .children(self.alt_text_overlay(attachment, cx))
                     .children(favorite_target.map(|target| {
                         self.gif_favorite_button(
                             format!("{id_prefix}-gif-fav-{}", attachment.id),

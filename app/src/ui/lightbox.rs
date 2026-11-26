@@ -101,6 +101,19 @@ pub(super) struct Lightbox {
     pub plain: bool,
 }
 
+/// The key a media thumbnail's bounds are recorded under, for the viewer's opening (`motion/media_open.rs`).
+pub(super) fn source_key(item: &str) -> String {
+    format!("lightbox-src:{item}")
+}
+
+/// Whether the viewer's item at `index` is a video.
+fn items_video(root: &Root, index: usize) -> bool {
+    root.lightbox
+        .as_ref()
+        .and_then(|open| open.items.get(index))
+        .is_some_and(|item| item.is_video)
+}
+
 /// The message's pictures in the order the viewer pages through them: attachments, then embed pictures.
 pub(super) fn items_of(message: &Message) -> Vec<Item> {
     let mut items: Vec<Item> = message
@@ -341,6 +354,16 @@ impl Root {
             details_open: false,
             plain: false,
         });
+        // Not in the pinned client: the viewer opens from the clicked thumbnail (`motion/media_open.rs`).
+        let source = (!items_video(self, index))
+            .then(|| {
+                self.tip_anchors
+                    .borrow()
+                    .get(source_key(key).as_str())
+                    .copied()
+            })
+            .flatten();
+        super::motion::media_open::begin(key, source);
         self.lightbox_images();
         cx.notify();
     }
@@ -450,6 +473,24 @@ impl Root {
     }
 
     pub(super) fn close_lightbox(&mut self, cx: &mut Context<Self>) {
+        // Not in the pinned client: the picture runs back into its thumbnail first (`motion/media_open.rs`).
+        let current = self
+            .lightbox
+            .as_ref()
+            .filter(|open| !open.zoomed)
+            .map(|open| open.items[open.index].key.clone());
+        if let Some(item) = current
+            && super::motion::media_open::begin_close(&item, super::motion::reduced())
+        {
+            cx.notify();
+            return;
+        }
+        self.close_lightbox_now(cx);
+    }
+
+    /// Closes the viewer at once.
+    pub(super) fn close_lightbox_now(&mut self, cx: &mut Context<Self>) {
+        super::motion::media_open::end();
         self.lightbox = None;
         self.release_lightbox_videos(None, cx);
         cx.notify();
@@ -608,6 +649,25 @@ impl Root {
         let panel = midnight("--background-surface-highest");
         let zoomed = open.zoomed;
         let (offset_x, offset_y) = (open.offset.x, open.offset.y);
+        // Not in the pinned client: the shared transition from the thumbnail (`motion/media_open.rs`): the picture's
+        // offset and scale, and the scrim's share of its darkness. A closing that has run back ends the viewer.
+        let shared = (!zoomed && !item.is_video)
+            .then(|| super::motion::media_open::frame(&item.key))
+            .flatten();
+        if let Some((t, _, true)) = shared
+            && t <= 0.
+        {
+            let root = cx.entity();
+            cx.defer(move |cx| root.update(cx, |this, cx| this.close_lightbox_now(cx)));
+        }
+        let (shared_offset, shared_scale) = shared.map_or(((0., 0.), 1.), |(t, source, _)| {
+            super::motion::media_open::pose(
+                t,
+                source,
+                (self.viewport.0 / 2., self.viewport.1 / 2.),
+                (width as f32 * scale, height as f32 * scale),
+            )
+        });
 
         let bar = div()
             .absolute()
@@ -879,8 +939,11 @@ impl Root {
                         .h(px(height as f32 * scale))
                         .flex_none()
                         .relative()
-                        .left(offset_x)
-                        .top(offset_y)
+                        .left(offset_x + px(shared_offset.0))
+                        .top(offset_y + px(shared_offset.1))
+                        .when(shared_scale != 1., |this| {
+                            this.paint_scale(shared_scale, gpui::point(0.5, 0.5))
+                        })
                         .cursor_pointer()
                         .on_mouse_up(
                             MouseButton::Right,
@@ -1060,7 +1123,13 @@ impl Root {
             .id("lightbox")
             .absolute()
             .inset_0()
-            .bg(pose.dim(gpui::rgba(0x000000eb)))
+            .bg(match shared {
+                Some((t, _, _)) => gpui::Rgba {
+                    a: (0xeb as f32 / 255.) * t.clamp(0., 1.),
+                    ..gpui::rgba(0x000000eb)
+                },
+                None => pose.dim(gpui::rgba(0x000000eb)),
+            })
             .occlude()
             .on_click(cx.listener(|this, _, _, cx| {
                 if let Some(open) = this.lightbox.as_mut().filter(|open| open.more) {
@@ -1071,20 +1140,32 @@ impl Root {
                     this.close_lightbox(cx);
                 }
             }))
-            .child(
+            .child({
+                // Not in the pinned client: with the shared transition the picture is not faded, and the controls
+                // fade in and out with the transition (`motion/media_open.rs`).
+                let (content, controls) = match shared {
+                    Some((t, _, _)) => (1., t.clamp(0., 1.)),
+                    None => (pose.opacity, 1.),
+                };
                 div()
                     .absolute()
                     .inset_0()
-                    .when(pose.opacity < 1., |this| this.opacity(pose.opacity))
+                    .when(content < 1., |this| this.opacity(content))
                     .child(stage)
-                    .children(arrows)
-                    .children((many && !zoomed).then(|| self.lightbox_gallery(cx)))
-                    // The sender and the pill fade while zoomed; the close button stays.
-                    .children((!zoomed && !open.plain).then_some(bar))
-                    .children((!zoomed).then_some(pill))
-                    .children(open.more.then(|| self.lightbox_more_menu(cx)))
-                    .child(close),
-            );
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .when(controls < 1., |this| this.opacity(controls))
+                            .children(arrows)
+                            .children((many && !zoomed).then(|| self.lightbox_gallery(cx)))
+                            // The sender and the pill fade while zoomed; the close button stays.
+                            .children((!zoomed && !open.plain).then_some(bar))
+                            .children((!zoomed).then_some(pill))
+                            .children(open.more.then(|| self.lightbox_more_menu(cx)))
+                            .child(close),
+                    )
+            });
         Some(deferred(layer).with_priority(2).into_any_element())
     }
 

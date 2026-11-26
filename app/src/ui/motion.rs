@@ -30,6 +30,7 @@ pub(crate) mod controls;
 pub(crate) mod departure;
 pub(crate) mod dm_rail;
 pub(crate) mod layers;
+pub(crate) mod media_open;
 pub(crate) mod messages;
 pub(crate) mod rail;
 pub(crate) mod toasts;

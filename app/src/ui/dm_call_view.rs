@@ -588,7 +588,10 @@ impl Root {
                 let (key, url) = avatar_source(&user);
                 self.request_image(key, url);
                 let face = self.call_avatar(&user, person, size);
-                div()
+                // Not in the pinned client: Discord's native client names the person above the avatar on hover
+                // (`dm-call-avatar-item`), with the app's ordinary tooltip.
+                let name = user.display_name().to_owned();
+                let avatar = div()
                     .id(gpui::SharedString::from(format!("dm-call-avatar-{id}")))
                     .mx(px(8.))
                     .on_mouse_up(
@@ -603,8 +606,14 @@ impl Root {
                             );
                         }),
                     )
-                    .child(face)
-                    .into_any_element()
+                    .child(face);
+                self.with_tip(
+                    format!("dm-call-avatar-tip-{id}"),
+                    Tip::body(super::tooltip::Body::Text(name.into()), Side::Top),
+                    avatar,
+                    cx,
+                )
+                .into_any_element()
             })
             .collect();
         div()

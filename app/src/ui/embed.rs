@@ -828,7 +828,9 @@ impl Root {
                 }),
             )
             .when(playable, |this| {
-                this.cursor_pointer()
+                // Not in the pinned client: where the viewer opens from (`motion/media_open.rs`).
+                this.child(self.anchor_probe(super::lightbox::source_key(&open)))
+                    .cursor_pointer()
                     .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
                         this.media_hover(&hovered, *inside, cx);
                     }))
