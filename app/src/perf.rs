@@ -302,7 +302,7 @@ static CHECKPOINTS: std::sync::Mutex<Vec<(&'static str, usize, u64, u64)>> =
     std::sync::Mutex::new(Vec::new());
 
 pub fn checkpoint(name: &'static str) {
-    let (working, _) = memory();
+    let (working, _, _) = memory();
     if let Ok(mut list) = CHECKPOINTS.lock() {
         list.push((name, heap().0, working, since_process_start_ms()));
     }
@@ -610,20 +610,21 @@ pub fn threads_report(begin: bool) -> String {
     line
 }
 
-/// Working set and private bytes of the process.
-pub fn memory() -> (u64, u64) {
+/// Working set, private bytes and the most private bytes the process has had.
+pub fn memory() -> (u64, u64, u64) {
     let mut counters = PROCESS_MEMORY_COUNTERS {
         cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
         ..Default::default()
     };
     let read = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
     if read.is_err() {
-        return (0, 0);
+        return (0, 0, 0);
     }
     // The pagefile usage of a process is its private (committed) bytes.
     (
         counters.WorkingSetSize as u64,
         counters.PagefileUsage as u64,
+        counters.PeakPagefileUsage as u64,
     )
 }
 
@@ -711,7 +712,7 @@ mod tests {
 
     #[test]
     fn counters_read_something() {
-        let (working, private) = memory();
+        let (working, private, _) = memory();
         assert!(working > 0 && private > 0);
         assert!(threads() >= 1);
     }

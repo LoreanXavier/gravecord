@@ -2753,12 +2753,12 @@ pub async fn run(
             // own caches), `perf start` (when the content and the loading screen's end showed).
             ["perf", "sample", label @ ..] => {
                 let renders = crate::perf::RENDERS.load(std::sync::atomic::Ordering::Relaxed);
-                let (working, private) = crate::perf::memory();
+                let (working, private, private_peak) = crate::perf::memory();
                 let (heap, heap_peak) = crate::perf::heap();
                 let (image, mapped, committed_private) = crate::perf::committed();
                 let _ = writeln!(
                     output,
-                    "perf sample {}: wall_ms={} cpu_ms={} ui_thread_cpu_ms={} working_set={working} private={private} heap={heap} heap_peak={heap_peak} commit_image={image} commit_mapped={mapped} commit_private={committed_private} threads={} renders={renders}",
+                    "perf sample {}: wall_ms={} cpu_ms={} ui_thread_cpu_ms={} working_set={working} private={private} private_peak={private_peak} heap={heap} heap_peak={heap_peak} commit_image={image} commit_mapped={mapped} commit_private={committed_private} threads={} renders={renders}",
                     label.join(" "),
                     crate::perf::since_process_start_ms(),
                     crate::perf::cpu_ms(),

@@ -5,7 +5,8 @@
 //! idle, typing, scrolling, then laps of the main destinations. The budgets are the project plan section 8.5.
 //!
 //! Scenarios: `all` (default), `start`, `idle`, `typing`, `scroll`, `soak`, `states` (idle shown, minimised and in a
-//! simulated call, first openings, switches, twenty channel visits) and `idle10` (ten minutes of idle). The report goes
+//! simulated call, first openings, switches, twenty channel visits), `idle10` (ten minutes of idle) and `pickers` (the
+//! memory before the emoji and sticker pickers open, right after they close, and 45 and 90 s later). The report goes
 //! to `design/perf/<label>.md`.
 //! The real server is only selected, scrolled and read: no write is sent from a harness run.
 //!
@@ -100,13 +101,13 @@ fn parse(args: &[&str]) -> Result<Options> {
                 }
             }
             other => bail!(
-                "usage: cargo xtask perf [--release] [--runs N] [--laps N] [--scenario all|start|idle|typing|scroll|soak|stickers|hitch|anim|states|idle10] [--label L] [--no-build] [--no-wait] [--idle-secs N] [--timeout-min N] [--exe PATH] [--replay FOLDER [--ready-delay-ms N] [--no-latency]] [--record FOLDER], got {other}"
+                "usage: cargo xtask perf [--release] [--runs N] [--laps N] [--scenario all|start|idle|typing|scroll|soak|stickers|hitch|anim|states|idle10|pickers] [--label L] [--no-build] [--no-wait] [--idle-secs N] [--timeout-min N] [--exe PATH] [--replay FOLDER [--ready-delay-ms N] [--no-latency]] [--record FOLDER], got {other}"
             ),
         }
     }
     if ![
         "all", "start", "idle", "typing", "scroll", "soak", "stickers", "hitch", "anim", "states",
-        "idle10",
+        "idle10", "pickers",
     ]
     .contains(&options.scenario.as_str())
     {
@@ -272,7 +273,21 @@ fn idle10_script() -> String {
         .to_owned()
 }
 
+/// The `pickers` scenario: private bytes at idle, right after the emoji picker and then the sticker picker were each
+/// opened once and closed, and 45 s (the decoded-picture cache's idle time) and 90 s after that.
+fn pickers_script() -> String {
+    format!(
+        "perf start; perf sample start; wait 3000; click 36 109; wait 2500; perf sample idle; perf caches idle; \
+         click {EMOJI_BUTTON}; wait 3000; key escape; wait 800; click 1162 683; wait 4000; key escape; wait 1500; \
+         perf sample closed; perf caches closed; wait 45000; perf sample settled; perf caches settled; \
+         wait 45000; perf sample late; perf caches late; perf heap; perf sample end"
+    )
+}
+
 fn script(options: &Options) -> String {
+    if options.scenario == "pickers" {
+        return pickers_script();
+    }
     if options.scenario == "states" {
         return states_script(options);
     }
@@ -616,6 +631,9 @@ fn metrics(log: &str) -> BTreeMap<String, f64> {
         }
         if let Some(value) = values.get("private") {
             out.insert(format!("{label}.private_mb"), mb(*value));
+        }
+        if let Some(value) = values.get("private_peak") {
+            out.insert(format!("{label}.private_peak_mb"), mb(*value));
         }
         if let Some(value) = values.get("threads") {
             out.insert(format!("{label}.threads"), *value);
