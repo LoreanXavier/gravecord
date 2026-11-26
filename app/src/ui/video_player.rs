@@ -569,15 +569,31 @@ impl VideoHub {
         }
     }
 
-    /// Whether the page must be drawn again for a playing video: its next frame is due, or the clock has not been
-    /// drawn for [`PLAYING_REDRAW_MAX`].
+    /// Whether the page must be drawn again for a playing video that the latest frame drew: its next frame is due,
+    /// or its clock has not been drawn for [`PLAYING_REDRAW_MAX`]. A video scrolled out of the list keeps playing (its
+    /// sound and clock go on), but nothing of it is on screen, so it asks for no frame, as a browser composites no
+    /// frame of an offscreen `<video>`; it is followed again from the frame that draws it.
     fn playing_redraw_due(&self, now: Instant) -> bool {
+        let mut shown = self.shown_entries().filter(|entry| entry.player.playing());
+        let Some(first) = shown.next() else {
+            return false;
+        };
         now.saturating_duration_since(self.prepared_at) >= PLAYING_REDRAW_MAX
-            || self.entries.values().any(|entry| entry.player.frame_due())
+            || first.player.frame_due()
+            || shown.any(|entry| entry.player.frame_due())
     }
 
-    fn any_playing(&self) -> bool {
-        self.entries.values().any(|entry| entry.player.playing())
+    /// The players the latest frame drew (their element asked for its entry during that frame).
+    fn shown_entries(&self) -> impl Iterator<Item = &Entry> {
+        let epoch = self.epoch;
+        self.entries
+            .values()
+            .filter(move |entry| entry.epoch == epoch)
+    }
+
+    /// Whether a video the latest frame drew plays: the display's refreshes are followed only for those.
+    fn any_shown_playing(&self) -> bool {
+        self.shown_entries().any(|entry| entry.player.playing())
     }
 
     /// Ticks every player for the frame being drawn. Returns the pictures to free, the next time the page must be
@@ -732,7 +748,10 @@ fn poll_video_frames(
     window.on_next_frame(move |window, cx| {
         let (due, playing) = {
             let hub = hub.borrow();
-            (hub.playing_redraw_due(Instant::now()), hub.any_playing())
+            (
+                hub.playing_redraw_due(Instant::now()),
+                hub.any_shown_playing(),
+            )
         };
         if due || !playing {
             hub.borrow_mut().frame_poll = false;
@@ -1932,7 +1951,7 @@ impl Root {
 #[cfg(feature = "capture")]
 impl Root {
     /// Capture script helper routed via `embeds video ...`:
-    /// `state | play <k> | pause <k> | clock <s> <k> | seek <s> <k> | volume-open <k|off>`.
+    /// `state | play <k> | play-latest | pause <k> | clock <s> <k> | seek <s> <k> | volume-open <k|off>`.
     pub(super) fn script_video_cx(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
         let mut hub = self.video_hub.borrow_mut();
         match words {
@@ -1957,6 +1976,21 @@ impl Root {
                     .collect();
                 parts.sort();
                 format!("video: {}", parts.join("; "))
+            }
+            // `play-latest`: the player made last (a demo's attachment, whose key carries a fresh id).
+            ["play-latest"] => {
+                let (vol, muted) = (hub.volume, hub.muted);
+                let latest = hub.entries.keys().max().cloned();
+                match latest.and_then(|key| hub.entries.get_mut(&key).map(|entry| (key, entry))) {
+                    Some((key, entry)) => {
+                        entry.has_clicked_play = true;
+                        entry.player.play(vol, muted);
+                        entry.tick = entry.player.tick();
+                        cx.notify();
+                        format!("video: played {key}")
+                    }
+                    None => "video: no player".to_owned(),
+                }
             }
             ["play", key] => {
                 let (vol, muted) = (hub.volume, hub.muted);
@@ -2041,7 +2075,7 @@ impl Root {
                 cx.notify();
                 format!("video: volume popout opened on {key}")
             }
-            _ => "video: usage `embeds video state | play <k> | pause <k> | clock <s> <k> | seek <s> <k> | volume-open <k|off>`".to_owned(),
+            _ => "video: usage `embeds video state | play <k> | play-latest | pause <k> | clock <s> <k> | seek <s> <k> | volume-open <k|off>`".to_owned(),
         }
     }
 }
@@ -2816,6 +2850,43 @@ mod tests {
         let entry = hub.entries.get("k1").unwrap();
         assert!(!entry.tick.playing);
         assert!(hub.controls_visible("k1", entry, false, t0 + Duration::from_secs(20)));
+    }
+
+    /// A playing video scrolled out of view asks for no frame (an inline player redrew the whole page at its frame
+    /// rate, and four times a second for its clock, while nothing of it was on screen); drawn again, it is followed
+    /// again. Paused, it asks for none either.
+    #[test]
+    fn only_a_drawn_playing_video_asks_for_frames() {
+        let mp4 = Arc::new(
+            synthetic_mp4(64, 64, 10, &[[220, 40, 40], [40, 220, 40]], 1).expect("synthetic mp4"),
+        );
+        let src = "https://example.test/offscreen.mp4";
+        let mut hub = VideoHub::new();
+        hub.seed_bytes(src, mp4);
+        let t0 = Instant::now();
+        hub.prepare(t0);
+        hub.ensure_entry("att:1", src, (64, 64), false);
+        hub.play_or_toggle("att:1", t0);
+        assert!(hub.any_shown_playing());
+        // The clock is due once PLAYING_REDRAW_MAX passed since the last drawn frame.
+        assert!(hub.playing_redraw_due(t0 + PLAYING_REDRAW_MAX));
+
+        // The next frame does not draw it: the list scrolled it away. It still plays.
+        let t1 = t0 + Duration::from_millis(20);
+        hub.prepare(t1);
+        assert!(hub.entries["att:1"].player.playing());
+        assert!(!hub.any_shown_playing());
+        assert!(!hub.playing_redraw_due(t1 + PLAYING_REDRAW_MAX * 4));
+
+        // Scrolled back into view: followed again.
+        hub.ensure_entry("att:1", src, (64, 64), false);
+        assert!(hub.any_shown_playing());
+        assert!(hub.playing_redraw_due(t1 + PLAYING_REDRAW_MAX));
+
+        // Paused while shown: no frames.
+        hub.play_or_toggle("att:1", t1);
+        assert!(!hub.any_shown_playing());
+        assert!(!hub.playing_redraw_due(t1 + PLAYING_REDRAW_MAX * 4));
     }
 
     static VOLUME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
