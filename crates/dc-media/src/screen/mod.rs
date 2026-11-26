@@ -22,9 +22,9 @@ use crate::{Error, Picture, Result};
 
 pub use audio::{AudioCapture, AudioChunk};
 pub use settings::{
-    BITRATE_HIGH, BITRATE_MIN, BITRATE_STANDARD, FRAME_RATES, MAX_HEIGHT, MAX_WIDTH, Resolution,
-    Settings, SourceId, StreamQuality, max_bitrate, offered_frame_rates, offered_resolutions,
-    output_size, preset_box, required_quality, software_rate_change,
+    BITRATE_HIGH, BITRATE_MIN, BITRATE_STANDARD, FRAME_RATES, MAX_FPS, MAX_HEIGHT, MAX_WIDTH,
+    Resolution, Settings, SourceId, StreamQuality, max_bitrate, offered_frame_rates,
+    offered_resolutions, output_size, preset_box, required_quality, software_rate_change,
 };
 #[cfg(windows)]
 pub use worker::{PREVIEW_WIDTH, Worker};

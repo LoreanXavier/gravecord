@@ -22,6 +22,8 @@ pub const MAX_HEIGHT: u32 = 2160;
 
 /// Frame rates the picker offers.
 pub const FRAME_RATES: [u32; 4] = [5, 15, 30, 60];
+/// The highest frame rate a share runs at ([`Settings::unlocked`]); the official picker stops at 60.
+pub const MAX_FPS: u32 = 240;
 
 /// Top bitrate for 720p or smaller at 30 fps or less (`lo` in the official constants), in bits per second.
 pub const BITRATE_STANDARD: u32 = 3_500_000;
@@ -38,6 +40,9 @@ pub enum Resolution {
     P1080,
     P1440,
     Source,
+    /// Not in the pinned client: a height off the official table (gravecord's LimitlessScreenshare plugin). The
+    /// official ladder has no pair for it, so [`Settings::new`] refuses it; [`Settings::unlocked`] takes it.
+    Custom(u32),
 }
 
 impl Resolution {
@@ -57,6 +62,7 @@ impl Resolution {
             Self::P1080 => 1080,
             Self::P1440 => 1440,
             Self::Source => 0,
+            Self::Custom(height) => height,
         }
     }
 
@@ -242,6 +248,30 @@ impl Settings {
         })
     }
 
+    /// Settings for any resolution and frame rate the encoder takes, off the official table too (at most
+    /// [`MAX_FPS`], never upscaled, at most 4K). `None` when the pair does not fit the source.
+    pub fn unlocked(
+        source: &super::Source,
+        resolution: Resolution,
+        fps: u32,
+        cursor: bool,
+        audio: bool,
+    ) -> Option<Self> {
+        if !(1..=MAX_FPS).contains(&fps) {
+            return None;
+        }
+        let (width, height) = output_size(resolution, source.width, source.height)?;
+        Some(Self {
+            source: source.id,
+            width,
+            height,
+            fps,
+            bitrate: max_bitrate(resolution, fps),
+            cursor,
+            audio,
+        })
+    }
+
     pub fn validate(&self) -> Result<()> {
         let bad = |what: &str| Err(Error::invalid(format!("screen share {what}")));
         if matches!(self.source, SourceId::Display(0) | SourceId::Window(0)) {
@@ -256,8 +286,9 @@ impl Settings {
         {
             return bad("size must be even and between 2x2 and 3840x2160");
         }
-        if !FRAME_RATES.contains(&self.fps) {
-            return bad("frame rate must be 5, 15, 30 or 60");
+        // The picker's rates, or any up to MAX_FPS for an unlocked share.
+        if !(1..=MAX_FPS).contains(&self.fps) {
+            return bad("frame rate must be between 1 and 240");
         }
         if !(BITRATE_MIN..=BITRATE_HIGH).contains(&self.bitrate) {
             return bad("bitrate must be between 500 kb/s and 9 Mb/s");
@@ -455,8 +486,8 @@ mod tests {
                 height: 2162,
                 ..good
             },
-            Settings { fps: 24, ..good },
-            Settings { fps: 120, ..good },
+            Settings { fps: 0, ..good },
+            Settings { fps: 241, ..good },
             Settings {
                 bitrate: 499_999,
                 ..good
@@ -478,6 +509,27 @@ mod tests {
         }
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn unlocked_settings_take_any_height_and_rate_the_encoder_does() {
+        let source = display(1920, 1080);
+        // Off the official table: refused by `new`, taken by `unlocked`.
+        assert!(Settings::new(&source, Resolution::Custom(900), 90, true, false).is_none());
+        let custom = Settings::unlocked(&source, Resolution::Custom(900), 90, true, false).unwrap();
+        assert_eq!((custom.width, custom.height, custom.fps), (1600, 900, 90));
+        assert_eq!(custom.bitrate, BITRATE_HIGH);
+        custom.validate().unwrap();
+        // An official height at a rate the picker does not list.
+        let rate = Settings::unlocked(&source, Resolution::P720, 24, true, false).unwrap();
+        assert_eq!(
+            (rate.width, rate.height, rate.fps, rate.bitrate),
+            (1280, 720, 24, BITRATE_STANDARD)
+        );
+        // Never upscaled, never past MAX_FPS.
+        assert!(Settings::unlocked(&source, Resolution::Custom(1440), 30, true, false).is_none());
+        assert!(Settings::unlocked(&source, Resolution::P720, MAX_FPS + 1, true, false).is_none());
+        assert_eq!(Resolution::from_height(900), None);
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub(crate) mod experiments;
 mod experiments_table;
 pub(crate) mod gif_maker;
 pub(crate) mod gif_provider;
+pub(crate) mod limitless_screenshare;
 pub(crate) mod quoter;
 mod registry;
 pub(crate) mod sed_enhanced;

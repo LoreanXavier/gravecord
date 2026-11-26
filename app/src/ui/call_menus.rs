@@ -143,6 +143,9 @@ pub(super) enum Slide {
     AttenuationStrength,
     /// Overlay Stream Video widget zoom 100%–300% (module 663912, `B3kEDs`).
     OverlayStreamZoom(Id),
+    /// Not in the pinned client: LimitlessScreenshare's resolution (true) or frame rate slider
+    /// (`plugin_hooks/limitless_screenshare.rs`).
+    PluginStreamQuality(bool),
 }
 
 /// A row of a tile menu.
@@ -1006,7 +1009,14 @@ pub(super) fn stream_tile_items(facts: &StreamFacts) -> Vec<Item> {
 /// Stream Quality (600125 `W`): Frame Rate (`ce`: 15, 30, 60) then Resolution (`Jk`: 480p to Source), as radios.
 fn quality_items(facts: &StreamFacts) -> Vec<Item> {
     let mut out = vec![Item::Label(dc_intl::tr("Frame Rate").to_owned())];
-    for fps in [15, 30, 60] {
+    // Not in the pinned client: LimitlessScreenshare's slider and presets (`plugin_hooks/limitless_screenshare.rs`).
+    out.extend(super::plugin_hooks::limitless_tile_slider(false).map(|(key, label)| Item::Slider {
+        key,
+        label,
+        fraction: 0.,
+        slide: Slide::PluginStreamQuality(false),
+    }));
+    for fps in super::plugin_hooks::limitless_fpss().unwrap_or_else(|| vec![15, 30, 60]) {
         let line = Line::new(
             format!("stream-settings-fps-{fps}"),
             dc_intl::t!("bW+JCW", value = fps),
@@ -1016,7 +1026,17 @@ fn quality_items(facts: &StreamFacts) -> Vec<Item> {
         out.push(Item::Line(line));
     }
     out.push(Item::Label(dc_intl::tr("Resolution").to_owned()));
-    for resolution in [480, 720, 1080, 1440, 0] {
+    // Not in the pinned client: LimitlessScreenshare (`plugin_hooks/limitless_screenshare.rs`).
+    out.extend(super::plugin_hooks::limitless_tile_slider(true).map(|(key, label)| Item::Slider {
+        key,
+        label,
+        fraction: 0.,
+        slide: Slide::PluginStreamQuality(true),
+    }));
+    let resolutions = super::plugin_hooks::limitless_resolutions()
+        .map(|list| list.into_iter().map(|resolution| resolution.height()).collect())
+        .unwrap_or_else(|| vec![480, 720, 1080, 1440, 0]);
+    for resolution in resolutions {
         let label = if resolution == 0 {
             dc_intl::tr("Source").to_owned()
         } else {
@@ -1415,6 +1435,9 @@ impl Root {
                 prefs.sound = !prefs.sound;
                 self.restart_stream_with(prefs, cx);
             }
+            // Not in the pinned client: LimitlessScreenshare takes any choice (`plugin_hooks/limitless_screenshare.rs`).
+            Run::Resolution(height) if self.limitless_tile_choice(Some(height), None, cx) => {}
+            Run::FrameRate(fps) if self.limitless_tile_choice(None, Some(fps), cx) => {}
             Run::Resolution(_) | Run::FrameRate(_) => {
                 let facts = self
                     .stores
@@ -1988,6 +2011,10 @@ impl Root {
                 300,
                 self.overlay_stream_zoom.get(&owner).copied().unwrap_or(100),
             ),
+            // Not in the pinned client: LimitlessScreenshare (`plugin_hooks/limitless_screenshare.rs`).
+            Slide::PluginStreamQuality(resolution) => {
+                return self.limitless_tile_slider_row(key, resolution, cx);
+            }
         };
         self.menu_slider_row(
             MenuSliderConfig {
@@ -2018,6 +2045,7 @@ impl Root {
                             this.overlay_stream_zoom
                                 .insert(owner, value.clamp(100, 300));
                         }
+                        Slide::PluginStreamQuality(_) => {}
                     }
                     cx.notify();
                 }),

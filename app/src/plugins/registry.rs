@@ -1892,6 +1892,44 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "LimitlessScreenshare",
+        name: "LimitlessScreenshare",
+        description: "Adds a slider for screenshare resolution and fps.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/limitlessScreenshare/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "maxFPS",
+                label: "Max FPS",
+                description: "Max FPS for the range slider",
+                kind: Kind::Number {
+                    default: 120.,
+                    min: 1.,
+                    max: 240.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "maxResolution",
+                label: "Max Resolution",
+                description: "Max Resolution for the range slider",
+                kind: Kind::Number {
+                    default: 1080.,
+                    min: 3.,
+                    max: 2160.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "roundResolution",
+                label: "Round Resolution",
+                description: "Round resolution to the nearest 10p",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "MemberCount",
         name: "MemberCount",
         description: "Shows the number of online members, total members, and users in voice channels on the server - in the member list and tooltip.",

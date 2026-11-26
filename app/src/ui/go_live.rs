@@ -179,6 +179,10 @@ pub(super) fn can_stream(
     resolution: Resolution,
     fps: u32,
 ) -> bool {
+    // Not in the pinned client: LimitlessScreenshare opens every choice (`plugin_hooks/limitless_screenshare.rs`).
+    if super::plugin_hooks::limitless_unlocked() {
+        return true;
+    }
     RULES.iter().any(|row| {
         row.preset.is_none_or(|own| own == preset)
             && row.resolution == resolution
@@ -346,12 +350,18 @@ impl Prefs {
         }
         if let Some(resolution) = value["resolution"]
             .as_u64()
-            .and_then(|h| Resolution::from_height(h as u32))
+            .and_then(|h| {
+                Resolution::from_height(h as u32)
+                    // Not in the pinned client: LimitlessScreenshare (`plugin_hooks/limitless_screenshare.rs`).
+                    .or_else(|| super::plugin_hooks::limitless_stored_resolution(h as u32))
+            })
         {
             prefs.resolution = resolution;
         }
         if let Some(fps) = value["fps"].as_u64().map(|f| f as u32)
-            && screen::FRAME_RATES.contains(&fps)
+            && (screen::FRAME_RATES.contains(&fps)
+                // Not in the pinned client: LimitlessScreenshare (`plugin_hooks/limitless_screenshare.rs`).
+                || super::plugin_hooks::limitless_stored_fps(fps))
         {
             prefs.fps = fps;
         }
@@ -427,7 +437,10 @@ pub(super) fn settings_for(
     fps: u32,
     audio: bool,
 ) -> Option<(Settings, Resolution, u32)> {
-    if let Some(settings) = Settings::new(source, resolution, fps, true, audio) {
+    // Not in the pinned client: LimitlessScreenshare sends any pair (`plugin_hooks/limitless_screenshare.rs`).
+    if let Some(settings) = super::plugin_hooks::limitless_settings(source, resolution, fps, audio)
+        .or_else(|| Settings::new(source, resolution, fps, true, audio))
+    {
         return Some((settings, resolution, fps));
     }
     // The wanted pair does not fit this source (a 720p window under 1080p): walk the resolutions down.
@@ -1949,12 +1962,18 @@ impl Root {
             let mut items: Vec<AnyElement> = Vec::new();
             match sub {
                 Sub::Resolution => {
-                    for resolution in [
-                        Resolution::P720,
-                        Resolution::P1080,
-                        Resolution::P1440,
-                        Resolution::Source,
-                    ] {
+                    // Not in the pinned client: LimitlessScreenshare's slider and presets
+                    // (`plugin_hooks/limitless_screenshare.rs`).
+                    items.extend(self.limitless_picker_slider(true, cx));
+                    let list = super::plugin_hooks::limitless_resolutions().unwrap_or_else(|| {
+                        vec![
+                            Resolution::P720,
+                            Resolution::P1080,
+                            Resolution::P1440,
+                            Resolution::Source,
+                        ]
+                    });
+                    for resolution in list {
                         if state.tab == Tab::Devices && resolution == Resolution::Source {
                             continue;
                         }
@@ -2000,7 +2019,11 @@ impl Root {
                     }
                 }
                 Sub::FrameRate => {
-                    for fps in [15u32, 30, 60] {
+                    // Not in the pinned client: LimitlessScreenshare (`plugin_hooks/limitless_screenshare.rs`).
+                    items.extend(self.limitless_picker_slider(false, cx));
+                    let list =
+                        super::plugin_hooks::limitless_fpss().unwrap_or_else(|| vec![15u32, 30, 60]);
+                    for fps in list {
                         let label = format!("{fps}fps");
                         let resolution = state.prefs.resolution;
                         items.push(

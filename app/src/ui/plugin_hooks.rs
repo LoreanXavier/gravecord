@@ -48,6 +48,11 @@ mod global_badges;
 mod greet_sticker_picker;
 mod ignore_activities;
 mod image_zoom;
+mod limitless_screenshare;
+pub(in crate::ui) use limitless_screenshare::{
+    limitless_fpss, limitless_resolutions, limitless_settings, limitless_stored_fps,
+    limitless_stored_resolution, limitless_tile_slider, limitless_unlocked,
+};
 mod member_count;
 mod message_clicks;
 mod message_logger;
@@ -762,6 +767,7 @@ pub(in crate::ui) fn has_own_section(id: &str) -> bool {
             | "GlobalBadges"
             | "SearchFix"
             | "CustomRPC"
+            | "LimitlessScreenshare"
     )
 }
 
@@ -782,6 +788,7 @@ impl super::Root {
             "UserPFP" => Some(self.userpfp_settings(cx)),
             "GlobalBadges" => Some(self.global_badges_settings(cx)),
             "CustomRPC" => Some(self.custom_rpc_settings(cx)),
+            "LimitlessScreenshare" => Some(self.limitless_screenshare_settings(cx)),
             "SearchFix" => Some(
                 gpui::div()
                     .text_size(gpui::px(14.))
