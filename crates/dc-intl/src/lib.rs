@@ -35,6 +35,7 @@ pub use hash::message_key;
 pub use locale_data::month_names;
 pub use relative::{humanize, humanize_in};
 
+use serde_json::value::RawValue;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,36 +50,184 @@ struct Message {
     text: Option<Box<str>>,
 }
 
+impl Message {
+    /// The message of one catalog value, `None` for a value of another shape (which the catalog then lacks).
+    fn parse(raw: &RawValue, formatters: &locale_data::Formatters) -> Option<Message> {
+        let value: serde_json::Value = serde_json::from_str(raw.get()).ok()?;
+        let nodes = ast::parse(&value)?;
+        let text = ast::needs_no_values(&nodes)
+            .then(|| format::plain(&nodes, &[], formatters).into_boxed_str());
+        Some(Message { nodes, text })
+    }
+}
+
+/// One key of a catalog: its value as it stands in the catalog JSON, and its message once something looked it up.
+struct Entry {
+    key: Cow<'static, str>,
+    raw: &'static RawValue,
+    parsed: OnceLock<Option<Box<Message>>>,
+}
+
+/// A locale's catalog. The JSON is kept as text with its keys sorted beside it, and a message is parsed the first time
+/// it is looked up: of some 29,000 en-US messages a run reads a few hundred, and the whole catalog parsed held about
+/// 18 MB against the 2 MB of its text.
 struct Catalog {
-    messages: HashMap<Box<str>, Message>,
+    formatters: &'static locale_data::Formatters,
+    /// The catalog JSONs, in the order they were given.
+    sources: Vec<&'static str>,
+    /// Every key by name; of a key given twice, the last value that is a message.
+    entries: Vec<Entry>,
+}
+
+/// A catalog key, borrowed from the JSON unless it holds an escape.
+struct Key<'de>(Cow<'de, str>);
+
+impl<'de> serde::Deserialize<'de> for Key<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Key<'de>;
+            fn expecting(&self, out: &mut std::fmt::Formatter) -> std::fmt::Result {
+                out.write_str("a catalog key")
+            }
+            fn visit_borrowed_str<E>(self, text: &'de str) -> Result<Key<'de>, E> {
+                Ok(Key(Cow::Borrowed(text)))
+            }
+            fn visit_str<E>(self, text: &str) -> Result<Key<'de>, E> {
+                Ok(Key(Cow::Owned(text.to_owned())))
+            }
+        }
+        deserializer.deserialize_str(Visit)
+    }
+}
+
+/// Calls `each` with every key and raw value of a catalog JSON object, in catalog order.
+fn each_raw<'de>(
+    json: &'de str,
+    each: &mut dyn FnMut(Cow<'de, str>, &'de RawValue),
+) -> Result<(), serde_json::Error> {
+    struct Visit<'f, 'de>(&'f mut dyn FnMut(Cow<'de, str>, &'de RawValue));
+    impl<'de> serde::de::Visitor<'de> for Visit<'_, 'de> {
+        type Value = ();
+        fn expecting(&self, out: &mut std::fmt::Formatter) -> std::fmt::Result {
+            out.write_str("a catalog object")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            while let Some(Key(key)) = map.next_key()? {
+                let raw: &'de RawValue = map.next_value()?;
+                (self.0)(key, raw);
+            }
+            Ok(())
+        }
+    }
+    let mut deserializer = serde_json::Deserializer::from_str(json);
+    serde::Deserializer::deserialize_map(&mut deserializer, Visit(each))?;
+    deserializer.end()
 }
 
 impl Catalog {
-    /// The messages of one or more catalog JSONs (a locale has one per loader), merged.
+    /// The catalog of one or more catalog JSONs (a locale has one per loader), merged. The JSONs are copied and kept for
+    /// the rest of the run.
     fn parse(locale: &str, jsons: &[&str]) -> Result<Catalog, String> {
+        Self::from_static(
+            locale,
+            jsons
+                .iter()
+                .map(|json| &*Box::leak((*json).to_owned().into_boxed_str()))
+                .collect(),
+        )
+    }
+
+    fn from_static(locale: &str, sources: Vec<&'static str>) -> Result<Catalog, String> {
         let formatters = locale_data::formatters(locale);
-        let mut messages = HashMap::new();
-        for json in jsons {
-            let value: serde_json::Value =
-                serde_json::from_str(json).map_err(|error| format!("{locale}: {error}"))?;
-            let object = value
-                .as_object()
-                .ok_or_else(|| format!("{locale}: a catalog is not an object"))?;
-            messages.reserve(object.len());
-            for (key, value) in object {
-                let Some(nodes) = ast::parse(value) else {
-                    continue;
-                };
-                let text = ast::needs_no_values(&nodes)
-                    .then(|| format::plain(&nodes, &[], formatters).into_boxed_str());
-                messages.insert(key.as_str().into(), Message { nodes, text });
-            }
+        let mut entries = Vec::new();
+        for json in sources.iter().copied() {
+            each_raw(json, &mut |key, raw| {
+                entries.push(Entry {
+                    key,
+                    raw,
+                    parsed: OnceLock::new(),
+                });
+            })
+            .map_err(|error| format!("{locale}: {error}"))?;
         }
-        Ok(Catalog { messages })
+        // Stable: a key's values stay in the order they came.
+        entries.sort_by(|a, b| a.key.cmp(&b.key));
+        let mut kept: Vec<Entry> = Vec::with_capacity(entries.len());
+        let mut entries = entries.into_iter().peekable();
+        while let Some(first) = entries.next() {
+            let mut same = vec![first];
+            while entries.peek().is_some_and(|next| next.key == same[0].key) {
+                same.extend(entries.next());
+            }
+            // A key given twice (keys are unique across the loaders, so this does not happen in the pinned build) keeps
+            // its last value that is a message, as a merge that skipped the others would.
+            let last = same.len() - 1;
+            let chosen = if last == 0 {
+                0
+            } else {
+                (0..same.len())
+                    .rev()
+                    .find(|index| Message::parse(same[*index].raw, formatters).is_some())
+                    .unwrap_or(last)
+            };
+            kept.push(same.swap_remove(chosen));
+        }
+        Ok(Catalog {
+            formatters,
+            sources,
+            entries: kept,
+        })
     }
 
     fn get(&self, key: &str) -> Option<&Message> {
-        self.messages.get(key)
+        let index = self
+            .entries
+            .binary_search_by(|entry| (*entry.key).cmp(key))
+            .ok()?;
+        let entry = &self.entries[index];
+        entry
+            .parsed
+            .get_or_init(|| Message::parse(entry.raw, self.formatters).map(Box::new))
+            .as_deref()
+    }
+
+    /// Every message in catalog order, with its key. A message nothing looked up yet is parsed for the call and not kept,
+    /// so a pass over the whole catalog leaves it as compact as it was.
+    fn each_message(&self, mut each: impl FnMut(&str, &Message)) {
+        for json in self.sources.iter().copied() {
+            let _ = each_raw(json, &mut |key, raw| {
+                let Ok(index) = self
+                    .entries
+                    .binary_search_by(|entry| (*entry.key).cmp(&*key))
+                else {
+                    return;
+                };
+                let entry = &self.entries[index];
+                // A key given twice is the message of the value it kept, once.
+                if !std::ptr::eq(entry.raw, raw) {
+                    return;
+                }
+                match entry.parsed.get() {
+                    Some(Some(message)) => each(&key, message),
+                    Some(None) => {}
+                    None => {
+                        if let Some(message) = Message::parse(entry.raw, self.formatters) {
+                            each(&key, &message);
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    /// How many keys have a parsed message, for the tests.
+    #[cfg(test)]
+    fn parsed_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.parsed.get().is_some())
+            .count()
     }
 }
 
@@ -88,7 +237,8 @@ fn en_us() -> &'static Catalog {
         let bytes = zstd::decode_all(&include_bytes!("../data/en-US.json.zst")[..])
             .expect("the en-US catalog decompresses");
         let json = String::from_utf8(bytes).expect("the en-US catalog is UTF-8");
-        Catalog::parse(DEFAULT_LOCALE, &[&json]).expect("the en-US catalog parses")
+        Catalog::from_static(DEFAULT_LOCALE, vec![Box::leak(json.into_boxed_str())])
+            .expect("the en-US catalog parses")
     })
 }
 

@@ -11,6 +11,7 @@ icu_decimal.workspace = true
 icu_locale_core.workspace = true
 icu_plurals.workspace = true
 icu_provider.workspace = true
-serde_json.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 tracing.workspace = true
 zstd.workspace = true

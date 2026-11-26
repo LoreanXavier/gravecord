@@ -49,11 +49,11 @@ fn shapes() -> &'static HashMap<String, Box<str>> {
     static SHAPES: OnceLock<HashMap<String, Box<str>>> = OnceLock::new();
     SHAPES.get_or_init(|| {
         let mut map = HashMap::new();
-        for (key, message) in &crate::en_us().messages {
+        crate::en_us().each_message(|key, message| {
             if let Some(shape) = shape(&message.nodes) {
-                map.entry(shape).or_insert_with(|| key.clone());
+                map.entry(shape).or_insert_with(|| key.into());
             }
-        }
+        });
         map
     })
 }

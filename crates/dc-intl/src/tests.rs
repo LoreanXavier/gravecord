@@ -238,15 +238,12 @@ fn locale_names_are_under_the_hash_of_their_code() {
 fn the_reverse_table_is_the_literal_en_us_messages() {
     // Regenerate with tools/gen-intl.py when this fails.
     let mut literal = 0;
-    for (key, message) in &en_us().messages {
+    en_us().each_message(|key, message| {
         if let Some(text) = ast::literal(&message.nodes).filter(|text| !text.is_empty()) {
             literal += 1;
-            assert!(
-                keys_of(&text).any(|known| known == &**key),
-                "{key} {text:?}"
-            );
+            assert!(keys_of(&text).any(|known| known == key), "{key} {text:?}");
         }
-    }
+    });
     assert_eq!(literal, reverse::REVERSE.len());
     assert!(
         reverse::REVERSE
@@ -312,6 +309,39 @@ fn the_current_locale_switches_and_falls_back() {
     assert_eq!(locale(), "en-US");
     assert_eq!(t("cduTBL"), "User Settings");
     assert_eq!(tr("User Settings"), "User Settings");
+    // A key no catalog has reads as nothing, whichever way it is looked up.
+    assert_eq!(t("no-such-key"), "");
+    assert_eq!(format("no-such-key", &[]), "");
+    assert_eq!(string("no-such-key"), "");
+    assert!(format_runs("no-such-key", &[]).is_empty());
+    assert!(paragraph_runs("no-such-key", &[]).is_empty());
+    assert!(!has_key("no-such-key"));
+    assert_eq!(en_us_text("no-such-key"), None);
+    // A switch to a locale with a small catalog of its own: its messages, then en-US for what it lacks or holds in
+    // another shape, then en-US again after switching back.
+    let japanese = message_key("ja");
+    let japanese_in_english = en_us_text(&japanese).unwrap();
+    let before = generation();
+    assert!(set_locale("fr"));
+    assert_eq!(locale(), "fr");
+    assert!(generation() > before);
+    assert_eq!(t("cduTBL"), "User Settings", "not installed yet");
+    let french = format!(
+        r#"{{"cduTBL": ["Paramètres utilisateur"], "u2qHzE": ["Ajouté ", [1, "name"], "."], "{japanese}": 5}}"#
+    );
+    install("fr", &[&french]).unwrap();
+    assert!(is_loaded("fr"));
+    assert_eq!(t("cduTBL"), "Paramètres utilisateur");
+    assert_eq!(t!("u2qHzE", name = "Ann"), "Ajouté Ann.");
+    assert_eq!(t(&japanese), japanese_in_english);
+    assert_eq!(t_in("fr", &japanese), None);
+    assert_eq!(t_in("fr", "cduTBL"), Some("Paramètres utilisateur"));
+    assert_eq!(t("no-such-key"), "");
+    assert!(set_locale("en-US"));
+    assert_eq!(t("cduTBL"), "User Settings");
+    assert!(set_locale("fr"));
+    assert_eq!(t("cduTBL"), "Paramètres utilisateur", "kept after a switch");
+    assert!(set_locale("en-US"));
     let Some(json) = dump("de") else { return };
     let before = generation();
     assert!(set_locale("de"));
@@ -328,12 +358,16 @@ fn the_current_locale_switches_and_falls_back() {
     assert_eq!(number(1234.5), "1.234,5");
     assert_eq!(localized_locale_name("de"), "Deutsch");
     // A key the locale lacks comes from en-US.
-    let missing = en_us()
-        .messages
-        .iter()
-        .find(|(key, message)| message.text.is_some() && catalog("de").unwrap().get(key).is_none())
-        .map(|(key, message)| (key.clone(), message.text.clone().unwrap()))
-        .unwrap();
+    let mut missing = None;
+    en_us().each_message(|key, message| {
+        if missing.is_none()
+            && let Some(text) = &message.text
+            && catalog("de").unwrap().get(key).is_none()
+        {
+            missing = Some((key.to_owned(), text.clone()));
+        }
+    });
+    let missing = missing.unwrap();
     assert_eq!(t(&missing.0), &*missing.1);
     assert!(!set_locale("de"));
     assert!(set_locale("xx-unknown"));
@@ -472,4 +506,66 @@ fn paragraphs_split_at_their_p_tags() {
         "You can restart your subscription anytime."
     );
     assert_eq!(paragraph_runs("FClXh9", &[]).len(), 1);
+}
+
+/// The en-US catalog parses a message only when it is looked up, and what it parses is what a parse of the whole JSON
+/// gives, key for key: the same nodes, the same text, and no message for a value of another shape.
+#[test]
+fn messages_parse_on_first_lookup_as_the_whole_catalog_would() {
+    let bytes = zstd::decode_all(&include_bytes!("../data/en-US.json.zst")[..]).unwrap();
+    let json = String::from_utf8(bytes).unwrap();
+    let lazy = Catalog::parse(DEFAULT_LOCALE, &[&json]).unwrap();
+    assert_eq!(lazy.parsed_count(), 0);
+    assert!(lazy.get("no-such-key").is_none());
+    assert_eq!(lazy.parsed_count(), 0);
+    assert_eq!(
+        lazy.get("cduTBL")
+            .and_then(|message| message.text.as_deref()),
+        Some("User Settings")
+    );
+    assert_eq!(lazy.parsed_count(), 1);
+    // A pass over every message keeps nothing parsed.
+    let mut seen = 0;
+    lazy.each_message(|_, _| seen += 1);
+    assert_eq!(lazy.parsed_count(), 1);
+    let formatters = locale_data::formatters(DEFAULT_LOCALE);
+    let whole: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let whole = whole.as_object().unwrap();
+    let mut messages = 0;
+    for (key, value) in whole {
+        let eager = ast::parse(value);
+        let found = lazy.get(key);
+        assert_eq!(found.is_some(), eager.is_some(), "{key}");
+        if let (Some(found), Some(nodes)) = (found, eager) {
+            messages += 1;
+            let text = ast::needs_no_values(&nodes).then(|| format::plain(&nodes, &[], formatters));
+            assert_eq!(found.nodes, nodes, "{key}");
+            assert_eq!(found.text.as_deref(), text.as_deref(), "{key}");
+        }
+    }
+    assert_eq!(seen, messages);
+    assert_eq!(lazy.parsed_count(), whole.len());
+}
+
+/// Catalogs merged from several JSONs: a key given again takes the later value that is a message, keys with escapes
+/// are found, and a JSON that is not an object is refused.
+#[test]
+fn merged_catalogs_keep_the_last_message_of_a_key() {
+    let catalog = Catalog::parse(
+        DEFAULT_LOCALE,
+        &[
+            r#"{"a": ["first"], "b": ["kept"], "c\u0041": ["escaped"]}"#,
+            r#"{"a": ["second"], "b": 5}"#,
+        ],
+    )
+    .unwrap();
+    let text = |key: &str| catalog.get(key).and_then(|message| message.text.as_deref());
+    assert_eq!(text("a"), Some("second"));
+    assert_eq!(text("b"), Some("kept"));
+    assert_eq!(text("cA"), Some("escaped"));
+    let mut keys = Vec::new();
+    catalog.each_message(|key, _| keys.push(key.to_owned()));
+    assert_eq!(keys, ["b", "cA", "a"]);
+    assert!(Catalog::parse(DEFAULT_LOCALE, &["[1, 2]"]).is_err());
+    assert!(Catalog::parse(DEFAULT_LOCALE, &["{\"a\": "]).is_err());
 }
