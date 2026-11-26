@@ -23,6 +23,10 @@ RENAMED = {
     'ExpressionCloner': 'ExpressionManager',
     'TenorGifSearch': 'GifProviderSwitcher',
     'MessageTags': 'CustomCommands',
+    # 15f8ecf0 "merge and improve YTAdblock and FixYtEmbeds".
+    'FixYoutubeEmbeds': 'BetterYouTubeEmbeds',
+    'IloveSpam': 'ILoveSpam',
+    'LimitMiddleClickPaste': 'MiddleClickTweaks',
 }
 # Plugins removed upstream since the backup, with the commit that says why.
 REMOVED = {
@@ -154,6 +158,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'AltKrispSwitch': "plugin_hooks/alt_krisp_switch.rs: the voice panel's Noise Suppression popout switch turns the suppressor off to None instead of Standard (shouldCancelSuppression drops the popout's Standard dispatch); the suppressor here is DeepFilterNet in Krisp's place, so the switch goes between None and DeepFilterNet. The settings page's select is unchanged, as the original only acts on the popout's section.",
     'ClipUpload': "plugin_hooks/clip_upload.rs + plugins/clip_upload.rs: the composer's + menu ends with Upload Clip File (CloudUploadIcon), which opens the original's dialog: Select File (MP4/M4V up to 500 MB) and Parse clip metadata from file (the clip box's game name, users and game id fill Title, Participants and Game/Application when empty), File name, Title, Participants (friends who are not bots, by label, with the consent line), Created at (datetime-local, Created at must be a valid date.), Message, Game/Application (games running, seen and candidates, or a custom id) and Spoiler/Remix/Thumbnail; Upload stamps a copy with the empty clip box (dc_clips::mp4::replace_metadata, the box updateClipMetadata writes), reserves it with is_clip and the clip fields, puts it and sends the message with the pending reply's reference (Checking clip file. / Clip uploaded. / the error toast). GAP: the FFmpeg conversion retry on not a valid clip (no FFmpeg here: a refused file ends with the original's not compatible text), the clip button on a clip attached in the composer (clips are shared from the gallery here), selects drawn as lists under their fields.",
     'CustomRPC': "plugin_hooks/custom_rpc.rs + plugins/custom_rpc.rs: a local activity of its own (LOCAL_ACTIVITY_UPDATE from the CustomRPC socket, after the games') while enablePresence is on, built as createActivity builds it (type, ids, lines and links, stream link, timestamps None/Since open/Your time/Custom with the repeating span, pictures turned into asset ids by fetchAssetIds, buttons with metadata, party); the card shows the original's notices with their buttons, help lines with links, the activity as the profile draws it, presets (saved, loaded, deleted in the store) and the whole form with each field's check and message. GAP: the toolbox toggle (no toolbox).",
     'ExpressionCloner': "plugin_hooks/expression_manager.rs (now ExpressionManager upstream): sticker menus in the picker and in messages get Clone Sticker (name field with the original's 2..30 check, server tiles with picture or acronym and tooltip, the sticker fetched from the media proxy at the largest size under 512 KiB and posted to the server, success or failure toast), Edit Sticker and Delete Sticker where you manage expressions (editAndDelete; delete after the original's confirmation), Copy/Open Sticker Link in place of Copy Sticker Image Link (stickerCopyAndOpen); custom emoji in the picker get Delete Emoji, a default emoji's Copy Emoji its CopyIcon; recents adds Remove From Recents after the favourite row of a frecent emoji or sticker (the frecency proto sent back without the entry; no confirmation in the reaction picker or with Shift). GAP: Clone Emoji, Edit Emoji and Upload as Emoji need the Emoji Studio the app has not got yet.",
@@ -260,6 +265,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'AltKrispSwitch': '`the_switch_turns_to_none_only_while_on`; replay by use: the popout switch off stores None (2) and keeps it after a restart, plugin off stores Standard (1)',
     'ClipUpload': '`names_read_as_the_original_reads_them`, `metadata_is_read_after_the_footer`, `dates_round_trip_through_the_field`, `bodies_carry_the_clip_fields`, `a_picked_file_is_stamped_in_a_copy`; frames pending (live runs held)',
     'CustomRPC': '`activities_read_as_create_activity_builds_them`, `checks_read_as_the_form_writes_them`, `fields_check_as_the_form_checks`; frames pending (live runs held)',
     'ExpressionCloner': '`stickers_follow_the_originals_tables`, dc-proto `an_entry_leaves_its_map_and_the_rest_stays`; frames pending (live runs held)',
@@ -352,6 +358,10 @@ TESTS = {
 }
 # Original settings a port does not have, with why (none today).
 SKIPPED_SETTINGS = {
+    'FixYoutubeEmbeds': {
+        'fixBlockedEmbeds': "not ported yet: it rewrites YouTube's embedded player page (recoverEmbed.js) when a label blocks the embed; here that page is the provider player's system web view (provider_player.rs), which has no way to run a page script yet (dc_webhost). Planned with that call.",
+        'blockAds': "not ported yet: it filters the ads of YouTube's embedded player and WatchTogether (playerFilter.js); the player here is the provider player's system web view (provider_player.rs), which has no way to run a page script yet (dc_webhost). Planned with that call.",
+    },
     'CustomRPC': {
         'config': "ported as the plugin card's own section: the RPC form (notices, presets, every field), not a setting.",
     },
@@ -434,7 +444,6 @@ NOT_APPLICABLE = {
 }
 # Not built yet: what each needs in this app.
 PLANNED = {
-    'AltKrispSwitch': 'Krisp, which is blocked here (its signature check); without it there is nothing to switch to.',
     'BetterAudioPlayer': 'a spectrograph and oscilloscope in the audio attachment player (needs the decoded samples).',
     'BetterFolders': 'a second server sidebar for folders.',
     'BetterGifAltText': "a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree.",
@@ -455,7 +464,25 @@ PLANNED = {
 errors = []
 rows, setting_rows = [], []
 counts = {'ported': 0, 'native': 0, 'not applicable': 0, 'planned': 0}
-for name in enabled:
+# Every other plugin of the checkout, with its verdict from tools/plugin-verdicts.tsv (name, port|native|n/a,
+# usefulness, text) until it is built.
+VERDICTS = {}
+for line in open(os.path.join(REPO, 'tools/plugin-verdicts.tsv'), encoding='utf-8'):
+    if line.startswith('#') or not line.strip():
+        continue
+    name, verdict, useful, text = line.rstrip('\n').split('\t')
+    VERDICTS[name] = (verdict, useful, text)
+covered = set(enabled) | {RENAMED.get(name, name) for name in enabled}
+extra = sorted((name for name in sources if name not in covered), key=str.lower)
+for name in extra:
+    if name not in VERDICTS and name not in ours:
+        errors.append(f'{name} is in the checkout but has no verdict in tools/plugin-verdicts.tsv')
+for name in VERDICTS:
+    if name not in sources:
+        errors.append(f'{name} has a verdict but is not in the checkout')
+in_backup = set(enabled)
+
+for name in enabled + extra:
     upstream = RENAMED.get(name, name)
     src, desc, original = sources.get(upstream, ('', '', []))
     if name in ours:
@@ -479,6 +506,10 @@ for name in enabled:
             errors.append(f'{name}.{key} is not a setting of the original')
     elif name in NATIVE:
         status, note, test = 'native', NATIVE[name], ''
+    elif name not in in_backup:
+        verdict, useful, text = VERDICTS.get(name, ('port', '-', ''))
+        status, test = {'port': 'planned', 'native': 'native', 'n/a': 'not applicable'}[verdict], ''
+        note = text if verdict != 'port' else f'usefulness {useful}/5. {text}'
     elif name in API or name in NOT_APPLICABLE:
         status, test = 'not applicable', ''
         note = NOT_APPLICABLE.get(name, 'client-mod plumbing (an API for other plugins), nothing to port.')
@@ -506,8 +537,9 @@ with open(OUT, 'w', encoding='utf-8', newline='\n') as out:
     out.write('Plugins off is the pinned client: `cargo xtask plugins-off` captures every scenario of\n')
     out.write('`tests/plugins-off/scenarios.txt` with the plugin code skipped, with the master switch off (every plugin on and\n')
     out.write('every setting changed), and with every plugin off, and fails on one differing pixel or on any plugin effect.\n\n')
-    out.write('The list is the plugins enabled in the owner\'s Equicord backup of 2026-09-21 (156). Sources were read in the local\n')
-    out.write('Equicord checkout of 2026-11-14 (`src/plugins` is Vencord\'s, `src/equicordplugins` Equicord\'s).\n\n')
+    out.write(f'The list is every plugin of the local Equicord checkout ({len(enabled) + len(extra)}): first the {len(enabled)} enabled in\n')
+    out.write(f'the owner\'s Equicord backup of 2026-09-21, then the other {len(extra)}, whose verdicts are in\n')
+    out.write('`tools/plugin-verdicts.tsv` (`src/plugins` is Vencord\'s, `src/equicordplugins` Equicord\'s).\n\n')
     out.write(f'Totals: {counts["ported"]} ported, {counts["native"]} native, {counts["planned"]} planned, '
               f'{counts["not applicable"]} not applicable.\n\n')
     out.write('Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;\n')
