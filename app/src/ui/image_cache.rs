@@ -129,6 +129,13 @@ impl<V> Tracker<V> {
         dropped
     }
 
+    /// Whether a later sweep can still drop something: a picture that no window shows in its latest frames.
+    /// Pictures that are on screen are only released once their window paints without them, which comes with a draw.
+    pub(super) fn has_unprotected(&self) -> bool {
+        let protected: HashSet<u64> = self.on_screen.values().flatten().copied().collect();
+        self.entries.keys().any(|id| !protected.contains(id))
+    }
+
     #[cfg(any(test, feature = "capture"))]
     pub(super) fn len(&self) -> usize {
         self.entries.len()
@@ -150,10 +157,10 @@ thread_local! {
 }
 
 /// Reads what the windows painted since the last call and drops the decoded copies that are due: gpui's cached pixels
-/// and the picture's atlas texture.
-pub(super) fn sweep(cx: &mut App) {
+/// and the picture's atlas texture. Whether a later sweep may still have something to drop.
+pub(super) fn sweep(cx: &mut App) -> bool {
     let now = Instant::now();
-    let dropped = CACHE.with(|cache| {
+    let (dropped, more) = CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         for (window, pictures) in gpui::take_painted_images() {
             cache.painted(
@@ -165,20 +172,36 @@ pub(super) fn sweep(cx: &mut App) {
                 now,
             );
         }
-        cache.evict(now)
+        let dropped = cache.evict(now);
+        (dropped, cache.has_unprotected())
     });
     for (image, render) in dropped {
         cx.drop_image(render, None);
         image.remove_asset(cx);
     }
+    more
 }
 
-/// Starts the timer that keeps the cache within its budget, for the life of the app.
+thread_local! {
+    /// The sweep timer runs.
+    static ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Starts the timer that keeps the cache within its budget, unless it runs. It stops by itself once every picture
+/// left is on screen (nothing can be dropped until a window paints again), so an idle window wakes nothing; the main
+/// view arms it again on each render.
 pub(crate) fn start(cx: &mut App) {
+    if ARMED.replace(true) {
+        return;
+    }
     cx.spawn(async move |cx| {
         loop {
             cx.background_executor().timer(PERIOD).await;
-            cx.update(sweep);
+            let more = cx.update(sweep);
+            if !more {
+                ARMED.set(false);
+                break;
+            }
         }
     })
     .detach();
@@ -209,6 +232,22 @@ mod tests {
 
     fn at(base: Instant, seconds: u64) -> Instant {
         base + Duration::from_secs(seconds)
+    }
+
+    /// The sweep timer stops once every picture left is on screen: nothing can go until a window paints again.
+    #[test]
+    fn only_pictures_off_screen_keep_the_sweep_running() {
+        let (mut cache, base) = tracker();
+        assert!(!cache.has_unprotected());
+        cache.painted(1, [(1, 1, 10), (2, 2, 10)], at(base, 0));
+        assert!(!cache.has_unprotected(), "both are on screen");
+        cache.painted(1, [(2, 2, 10)], at(base, 1));
+        assert!(
+            cache.has_unprotected(),
+            "picture 1 left the screen and waits to be dropped"
+        );
+        cache.evict(at(base, 120));
+        assert!(!cache.has_unprotected());
     }
 
     #[test]

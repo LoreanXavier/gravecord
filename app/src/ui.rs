@@ -12461,6 +12461,8 @@ impl Render for Root {
         }
         self.prepared.media_channel = Some(media_channel);
         self.prepare_videos(window, cx);
+        // A drawn frame may leave pictures to drop later: the cache's timer runs again if it had stopped.
+        image_cache::start(cx);
         self.prepare_gif_favorites();
         // The pointer left the window: the browser's `mouseleave` on the open menu closes a hover-opened submenu.
         // Windows reports only the window's hover change (no last move outside it), so the menus would keep the last
