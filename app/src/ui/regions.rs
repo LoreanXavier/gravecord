@@ -278,7 +278,9 @@ impl Root {
                         if enabled(Kind::Messages) {
                             motion::enter_view(window.current_view());
                         }
-                        let row = this.arrival_row(index, this.row(index, cx));
+                        let row = this.row(index, cx);
+                        let row = this.arrival_row(index, row);
+                        let row = this.departure_row(index, row, cx);
                         motion::leave_view();
                         row
                     }),

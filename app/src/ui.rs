@@ -93,6 +93,7 @@ mod crawl_reset;
 mod create_channel;
 mod dangerous_link;
 mod deep_link_route;
+mod departure;
 mod destructive;
 mod dm;
 mod dm_profile;
@@ -2225,6 +2226,10 @@ impl Root {
             } => self.send_progress(&nonce, index, sent, total, cx),
             Update::Dispatch { name, data } => {
                 if self.expand_voice_batch(&name, &data, cx) {
+                    return;
+                }
+                // Not in the pinned client: the deleted row's ghost (`departure.rs`) holds the event while it runs.
+                if name == "MESSAGE_DELETE" && self.hold_message_delete(&data, cx) {
                     return;
                 }
                 // The server's answer to an older settings write of this app, arriving while a newer one is on its
@@ -5295,6 +5300,10 @@ impl Root {
         let users = tweaks
             .clone()
             .unwrap_or_else(|| self.stores.typing_users(channel, Instant::now()));
+        // Not in the pinned client: the row fades in and out (`motion/typing.rs`), keeping its names while it goes.
+        let (users, opacity) = motion::typing::row(channel, users)?;
+        // TypingTweaks draws its line from the same people, the remembered ones while the row fades out.
+        let tweaks = tweaks.map(|_| users.clone());
         let names: Vec<String> = users
             .iter()
             .filter_map(|user| self.stores.users.get(user))
@@ -5321,6 +5330,7 @@ impl Root {
                 .left(px(16.))
                 .top(px(-24.))
                 .h(px(24.))
+                .opacity(opacity)
                 .flex()
                 .items_center()
                 .text_size(px(12.))
