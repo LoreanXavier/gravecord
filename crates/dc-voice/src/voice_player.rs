@@ -32,6 +32,8 @@ const SEARCH: usize = 480;
 const AHEAD: usize = RATE / 10;
 /// How long a paused or finished player keeps its speaker stream open.
 const IDLE_CLOSE: Duration = Duration::from_secs(5);
+/// How often a playing message is rendered ahead and its position published.
+const TICK: Duration = Duration::from_millis(5);
 
 /// A decoded voice message: mono samples at 48 kHz.
 #[derive(Debug)]
@@ -432,7 +434,14 @@ impl Worker {
 
     fn run(&mut self, receive: &mpsc::Receiver<Command>) {
         loop {
-            match receive.recv_timeout(Duration::from_millis(5)) {
+            let received = match self.wake_in(Instant::now()) {
+                Some(wait) => receive.recv_timeout(wait),
+                // Nothing plays and the speaker is let go: nothing changes until a command comes.
+                None => receive
+                    .recv()
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            };
+            match received {
                 Ok(command) => {
                     self.apply(command);
                     // Commands that arrive together are all read before anything is rendered.
@@ -446,6 +455,20 @@ impl Worker {
             self.render();
             self.publish();
         }
+    }
+
+    /// How long the worker may wait for a command before it must render again: [`TICK`] while a message plays, the
+    /// time left until the open speaker is let go while it is paused or ended, and no limit once it is let go.
+    fn wake_in(&self, now: Instant) -> Option<Duration> {
+        if self.playing {
+            return Some(TICK);
+        }
+        self.sink.as_ref()?;
+        Some(match self.idle_since {
+            Some(since) => (since + IDLE_CLOSE).saturating_duration_since(now),
+            // Not idle yet as far as `render` knows: it starts the count on the next pass.
+            None => Duration::ZERO,
+        })
     }
 
     fn apply(&mut self, command: Command) {
@@ -830,6 +853,39 @@ impl Feed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The worker waits for commands without waking while nothing plays and no speaker is held, renders every
+    /// [`TICK`] while a message plays, and wakes once to let a held speaker go.
+    #[test]
+    fn an_idle_worker_sleeps_until_a_command() {
+        let now = Instant::now();
+        let mut worker = Worker::new(true, Arc::new(Mutex::new(Status::default())));
+        assert_eq!(worker.wake_in(now), None);
+        worker.playing = true;
+        assert_eq!(worker.wake_in(now), Some(TICK));
+        worker.playing = false;
+        worker.idle_since = Some(now);
+        // A silent worker holds no speaker.
+        assert_eq!(worker.wake_in(now), None);
+    }
+
+    /// A silent engine answers a play at once after sitting idle: the blocking wait is woken by the command.
+    #[test]
+    fn a_command_wakes_an_idle_engine() {
+        let engine = Engine::start(true);
+        std::thread::sleep(Duration::from_millis(50));
+        let seq = engine.play("idle", Arc::new(Clip::from_samples(tone(1., 440.))), 0.);
+        let started = Instant::now();
+        while engine.status().play_seq != seq {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "the play was not applied"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(engine.status().playing);
+        engine.stop();
+    }
 
     fn tone(seconds: f32, hertz: f32) -> Vec<f32> {
         (0..(seconds * RATE as f32) as usize)
