@@ -24,6 +24,7 @@
 
 use gpui::{AnyElement, IntoElement, Rgba, Styled, canvas, div};
 
+pub(crate) mod arrival;
 pub(crate) mod composer;
 pub(crate) mod controls;
 pub(crate) mod dm_rail;

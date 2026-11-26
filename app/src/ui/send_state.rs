@@ -495,8 +495,14 @@ impl Root {
                 super::uploads::kind_icon_url(kind),
             );
         }
+        // Not in the pinned client: Phoenix's `MessageArrival` (`motion/arrival.rs`), for a send made while the open
+        // channel's list shows its bottom.
+        let arrives = shown && self.channel == Some(channel) && self.shows_present();
         if shown && let Some(message) = message.clone() {
             self.insert_local(message);
+        }
+        if arrives {
+            motion::arrival::begin(id);
         }
         self.send_ui.begin(
             id,
@@ -570,6 +576,9 @@ impl Root {
                     // The echo may have come first and already took the row; this takes it otherwise.
                     if self.send_ui.remove_send(id).is_some() && real_id != Some(id) {
                         self.remove_local(channel, id);
+                        if let Some(real_id) = real_id {
+                            motion::arrival::replaced(id, real_id);
+                        }
                     }
                 }
             }
@@ -823,6 +832,42 @@ impl Root {
         let real_id = json_id(&data["id"]);
         if mine && self.send_ui.remove_send(id).is_some() && real_id != Some(id) {
             self.remove_local(channel, id);
+            if let Some(real_id) = real_id {
+                motion::arrival::replaced(id, real_id);
+            }
+        }
+    }
+
+    /// Whether the message list shows its bottom: scrolled to the end (or too short to scroll) with the newest
+    /// messages loaded. A send made while reading history does not arrive with motion.
+    fn shows_present(&self) -> bool {
+        let latest_loaded = self
+            .channel
+            .and_then(|channel| self.stores.windows.get(&channel))
+            .is_none_or(|window| !window.has_more_after);
+        latest_loaded && self.list.is_scrolled_to_end() != Some(false)
+    }
+
+    /// The row at `index`, drawn as Phoenix's `MessageArrival` while its message arrives (`motion/arrival.rs`).
+    /// Every other row is returned untouched.
+    pub(super) fn arrival_row(&self, index: usize, row: gpui::AnyElement) -> gpui::AnyElement {
+        let Some(super::Row::Message { index: at, .. }) = self.rows.get(index) else {
+            return row;
+        };
+        let Some(id) = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .and_then(|messages| messages.get(*at))
+            .map(|message| message.id)
+        else {
+            return row;
+        };
+        if !motion::arrival::is_arriving(id) {
+            return row;
+        }
+        match motion::arrival::progress(id) {
+            Some(t) => motion::arrival::wrap(id, t, row),
+            None => row,
         }
     }
 
