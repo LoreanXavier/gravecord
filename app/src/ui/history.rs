@@ -60,7 +60,8 @@ impl Root {
     pub(super) fn route(&self) -> Route {
         Route {
             guild: self.guild,
-            channel: if self.channel_browser_open {
+            // A message request's chat open beside its page is not a place of its own (`openPrivateChannelAsSidebar`).
+            channel: if self.channel_browser_open || self.message_requests_active() {
                 None
             } else {
                 self.channel

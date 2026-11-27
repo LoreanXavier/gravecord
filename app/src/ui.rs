@@ -5912,20 +5912,22 @@ impl Root {
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let title = match (self.current_guild(), self.channel) {
             _ if self.in_favorites() => dc_intl::tr("Favorites").to_owned(),
+            // The title bar of /message-requests carries no title (golden message-requests/requests-empty), with a
+            // request's chat open beside the page too.
+            _ if self.message_requests_active() => String::new(),
             (Some(guild), _) => guild.name.clone(),
             (None, None) if self.discover_active() => dc_intl::tr("Discover").to_owned(),
             (None, None) if self.nitro_open => dc_intl::tr("Nitro").to_owned(),
             (None, None) if self.quests_active() => dc_intl::tr("Quests").to_owned(),
             (None, None) if self.shop_active() => dc_intl::tr("Shop").to_owned(),
-            // The title bar of /message-requests carries no title (golden message-requests/requests-empty).
-            (None, None) if self.message_requests_active() => String::new(),
             // As /library's title bar in the capture (library/empty): no title.
             (None, None) if self.library_active() => String::new(),
             (None, None) => dc_intl::tr("Friends").to_owned(),
             // A DM's window title is the section, not the person (`title_LnjVAX` in the DM capture).
             (None, Some(_)) => dc_intl::tr("Direct Messages").to_owned(),
         };
-        let in_dm = self.guild.is_none() && self.channel.is_some();
+        let in_dm =
+            self.guild.is_none() && self.channel.is_some() && !self.message_requests_active();
         let guild_icon = self.current_guild().map(|guild| {
             // The Favorites view's title carries the star (18px, frame menus2/favorites-view), not the server's icon.
             if self.in_favorites() {
@@ -12680,6 +12682,10 @@ impl Render for Root {
         if self.channel_browser_open && self.channel.is_some() {
             self.content_width = self.browser_preview_width() - 2. - 112.;
         }
+        // The opened message request's chat is as wide as its panel.
+        if self.message_requests_active() && self.channel.is_some() {
+            self.content_width = self.mr_panel_width(self.viewport.0) - 2. - 112.;
+        }
         let rows = list(
             self.list.clone(),
             cx.processor(|this, index, _, cx| {
@@ -12718,6 +12724,7 @@ impl Render for Root {
             .capture_any_mouse_up(cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
                 this.voice_mouse(event.button, false, cx);
                 this.end_browser_resize();
+                this.mr_end_resize();
                 this.clips_mouse_up(cx);
             }))
             // The text area menu (module 216603) of the field the release landed on, after that field's handlers.
@@ -12736,8 +12743,9 @@ impl Render for Root {
                     cx.notify();
                 }
             }))
-            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
                 this.move_browser_resize(event, cx);
+                this.mr_move_resize(event, window, cx);
                 if hover_bar::set_shift(event.modifiers.shift)
                     && (this.hovered.is_some() || this.full_profile.is_some())
                 {
@@ -14144,7 +14152,7 @@ impl Render for Root {
                         } else if self.shop_active() {
                             self.shop_page(window, cx)
                         } else if self.message_requests_active() {
-                            self.message_requests_page(window, cx)
+                            self.message_requests_page(window, rows.into_any_element(), cx)
                         } else if self.library_active() {
                             self.library_view(window, cx)
                         } else if self.in_favorites() && self.channel.is_none() {

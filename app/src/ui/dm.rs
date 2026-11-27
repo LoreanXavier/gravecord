@@ -212,9 +212,9 @@ impl Root {
                         })
                         .when(!system, |this| {
                             this.child(
+                                // A block, so the line wraps in a narrow chat (a request's panel is 450px).
                                 div()
                                     .mt(px(20.))
-                                    .flex()
                                     .text_size(px(16.))
                                     .line_height(px(20.))
                                     .text_color(color("--text-default"))
@@ -301,6 +301,47 @@ impl Root {
         // `isNonUserBot` (module 619019): the system account or a bot with the `0000` tag gets no buttons (`aI`).
         if user.system || (user.bot && user.discriminator == "0000") {
             return Vec::new();
+        }
+        // `aI` before the bot and friend buttons: in the chat of a message request (or a spam one, 321404 `c`), `aE`:
+        // Accept DM, Ignore, then Report Spam (`s4`), disabled while one of them is under way.
+        if self.stores.is_message_request(channel) || self.stores.is_spam_request(channel) {
+            let busy = self.message_requests.busy.contains_key(&channel)
+                || self.stores.is_accepted_optimistic(channel);
+            let mut list = vec![
+                small_button(
+                    "welcome-mr-accept",
+                    dc_intl::tr("Accept DM"),
+                    Tone::Primary,
+                    !busy,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.mr_accept(channel, cx)))
+                .into_any_element(),
+                small_button(
+                    "welcome-mr-ignore",
+                    dc_intl::tr("Ignore"),
+                    Tone::Secondary,
+                    !busy,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.mr_reject(channel, cx)))
+                .into_any_element(),
+            ];
+            if matches!(relationship, 0 | 2 | 3)
+                && let Some(first) = self.first_message_of(channel, id)
+            {
+                list.push(
+                    small_button(
+                        "welcome-report",
+                        dc_intl::tr("Report Spam"),
+                        Tone::CriticalPrimary,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_report_message(&first, true, window, cx);
+                    }))
+                    .into_any_element(),
+                );
+            }
+            return list;
         }
         if user.bot {
             // `aI` gives a bot `s9` instead of `ap`: no friend or Block button. Its Report Spam (`s4`) needs only
