@@ -404,6 +404,8 @@ impl GuildScheduledEventStore {
                 }
             }
             "GUILD_SCHEDULED_EVENT_CREATE" | "GUILD_SCHEDULED_EVENT_UPDATE" => self.set(data),
+            // `FETCH_GUILD_EVENT` (module 496092 `fetchGuildEvent`, the event link card and a click on its link).
+            "FETCH_GUILD_EVENT" => self.set(&data["guildScheduledEvent"]),
             "GUILD_SCHEDULED_EVENT_EXCEPTION_CREATE"
             | "GUILD_SCHEDULED_EVENT_EXCEPTION_UPDATE"
             | "GUILD_SCHEDULED_EVENT_EXCEPTION_DELETE" => self.exception_event(event, data),
@@ -492,6 +494,24 @@ mod tests {
             "scheduled_start_time": start, "status": status, "entity_type": 3,
             "entity_metadata": {"location": "somewhere"}, "privacy_level": 2,
         })
+    }
+
+    /// `FETCH_GUILD_EVENT` (an event link's fetch, or an invite's event) puts the one event in.
+    #[test]
+    fn a_fetched_event_is_kept() {
+        let mut store = GuildScheduledEventStore::default();
+        store.dispatch(
+            "FETCH_GUILD_EVENT",
+            &json!({"guildScheduledEvent": event("5", "10", "2026-11-12T10:00:00+00:00", 1)}),
+        );
+        assert_eq!(
+            store
+                .get_guild_scheduled_event(5)
+                .map(|found| found.guild_id),
+            Some(10)
+        );
+        store.dispatch("FETCH_GUILD_EVENT", &json!({"guildScheduledEvent": null}));
+        assert_eq!(store.get_guild_scheduled_events_for_guild(10).len(), 1);
     }
 
     #[test]

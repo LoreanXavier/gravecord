@@ -8,7 +8,7 @@
 
 mod create;
 mod detail;
-mod list;
+pub(super) mod list;
 mod menu;
 pub(super) mod pickers;
 mod prompt;
@@ -232,6 +232,14 @@ impl Root {
     }
 
     /// Opens the Events modal of the current server and asks for its events (`getGuildEventsForCurrentUser`).
+    /// Capture only: the server of the open Events modal and the event whose details show.
+    #[cfg(feature = "capture")]
+    pub(super) fn events_open(&self) -> Option<(Id, Option<Id>)> {
+        self.guild_events
+            .as_ref()
+            .map(|open| (open.guild, open.detail.as_ref().map(|detail| detail.event)))
+    }
+
     pub(super) fn open_guild_events(&mut self, cx: &mut Context<Self>) {
         let Some(guild) = self.guild else {
             return;

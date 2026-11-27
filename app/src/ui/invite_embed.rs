@@ -116,12 +116,14 @@ pub(super) fn age_restricted_alert(
 }
 
 impl Root {
-    /// Sends `POST /invites/{code}` and marks `guild` as pending join (`acceptInvite`).
+    /// Sends `POST /invites/{code}` and marks `guild` as pending join (`acceptInvite`). `code` may be an invite key
+    /// (`code?event=...`); the route takes its base code.
     pub(super) fn accept_invite_code(&mut self, code: &str, guild: Id) {
+        let base = dc_state::coded_links::split_invite_key(code).base_code;
         let _ = self.requests.send(Request::Rest {
             key: Some(format!("{ACCEPT_KEY}{code}")),
             method: reqwest::Method::POST,
-            route: format!("/invites/{code}"),
+            route: format!("/invites/{base}"),
             body: Some(serde_json::json!({})),
         });
         self.pending_join = Some(guild);
@@ -185,37 +187,14 @@ impl Root {
     }
 }
 
-/// Hosts that carry invites: `discord.gg/{code}` (`INVITE_HOST`), and `/invite/{code}` on the client's own hosts.
+/// The invite keys of a text: its `INVITE` coded links (module 486889: `discord.gg/{code}` and `/invite/{code}` on
+/// the client's own hosts, with the `event`, `channel` and `message` of the query kept in the key).
 pub(super) fn invite_codes(content: &str) -> Vec<String> {
-    let mut codes = Vec::new();
-    for word in content.split(|c: char| c.is_whitespace() || c == '<' || c == '>') {
-        let rest = word
-            .strip_prefix("https://")
-            .or_else(|| word.strip_prefix("http://"))
-            .unwrap_or(word);
-        let code = if let Some(code) = rest.strip_prefix("discord.gg/") {
-            Some(code)
-        } else {
-            [
-                "discord.com/invite/",
-                "discordapp.com/invite/",
-                "canary.discord.com/invite/",
-                "ptb.discord.com/invite/",
-            ]
-            .iter()
-            .find_map(|host| rest.strip_prefix(host))
-        };
-        if let Some(code) = code {
-            let code: String = code
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-                .collect();
-            if !code.is_empty() && !codes.contains(&code) {
-                codes.push(code);
-            }
-        }
-    }
-    codes
+    dc_state::coded_links::coded_links_in(content)
+        .into_iter()
+        .filter(|link| link.kind == dc_state::coded_links::Kind::Invite)
+        .map(|link| link.code)
+        .collect()
 }
 
 /// chroma.js `brighten(amount)`: Lab lightness up by 18 per step.
@@ -502,8 +481,8 @@ impl Root {
         for code in codes {
             if self.requested_invites.insert(code.clone()) {
                 let _ = self.requests.send(Request::Fetch {
+                    route: super::coded_link_cards::invite_resolve_route(&code),
                     key: format!("invite:{code}"),
-                    route: format!("/invites/{code}?with_counts=true&with_expiration=true&with_permissions=true"),
                 });
             }
         }
@@ -512,6 +491,26 @@ impl Root {
 
     /// A resolved invite: the icon for the card and its palette.
     pub(super) fn invite_fetched(&mut self, key: &str) {
+        let Some(body) = self.fetched.get(key) else {
+            return;
+        };
+        // `INVITE_RESOLVE_SUCCESS` of GuildScheduledEventStore (module 698441): the invite's event is kept.
+        if let Some(event_id) = super::coded_link_cards::invite_event(body) {
+            let event = body["guild_scheduled_event"].clone();
+            let guild = event["guild_id"]
+                .as_str()
+                .and_then(|id| id.parse::<Id>().ok());
+            self.stores.dispatch(
+                "FETCH_GUILD_EVENT",
+                &serde_json::json!({ "guildScheduledEvent": event }),
+            );
+            // The card's interested count (module 826383).
+            if let Some(guild) = guild
+                && self.coded_link_ask(format!("coded-event-counts:{event_id}"))
+            {
+                self.event_fetch_counts(guild, event_id);
+            }
+        }
         let Some(body) = self.fetched.get(key) else {
             return;
         };
@@ -665,7 +664,7 @@ impl Root {
             .into_any_element()
     }
 
-    fn invite_card(
+    pub(super) fn invite_card(
         &self,
         code: &str,
         message: &Message,
@@ -694,6 +693,15 @@ impl Root {
             #[cfg(not(feature = "capture"))]
             let probe = false;
             return Some(self.invalid_invite_card(message, body["banned"] == true, probe));
+        }
+        // Module 679636 `cr`: an invite that carries a scheduled event (`ly`, the invite key's `?event=`) is the event
+        // card (module 427080), whose Join accepts the invite.
+        if let Some(event) = super::coded_link_cards::invite_event(body).and_then(|event| {
+            self.stores
+                .scheduled_events
+                .get_guild_scheduled_event(event)
+        }) {
+            return Some(self.scheduled_event_card(event, Some(code.to_owned()), Some(body), cx));
         }
         // Module 679636 `cr`: a guild invite to a voice channel the account can see is drawn as the channel (`dX`).
         if let Some((guild, channel)) = self.voice_invite_channel(body) {
@@ -1052,26 +1060,6 @@ impl Root {
                 .child(body.unwrap_or_else(|| div().h(px(8.)).into_any_element()))
                 .into_any_element(),
         )
-    }
-
-    /// The cards for a message's invite links.
-    pub(super) fn invite_cards(
-        &self,
-        message: &Message,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let cards: Vec<AnyElement> = invite_codes(&message.content)
-            .iter()
-            .filter_map(|code| self.invite_card(code, message, cx))
-            .collect();
-        (!cards.is_empty()).then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .children(cards)
-                .into_any_element()
-        })
     }
 }
 

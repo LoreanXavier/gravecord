@@ -365,7 +365,12 @@ impl Root {
                         self.open_channel_browser(cx);
                         Outcome::Opened("channel browser")
                     }
-                    "boosts" | "shop" | "game-shop" => Outcome::NotBuilt("server page of the list"),
+                    // `/channels/<guild>/boosts`: the server's boost page (`boost_page.rs`), as the server menu opens it.
+                    "boosts" => {
+                        self.open_boost_page(cx);
+                        Outcome::Opened("server boosts")
+                    }
+                    "shop" | "game-shop" => Outcome::NotBuilt("server page of the list"),
                     _ => Outcome::Opened("server"),
                 }
             }
@@ -419,14 +424,10 @@ impl Root {
                 self.open_quests(cx);
                 Outcome::Opened("quests")
             }
-            Route::Event { guild, .. } => {
-                if !self.knows_guild(guild) {
-                    return Outcome::Missing("server");
-                }
-                let channel = self.default_channel_of(guild);
-                self.select(guild, channel);
-                self.open_guild_events(cx);
-                Outcome::Opened("events of the server")
+            // Module 697794: the event is fetched when needed, then the server and the event's details open.
+            Route::Event { guild, event } => {
+                self.open_event_link(guild, event, cx);
+                Outcome::Opened("event")
             }
             Route::FamilyCenter => {
                 self.open_settings_page("account", cx);
@@ -436,12 +437,26 @@ impl Root {
                 self.with_window(cx, |root, window, cx| root.open_add_server(window, cx));
                 Outcome::Opened("add a server")
             }
-            Route::BoostMarketing(_) => Outcome::NotBuilt("server boost page"),
-            Route::Invite(code) => {
-                self.open_accept_invite_modal(&code, cx);
-                Outcome::Opened("invite modal")
+            Route::BoostMarketing(guild) => {
+                if !self.knows_guild(guild) {
+                    return Outcome::Missing("server");
+                }
+                if self.guild != Some(guild) {
+                    let channel = self.default_channel_of(guild);
+                    self.select(guild, channel);
+                }
+                self.open_boost_page(cx);
+                Outcome::Opened("server boosts")
             }
-            Route::Gift(_) => Outcome::NotBuilt("gift modal"),
+            // Module 697794 `Y`: resolved first; a member the invite gives nothing new goes to the server.
+            Route::Invite(code) => {
+                self.open_invite_link(&code, cx);
+                Outcome::Opened("invite")
+            }
+            Route::Gift(code) => {
+                self.open_gift_link(&code, cx);
+                Outcome::Opened("gift")
+            }
             Route::Template(code) => {
                 self.with_window(cx, move |root, window, cx| {
                     root.open_template_accept_modal(&code, window, cx)

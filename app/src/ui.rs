@@ -313,8 +313,10 @@ pub(crate) mod regions;
 mod remediation;
 mod reminder_modal;
 mod reorder_hint;
+mod coded_link_cards;
 mod reply_content;
 mod report;
+mod route_mentions;
 mod report_issue;
 mod role_connection_verify;
 mod role_subscription_card;
@@ -903,6 +905,8 @@ pub struct Root {
     app_test_mode_active: app_test_mode::TestModeActive,
     /// Accept Invite modal (modules 654000 + 700156 + 4274, `accept_invite`).
     accept_invite_modal: Option<accept_invite::AcceptInviteModal>,
+    /// The coded links of messages: pending clicks and what was asked (`coded_link_cards.rs`).
+    coded_links: coded_link_cards::State,
     /// Game Stats Application Widget sync/connect/reconnect overlay (module 591410, `app_widget`).
     app_widget_state_overlay: Option<app_widget::AppWidgetStateOverlay>,
     /// Forum Tag Editor modal (module 950989, `forum_tag_editor`).
@@ -1674,6 +1678,7 @@ impl Root {
             app_test_mode_modal: None,
             app_test_mode_active: Default::default(),
             accept_invite_modal: None,
+            coded_links: coded_link_cards::State::default(),
             app_widget_state_overlay: None,
             forum_tag_editor: None,
             quest_call_sheet_overlay: None,
@@ -3090,6 +3095,9 @@ impl Root {
                 if self.gift_code_answered(&key, &body, cx) {
                     return;
                 }
+                if self.coded_link_fetched(&key, &body, cx) {
+                    return;
+                }
                 if self.settings_fetched(&key, &body) {
                     cx.notify();
                     return;
@@ -3477,6 +3485,7 @@ impl Root {
                 }
                 if key.starts_with("invite:") {
                     self.invite_fetched(&key);
+                    self.invite_click_resolved(&key, cx);
                 }
                 if key.starts_with("command-index:") {
                     self.refresh_command_mentions();
@@ -4840,6 +4849,7 @@ impl Root {
         // Other rows: a link the pointer was last found over may be gone (`inline::middle_press_on_link`).
         crate::inline::forget_link_under_pointer();
         self.request_invites();
+        self.request_coded_links();
         self.request_gift_codes();
         // A command mention needs the channel's command index to know whether it is a link (module 990474).
         if self
@@ -8899,6 +8909,9 @@ impl Root {
             Kind::Sound { id, .. } => self
                 .soundmoji_sound(*id)
                 .map_or_else(|| span.text.clone(), |sound| format!(" {} ", sound.name)),
+            Kind::StaticRoute { .. } | Kind::ChannelUrl { .. } => {
+                self.route_mention_label(span).unwrap_or_default()
+            }
             Kind::Text
             | Kind::Link(_)
             | Kind::AttachmentLink(_)
@@ -8908,6 +8921,10 @@ impl Root {
     }
 
     fn piece(&self, span: &Span, base: Hsla, size: f32, weight: f32, emoji_size: f32) -> Piece {
+        // Navigation chips and link mentions are drawn in parts (`route_mentions.rs`).
+        if let Some(piece) = self.route_mention_piece(span, size) {
+            return piece;
+        }
         let style = span.style;
         let deleted_role = matches!(
             span.kind,
@@ -9411,10 +9428,19 @@ impl Root {
                 }
             });
         }
+        // A server navigation chip opens its page (module 392605).
+        let static_routes: Vec<Option<String>> = spans
+            .iter()
+            .map(|span| match &span.kind {
+                Kind::StaticRoute { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
         if spoilers.iter().any(Option::is_some)
             || links.iter().any(Option::is_some)
             || channels.iter().any(Option::is_some)
             || commands.iter().any(Option::is_some)
+            || static_routes.iter().any(Option::is_some)
         {
             let spoilers = spoilers.to_vec();
             let root = self.weak.clone();
@@ -9448,6 +9474,9 @@ impl Root {
                     }
                     if let Some(Some((name, id))) = commands.get(piece).cloned() {
                         this.press_command_mention(name, id, window, cx);
+                    }
+                    if let Some(Some(id)) = static_routes.get(piece).cloned() {
+                        this.open_static_route(&id, cx);
                     }
                 });
             });
@@ -10100,17 +10129,18 @@ impl Root {
     }
 
     fn accessories(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // The order of module 679636's `render`: the poll, the coded links (`renderCodedLinks`), the gift codes,
+        // the attachments, the embeds, the activity invite, the stickers, the components, ..., the safety notice.
         let parts: Vec<AnyElement> = [
-            // `renderGiftCodes` (module 679636): after the coded links, before the attachments.
+            self.poll_card(message, cx),
+            self.coded_link_cards(message, cx),
             self.gift_cards(message, cx),
             self.attachments(message, cx),
             self.files(message, cx),
             self.embeds(message, cx),
+            self.activity_invite_embed(message, cx),
             self.message_stickers(message.id, &message.sticker_items, cx),
             self.message_components(message, cx),
-            self.invite_cards(message, cx),
-            self.activity_invite_embed(message, cx),
-            self.poll_card(message, cx),
             // `renderSafetySystemNotification` (module 679636): last of the accessories.
             self.safety_system_notice(message, cx),
         ]
@@ -12099,6 +12129,12 @@ fn link_runs(spans: &[Span]) -> Vec<Option<(String, String)>> {
             index += 1;
             continue;
         }
+        // A link mention (`channelOrMessageUrl`, `mediaPostLink`) follows its link; each of its parts does.
+        if let Kind::ChannelUrl { .. } = &spans[index].kind {
+            out[index] = Some((spans[index].text.clone(), spans[index].text.clone()));
+            index += 1;
+            continue;
+        }
         let Kind::Link(url) = &spans[index].kind else {
             index += 1;
             continue;
@@ -12151,7 +12187,7 @@ fn block_text(block: &Block) -> String {
         | Block::Quote(spans)
         | Block::Subtext(spans)
         | Block::Heading { spans, .. }
-        | Block::ListItem { spans, .. } => spans.iter().map(|span| span.text.as_str()).collect(),
+        | Block::ListItem { spans, .. } => spans.iter().map(Span::source).collect(),
         Block::Code { text, .. } => text.clone(),
     }
 }
@@ -12200,6 +12236,7 @@ fn pill(padding: f32, radius: f32, background: &str) -> BoxStyle {
         radius: px(radius),
         text_line_height: px(22.),
         text_top: px(0.),
+        ..BoxStyle::default()
     }
 }
 
@@ -12265,6 +12302,7 @@ fn inline_code_box() -> BoxStyle {
         radius: px(4.),
         text_line_height: px(18.),
         text_top: px(2.),
+        ..BoxStyle::default()
     }
 }
 
@@ -12296,6 +12334,7 @@ fn preview_code_box() -> BoxStyle {
         radius: px(4.),
         text_line_height: px(18.),
         text_top: px(0.),
+        ..BoxStyle::default()
     }
 }
 

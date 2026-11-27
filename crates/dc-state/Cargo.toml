@@ -9,5 +9,6 @@ publish.workspace = true
 chrono.workspace = true
 dc-intl.workspace = true
 dc-proto.workspace = true
+regex = "1"
 serde_json.workspace = true
 unicode-normalization.workspace = true

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct BoxStyle {
     /// An icon before the text, with the room it takes.
     pub icon: Option<(SharedString, Pixels, Pixels)>,
@@ -29,6 +29,60 @@ pub struct BoxStyle {
     pub radius: Pixels,
     pub text_line_height: Pixels,
     pub text_top: Pixels,
+    /// The box goes on into the piece before (`join_left`) or after (`join_right`) it: that side has no padding and
+    /// square corners, so several pieces draw as one box (a mention made of parts).
+    pub join_left: bool,
+    pub join_right: bool,
+    /// How far into its room the icon starts (a margin before it).
+    pub icon_inset: Pixels,
+    /// What the icon slot shows instead of the svg: a picture, or text on a disc (a server's acronym).
+    pub icon_art: Option<IconArt>,
+    /// Pieces of one group light up together while the pointer is over any of them.
+    pub group: Option<u64>,
+}
+
+/// A non-svg icon of a box: a picture with its corner radius, or a short text centred on a round background.
+#[derive(Clone)]
+pub enum IconArt {
+    Image(Arc<Image>, Pixels),
+    Text {
+        text: SharedString,
+        size: Pixels,
+        color: Hsla,
+        background: Hsla,
+        radius: Pixels,
+    },
+}
+
+impl BoxStyle {
+    /// The padding of the left and right sides.
+    fn paddings(&self) -> (Pixels, Pixels) {
+        (
+            if self.join_left {
+                px(0.)
+            } else {
+                self.padding_x
+            },
+            if self.join_right {
+                px(0.)
+            } else {
+                self.padding_x
+            },
+        )
+    }
+
+    fn corners(&self) -> Corners<Pixels> {
+        let (left, right) = (
+            if self.join_left { px(0.) } else { self.radius },
+            if self.join_right { px(0.) } else { self.radius },
+        );
+        Corners {
+            top_left: left,
+            bottom_left: left,
+            top_right: right,
+            bottom_right: right,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -318,6 +372,9 @@ struct Fragment {
 /// The motion key of a piece's hover state: its text and where it sits on its line, so it holds across frames
 /// without growing when the list scrolls.
 fn hover_key(piece: &Piece, fragment: &Fragment) -> u64 {
+    if let Some(group) = piece.boxed.as_ref().and_then(|style| style.group) {
+        return crate::ui::motion::key(&("mention-group", group));
+    }
     crate::ui::motion::key(&(
         "mention",
         piece.text.as_str(),
@@ -462,12 +519,12 @@ fn place(
     x: &mut Pixels,
     max_width: Option<Pixels>,
     fragment: (ShapedLine, usize, usize),
-    padding: Pixels,
+    padding: (Pixels, Pixels),
     icon: Pixels,
     hang_spaces: bool,
 ) {
     let (shaped, piece, start) = fragment;
-    let width = shaped.width + padding * 2. + icon;
+    let width = shaped.width + padding.0 + padding.1 + icon;
     // Collapsible spaces hang outside the line box; non-breaking spaces and inline boxes do not.
     let visible_width = if hang_spaces {
         shaped.x_for_index(shaped.text.trim_end_matches([' ', '\t']).len())
@@ -483,7 +540,7 @@ fn place(
         shaped,
         x: *x,
         width,
-        text_offset: padding + icon,
+        text_offset: padding.0 + icon,
         line: laid.lines - 1,
         piece,
         start,
@@ -530,7 +587,8 @@ fn split_long_word_slices(
 struct SegmentBox {
     max_width: Option<Pixels>,
     truncate: bool,
-    padding: Pixels,
+    /// Left and right.
+    padding: (Pixels, Pixels),
     icon: Pixels,
 }
 
@@ -547,14 +605,14 @@ fn lay_out_segment(
     let whole = shape(piece, seg_text, window);
     let fits = cfg
         .max_width
-        .is_none_or(|limit| *x + whole.width + cfg.padding * 2. + cfg.icon <= limit);
+        .is_none_or(|limit| *x + whole.width + (cfg.padding.0 + cfg.padding.1) + cfg.icon <= limit);
     if cfg.truncate && !fits {
         let limit = cfg.max_width.unwrap_or(px(0.));
         let shortened = shorten_text(
             piece,
             seg_text,
             &whole,
-            limit - *x - cfg.padding * 2.,
+            limit - *x - (cfg.padding.0 + cfg.padding.1),
             window,
         );
         place(
@@ -583,7 +641,8 @@ fn lay_out_segment(
     for (at, word) in words(seg_text) {
         let shaped = shape(piece, word, window);
         let trimmed_len = word.trim_end_matches([' ', '\t']).len();
-        let word_visible = shaped.x_for_index(trimmed_len) + cfg.padding * 2. + cfg.icon;
+        let word_visible =
+            shaped.x_for_index(trimmed_len) + (cfg.padding.0 + cfg.padding.1) + cfg.icon;
         if let Some(limit) = cfg.max_width
             && word_visible > limit
         {
@@ -591,7 +650,8 @@ fn lay_out_segment(
                 laid.lines += 1;
                 *x = px(0.);
             }
-            let inner_limit = f32::from((limit - cfg.padding * 2. - cfg.icon).max(px(1.)));
+            let inner_limit =
+                f32::from((limit - (cfg.padding.0 + cfg.padding.1) - cfg.icon).max(px(1.)));
             let slices = split_long_word_slices(word, inner_limit, |sub| {
                 let trimmed = sub.trim_end_matches([' ', '\t']);
                 if trimmed.is_empty() {
@@ -649,14 +709,17 @@ fn lay_out(
                 &mut x,
                 max_width,
                 (empty, index, offset),
-                px(0.),
+                (px(0.), px(0.)),
                 *size,
                 false,
             );
             offset += piece.text.len();
             continue;
         }
-        let padding = piece.boxed.as_ref().map_or(px(0.), |style| style.padding_x);
+        let padding = piece
+            .boxed
+            .as_ref()
+            .map_or((px(0.), px(0.)), BoxStyle::paddings);
         let icon = piece
             .boxed
             .as_ref()
@@ -1014,7 +1077,19 @@ impl Inline {
                         continue;
                     }
                     let key = hover_key(&pieces[fragment.piece], fragment);
-                    let inside = over.flatten().is_some_and(|at| at == fragment.start);
+                    let group = pieces[fragment.piece]
+                        .boxed
+                        .as_ref()
+                        .and_then(|style| style.group);
+                    // The piece under the pointer, or another of its group (an empty piece shares its start with
+                    // the next one, so the piece index decides).
+                    let inside = over.flatten().is_some_and(|(at, piece)| {
+                        (at == fragment.start && piece == fragment.piece)
+                            || group.is_some_and(|group| {
+                                pieces[piece].boxed.as_ref().and_then(|style| style.group)
+                                    == Some(group)
+                            })
+                    });
                     if crate::ui::motion::hovered(key) != inside {
                         crate::ui::motion::set_hover(key, inside);
                         window.refresh();
@@ -1442,17 +1517,74 @@ impl Element for Inline {
                 Some(style) => {
                     if let Some((path, icon_size, _)) = &style.icon {
                         let at = point(
-                            left + style.padding_x,
+                            left + style.paddings().0 + style.icon_inset,
                             top + style.top + (style.height - *icon_size) / 2.,
                         );
-                        let _ = window.paint_svg(
-                            Bounds::new(at, size(*icon_size, *icon_size)),
-                            path.clone(),
-                            None,
-                            TransformationMatrix::unit(),
-                            piece.color,
-                            cx,
-                        );
+                        let area = Bounds::new(at, size(*icon_size, *icon_size));
+                        match &style.icon_art {
+                            Some(IconArt::Image(image, radius)) => {
+                                if let Some(data) = image.clone().use_render_image(window, cx) {
+                                    gpui::note_painted_image(window, image, &data);
+                                    let _ = window.paint_image(
+                                        area,
+                                        area,
+                                        Corners::all(*radius),
+                                        data,
+                                        0,
+                                        false,
+                                    );
+                                }
+                            }
+                            Some(IconArt::Text {
+                                text,
+                                size: text_size,
+                                color: text_color,
+                                background,
+                                radius,
+                            }) => {
+                                window.paint_quad(quad(
+                                    area,
+                                    Corners::all(*radius),
+                                    Background::from(*background),
+                                    Edges::all(px(0.)),
+                                    Hsla::transparent_black(),
+                                    BorderStyle::Solid,
+                                ));
+                                let mut run_piece = piece.clone();
+                                run_piece.size = *text_size;
+                                run_piece.color = *text_color;
+                                run_piece.underline = false;
+                                run_piece.strike = false;
+                                let line = window.text_system().shape_line(
+                                    text.clone(),
+                                    *text_size,
+                                    &[run_for(&run_piece, text.len())],
+                                    None,
+                                );
+                                let origin = point(
+                                    at.x + (*icon_size - line.width) / 2.,
+                                    at.y + (*icon_size - *text_size) / 2. - px(1.),
+                                );
+                                let _ = line.paint(
+                                    origin,
+                                    *text_size + px(2.),
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            }
+                            None => {
+                                let _ = window.paint_svg(
+                                    area,
+                                    path.clone(),
+                                    None,
+                                    TransformationMatrix::unit(),
+                                    piece.color,
+                                    cx,
+                                );
+                            }
+                        }
                     }
                     let (background, text) = match piece.hover {
                         Some((hover_background, hover_text)) => {
@@ -1483,7 +1615,7 @@ impl Element for Inline {
                             point(left, top + style.top),
                             size(fragment.width, style.height),
                         ),
-                        Corners::all(style.radius),
+                        style.corners(),
                         Background::from(background),
                         Edges::all(px(1.)),
                         style.border,
@@ -1661,7 +1793,11 @@ impl Laid {
     }
 
     /// The start of the fragment under a point, when it is one with a hover look.
-    fn hover_piece_at(&self, position: Point<Pixels>, line_height: Pixels) -> Option<usize> {
+    fn hover_piece_at(
+        &self,
+        position: Point<Pixels>,
+        line_height: Pixels,
+    ) -> Option<(usize, usize)> {
         let line = (position.y / line_height).floor().max(0.) as usize;
         self.fragments
             .iter()
@@ -1670,7 +1806,7 @@ impl Laid {
                     && position.x >= fragment.x
                     && position.x < fragment.x + fragment.width
             })
-            .map(|fragment| fragment.start)
+            .map(|fragment| (fragment.start, fragment.piece))
     }
 
     pub fn index_at(&self, position: Point<Pixels>, line_height: Pixels) -> usize {
@@ -1757,7 +1893,7 @@ mod tests {
                 &mut x,
                 Some(px(10.)),
                 (shaped(text), 0, 0),
-                px(0.),
+                (px(0.), px(0.)),
                 px(0.),
                 hang_spaces,
             );
@@ -1770,7 +1906,7 @@ mod tests {
                     &mut x,
                     Some(px(10.)),
                     (shaped("next"), 0, 4),
-                    px(0.),
+                    (px(0.), px(0.)),
                     px(0.),
                     true,
                 );
@@ -1795,7 +1931,7 @@ mod tests {
             &mut x,
             Some(px(200.)),
             (gpui::ShapedLine::default(), 0, 0),
-            px(0.),
+            (px(0.), px(0.)),
             px(20.),
             false,
         );

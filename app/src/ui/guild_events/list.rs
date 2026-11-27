@@ -190,7 +190,7 @@ fn tones(tone: Tone) -> (&'static str, &'static str) {
 }
 
 /// The status line: the calendar, then the words of `status_line` in 14/18 semibold.
-pub(super) fn status_row(status: &Status) -> gpui::Div {
+pub(in crate::ui) fn status_row(status: &Status) -> gpui::Div {
     let (glyph, text) = tones(status.tone);
     div()
         .flex()
@@ -215,7 +215,7 @@ pub(super) fn status_row(status: &Status) -> gpui::Div {
 }
 
 /// The status of an event for the card (`with_end` false) or the detail (true).
-pub(super) fn event_status(
+pub(in crate::ui) fn event_status(
     event: &ScheduledEvent,
     now: NaiveDateTime,
     with_end: bool,
@@ -245,7 +245,7 @@ pub(super) fn interested_sentence(count: i64) -> String {
 
 impl Root {
     /// A user of an event: the account's own, or one the client has met.
-    pub(super) fn event_user(&self, id: Id) -> Option<User> {
+    pub(in crate::ui) fn event_user(&self, id: Id) -> Option<User> {
         self.stores
             .current_user
             .as_ref()
@@ -327,7 +327,7 @@ impl Root {
         }
     }
 
-    pub(super) fn event_fetch_counts(&mut self, guild: Id, event: Id) {
+    pub(in crate::ui) fn event_fetch_counts(&mut self, guild: Id, event: Id) {
         let _ = self.requests.send(Request::Fetch {
             key: format!("{COUNTS_KEY}{guild}:{event}"),
             route: format!("/guilds/{guild}/scheduled-events/{event}/users/counts"),
@@ -393,7 +393,7 @@ impl Root {
     }
 
     /// Whether the user is interested in the event (`isInterestedInEventRecurrence`).
-    pub(super) fn event_interested(&self, event: Id) -> bool {
+    pub(in crate::ui) fn event_interested(&self, event: Id) -> bool {
         self.stores.me().is_some_and(|me| {
             self.stores
                 .scheduled_events
@@ -404,7 +404,7 @@ impl Root {
     /// `updateRsvp` of a series or recurrence (`666394` / `929267.QC`): if the event is recurring
     /// and a recurrence is selected without an existing recurrence-level RSVP, opens the RSVP picker
     /// modal; otherwise sends `PUT` / `DELETE /guilds/{guild}/scheduled-events/{event}[/{recurrence}]/users/@me`.
-    pub(super) fn toggle_event_interest(&mut self, event: Id, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn toggle_event_interest(&mut self, event: Id, cx: &mut Context<Self>) {
         let Some(me) = self.stores.me() else {
             return;
         };
@@ -918,7 +918,7 @@ impl Root {
     }
 
     /// The place line of an event: its icon and name, an outside location or the channel.
-    pub(super) fn event_place(&self, event: &ScheduledEvent) -> (&'static str, String) {
+    pub(in crate::ui) fn event_place(&self, event: &ScheduledEvent) -> (&'static str, String) {
         if event.entity_type == ENTITY_EXTERNAL {
             return ("event_location", event.location.clone().unwrap_or_default());
         }

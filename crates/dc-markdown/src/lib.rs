@@ -52,6 +52,195 @@ pub enum Kind {
         guild: u64,
         id: u64,
     },
+    /// `<id:home|browse|customize|guide|linked-roles[:item]>` (the staticRouteLink rule, `P0V` of module 652215): a
+    /// server navigation chip. The rule draws one mention (`mainContent`, then a chevron and `itemContent` when the
+    /// item has a name), so it comes as three spans, one per part; the renderer draws the parts it has (with an item,
+    /// `Before` is the page and `Main` the item).
+    StaticRoute {
+        id: String,
+        item: Option<u64>,
+        part: Part,
+    },
+    /// A link to a channel or a message of Discord (`channelOrMessageUrl`, `V` of module 605275, over `BM` of module
+    /// 376943), or to a message of a thread (`mediaPostLink`, `H`, over `En`): a channel mention. `guild` is none for
+    /// `@me`. Three spans as for `StaticRoute`: what the mention shows before its chevron (`inContent`: the server,
+    /// or the channel of a message), the chevron, and the rest (`content`). The span's text is the link.
+    ChannelUrl {
+        guild: Option<u64>,
+        channel: u64,
+        message: Option<u64>,
+        /// The thread of a `mediaPostLink`.
+        thread: Option<u64>,
+        part: Part,
+    },
+}
+
+impl Span {
+    /// The source text the span stands for: a mention drawn from several spans gives it once, from its `Main` part
+    /// (each part carries the whole source).
+    pub fn source(&self) -> &str {
+        match &self.kind {
+            Kind::StaticRoute { part, .. } | Kind::ChannelUrl { part, .. } if *part != Part::Main => "",
+            _ => &self.text,
+        }
+    }
+}
+
+/// One part of a mention drawn from several spans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Part {
+    Before,
+    Chevron,
+    Main,
+}
+
+/// `P0V`: `^<id:(home|browse|customize|guide|linked-roles)(?::(\d+))?>`.
+fn static_route(rest: &str) -> Option<(usize, String, Option<u64>)> {
+    let body = rest.strip_prefix("<id:")?;
+    let id = ["home", "browse", "customize", "guide", "linked-roles"]
+        .into_iter()
+        .find(|id| body.starts_with(id))?;
+    let after = &body[id.len()..];
+    let (item, tail) = match after.strip_prefix(':') {
+        Some(number) => {
+            let run = digits(number);
+            if run.is_empty() {
+                return None;
+            }
+            (run.parse().ok(), &number[run.len()..])
+        }
+        None => (None, after),
+    };
+    tail.starts_with('>')
+        .then(|| (rest.len() - tail.len() + 1, id.to_owned(), item))
+}
+
+/// The host part of `BM`/`En`: `(?:(?:canary\.|ptb\.)?discord(?:app)?.com|staging\.discord\.co)` after `https://`
+/// (the `.` before `com` is any character but a line break). The length includes `https://`.
+fn channel_url_host(rest: &str) -> Option<usize> {
+    let body = rest.strip_prefix("https://")?;
+    let scheme = "https://".len();
+    let mut at = 0;
+    if body.starts_with("canary.") {
+        at += 7;
+    } else if body.starts_with("ptb.") {
+        at += 4;
+    }
+    let main = body[at..].strip_prefix("discord").and_then(|tail| {
+        let (tail, extra) = match tail.strip_prefix("app") {
+            Some(after) => (after, 3),
+            None => (tail, 0),
+        };
+        let mut chars = tail.chars();
+        let any = chars.next().filter(|c| *c != '\n')?;
+        chars
+            .as_str()
+            .starts_with("com")
+            .then(|| scheme + at + 7 + extra + any.len_utf8() + 3)
+    });
+    main.or_else(|| {
+        body.starts_with("staging.discord.co")
+            .then(|| scheme + "staging.discord.co".len())
+    })
+}
+
+/// `\d+|[a-zA-Z-]+` at the start.
+fn route_segment(text: &str) -> &str {
+    let numbers = digits(text);
+    if !numbers.is_empty() {
+        return numbers;
+    }
+    let len = text
+        .bytes()
+        .take_while(|b| b.is_ascii_alphabetic() || *b == b'-')
+        .count();
+    &text[..len]
+}
+
+/// What `V` makes of a link: its length, the server (none for `@me`), the channel and the message.
+type ChannelUrlMatch = (usize, Option<u64>, Option<u64>, Option<u64>);
+
+/// `V` over `BM`: `^https://<host>/channels/(\d+|@me)(?:/(\d+|[a-zA-Z-]+))?(?:/(\d+|[a-zA-Z-]+))?(?:\?([\w%=&+-]+))?`,
+/// refused when the second or third segment is not a number. Without a channel it stays a link (`G`). The match
+/// ends where the rule's regex does, so what follows (another segment, a `)`) is text again.
+fn channel_or_message_url(rest: &str) -> Option<ChannelUrlMatch> {
+    let host = channel_url_host(rest)?;
+    let mut at = host;
+    let tail = rest[at..].strip_prefix("/channels/")?;
+    at += "/channels/".len();
+    let guild_text = if tail.starts_with("@me") {
+        "@me"
+    } else {
+        let run = digits(tail);
+        if run.is_empty() {
+            return None;
+        }
+        run
+    };
+    at += guild_text.len();
+    let mut segments: Vec<&str> = Vec::new();
+    for _ in 0..2 {
+        let Some(after) = rest[at..].strip_prefix('/') else {
+            break;
+        };
+        let segment = route_segment(after);
+        if segment.is_empty() {
+            break;
+        }
+        at += 1 + segment.len();
+        segments.push(segment);
+    }
+    if segments
+        .iter()
+        .any(|segment| digits(segment).len() != segment.len())
+    {
+        return None;
+    }
+    if let Some(after) = rest[at..].strip_prefix('?') {
+        let len = after
+            .bytes()
+            .take_while(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'_' | b'%' | b'=' | b'&' | b'+' | b'-')
+            })
+            .count();
+        if len > 0 {
+            at += 1 + len;
+        }
+    }
+    let guild = if guild_text == "@me" {
+        None
+    } else {
+        Some(guild_text.parse().ok()?)
+    };
+    let channel = segments.first().and_then(|id| id.parse().ok());
+    let message = segments.get(1).and_then(|id| id.parse().ok());
+    Some((at, guild, channel, message))
+}
+
+/// `H` over `En`: `^https://<host>/channels/(\d+)(?:/)(\d+)(?:/threads/)(\d+)(?:/)(\d+)`: the length, then the
+/// server, channel, thread and message.
+fn media_post_url(rest: &str) -> Option<(usize, [u64; 4])> {
+    let mut at = channel_url_host(rest)?;
+    at += rest[at..]
+        .strip_prefix("/channels/")
+        .map(|_| "/channels/".len())?;
+    let mut numbers = [0u64; 4];
+    for (index, number) in numbers.iter_mut().enumerate() {
+        let separator = match index {
+            0 => "",
+            2 => "/threads/",
+            _ => "/",
+        };
+        let after = rest[at..].strip_prefix(separator)?;
+        at += separator.len();
+        let run = digits(after);
+        if run.is_empty() {
+            return None;
+        }
+        *number = run.parse().ok()?;
+        at += run.len();
+    }
+    Some((at, numbers))
 }
 
 /// The name of a command mention: one to three words of 1 to 32 letters, numbers, `-` or `_` (Devanagari and Thai
@@ -661,6 +850,21 @@ fn walk(source: &str, style: Style, rules: Rules, spans: &mut Vec<Span>) {
             at += 1 + escaped.len_utf8();
             continue;
         }
+        if let Some((consumed, id, item)) = static_route(rest) {
+            for part in [Part::Before, Part::Chevron, Part::Main] {
+                spans.push(Span {
+                    text: rest[..consumed].to_owned(),
+                    style,
+                    kind: Kind::StaticRoute {
+                        id: id.clone(),
+                        item,
+                        part,
+                    },
+                });
+            }
+            at += consumed;
+            continue;
+        }
         if let Some((consumed, kind, text)) = angle_token(rest, rules.mentions) {
             spans.push(Span { text, style, kind });
             at += consumed;
@@ -718,6 +922,57 @@ fn walk(source: &str, style: Style, rules: Rules, spans: &mut Vec<Span>) {
                 style,
                 kind: Kind::AttachmentLink(rest[..length].to_owned()),
             });
+            at += length;
+            continue;
+        }
+        // `channelOrMessageUrl` and `mediaPostLink` share `attachmentLink`'s order and follow it by name.
+        if rules.links
+            && let Some((length, guild, channel, message)) = channel_or_message_url(rest)
+        {
+            let text = rest[..length].to_owned();
+            match channel {
+                Some(channel) => {
+                    for part in [Part::Before, Part::Chevron, Part::Main] {
+                        spans.push(Span {
+                            text: text.clone(),
+                            style,
+                            kind: Kind::ChannelUrl {
+                                guild,
+                                channel,
+                                message,
+                                thread: None,
+                                part,
+                            },
+                        });
+                    }
+                }
+                // `G`: a link to a server alone stays a link.
+                None => spans.push(Span {
+                    text: text.clone(),
+                    style,
+                    kind: Kind::Link(text),
+                }),
+            }
+            at += length;
+            continue;
+        }
+        if rules.links
+            && let Some((length, [guild, channel, thread, message])) = media_post_url(rest)
+        {
+            let text = rest[..length].to_owned();
+            for part in [Part::Before, Part::Chevron, Part::Main] {
+                spans.push(Span {
+                    text: text.clone(),
+                    style,
+                    kind: Kind::ChannelUrl {
+                        guild: Some(guild),
+                        channel,
+                        message: Some(message),
+                        thread: Some(thread),
+                        part,
+                    },
+                });
+            }
             at += length;
             continue;
         }
@@ -977,6 +1232,96 @@ mod tests {
             }]
         );
         assert!(kinds("<t:1794000000:Z>").is_empty());
+    }
+
+    #[test]
+    fn server_navigation_mentions_come_in_three_parts() {
+        let found = kinds("see <id:customize> and <id:linked-roles:42>");
+        let routes: Vec<_> = found
+            .iter()
+            .filter_map(|kind| match kind {
+                Kind::StaticRoute { id, item, part } => Some((id.as_str(), *item, *part)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                ("customize", None, Part::Before),
+                ("customize", None, Part::Chevron),
+                ("customize", None, Part::Main),
+                ("linked-roles", Some(42), Part::Before),
+                ("linked-roles", Some(42), Part::Chevron),
+                ("linked-roles", Some(42), Part::Main),
+            ]
+        );
+        // Unknown names and broken items stay text.
+        assert!(kinds("<id:settings>").is_empty());
+        assert!(kinds("<id:browse:>").is_empty());
+        assert!(matches!(kinds("<id:guide>")[0], Kind::StaticRoute { .. }));
+        assert!(matches!(kinds("<id:home>")[0], Kind::StaticRoute { .. }));
+    }
+
+    /// A link mention's server, channel, message and thread.
+    type UrlParts = (Option<u64>, u64, Option<u64>, Option<u64>);
+
+    #[test]
+    fn channel_and_message_links_become_mentions() {
+        let parts = |source: &str| -> Vec<UrlParts> {
+            inline(source)
+                .into_iter()
+                .filter_map(|span| match span.kind {
+                    Kind::ChannelUrl {
+                        guild,
+                        channel,
+                        message,
+                        thread,
+                        part: Part::Main,
+                    } => Some((guild, channel, message, thread)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            parts("https://discord.com/channels/1/2"),
+            [(Some(1), 2, None, None)]
+        );
+        assert_eq!(
+            parts(
+                "https://ptb.discord.com/channels/1/2/3 https://canary.discordapp.com/channels/@me/4"
+            ),
+            [(Some(1), 2, Some(3), None), (None, 4, None, None)]
+        );
+        assert_eq!(
+            parts("https://discord.com/channels/1/2/threads/3/4"),
+            [(Some(1), 2, Some(4), Some(3))]
+        );
+        // A named page and a bare server stay links.
+        assert_eq!(
+            kinds("https://discord.com/channels/1/shop"),
+            [Kind::Link("https://discord.com/channels/1/shop".into())]
+        );
+        assert_eq!(
+            kinds("https://discord.com/channels/1"),
+            [Kind::Link("https://discord.com/channels/1".into())]
+        );
+        // The mention ends where the rule does: a fourth segment is text again.
+        let spans = inline("https://discord.com/channels/1/2/3/4");
+        assert_eq!(spans.last().map(|span| span.text.as_str()), Some("/4"));
+        // The query is part of the match.
+        let spans = inline("https://discord.com/channels/1/2?c=5 x");
+        assert_eq!(spans[0].text, "https://discord.com/channels/1/2?c=5");
+        // Embed titles without links keep them as text.
+        assert!(
+            embed_title("https://discord.com/channels/1/2", false)
+                .iter()
+                .all(|span| span.kind == Kind::Text)
+        );
+        // Other hosts are plain links.
+        assert!(matches!(
+            kinds("https://discord.gg/channels/1/2")[0],
+            Kind::Link(_)
+        ));
     }
 
     #[test]

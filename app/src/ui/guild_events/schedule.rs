@@ -399,7 +399,7 @@ pub(super) fn time_strings(
 
 /// How the status line of an event reads and is tinted (`D` of module 103355).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Tone {
+pub(in crate::ui) enum Tone {
     /// Upcoming: a brand icon, the text in the default colour.
     Plain,
     /// Starting soon or running late: the text is brand coloured too.
@@ -413,7 +413,7 @@ pub(super) enum Tone {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct Status {
+pub(in crate::ui) struct Status {
     pub tone: Tone,
     pub text: String,
     /// For a running event with an end: the green lead of the text, which `text` then continues.

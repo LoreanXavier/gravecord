@@ -212,7 +212,8 @@ pub(crate) fn invite_code(text: &str) -> Option<String> {
     if text.is_empty() {
         return None;
     }
-    if let Some(code) = super::invite_embed::invite_codes(text).into_iter().next() {
+    if let Some(key) = super::invite_embed::invite_codes(text).into_iter().next() {
+        let code = dc_state::coded_links::split_invite_key(&key).base_code;
         return Some(code);
     }
     text.chars()

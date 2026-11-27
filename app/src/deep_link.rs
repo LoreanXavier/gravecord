@@ -80,8 +80,39 @@ pub fn parse_protocol(url: &str) -> Option<Link> {
     })
 }
 
-/// A link to the web app: `https://discord.com/channels/...` on discord.com, ptb, canary or discordapp.com.
+/// The short hosts (`INVITE_HOST`, `GIFT_CODE_HOST`, `GUILD_TEMPLATE_HOST`) and the place of the app a
+/// `https://<host>/<code>` link stands for. Only a single `[a-zA-Z0-9-]+` segment counts (`N` of module 486889), so
+/// `discord.gg/channels/...` is not a place of the app.
+///
+/// Not in the pinned client for the gift and template hosts: its link click (module 697794) opens those two in the
+/// browser, whose page then hands `/gifts/<code>` or `/template/<code>` back to the app. Here the app opens them
+/// directly, as it does for `discord.com/template/<code>` links.
+const SHORT_HOSTS: [(&str, &str); 3] = [
+    ("discord.gg", "/invite/"),
+    ("discord.gift", "/gifts/"),
+    ("discord.new", "/template/"),
+];
+
+fn short_host_link(url: &str) -> Option<Link> {
+    let parsed = dc_state::coded_links::parse_url(url);
+    if !matches!(parsed.protocol.as_deref(), Some("http:" | "https:")) {
+        return None;
+    }
+    SHORT_HOSTS.iter().find_map(|(host, place)| {
+        let code = dc_state::coded_links::short_host_code(url, host)?;
+        Some(Link {
+            path: format!("{place}{code}"),
+            query: parsed.query.clone().unwrap_or_default(),
+        })
+    })
+}
+
+/// A link to the web app: `https://discord.com/channels/...` on discord.com, ptb, canary or discordapp.com, or a
+/// short host link (`SHORT_HOSTS`).
 pub fn parse_web(url: &str) -> Option<Link> {
+    if let Some(link) = short_host_link(url.trim()) {
+        return Some(link);
+    }
     let url = url.trim();
     let rest = strip_scheme(url, "https://").or_else(|| strip_scheme(url, "http://"))?;
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
@@ -131,7 +162,8 @@ pub enum Route {
     GuildPage { guild: u64, name: String },
     /// `/users/<id>`.
     User(u64),
-    /// `/invite/<code>`, `/app/invite-with-guild-onboarding/<code>`.
+    /// `/invite/<code>`, `/app/invite-with-guild-onboarding/<code>`: the invite key (`fB` of module 21599, the code
+    /// with the query's `event`, `channel` and `message`).
     Invite(String),
     /// `/gifts/<code>`, `/app/gifts/<code>`.
     Gift(String),
@@ -248,7 +280,8 @@ pub fn route(link: &Link) -> Route {
         }
         ["users", user] => id(user).map_or_else(other, Route::User),
         ["invite", code, ..] | ["app", "invite-with-guild-onboarding", code] => {
-            Route::Invite((*code).to_owned())
+            let search = (!link.query.is_empty()).then(|| format!("?{}", link.query));
+            Route::Invite(dc_state::coded_links::invite_key(code, search.as_deref()))
         }
         ["gifts", code, ..] | ["app", "gifts", code] => Route::Gift((*code).to_owned()),
         ["template", code, ..] => Route::Template((*code).to_owned()),
@@ -568,6 +601,30 @@ mod tests {
     }
 
     #[test]
+    fn short_hosts_stand_for_their_places() {
+        assert_eq!(
+            link("https://discord.gg/abc-1"),
+            Route::Invite("abc-1".to_owned())
+        );
+        assert_eq!(
+            link("http://www.discord.gg/abc?event=1234567890123456789"),
+            Route::Invite("abc?event=1234567890123456789".to_owned())
+        );
+        assert_eq!(
+            link("https://discord.gift/G1ft"),
+            Route::Gift("G1ft".to_owned())
+        );
+        assert_eq!(
+            link("https://discord.new/Tmpl"),
+            Route::Template("Tmpl".to_owned())
+        );
+        // Only one segment: these are not places of the app.
+        assert!(parse_web("https://discord.gg/channels/1/2").is_none());
+        assert!(parse_web("https://discord.gift/").is_none());
+        assert!(parse_web("https://promos.discord.gg/x").is_none());
+    }
+
+    #[test]
     fn the_other_places_of_the_table_route() {
         assert_eq!(link("discord://-/users/77"), Route::User(77));
         assert_eq!(
@@ -579,6 +636,11 @@ mod tests {
             Route::Invite("xyz".to_owned())
         );
         assert_eq!(link("discord://-/gifts/g1"), Route::Gift("g1".to_owned()));
+        // An invite keeps the event of its query.
+        assert_eq!(
+            link("https://discord.com/invite/abc?event=1234567890123456789&x=1"),
+            Route::Invite("abc?event=1234567890123456789".to_owned())
+        );
         assert_eq!(
             link("discord://-/template/t1"),
             Route::Template("t1".to_owned())

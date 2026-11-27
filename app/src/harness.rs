@@ -2313,6 +2313,12 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_gift_embed(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `coded-links follow <url>` / `state` / `template <code>`: a message link's click, the coded links of the
+            // last message and what they opened (`ui/coded_link_cards.rs`).
+            ["coded-links", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_coded_links(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["shop-embed", rest @ ..] => {
                 let arg = rest.join(" ");
                 let line = root.update(cx, |root, cx| root.script_shop_embed(&arg, cx));

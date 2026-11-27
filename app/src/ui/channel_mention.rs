@@ -86,7 +86,96 @@ fn no_access() -> Look {
     }
 }
 
+/// What `w` of module 605275 reads of a channel for a link mention (`channelOrMessageUrl`, `mediaPostLink`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Facts {
+    pub guild: Option<Id>,
+    pub name: String,
+    pub icon: &'static str,
+    /// `canViewChannel` (a thread through its parent).
+    pub can_view: bool,
+    /// `isMentionable`: every type but a category.
+    pub mentionable: bool,
+    pub dm: bool,
+    /// A thread of a forum or media channel.
+    pub forum_post: bool,
+    /// The parent channel of a forum post: its name and icon (`QG ?? "forum"`).
+    pub parent: Option<(String, &'static str)>,
+}
+
 impl Root {
+    /// `w`: the channel a link names, from any server the session holds or the direct messages.
+    pub(super) fn link_channel_facts(&self, id: Id) -> Option<Facts> {
+        let me = self.stores.me();
+        for guild in &self.stores.guilds {
+            if let Some(channel) = guild.channels.iter().find(|channel| channel.id == id) {
+                let kind = kind_number(&channel.kind);
+                let can = |permission| {
+                    me.is_some_and(|me| permissions::can_in_channel(guild, channel, me, permission))
+                };
+                return Some(Facts {
+                    guild: Some(guild.id),
+                    name: channel.name.clone(),
+                    icon: icon_for(
+                        kind,
+                        channel.nsfw,
+                        channel.flags & SPOILER_FLAG != 0,
+                        can(CONNECT),
+                        false,
+                    ),
+                    can_view: can(VIEW_CHANNEL),
+                    mentionable: kind != 4,
+                    dm: false,
+                    forum_post: false,
+                    parent: None,
+                });
+            }
+            if let Some(thread) = guild.threads.iter().find(|thread| thread.id == id) {
+                let parent = guild
+                    .channels
+                    .iter()
+                    .find(|channel| channel.id == thread.parent_id);
+                let can_view = parent.is_none_or(|parent| {
+                    me.is_some_and(|me| {
+                        permissions::can_in_channel(guild, parent, me, VIEW_CHANNEL)
+                    })
+                });
+                let forum_post =
+                    parent.is_some_and(|parent| matches!(kind_number(&parent.kind), 15 | 16));
+                return Some(Facts {
+                    guild: Some(guild.id),
+                    name: thread.name.clone(),
+                    icon: icon_for(thread.kind, false, false, true, forum_post),
+                    can_view,
+                    mentionable: true,
+                    dm: false,
+                    forum_post,
+                    parent: parent.filter(|_| forum_post).map(|parent| {
+                        (
+                            parent.name.clone(),
+                            icon_for(kind_number(&parent.kind), parent.nsfw, false, true, false),
+                        )
+                    }),
+                });
+            }
+        }
+        let private = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|channel| channel.id == id)?;
+        Some(Facts {
+            guild: None,
+            name: self.private_channel_name(private),
+            icon: "icons/text_channel.svg",
+            can_view: true,
+            mentionable: true,
+            dm: true,
+            forum_post: false,
+            parent: None,
+        })
+    }
+
     /// `w` then `F` (or `k`) for `<#id>`.
     pub(super) fn channel_mention_look(&self, id: Id) -> Look {
         let me = self.stores.me();

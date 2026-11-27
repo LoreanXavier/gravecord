@@ -7,6 +7,7 @@ pub mod automod_messages;
 pub mod calls;
 pub mod channel_member_counts;
 pub mod channel_status;
+pub mod coded_links;
 pub mod collectibles;
 pub mod components;
 pub mod confusables;

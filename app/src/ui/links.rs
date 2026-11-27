@@ -158,6 +158,10 @@ impl Root {
         if self.open_in_app(url, cx) {
             return;
         }
+        // A game or App Directory link opens its modal or page (module 697794, `coded_link_cards.rs`).
+        if self.open_coded_link_click(url, cx) {
+            return;
+        }
         // A `discord://` link, or a discord.com link to a place of the app, opens there and never in a browser.
         if self.open_deep_link(url, cx) {
             return;
