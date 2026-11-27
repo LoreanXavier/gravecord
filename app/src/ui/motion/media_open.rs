@@ -5,7 +5,7 @@
 //! Phoenix's media viewer (`discord-desktop/src/media_viewer/view.rs`) runs one transition, the slot `mv-shared`:
 //! 300 ms with curve 5, `cubic-bezier(.4, 0, .2, 1)` (spec at RVA `0x50f4361`). The picture moves and scales from the
 //! thumbnail's rectangle in the chat to its place in the viewer, and the scrim darkens with it; closing runs it back.
-//! A screen recording of the official client (30 fps) agrees: two openings and one closing fit this curve within
+//! A screen recording of Phoenix (30 fps) agrees: two openings and one closing fit this curve within
 //! 0.03 of the way on average (the closing within 0.013). Under reduced motion it snaps, as Phoenix's driver does.
 
 use super::{Css, Ease, key, value_from};

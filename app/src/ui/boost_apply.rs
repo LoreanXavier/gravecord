@@ -11,7 +11,7 @@
 //!
 //! Measured: the first step, from a capture of the official dialog (480 wide, the stepper of module
 //! 663803, the styles `quantitySelector*_T4asAA`). Not measured, built from the modules and the style sheets only
-//! (no account at hand held a free Boost): the confirm and the success step. Their header graphic is not in the
+//! (a capture needs a free Boost): the confirm and the success step. Their header graphic is not in the
 //! snapshot, so its box is left empty: the confirm step's Rive file (module 449349, `4e02ee04….riv`, artboard "Boost
 //! Server") and the success step's fallback picture and confetti (module 88671, `0f6e600f….png`, `5211bb6d….png`;
 //! with media URLs from the server it plays videos instead).

@@ -577,7 +577,7 @@ impl Root {
     }
 }
 
-/// The test DM of the harness: the test account's DM with the second test account. The only channel a script may
+/// The test DM of the harness: the test account's DM with one fixed account. The only channel a script may
 /// call in.
 #[cfg(feature = "capture")]
 pub const TEST_DM: Id = 1_568_693_333_864_480_939;

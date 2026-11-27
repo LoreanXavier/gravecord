@@ -29,7 +29,7 @@ pub(in crate::ui) struct State {
     exported: Option<String>,
 }
 
-/// The largest backup read (a typical Equicord backup is about 100 KB).
+/// The largest backup read (a full Equicord backup measured about 100 KB).
 const MAX_BACKUP_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The settings button with a press: the button inside a box that takes the click.

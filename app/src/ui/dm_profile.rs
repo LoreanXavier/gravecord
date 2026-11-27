@@ -2709,7 +2709,7 @@ mod tests {
 
     #[test]
     fn member_since_reads_the_snowflake() {
-        // loreanxavier's account, created on 29 October 2021 in the capture.
+        // An account created on 29 October 2021 in the capture.
         assert!(member_since(903_350_000_000_000_000).ends_with("2021"));
     }
 

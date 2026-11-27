@@ -1,8 +1,8 @@
 //! The Shop's pictures kept on disk between runs. The official client draws them with `<img>` and CSS backgrounds,
 //! so Chromium's HTTP cache serves a second visit from disk (`Cache-Control: public, max-age=86400` on
 //! `cdn.discordapp.com/media/v1/collectibles-shop/...`, with an `ETag` it revalidates after the day). Without a cache
-//! every start fetched every picture again: about fifty files, half a megabyte to 1.7 MB each, which on a home
-//! line took up to twenty seconds, and the CDN has no smaller variants of them (`size`, `width` and `format` are
+//! every start fetched every picture again: about fifty files, half a megabyte to 1.7 MB each, which could
+//! take up to twenty seconds, and the CDN has no smaller variants of them (`size`, `width` and `format` are
 //! ignored on that path).
 //!
 //! What is kept is the picture as the Shop draws it (already cut down to its box), under a name made of the URL's path
