@@ -20,6 +20,67 @@ const MENU_WIDTH: f32 = 222.;
 /// `calc(100vh - var(--custom-menu-viewport-padding)*2)`.
 const MENU_VIEWPORT_PADDING: f32 = 48.;
 
+/// `.flexible_M3qk4j` (476662 css): `min-width: var(--custom-menu-flexible-min-width)`, which the Menu of module 165862
+/// sets to 144px while the `2025-11-mana-context-menu` experiment is on (188px otherwise; every captured menu computes
+/// 144), and `max-width: 320px`.
+pub(super) const FLEXIBLE_MIN_WIDTH: f32 = 144.;
+pub(super) const FLEXIBLE_MAX_WIDTH: f32 = 320.;
+
+/// The border-box width of a `flexible_M3qk4j` menu whose widest row is `widest_row` wide: the row plus the scroller's
+/// 8px sides and the 1px border, kept between the menu's min and max width. Rows narrower than that take the menu's
+/// width; a label that does not fit is cut with an ellipsis (`label_M3qk4j`).
+pub(super) fn flexible_width(widest_row: f32) -> f32 {
+    (widest_row + 2. * 8. + 2. * 1.).clamp(FLEXIBLE_MIN_WIDTH, FLEXIBLE_MAX_WIDTH)
+}
+
+/// The label a message menu row shows. Not in the pinned client: a plugin's row keeps its English label, as the
+/// original does.
+fn message_row_label(label: &'static str, run: Action) -> &'static str {
+    if matches!(
+        run,
+        Action::PluginCloneSticker
+            | Action::PluginCopyStickerLink
+            | Action::PluginOpenStickerLink
+            | Action::PluginTranslate
+            | Action::PluginQuote
+            | Action::PluginMakeGif
+            | Action::PluginToggleDeletedHighlight
+            | Action::PluginToggleDiffView
+            | Action::PluginClearMessageHistory
+            | Action::PluginMessageLogger
+    ) {
+        label
+    } else {
+        dc_intl::tr(label)
+    }
+}
+
+/// Rows that draw something after the label (the external link icon, a plugin's icon, the check box, Copy's keys):
+/// counted as one 20px accessory 8px after the label.
+fn message_row_trailing(run: Action) -> bool {
+    matches!(
+        run,
+        Action::OpenUrl
+            | Action::VideoStats
+            | Action::CopySelection
+            | Action::PluginTranslate
+            | Action::PluginQuote
+            | Action::PluginMakeGif
+    )
+}
+
+/// A message menu row's natural width (frame message-more: 8px padding, the 20px icon and 8px, the label, 8px and the
+/// 20px caret, 8px padding).
+fn message_row_width(label: f32, icon: bool, trailing: bool) -> f32 {
+    8. + if icon { 20. + 8. } else { 0. } + label + if trailing { 8. + 20. } else { 0. } + 8.
+}
+
+/// The message menu's width: the captured 222 (the quick reactions and the rows of the pinned client), wider only
+/// when a row needs more, up to `flexible_M3qk4j`'s 320.
+fn message_menu_width(rows: impl Iterator<Item = f32>) -> f32 {
+    flexible_width(rows.fold(0., f32::max)).max(MENU_WIDTH)
+}
+
 /// The hover bar menu's top and max-height for a More button at `button_top` (ReferencePositionLayer, module 623646).
 /// The layer measures the menu before its first layout sets `--reference-position-layer-max-height`, so a tall menu
 /// is measured at the CSS fallback cap. `nudgeTopAlignment` then lifts that measured height to keep 12px off the
@@ -1765,25 +1826,7 @@ impl Root {
                 // `label_M3qk4j`: one line, cut with an ellipsis.
                 .truncate()
                 // Not in the pinned client: a plugin's row keeps its English label, as the original does.
-                .child(
-                    if matches!(
-                        run,
-                        Action::PluginCloneSticker
-                            | Action::PluginCopyStickerLink
-                            | Action::PluginOpenStickerLink
-                            | Action::PluginTranslate
-                            | Action::PluginQuote
-                            | Action::PluginMakeGif
-                            | Action::PluginToggleDeletedHighlight
-                            | Action::PluginToggleDiffView
-                            | Action::PluginClearMessageHistory
-                            | Action::PluginMessageLogger
-                    ) {
-                        label
-                    } else {
-                        dc_intl::tr(label)
-                    },
-                ),
+                .child(message_row_label(label, run)),
         )
         // The keyboard shortcut of Copy (module 373963 `keyCombo`).
         .when(run == Action::CopySelection, |this| {
@@ -1915,7 +1958,22 @@ impl Root {
         {
             rows.extend(self.quick_row(open.message, cx));
         }
-        for (index, item) in self.open_menu_items(open, saved).into_iter().enumerate() {
+        let items = self.open_menu_items(open, saved);
+        // `flexible_M3qk4j`: the captured menus are 222 wide; a plugin's longer label widens the menu up to 320.
+        let menu_width = message_menu_width(items.iter().filter_map(|item| match *item {
+            Item::Entry(label, icon, run, caret) => Some(message_row_width(
+                super::threads::measure_text(window, message_row_label(label, run), 14., 500.),
+                !icon.is_empty(),
+                caret || message_row_trailing(run),
+            )),
+            Item::Danger(label, icon, run) => Some(message_row_width(
+                super::threads::measure_text(window, message_row_label(label, run), 14., 500.),
+                !icon.is_empty(),
+                run == Action::RemoveReactions,
+            )),
+            Item::Separator => None,
+        }));
+        for (index, item) in items.into_iter().enumerate() {
             rows.push(match item {
                 Item::Separator => div()
                     .my(px(8.))
@@ -1937,7 +1995,7 @@ impl Root {
                 let natural = self.menu_height(open.own, open.message);
                 let (top, max_height) = more_menu_place(f32::from(at.y), viewport_height, natural);
                 (
-                    gpui::point(at.x - px(MORE_GAP + MENU_WIDTH), px(top)),
+                    gpui::point(at.x - px(MORE_GAP + menu_width), px(top)),
                     MORE_EDGE,
                     max_height,
                 )
@@ -1961,7 +2019,7 @@ impl Root {
                         .occlude()
                         // Not in the pinned client: MoreQuickReactions' grid widens the menu (`min-width:
                         // fit-content`, `plugin_hooks/more_quick_reactions.rs`).
-                        .w(px(super::plugin_hooks::more_quick_menu_width(MENU_WIDTH)))
+                        .w(px(super::plugin_hooks::more_quick_menu_width(menu_width)))
                         .max_h(px(max_height))
                         .rounded(px(8.))
                         .bg(color("--background-surface-higher"))
@@ -2865,6 +2923,35 @@ mod priority_tests {
         assert_eq!(
             super::parse_reaction_route("\u{1f44d}"),
             ("\u{1f44d}", None)
+        );
+    }
+}
+
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+
+    #[test]
+    fn flexible_menus_grow_with_their_widest_row_between_144_and_320() {
+        // Frame composer-plus: a 183.44 row makes the 201.44 menu; frame file-more: short rows keep 144.
+        assert!((flexible_width(183.44) - 201.44).abs() < 1e-3);
+        assert_eq!(flexible_width(60.), FLEXIBLE_MIN_WIDTH);
+        assert_eq!(flexible_width(900.), FLEXIBLE_MAX_WIDTH);
+    }
+
+    #[test]
+    fn the_message_menu_keeps_222_until_a_row_needs_more() {
+        // Frame message-more: Add Reaction's row is 204 (132 of label between the icon and the caret).
+        assert!((message_row_width(132., true, true) - 204.).abs() < 1e-3);
+        assert_eq!(message_menu_width([204.].into_iter()), MENU_WIDTH);
+        // A plugin's longer label widens the menu, never past 320.
+        assert!(
+            (message_menu_width([message_row_width(190., true, false)].into_iter()) - 252.).abs()
+                < 1e-3
+        );
+        assert_eq!(
+            message_menu_width([message_row_width(600., true, true)].into_iter()),
+            FLEXIBLE_MAX_WIDTH
         );
     }
 }

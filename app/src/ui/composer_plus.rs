@@ -29,6 +29,12 @@ pub(super) const DURATIONS: [(u32, &str); 7] = [
     (336, "2 weeks"),
 ];
 
+/// A "+" menu row's natural width for a label `label` wide: 8px padding each side, the 20px icon and the 8px gap, and
+/// the 20px caret 8px after the label (frame composer-plus: 183.44 for "Schedule Message", 111.44 of text).
+pub(super) fn plus_row_width(label: f32, caret: bool) -> f32 {
+    8. + 20. + 8. + label + if caret { 8. + 20. } else { 0. } + 8.
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Plus {
     Upload,
@@ -292,7 +298,8 @@ impl Root {
         }
     }
 
-    /// The menu above the "+" button: 201.44 wide, its bottom 61px above the window's, left edge on the composer's.
+    /// The menu above the "+" button: as wide as its widest row (201.44 in the capture), its bottom 61px above the
+    /// window's, left edge on the composer's.
     pub(super) fn plus_menu_layer(
         &self,
         window: &Window,
@@ -326,7 +333,8 @@ impl Root {
                 .font_weight(FontWeight(500.))
                 .text_color(color("--text-default"))
                 .child(icon(glyph, 20., "--interactive-icon-default"))
-                .child(div().flex_1().child(label))
+                // `label_M3qk4j`: `flex: 1 1 auto`, one line, cut with an ellipsis.
+                .child(div().flex_1().min_w(px(0.)).truncate().child(label))
                 .when(caret, |this| {
                     this.child(icon("pm_chevron", 20., "--interactive-icon-default"))
                 })
@@ -352,14 +360,46 @@ impl Root {
                 })
         };
         let record_finalizing = self.record_voice_disabled();
+        let share_clip = cfg!(windows) && !crate::storage::is_capture_run() && self.clips_listed();
+        // `menu_M3qk4j flexible_M3qk4j` (frame composer-plus: 201.44 for "Schedule Message" and its caret): as wide as
+        // the widest row, from 144 to 320; a longer label is cut with an ellipsis (`label_M3qk4j`).
+        let rows: Vec<(&str, bool)> = [
+            Some((dc_intl::tr("Upload a File"), false)),
+            Some((dc_intl::tr("Create Thread"), false)),
+            Some((dc_intl::tr("Create Poll"), false)),
+            Some((dc_intl::tr("Use Apps"), false)),
+            self.schedule_offered()
+                .then(|| (dc_intl::tr("Schedule Message"), true)),
+            self.record_voice_offered()
+                .then(|| (dc_intl::tr("Record Voice Message"), false)),
+            share_clip.then(|| (dc_intl::tr("Share a Clip"), false)),
+            self.voice_messages_plus_label().map(|label| (label, false)),
+            self.clip_upload_plus_label().map(|label| (label, false)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let width = super::menu::flexible_width(
+            rows.iter()
+                .map(|(label, caret)| {
+                    plus_row_width(
+                        super::threads::measure_text(window, label, 14., 500.),
+                        *caret,
+                    )
+                })
+                .fold(0., f32::max),
+        );
         let menu = div()
             .parity_with_border("plus-menu", 1.)
             .id("composer-plus-menu")
             .occlude()
             .absolute()
-            .left(px((self.composer_column_left() + 20.).min((self.viewport.0 - 220.).max(16.))))
+            // The menu keeps 18.56 from the window's right edge (220 for the captured 201.44).
+            .left(px(
+                (self.composer_column_left() + 20.).min((self.viewport.0 - width - 18.56).max(16.))
+            ))
             .bottom(px(61.))
-            .w(px(201.44))
+            .w(px(width))
             .p(px(8.))
             .rounded(px(8.))
             .border_1()
@@ -426,21 +466,17 @@ impl Root {
                     cx,
                 )
             }))
-            .children(
-                (cfg!(windows) && !crate::storage::is_capture_run() && self.clips_listed()).then(
-                    || {
-                        row(
-                            "plus-share-clip",
-                            "clips_clips",
-                            dc_intl::tr("Share a Clip"),
-                            Some(Plus::ShareClip),
-                            false,
-                            false,
-                            cx,
-                        )
-                    },
-                ),
-            )
+            .children(share_clip.then(|| {
+                row(
+                    "plus-share-clip",
+                    "clips_clips",
+                    dc_intl::tr("Share a Clip"),
+                    Some(Plus::ShareClip),
+                    false,
+                    false,
+                    cx,
+                )
+            }))
             // Not in the pinned client: VoiceMessages' row, last (`plugin_hooks/voice_messages.rs`).
             .children(self.voice_messages_plus_label().map(|label| {
                 row(
@@ -852,6 +888,20 @@ mod tests {
                 "layout_type": 1,
             }})
         );
+    }
+
+    #[test]
+    fn the_plus_menu_is_as_wide_as_its_widest_row_from_144_to_320() {
+        use super::super::menu::flexible_width;
+        // Frame composer-plus: "Schedule Message" (111.44 of text) and its caret make the 201.44 menu, 183.44 rows.
+        assert!((plus_row_width(111.44, true) - 183.44).abs() < 1e-3);
+        assert!((flexible_width(plus_row_width(111.44, true)) - 201.44).abs() < 1e-3);
+        // A short menu keeps the 144 minimum; a long plugin label stops the menu at 320 and is cut.
+        assert_eq!(flexible_width(plus_row_width(40., false)), 144.);
+        assert_eq!(flexible_width(plus_row_width(400., false)), 320.);
+        // VoiceMessages' "Send Audio File as Voice Message" (about 215 of text) widens it past 201.44, not past 320.
+        let wide = flexible_width(plus_row_width(215., false));
+        assert!(wide > 201.44 && wide < 320.);
     }
 
     #[test]

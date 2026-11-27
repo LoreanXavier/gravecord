@@ -275,10 +275,7 @@ impl Root {
             // `useFriendsItem` (module 808144): only with `2026-01-friends-in-server` giving
             // `guildFriendsEnabled`.
             Entry::FriendsInServer => {
-                self.stores
-                    .experiments
-                    .variant("2026-01-friends-in-server")
-                    == Some(1)
+                self.stores.experiments.variant("2026-01-friends-in-server") == Some(1)
             }
             _ => true,
         }
@@ -472,6 +469,7 @@ impl Root {
                         .child(
                             div()
                                 .flex_1()
+                                .min_w(px(0.))
                                 .text_size(px(14.))
                                 .line_height(px(18.))
                                 .font_weight(FontWeight(500.))
@@ -480,6 +478,9 @@ impl Root {
                                 } else {
                                     color("--text-strong")
                                 })
+                                // `label_M3qk4j` of the `fixed_M3qk4j` 220 menu: one line, cut with an ellipsis (a
+                                // plugin's longer label no longer runs past the menu's edge).
+                                .truncate()
                                 .child(label),
                         )
                         // Not in the pinned client: NewGuildSettings gives its row the CogWheel after the label too.
