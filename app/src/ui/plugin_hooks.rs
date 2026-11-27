@@ -82,6 +82,7 @@ mod platform_indicators;
 mod plugin_commands;
 mod plugin_notifications;
 mod preview_message;
+mod quick_reply;
 mod quoter;
 mod read_all;
 mod relationship_notifier;

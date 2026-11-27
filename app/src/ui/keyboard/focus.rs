@@ -867,6 +867,10 @@ impl Root {
             modal: self.modal_open() > 0,
             typing,
         };
+        // Not in the pinned client: QuickReply (`plugin_hooks/quick_reply.rs`).
+        if self.quick_reply_key(keystroke, facts.layers || facts.modal, window, cx) {
+            return true;
+        }
         match route(keystroke, facts) {
             Route::Global(hit) => {
                 // Plain Escape reaches the chain after the overlays have had it (the end of the root handler).

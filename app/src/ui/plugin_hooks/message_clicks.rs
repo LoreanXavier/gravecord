@@ -665,7 +665,7 @@ impl Root {
     }
 
     /// `canSend`: a DM, or a guild channel the account may write in.
-    fn can_send_here(&self) -> bool {
+    pub(in crate::ui) fn can_send_here(&self) -> bool {
         self.guild.is_none() || self.can_here(dc_state::permissions::SEND_MESSAGES)
     }
 

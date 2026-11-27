@@ -2683,6 +2683,35 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "QuickReply",
+        name: "QuickReply",
+        description: "Reply to (ctrl + up/down) and edit (ctrl + shift + up/down) messages via keybinds",
+        origin: Origin::Vencord,
+        source: "src/plugins/quickReply/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "shouldMention",
+                label: "Should Mention",
+                description: "Ping reply by default",
+                kind: Kind::Select {
+                    options: &[
+                        ("Follow NoReplyMention plugin (if enabled)", Lit::Int(2)),
+                        ("Enabled", Lit::Int(1)),
+                        ("Disabled", Lit::Int(0)),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "ignoreBlockedAndIgnored",
+                label: "Ignore Blocked And Ignored",
+                description: "Ignore messages by blocked/ignored users when navigating",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "Quoter",
         name: "Quoter",
         description: "Adds the ability to create an inspirational quote image from a message.",
