@@ -52,7 +52,7 @@ md-5 = "0.10"
 # The update setup file is verified against the SHA-256 in the feed (updater.rs).
 sha2 = "0.10"
 # Standard stickers are Lottie JSON (module 148355 draws them with lottie-web); rasterlottie (MIT OR Apache-2.0) draws
-# them on the CPU, as Serein does (DECISIONS.md).
+# them on the CPU, as Serein does.
 rasterlottie = { version = "=0.2.2", default-features = false }
 # The ClearURLs plugin runs the ClearURLs project's rules (plugins/clear_urls.rs); both crates are already in the tree.
 regex = "1"

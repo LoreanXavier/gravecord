@@ -385,7 +385,7 @@ const SHARE_FLOOR: u32 = dc_media::screen::BITRATE_MIN;
 /// A still screen's pictures: an encoder output of about 200 kb/s at 60 fps.
 const STILL_BYTES: usize = 200_000 / 8 / FPS as usize;
 
-/// Windows' default timer tick, to which tokio's timer rounds every wait up (DECISIONS.md, `clock.rs`).
+/// Windows' default timer tick, to which tokio's timer rounds every wait up (see `clock.rs`).
 const SYSTEM_TICK_US: u64 = 15_625;
 
 /// What the far end sends back.

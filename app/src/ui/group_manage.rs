@@ -12,7 +12,7 @@
 //! - A group's row in the DM list: the group avatar, the name, "{n} Members" under it, the close button on the right.
 //!
 //! Group DM states are not captured from the official client yet; sizes not in a module or its CSS follow the 1:1
-//! DM rows and are marked in `DECISIONS.md`.
+//! DM rows.
 
 use super::tooltip::{Side, Tip};
 use super::unread_dms::{avatar, group_icon};

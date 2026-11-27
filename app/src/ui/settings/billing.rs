@@ -3,7 +3,7 @@
 //!
 //! Only the empty states are drawn: the captured account has no subscription, credit, payment source or payment.
 //! A saved source, a running subscription or a past payment needs the field layout of its API record, which is not in
-//! the recorded traffic; those lists draw nothing until it is (`BLOCKED.md`).
+//! the recorded traffic; those lists draw nothing until it is.
 
 use super::{ButtonKind, Root, button, color};
 use crate::ui::{icon, modal};

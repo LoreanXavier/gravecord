@@ -132,7 +132,7 @@ impl Root {
         };
         dialog.busy = false;
         if body["ok"] == true {
-            // The school, PIN and waitlist steps were not captured (BLOCKED.md); the dialog stays on its field.
+            // The school, PIN and waitlist steps were not captured; the dialog stays on its field.
             let _ = next_step(&body["body"]);
         } else {
             dialog.error = Some(crate::ui::server_automod::any_error_message(&body["body"]));

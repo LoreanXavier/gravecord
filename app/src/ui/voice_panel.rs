@@ -2,7 +2,7 @@
 //! Upload Logs, and the Privacy tab with the call's code) and the noise suppression popout (`TL` in module 596339).
 //! Measured in `design/dom/popouts/voice-panel-ping-darker-cozy.json` and `voice-panel-krisp-darker-cozy.json`.
 //!
-//! The official noise popout names Krisp. gravecord does not run Krisp (BLOCKED.md): the same popout names what runs,
+//! The official noise popout names Krisp. gravecord does not run Krisp: the same popout names what runs,
 //! DeepFilterNet.
 
 mod ping_graph;

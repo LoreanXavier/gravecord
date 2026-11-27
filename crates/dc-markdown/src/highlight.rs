@@ -1,5 +1,5 @@
 //! Code block highlighting with syntect, mapped onto the official `--text-code-*` tokens.
-//! Token-level parity with the bundle's highlighter is a documented gap in `BLOCKED.md`.
+//! Token-level parity with the bundle's highlighter is a known gap.
 
 use std::sync::OnceLock;
 use syntect::parsing::{ParseState, Scope, ScopeStack, ScopeStackOp, SyntaxSet};

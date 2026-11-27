@@ -4,7 +4,7 @@
 //! heights so the scroll offsets of the nav bar match.
 //!
 //! Not drawn: the hero and bento videos, and the Rive buttons' glow. Those are video and
-//! canvas content in the official page (`BLOCKED.md`).
+//! canvas content in the official page.
 
 use super::{Root, color, icon};
 use crate::net::Request;

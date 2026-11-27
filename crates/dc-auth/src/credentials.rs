@@ -3,7 +3,7 @@
 //! Adapted from Serein (MIT OR Apache-2.0): `apps/desktop/src/credentials.rs` and `crates/platform/src/login_keyring.rs`.
 //! Kept from there: one worker thread orders every read, write and delete, each waits at most five seconds, a late
 //! answer is dropped, and a token read back is validated before it is used. Left out: the plaintext fallback and the
-//! Linux secret-service paths (gravecord is Windows only, `DECISIONS.md`).
+//! Linux secret-service paths (gravecord is Windows only).
 
 use dc_proto::secrets::Token;
 use std::sync::mpsc;

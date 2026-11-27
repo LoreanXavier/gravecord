@@ -1,8 +1,7 @@
 //! The clip file: a plain MP4 (ISO base media, not fragmented, `moov` before `mdat` so a reader can start at once) with
 //! one H.264 video track, one Opus audio track per source, and the clip metadata in a `uuid` box at the very end.
 //!
-//! The official clip's box layout is not in the bundle (the native module writes it), so these choices are ours and are
-//! recorded in DECISIONS.md: Opus in MP4 (the "Opus" sample entry with its `dOps` box, as the Opus-in-ISOBMFF
+//! The official clip's box layout is not in the bundle (the native module writes it), so these choices are ours: Opus in MP4 (the "Opus" sample entry with its `dOps` box, as the Opus-in-ISOBMFF
 //! specification defines it), because the stream's own audio is Opus and no AAC encoder is in the tree; and the
 //! metadata in a top-level `uuid` box last in the file, because the official upload path looks for the final `uuid`
 //! box (module 489496 `VO`, "mp4boxInputFile" loop) and keeps its first 24 bytes.

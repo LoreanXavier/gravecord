@@ -14,7 +14,7 @@
 //!
 //! A harness run is inert: the lookup (a GET) goes out, the redeem is refused by `net.rs` and its answer shows the
 //! dialog's generic failure text. The dialog's own layout has no capture of the official (the bundle's markup is read,
-//! not measured): see `BLOCKED.md`.
+//! not measured).
 
 use super::Root;
 use crate::editor::{Editor, EditorEvent};

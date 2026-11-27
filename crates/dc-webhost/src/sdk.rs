@@ -416,7 +416,7 @@ impl Bridge {
                 post(reply(cmd, nonce, json!({"participants": ctx.participants})))
             }
             // The activity's presence is accepted and answered as the official client answers; this client does not
-            // publish it (BLOCKED.md).
+            // publish it.
             "SET_ACTIVITY" => post(reply(cmd, nonce, args["activity"].clone())),
             "REQUEST_PROXY_TICKET_REFRESH" => {
                 if let Some(denied) = need_auth(self) {

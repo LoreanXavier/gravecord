@@ -25,7 +25,7 @@
 //! * a custom file is a JPG, PNG, GIF or MP4 of at most 10 MiB (`G9 = 0xa00000`, the filter list of `et`), at most 25
 //!   of them (`maxCustomBackgrounds`); an upload refused for its size says `mrlScX`, any other failure `Mt8yDB`.
 //!
-//! What differs, and why (BLOCKED.md "Video: stream attenuation, hook, background"): a picked picture goes up as it
+//! What differs, and why: a picked picture goes up as it
 //! is, without the official crop step (the image editor of module 685663) and without the Tenor GIF picker.
 
 mod clip;

@@ -2,7 +2,7 @@
 //! compared with `design/golden/windows/login/*@1.png`. Everything that talks to Discord is `dc-auth`; this file only
 //! draws the states it reports and turns clicks and typing into its commands.
 //!
-//! Left out here, on purpose: the passkey sign in with no password (`BLOCKED.md`). The WebAuthn second factor runs the
+//! Left out here, on purpose: the passkey sign in with no password. The WebAuthn second factor runs the
 //! system's prompt through `dc-webauthn`. The captcha is hCaptcha's own widget in a `dc-webhost` surface over the
 //! dialog's slot.
 

@@ -6,7 +6,7 @@
 //! The behaviour follows the original plugins, read in `Vendicated/Vencord` (`src/plugins`) and `Equicord/Equicord`
 //! (`src/equicordplugins`), both GPL-3.0-or-later like gravecord. Each definition names the file it was read from.
 //! The code is a native rewrite: there are no webpack patches, so a Discord update cannot break a port the way it
-//! breaks a JS patch, and the plugins ship and update with the app (see `DECISIONS.md`, "Built-in plugins").
+//! breaks a JS patch, and the plugins ship and update with the app.
 //!
 //! The state is one JSON object in `storage.json` under `plugins`. Code that a plugin changes asks [`on`] at the
 //! place it acts, so a switch takes effect on the next frame without a restart.

@@ -28,7 +28,7 @@ use std::{
 /// behind.
 const STREAM_AUDIO_FRAMES: usize = 6;
 /// RMS (about -50 dBFS) from which a mixed voice frame counts as someone speaking, for stream attenuation. The
-/// official engine's compressor is native code; this threshold is ours (BLOCKED.md, stream attenuation).
+/// official engine's compressor is native code; this threshold is ours.
 #[cfg(test)]
 const VOICE_AUDIBLE: f32 = 0.003;
 

@@ -1,5 +1,5 @@
 //! Flux stores. M0 slice: the parts of UserStore, GuildStore, ChannelStore and MessageStore the first screen reads.
-//! Names and getters follow `STORES`; the rest of each store is tracked as open rows in `FEATURES.md`.
+//! Names and getters follow `STORES`; the rest of each store is not mirrored yet.
 
 pub mod account_events;
 pub mod autocomplete;

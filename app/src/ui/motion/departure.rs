@@ -1,5 +1,4 @@
-//! Not in the pinned client: the ghost a deleted message leaves, taken from Discord's native client ("Phoenix",
-//! `DECISIONS.md`). The pinned build drops the row at once.
+//! Not in the pinned client: the ghost a deleted message leaves, taken from Discord's native client ("Phoenix"). The pinned build drops the row at once.
 //!
 //! Phoenix's `DeletedGhost` (`discord-desktop-chat/src/chat/row_motion.rs`, `message-delete`) keeps drawing the
 //! deleted row for a moment:

@@ -4,9 +4,9 @@
 //! No VP9 decoder is in the tree, so this reads the same clip's H.264 sibling, `7c5b005481eed9fc.mp4` (the build lists
 //! it as the second source: the same 64 frames, the mark on a flat navy matte), and recovers the alpha from the luma:
 //! the matte is the picture's first pixel, a pixel's alpha is how far its luma climbs from the matte towards white. The
-//! mark is white, so the frame is white with that alpha. The substitute is listed in `BLOCKED.md`.
+//! mark is white, so the frame is white with that alpha.
 //!
-//! The file is not bundled (DECISIONS.md): it is fetched once from the build's CDN, kept under the run's data folder and
+//! The file is not bundled: it is fetched once from the build's CDN, kept under the run's data folder and
 //! decoded when the connecting screen needs it.
 
 use crate::storage;

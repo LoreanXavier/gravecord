@@ -821,7 +821,7 @@ impl Root {
             cx,
         );
         // The share button copies the item's link and says so in a toast (module 760429: `Link Copied!`). The official
-        // button opens the forward picker with this copy as one of its actions; that picker is in BLOCKED.md.
+        // button opens the forward picker with this copy as one of its actions; that picker is not built.
         let share_sku = sku.clone();
         let share = round("shop-modal-share", "shop_share", "--text-strong").on_click(cx.listener(
             move |this, _, _, cx| {

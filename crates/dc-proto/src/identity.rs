@@ -104,7 +104,7 @@ fn os_versions() -> (String, String, String) {
 #[derive(Clone, Debug)]
 pub struct Launch {
     pub client_launch_id: String,
-    /// The original computes this in libdiscore from the JS environment. See `BLOCKED.md`.
+    /// The original computes this in libdiscore from the JS environment.
     pub launch_signature: String,
     pub client_heartbeat_session_id: String,
 }

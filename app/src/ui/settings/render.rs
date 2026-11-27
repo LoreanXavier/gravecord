@@ -675,8 +675,7 @@ pub(super) fn suppression(index: usize) -> dc_voice::Suppression {
     }
 }
 
-/// gravecord's own switch under Echo Cancellation, not in the official client (`dc_voice`'s `dereverb.rs`,
-/// DECISIONS.md). The generated pages stay as captured; it is drawn after the row it follows.
+/// gravecord's own switch under Echo Cancellation, not in the official client (`dc_voice`'s `dereverb.rs`). The generated pages stay as captured; it is drawn after the row it follows.
 pub(in crate::ui) const ROOM_ECHO_KEY: &str = "gravecord_reduce_room_echo";
 #[cfg(test)]
 const ROOM_ECHO_AFTER: &str = "voice_echo_cancellation_setting";

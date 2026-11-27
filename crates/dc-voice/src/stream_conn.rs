@@ -3,8 +3,7 @@
 //!
 //! Adapted from Serein `crates/discord-voice/src/transport.rs` (`run_stream`, `run_inner`), MIT OR Apache-2.0, and
 //! from this crate's `session::run`, whose socket, heartbeat, discovery and DAVE handling it repeats in a smaller
-//! shape (the call loop interleaves audio devices and the mixer too tightly to share one function). Differences from the
-//! official client are in DECISIONS.md.
+//! shape (the call loop interleaves audio devices and the mixer too tightly to share one function).
 use crate::{
     DisconnectReason, clock,
     dave::Dave,

@@ -1,5 +1,5 @@
 //! The login screen's artwork. Static files of the pinned build's CDN, fetched on first use and kept on disk next to the
-//! fonts (`fonts.rs` does the same); nothing is bundled (`DECISIONS.md`).
+//! fonts (`fonts.rs` does the same); nothing is bundled.
 
 use anyhow::{Context as _, Result};
 use dc_proto::pin;

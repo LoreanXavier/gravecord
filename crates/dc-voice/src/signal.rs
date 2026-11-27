@@ -165,7 +165,7 @@ fn codecs() -> Value {
 /// `selectProtocol` of module 921747 for UDP: `{protocol, data: {address, port, mode}, ...transport info, codecs,
 /// rtc_connection_id, experiments}`. `experiments` is what `_chooseExperiments` adds; every entry there opts into
 /// server behaviour behind a flag of the official media engine or an experiment this client has no reading of
-/// (`connection_log`, `fixed_keyframe_interval`, `voice_quality_scoring`, ...), so the list is empty (BLOCKED.md).
+/// (`connection_log`, `fixed_keyframe_interval`, `voice_quality_scoring`, ...), so the list is empty.
 pub(crate) fn select_protocol(
     address: IpAddr,
     port: u16,

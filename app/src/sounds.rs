@@ -8,7 +8,7 @@
 //! the per-sound switches; the hooks that play events do (`useSound`, module 596339: `isSoundDisabled(sound)` first,
 //! volume 0.4), and the Preview Sound links do not.
 //!
-//! The files are not bundled (DECISIONS.md): each is fetched once from `https://discord.com/assets/<file>`, kept under
+//! The files are not bundled: each is fetched once from `https://discord.com/assets/<file>`, kept under
 //! `%LOCALAPPDATA%\gravecord\sounds` and decoded in memory. Capture runs play nothing and fetch nothing; they only keep a
 //! trace of what would have played, for the harness.
 

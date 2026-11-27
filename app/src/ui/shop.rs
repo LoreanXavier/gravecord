@@ -1312,7 +1312,7 @@ impl Root {
             _ => None,
         };
         let beta = id == "game-servers";
-        // Game Servers leads to a tab that is not built (BLOCKED.md): it neither takes a click nor underlines on hover.
+        // Game Servers leads to a tab that is not built: it neither takes a click nor underlines on hover.
         let live = tab.is_some() || menu.is_some();
         div()
             .id(SharedString::from(format!("shop-nav-{id}")))
@@ -1623,7 +1623,7 @@ impl Root {
                     .items_center()
                     .gap(px(8.))
                     // A Game Shops row opens that game's storefront page; Game Servers has its own tab, which is not
-                    // built (BLOCKED.md), so that row neither highlights nor takes a click.
+                    // built, so that row neither highlights nor takes a click.
                     .when(tab.is_some() || game.is_some(), |row| {
                         row.cursor_pointer()
                             .hover(|row| row.bg(color("--background-mod-subtle")))

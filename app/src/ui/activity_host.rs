@@ -904,7 +904,7 @@ impl Root {
                 }
             }
             Ask::OpenExternalLink { nonce, url } => {
-                // The untrusted-link confirmation of the official client is not built: no link opens (BLOCKED.md).
+                // The untrusted-link confirmation of the official client is not built: no link opens.
                 tracing::debug!(
                     length = url.len(),
                     "activity asked to open a link: not opened"

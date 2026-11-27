@@ -1,5 +1,4 @@
-//! Not in the pinned client: the typing indicator's row fades in and out, as in Discord's native client ("Phoenix",
-//! `DECISIONS.md`). The pinned build mounts and unmounts it at once (`.typing_U9Tvvz` has no transition).
+//! Not in the pinned client: the typing indicator's row fades in and out, as in Discord's native client ("Phoenix"). The pinned build mounts and unmounts it at once (`.typing_U9Tvvz` has no transition).
 //!
 //! Phoenix's `chat/typing.rs` wraps the row (`typing-row`) in a presence with the slot `chat-typing-fade`: the same
 //! transition for entering and leaving, 500 ms with curve 4 (`ease-in-out`, spec at RVA `0x154da7d8`), drives the

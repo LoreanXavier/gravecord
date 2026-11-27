@@ -58,7 +58,7 @@ const ATTEN_OTHERS_STORED: &str = "audio.attenuation_others";
 const QOS_STORED: &str = "audio.qos";
 const STREAM_ATTEN_STORED: &str = "audio.stream_attenuation";
 const STREAM_ATTEN_STRENGTH_STORED: &str = "audio.stream_attenuation_strength";
-/// `getVideoHook`: kept, but this client captures with the system API and has no hook to turn on (BLOCKED.md).
+/// `getVideoHook`: kept, but this client captures with the system API and has no hook to turn on.
 const VIDEO_HOOK_STORED: &str = "audio.video_hook";
 const RECORDING_STORED: &str = "audio.recording";
 /// Native in the official client, so no store resets it; kept in storage.json here.

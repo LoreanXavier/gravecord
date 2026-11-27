@@ -1,6 +1,6 @@
 //! Room echo removal: online weighted prediction error (WPE) dereverberation, single channel.
 //!
-//! Not in the official client: gravecord's "Reduce Room Echo" switch, under Echo Cancellation (DECISIONS.md). Echo
+//! Not in the official client: gravecord's "Reduce Room Echo" switch, under Echo Cancellation. Echo
 //! cancellation only takes out what the speakers played; this takes out the room's own reverb on the voice, which
 //! makes a speaker in a bare room sound far away.
 //!

@@ -3,7 +3,7 @@
 //! `sq`): the pages with their section lists, the store listings behind the sku ids, and the pricing map. The cards are
 //! module 869099, the header module 980780, the page background module 953331 `es`.
 //!
-//! Not built (BLOCKED.md): the sku modal a card opens (module 317560), the purchase and gift flows behind the hover
+//! Not built: the sku modal a card opens (module 317560), the purchase and gift flows behind the hover
 //! buttons, the wishlist tooltip, the leaderboard, promotion banners and the hover animation of the cards.
 use super::{HEADER, Menu, Root, Tab};
 use crate::parity::Parity;
@@ -1341,7 +1341,7 @@ impl Root {
                 }),
             )
             .on_click(cx.listener(move |_, _, _, _| {
-                // A card opens the sku modal of module 317560, which is not built (BLOCKED.md).
+                // A card opens the sku modal of module 317560, which is not built.
             }))
             .into_any_element()
     }

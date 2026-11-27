@@ -207,7 +207,7 @@ impl Cta {
 }
 
 /// Module 461888, for the cases this client can act on: a member goes to the server, a discoverable server is joined as
-/// a preview. Adopt Tag, View Application Status, Apply to Join and Accept have no flow here (BLOCKED.md).
+/// a preview. Adopt Tag, View Application Status, Apply to Join and Accept have no flow here.
 fn cta_for(member: bool, profile: &Profile) -> Option<Cta> {
     if member {
         Some(Cta::GoToServer)

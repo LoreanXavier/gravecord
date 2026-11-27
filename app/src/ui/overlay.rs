@@ -64,7 +64,7 @@ pub(super) fn window_allowed_on(capture: bool, desktop: Option<&str>) -> bool {
 }
 
 /// Whether this run does any overlay work at all: a harness run, or any normal non-test desktop run unless
-/// disabled with `GRAVECORD_OVERLAY=0`. BLOCKED.md, "Injected overlay anticheat compatibility".
+/// disabled with `GRAVECORD_OVERLAY=0` (for games whose anticheat objects to an overlay).
 pub(super) fn gate_on(capture: bool, inert_or_test: bool, env: Option<&str>) -> bool {
     capture || (!inert_or_test && env != Some("0"))
 }

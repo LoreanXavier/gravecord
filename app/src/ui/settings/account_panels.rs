@@ -316,7 +316,7 @@ impl Root {
     }
 
     /// Module 158935 `by`: Security Keys, Authenticator App, SMS Authentication and Backup Codes, in that order.
-    /// Adding a security key needs the platform's WebAuthn dialog (BLOCKED.md), so that button is not drawn.
+    /// Adding a security key needs the platform's WebAuthn dialog, so that button is not drawn.
     fn mfa_body(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let account = &self.stores.account;
         let flags = self

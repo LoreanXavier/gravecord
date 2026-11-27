@@ -1,5 +1,5 @@
 //! Not in the pinned client: the media viewer opens from the picture that was clicked and closes back into it, as in
-//! Discord's native client ("Phoenix", `DECISIONS.md`). The pinned build fades the viewer in over 200 ms with the
+//! Discord's native client ("Phoenix"). The pinned build fades the viewer in over 200 ms with the
 //! scrim on the modal spring (`lightbox.rs`).
 //!
 //! Phoenix's media viewer (`discord-desktop/src/media_viewer/view.rs`) runs one transition, the slot `mv-shared`:

@@ -3,7 +3,7 @@
 //! The official client draws the overlay in a frameless, transparent, always-on-top Electron window of its own
 //! (`DISCORD_OutOfProcessOverlay`, shown with `showInactive`) that the native module `discord_desktop_overlay` keeps
 //! over the focused game and makes click-through while input is locked (`setInteractionEnabled`, module 222506). The
-//! legacy overlay injects a hook DLL instead (`discord_overlay2`); gravecord does not inject (`BLOCKED.md`).
+//! legacy overlay injects a hook DLL instead (`discord_overlay2`); gravecord does not inject.
 //!
 //! - [`decision`]: when the overlay is drawn over a game (`OverlayRenderStore` `Q`, module 861862; the per-game
 //!   enablement `eY` of `RunningGameStore`, module 397369).

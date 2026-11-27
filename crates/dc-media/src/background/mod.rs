@@ -6,7 +6,7 @@
 //! `selfie_segmentation_landscape.tflite`, 256x144; MediaPipe, Apache-2.0), smooths the mask and mixes. Here the same
 //! model runs on [`tflite`]'s CPU interpreter and the same smoothing and mixing run in [`composite`].
 //!
-//! The model is not bundled (nothing from the official build is, see DECISIONS.md "Asset bundling"). It is looked up
+//! The model is not bundled (nothing from the official build is). It is looked up
 //! by file name in the folders [`set_model_dirs`] names; without it [`available`] is false, the app hides the
 //! choice as the official client does when its engine lacks the filter, and frames pass through untouched.
 //!

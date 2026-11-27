@@ -3,8 +3,7 @@
 //!
 //! Dispatch shapes are the ones the app's stores read (`dc-state` `VoiceState::from_value`, `calls.rs`,
 //! `dc-voice` `streams::parse_dispatch`), which follow modules 225123, 470710 and 652896 of the pinned build. Their
-//! order and the delays between them are assumptions (no voice traffic is in `design/snapshot/TRAFFIC`); see
-//! `DECISIONS.md`.
+//! order and the delays between them are assumptions (no voice traffic is in `design/snapshot/TRAFFIC`).
 use crate::server::{ConnReport, Feedback, Ticket, VoiceServer};
 use crate::stats::{Board, Summary};
 use dc_voice::streams::{Role, StreamJoin, StreamKey};
@@ -1223,7 +1222,7 @@ impl Inner {
             channel_id: rtc - 1,
             label: name.to_owned(),
         });
-        // The ceiling of the pinned build: 9 Mb/s above 720p30, 3.5 Mb/s at or below (DECISIONS.md, Go Live).
+        // The ceiling of the pinned build: 9 Mb/s above 720p30, 3.5 Mb/s at or below.
         let bitrate = if height <= 720 && fps <= 30 {
             3_500_000
         } else {

@@ -3,8 +3,7 @@
 //!
 //! The official client's Voice & Video settings choose `setEchoCancellation` and, in Noise Suppression, `KRISP`
 //! (`setNoiseCancellation`), `STANDARD` (`setNoiseSuppression`) or `NONE` (module 158935). Krisp's SDK only runs in an
-//! application Discord signed (`discord_krisp.node`), so Krisp is DeepFilterNet 3 here, under the same choice
-//! (BLOCKED.md). Standard is WebRTC's noise suppressor and echo cancellation is WebRTC's AEC3, both through Sonora, a
+//! application Discord signed (`discord_krisp.node`), so Krisp is DeepFilterNet 3 here, under the same choice. Standard is WebRTC's noise suppressor and echo cancellation is WebRTC's AEC3, both through Sonora, a
 //! pure Rust port of WebRTC's audio processing (BSD-3-Clause).
 //!
 //! The Sonora part is adapted from Serein `crates/discord-voice/src/audio/echo.rs` (`Echo::new`, `configure`,

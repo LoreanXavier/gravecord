@@ -34,8 +34,8 @@ pub(crate) const CAMERA_PACING: Pacing = Pacing {
 };
 /// A screen share: the paced queue time limit (2875 ms) of the default-on `WebRTC-ProbingScreenshareBwe` settings
 /// ("1.0,2875,80,40,-60,3", `kDefaultProbingScreenshareBweSettings` of `alr_experiment.cc`), but a pacing factor of 2.5
-/// (`kDefaultPaceMultiplier` of `goog_cc_network_control.cc`, and Serein's sender), not the settings' 1.0. A deviation
-/// (DECISIONS.md): libwebrtc pairs 1.0 with an encoder frame dropper and tight encoder buffers, which this client does
+/// (`kDefaultPaceMultiplier` of `goog_cc_network_control.cc`, and Serein's sender), not the settings' 1.0. A deviation:
+/// libwebrtc pairs 1.0 with an encoder frame dropper and tight encoder buffers, which this client does
 /// not have; at 1.0 every keyframe of the hardware encoder (8.5 pictures at 1440p60) held the next pictures back and
 /// the capture skipped some two a second, at 2.5 none (`video::lossy::smoothness_table`).
 pub(crate) const SCREEN_PACING: Pacing = Pacing {
