@@ -220,6 +220,53 @@ pub(super) fn attachment_obscure_kind(
     None
 }
 
+/// The hidden spoiler of an `ObscureWrapper` of type `attachment` (module 302031 `S`, `880150.css`): a cover over the
+/// whole box (`spoilerContainer` with `--radius-sm` corners) holding the centred "SPOILER" warning, `padding: 8px 12px`,
+/// 20px corners, 15px semibold upper case on `--opacity-black-60` in `--primary-200`; under the pointer
+/// `--opacity-black-88` and `--white`. `blur` puts the media under it out of focus (`hiddenSpoiler`'s
+/// `--custom-message-attachment-spoiler-blur-radius`, 44px); without it the cover is the box's own
+/// `--spoiler-hidden-background` (a File component's card is `opacity: 0` while hidden, `fileHidden_aMNXbv`). The
+/// caller adds the click that reveals.
+pub(super) fn spoiler_cover(id: &str, blur: bool) -> gpui::Stateful<gpui::Div> {
+    let group = SharedString::from(format!("{id}-group"));
+    let cover = div()
+        .id(SharedString::from(id.to_owned()))
+        .group(group.clone())
+        .occlude()
+        .absolute()
+        .inset_0()
+        .rounded(px(8.))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center();
+    let cover = if blur {
+        let mut tint = color("--spoiler-hidden-background");
+        if tint.a > 0.65 {
+            tint.a = 0.45;
+        }
+        cover.backdrop_blur(px(44.)).bg(tint)
+    } else {
+        cover
+            .bg(color("--spoiler-hidden-background"))
+            .hover(|style| style.bg(color("--spoiler-hidden-background-hover")))
+    };
+    cover.child(
+        div()
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(20.))
+            .bg(rgba(0x00000099))
+            .group_hover(group.clone(), |style| style.bg(rgba(0x000000e0)))
+            .text_size(px(15.))
+            .line_height(px(18.))
+            .font_weight(FontWeight(600.))
+            .text_color(color("--primary-200"))
+            .group_hover(group, |style| style.text_color(color("--white")))
+            .child(dc_intl::t!("F+x38C").to_uppercase()),
+    )
+}
+
 pub(super) fn attachment_url(attachment: &Attachment, width: u32, height: u32) -> String {
     // Not in the pinned client: FixImagesQuality's full-resolution picture (`plugin_hooks.rs`).
     if let Some(url) = super::plugin_hooks::fixed_image_url(
@@ -550,50 +597,15 @@ impl Root {
             (ObscureKind::SensitiveContent, false) => {
                 Some(self.attachment_sensitive_toggle_button(wrapper, cx))
             }
-            (ObscureKind::Spoiler, true) => {
-                let group = SharedString::from(format!("spoiler-group-{attachment_id}"));
-                let mut tint = color("--spoiler-hidden-background");
-                if tint.a > 0.65 {
-                    tint.a = 0.45;
-                }
-                Some(
-                    div()
-                        .id(SharedString::from(format!(
-                            "obscure-spoiler-{attachment_id}"
-                        )))
-                        .parity("attachment-spoiler-cover")
-                        .group(group.clone())
-                        .occlude()
-                        .absolute()
-                        .inset_0()
-                        .rounded(px(8.))
-                        .backdrop_blur(px(44.))
-                        .bg(tint)
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.reveal_spoiler_attachment(attachment_id, cx);
-                            cx.stop_propagation();
-                        }))
-                        .child(
-                            div()
-                                .px(px(12.))
-                                .py(px(8.))
-                                .rounded(px(20.))
-                                .bg(rgba(0x00000099))
-                                .group_hover(group.clone(), |style| style.bg(rgba(0x000000e0)))
-                                .text_size(px(15.))
-                                .line_height(px(18.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--primary-200"))
-                                .group_hover(group, |style| style.text_color(color("--white")))
-                                .child(dc_intl::t!("F+x38C").to_uppercase()),
-                        )
-                        .into_any_element(),
-                )
-            }
+            (ObscureKind::Spoiler, true) => Some(
+                spoiler_cover(&format!("obscure-spoiler-{attachment_id}"), true)
+                    .parity("attachment-spoiler-cover")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.reveal_spoiler_attachment(attachment_id, cx);
+                        cx.stop_propagation();
+                    }))
+                    .into_any_element(),
+            ),
             (ObscureKind::SensitiveContent, true) => Some(
                 div()
                     .id(SharedString::from(format!(

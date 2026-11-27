@@ -43,6 +43,32 @@ pub(super) struct OpenSelect {
 #[derive(Default)]
 pub(super) struct State {
     pub open: Option<OpenSelect>,
+    /// The spoilers opened by a click, by message and [`spoiler_key`]. The official wrapper (module 302031 `_`) keeps
+    /// `visible` per item and a spoiler only ever opens (`removeObscurity`): there is no way back.
+    pub revealed: std::collections::HashSet<(Id, String)>,
+    /// Set while the children of a hidden spoiler container draw: nothing in it takes a press or the keyboard
+    /// (`pointer-events: none` of `isHidden_rc97-L`, `inert` of `spoilerInnerContainer`).
+    pub inert: std::cell::Cell<bool>,
+}
+
+/// Which spoiler of a message a reveal belongs to: the component's id, and the item's place in a gallery.
+pub(super) fn spoiler_key(component: &str, item: Option<usize>) -> String {
+    match item {
+        Some(index) => format!("{component}#{index}"),
+        None => component.to_owned(),
+    }
+}
+
+/// Whether a component marked `spoiler` draws covered: module 302031 shows the content when the channel's
+/// `Bs` context says so (`m || u || !l`; module 891522 provides 863439 `A` of "Show spoiler content": Always, or If
+/// moderator for someone with Manage Messages), or once this item was clicked open.
+pub(super) fn spoiler_hidden(
+    revealed: &std::collections::HashSet<(Id, String)>,
+    message: Id,
+    key: &str,
+    spoilers_shown: bool,
+) -> bool {
+    !spoilers_shown && !revealed.contains(&(message, key.to_owned()))
 }
 
 /// A thing of the entity lists: its value (an id), its label, and what picture goes with it.
@@ -455,21 +481,35 @@ impl Root {
                 id,
                 media,
                 description: _,
-                spoiler: _,
-            } => self.picture_with_kind(
-                message,
-                id,
-                (0, Some(&media.url)),
-                (THUMBNAIL as f32, THUMBNAIL as f32),
-                [8.; 4],
-                PictureMenu::StandaloneImage,
-            ),
+                spoiler,
+            } => {
+                // `nZ` of module 232430: a spoiler thumbnail sits in the attachment ObscureWrapper.
+                let hidden = *spoiler && self.component_spoiler_hidden(message.id, id);
+                let picture = self.picture_with_kind(
+                    message,
+                    id,
+                    (0, Some(&media.url)),
+                    (THUMBNAIL as f32, THUMBNAIL as f32),
+                    [8.; 4],
+                    PictureMenu::StandaloneImage,
+                );
+                self.spoiler_wrapped(message.id, id, hidden, (true, true), picture, cx)
+            }
             Component::MediaGallery { id, items } => {
-                self.gallery(message, id, items, inside_container)
+                self.gallery(message, id, items, inside_container, cx)
             }
             Component::File {
-                file, name, size, ..
-            } => self.file_component(message, file, name.as_deref(), *size, cx),
+                id,
+                file,
+                name,
+                size,
+                spoiler,
+            } => {
+                // `np` of module 232430: the card is drawn at `opacity: 0` under the cover (`fileHidden_aMNXbv`).
+                let hidden = *spoiler && self.component_spoiler_hidden(message.id, id);
+                let card = self.file_component(message, file, name.as_deref(), *size, hidden, cx);
+                self.spoiler_wrapped(message.id, id, hidden, (false, true), card, cx)
+            }
             Component::Separator { divider, large, .. } => div()
                 .w_full()
                 .when(*large, |this| this.my(px(8.)))
@@ -479,12 +519,23 @@ impl Root {
                 })
                 .into_any_element(),
             Component::Container {
+                id,
                 accent_color,
                 components,
-                ..
+                spoiler,
             } => {
+                // `lx` of module 232430: an empty container draws nothing; a spoiler one is blurred under the cover
+                // (`isHidden_rc97-L`) and nothing in it can be used.
+                if components.is_empty() {
+                    return div().into_any_element();
+                }
+                let hidden = *spoiler && self.component_spoiler_hidden(message.id, id);
+                let was_inert = self
+                    .components
+                    .inert
+                    .replace(hidden || self.components.inert.get());
                 let accent = *accent_color;
-                div()
+                let body = div()
                     .relative()
                     .flex()
                     .flex_col()
@@ -511,9 +562,59 @@ impl Root {
                             .iter()
                             .map(|inner| self.component(message, inner, true, cx)),
                     )
-                    .into_any_element()
+                    .into_any_element();
+                self.components.inert.set(was_inert);
+                self.spoiler_wrapped(message.id, id, hidden, (true, false), body, cx)
             }
         }
+    }
+
+    /// `true` while a spoiler component of this message is still covered (see [`spoiler_hidden`]); RevealAllSpoilers
+    /// (not in the pinned client) opens every one of a message it opened.
+    fn component_spoiler_hidden(&self, message: Id, key: &str) -> bool {
+        spoiler_hidden(
+            &self.components.revealed,
+            message,
+            key,
+            self.spoilers_shown()
+                || super::plugin_hooks::all_spoilers_revealed(&self.revealed, message),
+        )
+    }
+
+    /// The attachment ObscureWrapper around a component (module 302031, reason SPOILER): the content under the
+    /// cover, which opens it on a click and is gone afterwards. The content is drawn in the same frame as its cover,
+    /// so a spoiler is never seen uncovered.
+    fn spoiler_wrapped(
+        &self,
+        message: Id,
+        key: &str,
+        hidden: bool,
+        (blur, fit): (bool, bool),
+        content: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if !hidden {
+            return content;
+        }
+        let reveal = (message, key.to_owned());
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .when(fit, |this| this.self_start())
+            .rounded(px(8.))
+            .overflow_hidden()
+            .bg(color("--spoiler-hidden-background"))
+            .child(content)
+            .child(
+                super::media_image::spoiler_cover(&format!("comp-spoiler-{message}-{key}"), blur)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.components.revealed.insert(reveal.clone());
+                        cx.stop_propagation();
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
     }
 
     /// `nJ`: what a component the client does not know is drawn as.
@@ -683,6 +784,7 @@ impl Root {
         id: &str,
         items: &[GalleryItem],
         inside_container: bool,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let width: f32 = if inside_container { 494. } else { 516. };
         let count = items.len();
@@ -742,29 +844,38 @@ impl Root {
             // Dump (v2-container-p0): 326.67 square beside two 163.33 x 161.33, no rounding.
             let large = 2. * (width - 4.) / 3.;
             let small = (large - 4.) / 2.;
-            let tile = |index: usize, w: f32, h: f32, corners: [f32; 4]| {
-                self.picture_with_kind(
-                    message,
-                    id,
-                    (index, Some(&items[index].media.url)),
-                    (w, h),
-                    corners,
-                    PictureMenu::MessageMedia {
-                        video: is_video_media(&items[index].media),
-                    },
-                )
-            };
             div()
                 .flex()
                 .gap(px(4.))
-                .child(tile(0, large, large, [8., 2., 2., 8.]))
+                .child(self.gallery_tile(
+                    message,
+                    id,
+                    items,
+                    (0, large, large),
+                    [8., 2., 2., 8.],
+                    cx,
+                ))
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(4.))
-                        .child(tile(1, width - 4. - large, small, [2., 8., 2., 2.]))
-                        .child(tile(2, width - 4. - large, small, [2., 2., 8., 2.])),
+                        .child(self.gallery_tile(
+                            message,
+                            id,
+                            items,
+                            (1, width - 4. - large, small),
+                            [2., 8., 2., 2.],
+                            cx,
+                        ))
+                        .child(self.gallery_tile(
+                            message,
+                            id,
+                            items,
+                            (2, width - 4. - large, small),
+                            [2., 2., 8., 2.],
+                            cx,
+                        )),
                 )
         } else {
             let total = rows.len();
@@ -782,16 +893,7 @@ impl Root {
                             } else {
                                 corner(row, col, cells.len(), total)
                             };
-                            self.picture_with_kind(
-                                message,
-                                id,
-                                (index, Some(&items[index].media.url)),
-                                (w, h),
-                                corners,
-                                PictureMenu::MessageMedia {
-                                    video: is_video_media(&items[index].media),
-                                },
-                            )
+                            self.gallery_tile(message, id, items, (index, w, h), corners, cx)
                         }))
                 }))
         };
@@ -803,6 +905,64 @@ impl Root {
             .into_any_element()
     }
 
+    /// One tile of a gallery. A spoiler item is covered as an attachment of the mosaic is (module 96782 wraps it in
+    /// the attachment ObscureWrapper whenever `getObscureReason`, 294520 `tt`, names SPOILER), one item at a time.
+    fn gallery_tile(
+        &self,
+        message: &Message,
+        id: &str,
+        items: &[GalleryItem],
+        (index, w, h): (usize, f32, f32),
+        corners: [f32; 4],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let item = &items[index];
+        let tile = self.picture_with_kind(
+            message,
+            id,
+            (index, Some(&item.media.url)),
+            (w, h),
+            corners,
+            PictureMenu::MessageMedia {
+                video: is_video_media(&item.media),
+            },
+        );
+        let key = spoiler_key(id, Some(index));
+        if !item.spoiler || !self.component_spoiler_hidden(message.id, &key) {
+            return tile;
+        }
+        let [tl, tr, br, bl] = corners.map(px);
+        let reveal = (message.id, key.clone());
+        div()
+            .relative()
+            .flex_none()
+            .w(px(w))
+            .h(px(h))
+            .rounded_tl(tl)
+            .rounded_tr(tr)
+            .rounded_br(br)
+            .rounded_bl(bl)
+            .overflow_hidden()
+            .bg(color("--spoiler-hidden-background"))
+            .child(tile)
+            .child(
+                super::media_image::spoiler_cover(
+                    &format!("comp-spoiler-{}-{key}", message.id),
+                    true,
+                )
+                .rounded_tl(tl)
+                .rounded_tr(tr)
+                .rounded_br(br)
+                .rounded_bl(bl)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.components.revealed.insert(reveal.clone());
+                    cx.stop_propagation();
+                    cx.notify();
+                })),
+            )
+            .into_any_element()
+    }
+
     /// The File component: the plaintext card's frame (`container_BOOBu-`), a link-colored name and the size under it.
     fn file_component(
         &self,
@@ -810,6 +970,7 @@ impl Root {
         file: &Media,
         name: Option<&str>,
         size: Option<u64>,
+        hidden: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let title = name
@@ -875,7 +1036,10 @@ impl Root {
                         )
                     }),
             )
-            .on_click(cx.listener(move |this, _, _, cx| this.follow_link(&url, &label, cx)))
+            .when(hidden, |this| this.invisible())
+            .when(!hidden && !self.components.inert.get(), |this| {
+                this.on_click(cx.listener(move |this, _, _, cx| this.follow_link(&url, &label, cx)))
+            })
             .into_any_element()
     }
 
@@ -1065,7 +1229,7 @@ impl Root {
             Some(open) if multi => open.draft.clone(),
             _ => shown,
         };
-        let inert = select.disabled || visual != Visual::Normal;
+        let inert = select.disabled || visual != Visual::Normal || self.components.inert.get();
         let key = format!("comp-{}-{}", message.id, select.id);
         let handle = self.stop(&key, cx);
         let (message_id, component_id) = (message.id, select.id.clone());
@@ -1564,7 +1728,30 @@ fn option_label(select: &Select, value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::humanize_filesize;
+    use super::{humanize_filesize, spoiler_hidden, spoiler_key};
+    use std::collections::HashSet;
+
+    #[test]
+    fn a_spoiler_stays_covered_until_its_own_item_is_clicked() {
+        let mut revealed = HashSet::new();
+        let (thumbnail, second, third) = (
+            spoiler_key("0,1", None),
+            spoiler_key("2", Some(1)),
+            spoiler_key("2", Some(2)),
+        );
+        assert_eq!(thumbnail, "0,1");
+        assert_eq!(second, "2#1");
+        assert!(spoiler_hidden(&revealed, 7, &thumbnail, false));
+        assert!(spoiler_hidden(&revealed, 7, &second, false));
+        // A click opens that item only: the next gallery item and the same id of another message stay covered.
+        revealed.insert((7, second.clone()));
+        assert!(!spoiler_hidden(&revealed, 7, &second, false));
+        assert!(spoiler_hidden(&revealed, 7, &third, false));
+        assert!(spoiler_hidden(&revealed, 8, &second, false));
+        assert!(spoiler_hidden(&revealed, 7, &thumbnail, false));
+        // "Show spoiler content" (863439 `A`) opens every one.
+        assert!(!spoiler_hidden(&revealed, 7, &third, true));
+    }
 
     #[test]
     fn filesize_follows_the_humanize_helper() {
