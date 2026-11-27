@@ -541,6 +541,9 @@ mod tests {
             "😀 @😀 #😀 :😀: ",
             "e\u{301}@x ",
             "İstanbul ıı @İ: #ş\n@ç#1234 ",
+            "日本語を入力 @テスト #チャンネル :絵文字: ",
+            "にほんご",
+            "漢@字#か:な",
         ] {
             let found = raw_mentions(text, |kind| Some(format!("{kind:?}")));
             for (range, _) in &found {
