@@ -12554,6 +12554,7 @@ impl Render for Root {
             self.hovered = None;
         }
         self.interaction_modal_frame(window, cx);
+        self.location_frame();
         self.drafts_frame(cx);
         self.composer_voids_frame(cx);
         if std::mem::take(&mut self.chat_extra.back_to_login) {
@@ -12573,6 +12574,7 @@ impl Render for Root {
         ));
         self.selection.borrow_mut().begin_frame();
         motion::set_window_active(window.is_window_active());
+        dc_http::set_focused(window.is_window_active());
         self.video_note_window(window, cx);
         // Not in the pinned client: VoiceStats follows its own switch (`plugin_hooks/voice_stats.rs`).
         self.voice_stats_observe(cx);

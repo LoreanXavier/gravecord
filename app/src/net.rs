@@ -365,6 +365,8 @@ pub enum Request {
         /// Guild, if any, and the message being answered.
         /// The guild, the message, and whether the reply pings its author (the reply bar's @ switch).
         reply: Option<(Option<u64>, u64, bool)>,
+        /// The request's context, sent as `X-Context-Properties` (`thread_creation` for a new thread's first message).
+        context: Option<Value>,
     },
     /// A message the view already shows (`ui/send_state.rs`): it carries the nonce of that local row, is sent with the
     /// official retries (`send_policy.rs`) and ends as `Update::SendResult`.
@@ -377,6 +379,8 @@ pub enum Request {
         sticker_ids: Vec<u64>,
         /// Guild, channel and id of the message a forward points at.
         forward: Option<ForwardRef>,
+        /// The request's context, sent as `X-Context-Properties` (`chat_input` for a GIF from the picker).
+        context: Option<Value>,
     },
     /// A voice message: the recording is uploaded, then a message with an empty content, the voice flag (8192) and the
     /// attachment's `duration_secs` and `waveform` is created (`em` in module 841817). The outcome is
@@ -1680,7 +1684,7 @@ async fn send_local(
     content: &str,
     files: &[Upload],
     reply: Option<(Option<u64>, u64, bool)>,
-    (sticker_ids, forward): (&[u64], Option<ForwardRef>),
+    (sticker_ids, forward, context): (&[u64], Option<ForwardRef>, Option<&Value>),
 ) -> crate::send_policy::Outcome {
     use crate::send_policy::{Backoff, Failure, Outcome, RETRIES, TIMEOUT, status_is_retried};
     let mut body = send_body(channel, content, reply);
@@ -1742,7 +1746,17 @@ async fn send_local(
     let mut retries = RETRIES;
     loop {
         let mut retry_after_wait = None;
-        let failure = match tokio::time::timeout(TIMEOUT, client.post(&route, &body)).await {
+        let post = async {
+            match context {
+                Some(context) => {
+                    client
+                        .request_with_context(reqwest::Method::POST, &route, Some(&body), context)
+                        .await
+                }
+                None => client.post(&route, &body).await,
+            }
+        };
+        let failure = match tokio::time::timeout(TIMEOUT, post).await {
             Ok(Ok(sent)) => return Outcome::Sent(sent),
             Ok(Err(dc_http::Error::Status {
                 status,
@@ -2003,6 +2017,44 @@ impl Drop for Shutdown {
     }
 }
 
+/// Where `AuthenticationStore` (module 46653) keeps the installation id.
+const INSTALLATION_KEY: &str = "installation_id_v3";
+
+/// Keeps `id` as the installation id unless one is known (`INSTALLATION_ID`: the first one stays), in storage too.
+fn keep_installation_id(id: &str) {
+    dc_http::set_installation_id(id);
+    if let Some(known) = dc_http::installation_id()
+        && crate::storage::get(INSTALLATION_KEY)
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .as_deref()
+            != Some(known.as_str())
+    {
+        crate::storage::set(INSTALLATION_KEY, json!(known));
+    }
+}
+
+/// The installation id every API request carries as `X-Installation-ID` and IDENTIFY as `installation_id`: the stored
+/// one, the one a login of this run was handed, or, for an install that has none, the one the logged-out page asks for
+/// (`GET /experiments`, then `GET /apex/experiments`). Not asked for in a replay run.
+async fn installation_id(identity: &Identity) -> Option<String> {
+    if let Some(stored) = crate::storage::get(INSTALLATION_KEY)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .filter(|stored| !stored.is_empty())
+    {
+        dc_http::set_installation_id(&stored);
+    }
+    let replay = dc_proto::replay::rewrite(pin::API_BASE) != pin::API_BASE;
+    if dc_http::installation_id().is_none()
+        && !replay
+        && let Ok(api) = dc_auth::api::AuthApi::pinned(identity.clone())
+    {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), api.installation()).await;
+    }
+    let known = dc_http::installation_id()?;
+    keep_installation_id(&known);
+    Some(known)
+}
+
 pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests: RequestQueue) {
     crate::start_trace::mark("net_run");
     let RequestQueue {
@@ -2032,10 +2084,14 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
     let _rpc = crate::rpc::start(client.clone(), updates.clone());
     let spotify = crate::spotify::Worker::start(client.clone(), updates.clone());
     let spotify_observer = spotify.as_ref().map(crate::spotify::Worker::observer);
+    let installation_id = installation_id(&identity).await;
     let (commands, mut events) = spawn(Config {
         token,
         identity,
-        state: IdentifyState::default(),
+        state: IdentifyState {
+            installation_id,
+            ..IdentifyState::default()
+        },
     });
     // Network and power events, for as long as this login (`system_events`).
     let (system_send, mut system_events) = mpsc::unbounded_channel();
@@ -2066,7 +2122,14 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                         observer.event(&name, &data);
                     }
                     match name.as_str() {
-                        "READY" => crate::start_trace::mark("gw_ready_recv"),
+                        "READY" => {
+                            crate::start_trace::mark("gw_ready_recv");
+                            // `CONNECTION_OPEN`: an installation id in `apex_experiments` is kept when none is
+                            // known yet (`INSTALLATION_ID`, module 46653).
+                            if let Some(id) = data["apex_experiments"]["installation"].as_str() {
+                                keep_installation_id(id);
+                            }
+                        }
                         "READY_SUPPLEMENTAL" => crate::start_trace::mark("gw_supp_recv"),
                         _ => {}
                     }
@@ -2225,6 +2288,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 reply,
                 sticker_ids,
                 forward,
+                context,
             } => {
                 tokio::spawn(async move {
                     let outcome = send_local(
@@ -2234,7 +2298,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                         &content,
                         &files,
                         reply,
-                        (&sticker_ids, forward),
+                        (&sticker_ids, forward, context.as_ref()),
                     )
                     .await;
                     let _ = updates.send(Update::SendResult {
@@ -2249,6 +2313,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 content,
                 files,
                 reply,
+                context,
             } => {
                 tokio::spawn(async move {
                     let mut body = send_body(channel, &content, reply);
@@ -2271,10 +2336,21 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             }
                         }
                     }
-                    match client
-                        .post(&format!("/channels/{channel}/messages"), &body)
-                        .await
-                    {
+                    let route = format!("/channels/{channel}/messages");
+                    let sent = match &context {
+                        Some(context) => {
+                            client
+                                .request_with_context(
+                                    reqwest::Method::POST,
+                                    &route,
+                                    Some(&body),
+                                    context,
+                                )
+                                .await
+                        }
+                        None => client.post(&route, &body).await,
+                    };
+                    match sent {
                         Ok(_) => {
                             let _ = updates.send(Update::Slowmode {
                                 channel,
@@ -3721,19 +3797,8 @@ async fn save_download(url: &str, filename: &str) -> Option<String> {
     let folder = std::env::var_os("USERPROFILE")
         .map(|home| std::path::PathBuf::from(home).join("Downloads"))?;
     let _ = std::fs::create_dir_all(&folder);
-    let response = match dc_http::plain::client_for(url).get(url).send().await {
-        Ok(response) => response,
-        Err(error) => {
-            warn!("download failed: {error}");
-            return None;
-        }
-    };
-    if !response.status().is_success() {
-        warn!("download failed: HTTP {}", response.status());
-        return None;
-    }
-    let bytes = match response.bytes().await {
-        Ok(bytes) => bytes,
+    let bytes = match dc_http::download::get(url, dc_http::download::Fetch::default()).await {
+        Ok(file) => file.bytes,
         Err(error) => {
             warn!("download failed: {error}");
             return None;
@@ -3758,12 +3823,8 @@ async fn save_download(url: &str, filename: &str) -> Option<String> {
 /// The first source of a file that answers with success.
 async fn fetch_first(sources: &[String]) -> Option<Vec<u8>> {
     for source in sources {
-        match dc_http::plain::client_for(source).get(source).send().await {
-            Ok(response) if response.status().is_success() => match response.bytes().await {
-                Ok(bytes) => return Some(bytes.to_vec()),
-                Err(error) => warn!("attachment download failed: {error}"),
-            },
-            Ok(response) => warn!("attachment download failed: {}", response.status()),
+        match dc_http::download::get(source, dc_http::download::Fetch::default()).await {
+            Ok(file) => return Some(file.bytes),
             Err(error) => warn!("attachment download failed: {error}"),
         }
     }

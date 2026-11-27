@@ -19,6 +19,7 @@ deep_filter.workspace = true
 dc-clips.workspace = true
 dc-media.workspace = true
 dc-proto.workspace = true
+dc-http.workspace = true
 dc-winaudio.workspace = true
 futures-util.workspace = true
 # JPEG for the Go Live preview thumbnail.

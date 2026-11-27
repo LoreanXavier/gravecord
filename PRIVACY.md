@@ -25,6 +25,10 @@ code of this repository. If you find something this page does not mention, pleas
 - **What:** Discord's API, its real-time gateway, its CDN and media proxy, and its voice and video servers. These are
   the same services the official app uses, with the same requests.
 - **What travels:** your token goes in the requests that need it (see [Your token](#your-token)).
+- **How it connects:** with the TLS and HTTP/2 handshake of the Chromium inside the official app, so the connection
+  looks like the official app's. The other hosts below get a plain connection instead.
+- **Cookies:** the cookies Discord's servers set (Cloudflare's and Discord's own) are kept in memory while gravecord
+  runs and sent back only to Discord's hosts, as a browser does. They are not written to disk.
 - **Discord's own files:** fonts, interface text, sounds and some artwork come from Discord's servers too, as they do
   in the official app.
 - **Pictures in embeds:** they load through Discord's media proxy. A picture comes straight from its own site only
@@ -106,6 +110,9 @@ Every plugin below is off by default and contacts nothing until you switch it on
   playing if activity sharing is on.
   - Game detection reads the list of running programs on your PC and compares it with Discord's list of games.
   - Only a match is shared, and only as your activity.
+- **An installation id**, which Discord hands out to every install, as the official app keeps it. It goes with every
+  request to Discord's API (`X-Installation-ID`) and in the gateway login. An install that has none asks Discord for
+  one once, as the logged-out official app does.
 - **A client-information header**, the same one the official app sends:
   - Windows version and build, processor architecture and system language
   - the client version
@@ -151,7 +158,7 @@ Everything below is in `%LOCALAPPDATA%\gravecord` and is never uploaded unless t
 
 | What | Contents |
 | - | - |
-| `storage.json` | Your client settings, plugin settings and the Switch Accounts list (names and avatars, no tokens) |
+| `storage.json` | Your client settings, plugin settings, the Switch Accounts list (names and avatars, no tokens) and the installation id Discord handed out |
 | Start cache | What the first screen needs, so it draws before Discord answers: your servers, channels, friends, settings, the recent messages of the last channel you had open, and the top of its member list |
 | Picture, font, sound and language caches | Files downloaded from Discord |
 | Web view data | Cookies of the captcha, Activities and video players, kept as a browser would keep them |

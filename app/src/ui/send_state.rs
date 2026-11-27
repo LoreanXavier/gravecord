@@ -48,6 +48,8 @@ pub(super) struct LocalSend {
     pub forward: Option<(Option<Id>, Id, Id)>,
     /// The row, kept so a reloaded window can show it again.
     pub message: Option<Message>,
+    /// The request's context (`X-Context-Properties`).
+    pub context: Option<serde_json::Value>,
 }
 
 /// What a message to send is made of.
@@ -58,6 +60,7 @@ struct Parts {
     reply: Option<(Option<Id>, Id, bool)>,
     sticker_ids: Vec<Id>,
     forward: Option<(Option<Id>, Id, Id)>,
+    context: Option<serde_json::Value>,
 }
 
 #[derive(Default)]
@@ -362,6 +365,7 @@ impl Root {
             reply,
             sticker_ids,
             forward: None,
+            context: None,
         };
         self.send_with_nonce(channel, nonce, parts);
     }
@@ -369,6 +373,17 @@ impl Root {
     /// A message of text alone that goes through the queue: a GIF's link, a profile or invite link.
     pub(super) fn start_local_text(&mut self, channel: Id, content: String) {
         self.start_local_send(channel, content, Vec::new(), None, Vec::new());
+    }
+
+    /// A GIF's page address from the picker, sent with the composer's context (`chat_input`), as
+    /// TRAFFIC/gif-send.json records it.
+    pub(super) fn start_local_gif(&mut self, channel: Id, content: String) {
+        let parts = Parts {
+            content,
+            context: Some(serde_json::json!({"location": "chat_input"})),
+            ..Parts::default()
+        };
+        self.send_with_nonce(channel, crate::net::nonce(), parts);
     }
 
     /// A message of one sticker (the picker's, answering the reply bar).
@@ -413,6 +428,7 @@ impl Root {
             reply,
             sticker_ids,
             forward,
+            context,
         } = parts;
         let Some(nonce_id) = id_of(&nonce) else {
             return;
@@ -516,6 +532,7 @@ impl Root {
                 sticker_ids,
                 forward,
                 message,
+                context,
             },
         );
         self.send_pump();
@@ -541,6 +558,7 @@ impl Root {
             reply: send.reply,
             sticker_ids: send.sticker_ids.clone(),
             forward: send.forward,
+            context: send.context.clone(),
         });
     }
 
@@ -886,6 +904,7 @@ impl Root {
             reply: send.reply,
             sticker_ids: send.sticker_ids,
             forward: send.forward,
+            context: send.context,
         };
         self.send_with_nonce(send.channel, send.nonce, parts);
         cx.notify();
@@ -1173,6 +1192,7 @@ mod tests {
             sticker_ids: Vec::new(),
             forward: None,
             message: None,
+            context: None,
         }
     }
 

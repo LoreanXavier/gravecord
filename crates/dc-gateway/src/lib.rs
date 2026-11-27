@@ -16,14 +16,11 @@ use rand::Rng;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{self, Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
 use tracing::{debug, info, warn};
 
 /// `tu` in module 868: the `helloTimeout` set as `_connect` begins, so it covers the socket's connect and OP_HELLO.
@@ -39,7 +36,7 @@ const CLOSE_RECONNECT: u16 = 4000;
 const MAX_FAILS_BEFORE_RESET: u32 = 4;
 const MAX_PENDING_SENDS: usize = 64;
 
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type Socket = WebSocketStream<dc_http::Upgraded>;
 
 #[derive(Debug)]
 pub enum Event {
@@ -171,8 +168,6 @@ pub fn spawn(
     mpsc::UnboundedSender<Command>,
     mpsc::UnboundedReceiver<Event>,
 ) {
-    // Dependencies pull in more than one rustls backend, so it has to be chosen. Fails harmlessly if already set.
-    let _ = rustls::crypto::ring::default_provider().install_default();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let session = Session {
@@ -278,23 +273,24 @@ impl Session {
         }
     }
 
-    async fn connect(&self) -> Result<Socket, tungstenite::Error> {
+    /// The socket the web app's page opens: Chromium's handshake and upgrade headers (`dc_http::chromium`), from
+    /// the page's origin, with its user agent and language.
+    async fn connect(&self) -> Result<Socket, dc_http::chromium::SocketError> {
         let base = self.resume_url.as_deref().unwrap_or(pin::GATEWAY_ENDPOINT);
         let url = gateway_url(base);
         info!("gateway connecting to {base}");
         dc_proto::replay::record_gateway_send("connect", None, &Value::Null);
         let url = dc_proto::replay::rewrite(&url);
-        let mut request = url.as_ref().into_client_request()?;
-        let headers = request.headers_mut();
-        headers.insert("Origin", HeaderValue::from_static(pin::WEBAPP_ORIGIN));
-        headers.insert("User-Agent", HeaderValue::from_static(pin::USER_AGENT));
-        headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
-        headers.insert("Pragma", HeaderValue::from_static("no-cache"));
         let config = WebSocketConfig::default()
             .max_message_size(None)
             .max_frame_size(None);
-        let (socket, _) = connect_async_with_config(request, Some(config), false).await?;
-        Ok(socket)
+        dc_http::chromium::websocket(
+            url.as_ref(),
+            pin::WEBAPP_ORIGIN,
+            &self.config.identity.system.locale,
+            config,
+        )
+        .await
     }
 
     async fn send(

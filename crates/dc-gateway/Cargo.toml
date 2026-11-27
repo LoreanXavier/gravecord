@@ -7,9 +7,9 @@ publish.workspace = true
 
 [dependencies]
 dc-proto.workspace = true
+dc-http.workspace = true
 futures-util.workspace = true
 rand.workspace = true
-rustls.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

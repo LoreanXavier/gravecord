@@ -110,12 +110,16 @@ pub struct Launch {
 }
 
 impl Launch {
+    /// The ids of this run: made once, so every client of the process (the account's, the login's, the font and
+    /// language downloads) and the gateway send the same ones, as the one page of the official client does.
     pub fn new() -> Self {
-        Self {
+        static RUN: std::sync::OnceLock<Launch> = std::sync::OnceLock::new();
+        RUN.get_or_init(|| Self {
             client_launch_id: Uuid::new_v4().to_string(),
             launch_signature: Uuid::new_v4().to_string(),
             client_heartbeat_session_id: Uuid::new_v4().to_string(),
-        }
+        })
+        .clone()
     }
 }
 

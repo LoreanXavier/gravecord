@@ -65,12 +65,12 @@ pub struct LinkedAccount {
 pub async fn connected_accounts(discord: &Client) -> Result<Vec<LinkedAccount>, Error> {
     tokio::time::timeout(TIMEOUT, async {
         let response = discord
-            .send(&Method::GET, "/users/@me/connections", None)
+            .send(&Method::GET, "/users/@me/connections", None, None)
             .await
             .map_err(|_| Error::Transport)?;
         let status = response.status();
         if status == StatusCode::TOO_MANY_REQUESTS {
-            return Err(Error::RateLimited(retry_after(&response)));
+            return Err(Error::RateLimited(retry_after(response.headers())));
         }
         if !status.is_success() {
             return Err(Error::Status(status.as_u16()));
@@ -82,7 +82,7 @@ pub async fn connected_accounts(discord: &Client) -> Result<Vec<LinkedAccount>, 
             kind: Option<String>,
             show_activity: Option<bool>,
         }
-        let bytes = bounded(response, PLAYER_BYTES).await?;
+        let bytes = bounded_discord(response, PLAYER_BYTES).await?;
         let accounts: Vec<WireAccount> =
             serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
         Ok(accounts
@@ -117,9 +117,31 @@ async fn bounded(mut response: Response, limit: usize) -> Result<Zeroizing<Vec<u
     Ok(bytes)
 }
 
-fn retry_after(response: &Response) -> Duration {
-    response
-        .headers()
+/// [`bounded`] for an answer of the Discord client.
+async fn bounded_discord(
+    response: wreq::Response,
+    limit: usize,
+) -> Result<Zeroizing<Vec<u8>>, Error> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(Error::Capacity);
+    }
+    let mut bytes = Zeroizing::new(Vec::new());
+    let mut stream = std::pin::pin!(response.bytes_stream());
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| Error::Transport)?;
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
+            return Err(Error::Capacity);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Duration {
+    headers
         .get("retry-after")
         .and_then(|header| header.to_str().ok())
         .and_then(|value| value.parse::<f64>().ok())
@@ -203,6 +225,9 @@ impl Spotify {
         let config = WebSocketConfig::default()
             .max_message_size(Some(PLAYER_BYTES))
             .max_frame_size(Some(PLAYER_BYTES));
+        // The plain stack's TLS (rustls): the build carries more than one of its backends, so one is chosen. Harmless
+        // when already set.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let (socket, _) = tokio::time::timeout(
             TIMEOUT,
             connect_async_with_config(request, Some(config), false),
@@ -222,14 +247,14 @@ impl Spotify {
         let discord = self.discord.clone();
         let token = tokio::time::timeout(TIMEOUT, async move {
             let response = discord
-                .send(&Method::GET, &route, None)
+                .send(&Method::GET, &route, None, None)
                 .await
                 .map_err(|_| Error::Transport)?;
             let status = response.status();
             if status == StatusCode::TOO_MANY_REQUESTS {
-                return Err(Error::RateLimited(retry_after(&response)));
+                return Err(Error::RateLimited(retry_after(response.headers())));
             }
-            let bytes = bounded(response, TOKEN_BYTES).await?;
+            let bytes = bounded_discord(response, TOKEN_BYTES).await?;
             if !status.is_success() {
                 #[derive(Deserialize)]
                 struct Refusal {
@@ -314,7 +339,7 @@ impl Spotify {
                 self.clear_credential();
             }
             if status == StatusCode::TOO_MANY_REQUESTS {
-                return Err(Error::RateLimited(retry_after(&response)));
+                return Err(Error::RateLimited(retry_after(response.headers())));
             }
             if !status.is_success() || status == StatusCode::ACCEPTED {
                 return Err(Error::Status(status.as_u16()));

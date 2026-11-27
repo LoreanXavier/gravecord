@@ -1226,37 +1226,20 @@ fn fetch_video_bytes(url: &str) -> Result<Vec<u8>, String> {
         .ok_or("no HTTP runtime")?;
     let url = url.to_owned();
     runtime.block_on(async move {
-        let client = dc_http::plain::builder_for(&url)
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() >= 5 {
-                    attempt.error("too many redirects")
-                } else if attempt.url().scheme() != "https" {
-                    attempt.error("refusing non-HTTPS redirect")
-                } else {
-                    attempt.follow()
-                }
-            }))
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(|error| error.to_string())?;
-        let response = client
-            .get(dc_proto::replay::rewrite(&url).as_ref())
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
-        if !response.status().is_success() {
-            return Err(format!("HTTP {}", response.status()));
+        let fetch = dc_http::download::Fetch {
+            max_bytes: MAX_VIDEO_BYTES,
+            timeout: Some(Duration::from_secs(60)),
+            redirects: 5,
+            https_redirects: true,
+        };
+        match dc_http::download::get(&url, fetch).await {
+            Ok(file) => Ok(file.bytes),
+            Err(dc_http::download::Failure::Status(code)) => Err(format!("HTTP {code}")),
+            Err(dc_http::download::Failure::TooLarge) => {
+                Err("video exceeds 100 MiB size limit".to_owned())
+            }
+            Err(error) => Err(error.to_string()),
         }
-        if let Some(len) = response.content_length()
-            && len as usize > MAX_VIDEO_BYTES
-        {
-            return Err("video exceeds 100 MiB size limit".to_owned());
-        }
-        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-        if bytes.len() > MAX_VIDEO_BYTES {
-            return Err("video exceeds 100 MiB size limit".to_owned());
-        }
-        Ok(bytes.to_vec())
     })
 }
 

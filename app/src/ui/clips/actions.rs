@@ -606,6 +606,7 @@ impl Root {
                                 content: note.clone(),
                                 files: uploads.clone(),
                                 reply,
+                                context: None,
                             });
                         }
                     }

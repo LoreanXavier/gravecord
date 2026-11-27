@@ -8,6 +8,7 @@ use crate::errors::{CaptchaAnswer, Failure, classify};
 use dc_proto::identity::Identity;
 use dc_proto::pin;
 use dc_proto::secrets::Token;
+use reqwest::Method;
 use reqwest::header::HeaderMap;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -98,8 +99,11 @@ pub enum ForgotOutcome {
     OneTimeLogin,
 }
 
+/// The page the logged-out client shows (`/login`), the `Referer` of its requests.
+const LOGIN_PAGE: &str = "/login";
+
 pub struct AuthApi {
-    http: reqwest::Client,
+    http: wreq::Client,
     base: String,
     identity: Identity,
     fingerprint: Mutex<Option<String>>,
@@ -115,8 +119,9 @@ fn token_of(body: &Value) -> Option<Token> {
 impl AuthApi {
     /// `base` is the REST root, `pin::API_BASE` outside tests.
     pub fn new(base: impl Into<String>, identity: Identity) -> Result<Self, dc_http::Error> {
-        let http = reqwest::Client::builder()
-            .user_agent(pin::USER_AGENT)
+        // The Discord client's handshake, header order and cookies (`dc_http::chromium`), with the header set every
+        // request of the page carries.
+        let http = dc_http::chromium::builder()
             .default_headers(dc_http::fixed_headers(&identity)?)
             .build()?;
         Ok(Self {
@@ -131,25 +136,72 @@ impl AuthApi {
         Self::new(pin::API_BASE, identity)
     }
 
+    /// The system language the requests carry, for the QR login's socket.
+    pub(crate) fn locale(&self) -> &str {
+        &self.identity.system.locale
+    }
+
+    /// A request of the logged-out page (module 596339's `prepareRequest`): `X-Super-Properties`, `X-Installation-ID`
+    /// once known, the page's `Origin` (not on a `GET`) and the login page as its `Referer`.
+    fn request(&self, method: Method, url: String) -> wreq::RequestBuilder {
+        let mut request = self
+            .http
+            .request(method.clone(), url)
+            .header(
+                "x-super-properties",
+                self.identity.super_properties_header(dc_http::focused()),
+            )
+            .header("referer", format!("{}{LOGIN_PAGE}", pin::WEBAPP_ORIGIN));
+        if let Some(installation) = dc_http::installation_id() {
+            request = request.header("x-installation-id", installation);
+        }
+        if let Some(origin) = dc_http::origin(&method) {
+            request = request.header("origin", origin);
+        }
+        request
+    }
+
+    /// The installation id of this install (`installation_id_v3`): the logged-out page asks `GET /experiments` for
+    /// it with the fingerprint, then `GET /apex/experiments?surface=2` when that gave none
+    /// (`fetchInstallationExperiments`, module 620233). Known ids are kept ([`dc_http::set_installation_id`]).
+    pub async fn installation(&self) -> Option<String> {
+        if let Some(known) = dc_http::installation_id() {
+            return Some(known);
+        }
+        let _ = self.fingerprint().await;
+        if dc_http::installation_id().is_none()
+            && let Ok(answer) = self
+                .request(
+                    Method::GET,
+                    format!("{}/apex/experiments?surface=2", self.base),
+                )
+                .send()
+                .await
+            && let Ok(body) = answer.json::<Value>().await
+            && let Some(id) = body["installation"].as_str()
+        {
+            dc_http::set_installation_id(id);
+        }
+        dc_http::installation_id()
+    }
+
     /// `X-Fingerprint` comes from `GET /experiments`, as the logged-out client gets it (`ee` in module 46653). A failure
     /// only means the header is left out.
     async fn fingerprint(&self) -> Option<String> {
         let mut cached = self.fingerprint.lock().await;
         if cached.is_none() {
             let answer = self
-                .http
-                .get(format!(
-                    "{}/experiments?with_guild_experiments=true",
-                    self.base
-                ))
-                .header(
-                    "x-super-properties",
-                    self.identity.super_properties_header(true),
+                .request(
+                    Method::GET,
+                    format!("{}/experiments?with_guild_experiments=true", self.base),
                 )
                 .send()
                 .await
                 .ok()?;
             let body: Value = answer.json().await.ok()?;
+            if let Some(id) = body["installation"].as_str() {
+                dc_http::set_installation_id(id);
+            }
             *cached = body["fingerprint"].as_str().map(str::to_owned);
         }
         cached.clone()
@@ -187,12 +239,7 @@ impl AuthApi {
             put("authorization", token.expose());
         }
         let answer = self
-            .http
-            .post(format!("{}{route}", self.base))
-            .header(
-                "x-super-properties",
-                self.identity.super_properties_header(true),
-            )
+            .request(Method::POST, format!("{}{route}", self.base))
             .headers(headers)
             .json(body)
             .send()

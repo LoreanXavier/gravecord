@@ -56,7 +56,56 @@ impl History {
     }
 }
 
+impl Route {
+    /// The web app's address of the route (module 375389's `Routes`): `/channels/<guild or @me or
+    /// @favorites>/<channel>`, a guild's `@home` and `channel-browser`, and the Home pages' own paths.
+    pub(crate) fn path(&self) -> String {
+        use super::discover::Place;
+        if let Some(place) = self.discover {
+            return match place {
+                Place::Servers => "/discovery/servers".to_owned(),
+                Place::Apps => "/discovery/applications".to_owned(),
+                Place::App(id) => format!("/discovery/applications/{id}"),
+            };
+        }
+        if self.guild.is_none() {
+            let page = if self.shop {
+                Some("/shop")
+            } else if self.nitro {
+                Some("/store")
+            } else if self.quests {
+                Some("/quest-home")
+            } else if self.message_requests {
+                Some("/message-requests")
+            } else if self.library {
+                Some("/library")
+            } else {
+                None
+            };
+            if let Some(page) = page {
+                return page.to_owned();
+            }
+        }
+        let guild = match self.guild {
+            _ if self.favorites => "@favorites".to_owned(),
+            Some(guild) => guild.to_string(),
+            None => "@me".to_owned(),
+        };
+        match (self.guild, self.channel) {
+            (Some(_), _) if self.guild_guide => format!("/channels/{guild}/@home"),
+            (Some(_), _) if self.channel_browser => format!("/channels/{guild}/channel-browser"),
+            (_, Some(channel)) => format!("/channels/{guild}/{channel}"),
+            (_, None) => format!("/channels/{guild}"),
+        }
+    }
+}
+
 impl Root {
+    /// The page's address follows the route, as the `Referer` of every request (`dc_http::set_location`).
+    pub(super) fn location_frame(&self) {
+        dc_http::set_location(&self.route().path());
+    }
+
     pub(super) fn route(&self) -> Route {
         Route {
             guild: self.guild,
@@ -237,6 +286,33 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::{History, Route};
+
+    #[test]
+    fn a_route_has_the_web_apps_address() {
+        let home = Route::default();
+        assert_eq!(home.path(), "/channels/@me");
+        let dm = Route {
+            channel: Some(7),
+            ..Route::default()
+        };
+        assert_eq!(dm.path(), "/channels/@me/7");
+        let channel = Route {
+            guild: Some(1),
+            channel: Some(2),
+            ..Route::default()
+        };
+        assert_eq!(channel.path(), "/channels/1/2");
+        let shop = Route {
+            shop: true,
+            ..Route::default()
+        };
+        assert_eq!(shop.path(), "/shop");
+        let nitro = Route {
+            nitro: true,
+            ..Route::default()
+        };
+        assert_eq!(nitro.path(), "/store");
+    }
 
     #[test]
     fn a_new_visit_clears_forward() {

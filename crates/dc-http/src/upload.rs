@@ -2,7 +2,7 @@
 //! of module 48325 (`createResumeAwareProgressFn`, throttled to 50 ms) as a body that reports the bytes it has
 //! handed to the connection.
 
-use super::{Client, Error};
+use super::{Client, Error, Http};
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
 use std::convert::Infallible;
@@ -58,18 +58,29 @@ impl Client {
         bytes: Vec<u8>,
         report: Progress,
     ) -> Result<(), Error> {
-        let body = reqwest::Body::wrap(ProgressBody {
+        let body = ProgressBody {
             data: Bytes::from(bytes),
             sent: 0,
             report,
-        });
-        self.public_http(url)
-            .put(url)
-            .header("content-type", "application/octet-stream")
-            .body(body)
-            .send()
-            .await?
-            .error_for_status()?;
+        };
+        match self.public_http(url) {
+            Http::Chromium(http) => {
+                http.put(url)
+                    .header("content-type", "application/octet-stream")
+                    .body(wreq::Body::wrap(body))
+                    .send()
+                    .await?
+                    .error_for_status()?;
+            }
+            Http::Plain(http) => {
+                http.put(url)
+                    .header("content-type", "application/octet-stream")
+                    .body(reqwest::Body::wrap(body))
+                    .send()
+                    .await?
+                    .error_for_status()?;
+            }
+        }
         Ok(())
     }
 }
