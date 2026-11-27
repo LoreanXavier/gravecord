@@ -97,6 +97,35 @@ def top_level_entries(block):
     return out
 
 
+# The plugin authors' names (`Devs` and `EquicordDevs` of src/utils/constants.ts), for the credit column.
+CONSTANTS = open(os.path.join(ROOT, 'utils', 'constants.ts'), encoding='utf-8').read()
+
+
+def dev_names(table):
+    start = CONSTANTS.index(f'export const {table} =')
+    end = CONSTANTS.index('\n}', start)
+    return dict(re.findall(r'^\s*["\']?([\w$]+)["\']?\s*:\s*\{\s*name:\s*"([^"]+)"', CONSTANTS[start:end], re.M))
+
+
+DEVS = {'Devs': dev_names('Devs'), 'EquicordDevs': dev_names('EquicordDevs')}
+
+
+def authors_of(block):
+    """The names in a plugin's `authors: [...]`: `Devs.x`, `EquicordDevs.x`, `Devs["x"]` or an inline `{ name }`."""
+    listed = re.search(r'\n\s{4}authors:\s*\[([^\]]*)\]', block)
+    if not listed:
+        return []
+    names = []
+    for kind, key, kind2, key2, inline in re.findall(
+            r'(EquicordDevs|Devs)\.([\w$]+)|(EquicordDevs|Devs)\["([^"]+)"\]|\{\s*name:\s*"([^"]+)"', listed.group(1)):
+        if inline:
+            names.append(inline)
+        else:
+            kind, key = (kind, key) if kind else (kind2, key2)
+            names.append(DEVS[kind].get(key, key))
+    return names
+
+
 sources = {}
 for dp, dn, fn in os.walk(ROOT):
     for f in fn:
@@ -151,7 +180,7 @@ for dp, dn, fn in os.walk(ROOT):
                 if face:
                     for key in re.findall(r'^\s*(\w+)\??:', balanced(holder, face.end() - 1), re.M):
                         settings.append((key, 'PRIVATE', ''))
-            sources.setdefault(name.group(1), (rel, desc.group(1) if desc else '', settings))
+            sources.setdefault(name.group(1), (rel, desc.group(1) if desc else '', settings, authors_of(block)))
 
 # The ported plugins and their settings, from the registry.
 registry = open(os.path.join(REPO, 'app/src/plugins/registry.rs'), encoding='utf-8').read()
@@ -510,7 +539,7 @@ in_backup = set(enabled)
 
 for name in enabled + extra:
     upstream = RENAMED.get(name, name)
-    src, desc, original = sources.get(upstream, ('', '', []))
+    src, desc, original, authors = sources.get(upstream, ('', '', [], []))
     if name in ours:
         if name not in PORTED:
             errors.append(f'{name} is in the registry but has no PORTED note')
@@ -552,7 +581,7 @@ for name in enabled + extra:
     if not src:
         src = '(not in the 2026-11-14 checkout)'
     desc = desc.replace('|', '/')
-    rows.append(f'| {name} | {status} | {src} | {desc} | {note} | {test} |')
+    rows.append(f'| {name} | {status} | {src} | {", ".join(authors)} | {desc} | {note} | {test} |')
 
 with open(OUT, 'w', encoding='utf-8', newline='\n') as out:
     out.write('# PLUGINS.md\n\n')
@@ -571,8 +600,8 @@ with open(OUT, 'w', encoding='utf-8', newline='\n') as out:
     out.write('Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;\n')
     out.write('**planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to\n')
     out.write('port in a native client, or was removed upstream.\n\n')
-    out.write('| plugin | status | source | what it does (original) | here / what it needs | proof |\n')
-    out.write('| - | - | - | - | - | - |\n')
+    out.write('| plugin | status | source | authors | what it does (original) | here / what it needs | proof |\n')
+    out.write('| - | - | - | - | - | - | - |\n')
     out.write('\n'.join(rows) + '\n\n')
     out.write('## Settings of the ported plugins\n\n')
     out.write('Every setting of each original (`definePluginSettings`), its type and default there, and what it does here.\n\n')

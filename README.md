@@ -121,9 +121,15 @@ gravecord ships native ports of popular [Vencord](https://github.com/Vendicated/
 - **Settings:** plugin ids and setting names are the originals', so an Equicord or Vencord backup imports as it is
   (see [Backup & Restore](#backup--restore)).
 
-**Credit:** the behaviour of each port was read from the Vencord and Equicord sources (GPL-3.0-or-later, the same
-licence as gravecord), plus one user plugin. Each port names the original file it follows. Thanks to their authors
-and contributors.
+**Credit:** every port is a rewrite of a Vencord or Equicord plugin and follows its behaviour, so each one is a
+derivative of that plugin and keeps its licence: GPL-3.0-or-later, the same as gravecord. The authors column below
+names the people each original credits in its `authors` field, and [PLUGINS.md](PLUGINS.md) gives the source file
+each port follows. MuteChannelMentions is a user plugin by ShaggyLorean. Thanks to these authors and to everyone who
+contributed to the two projects:
+
+- [Vencord](https://github.com/Vendicated/Vencord): Copyright (c) Vendicated and contributors, GPL-3.0-or-later.
+- [Equicord](https://github.com/Equicord/Equicord): Copyright (c) Equicord contributors (a fork of Vencord),
+  GPL-3.0-or-later.
 
 **Coverage:** 96 plugins are ported. 12 more are things gravecord already does without a plugin, and 239 are
 planned and not listed here. [PLUGINS.md](PLUGINS.md) has the full status table, with each plugin's source and settings.
@@ -132,104 +138,104 @@ Plugin names are the ones the Plugins page shows. Plugins marked † can reach a
 <details>
 <summary><b>The 96 ported plugins</b></summary>
 
-| Plugin | From | What it does |
-| - | - | - |
-| AccountPanelServerProfile | Vencord | Right-click your account panel to view your profile in the current server. |
-| AltKrispSwitch | Equicord | The voice panel's noise suppression switch turns suppression off instead of falling back to Standard. |
-| AlwaysAnimate | Vencord | Plays animated avatars, server icons, nameplates and gradient role names without hovering. |
-| AlwaysTrust | Vencord | Opens links without the "Leaving Discord" prompt; deleting a server asks a simple confirmation instead of its typed name. |
-| AnonymiseFileNames | Vencord | Renames uploaded files as they are sent, with a per-file switch. |
-| BetterActivities † | Equicord | Shows activity icons in the member and DM lists, and every activity in profiles. |
-| BetterAudioPlayer | Equicord | Draws a waveform and frequency bars over audio players while they play. |
-| BetterBlockedUsers | Equicord | Groups blocked and ignored messages and opens a blocked person's profile without the prompt. |
-| BetterCommands | Equicord | Adds /refresh to reload the command list of the open channel or server. |
-| BetterForwards | Equicord | Lets you choose which attachments and embeds to forward, and shows where a forward came from. |
-| BetterGifAltText | Vencord | Gives GIFs without a description an alt text made from the words of their file name. |
-| BetterPlusReacts | Equicord | Each extra plus in `+:emoji:` reacts to a message one further back. |
-| BetterRoleContext | Vencord | Right-click a role header to edit the role, copy its colour, view its icon or members, or copy its id. |
-| BetterRoleDot | Vencord | Click a role dot to copy its colour; show role dots and coloured names together. |
-| BetterUploadButton | Vencord | Click the upload button to pick a file at once; right-click for its menu. |
-| BiggerStreamPreview | Vencord | View a stream's preview picture at full size from the streamer's menu. |
-| BypassStatus | Equicord | Still get notifications from chosen people, channels and servers while on Do Not Disturb. |
-| CallTimer | Vencord | Shows how long you, and optionally everyone, have been in the call. |
-| CancelFriendRequest | Equicord | Cancel an outgoing friend request from the person's profile or DM. |
-| ClearURLs | Vencord | Removes tracking parameters from links you send or edit, with the bundled ClearURLs rules. |
-| ClipsEnhancements | Equicord | Adds more clip lengths, resolutions and frame rates, and tags clips with your game. |
-| ClipUpload | Equicord | Uploads a local MP4 file as a Discord clip, with its metadata. |
-| ColorSighted | Vencord | Draws status dots as plain coloured circles, without the colourblind shapes. |
-| CopyUserURLs | Vencord | Adds Copy User URL to user menus. |
-| CustomRPC | Vencord | Sets a fully custom Rich Presence activity on your profile. |
-| DisableCallIdle | Vencord | Stops a DM call from disconnecting you after three minutes alone. |
-| DownloadAllAttachments | Equicord | A hover bar button that saves every attachment of a message at once. |
-| Experiments | Vencord | Adds a Staff Only Experiments page where you can override experiment buckets and variants. |
-| ExpressionManager | Vencord | Clone stickers into your servers, and edit, delete or copy stickers and emoji from their menus. |
-| FavoriteEmojiFirst | Vencord | Puts your favourite emoji first in emoji autocomplete. |
-| FixImagesQuality | Vencord | Loads attachment pictures at their original resolution. |
-| FixYoutubeEmbeds | Vencord | Shows a YouTube embed's description, folded until clicked. |
-| FriendInvites | Vencord | Slash commands to create, view and revoke friend invite links. |
-| FullSearchContext | Vencord | Right-click a search result for the full message menu instead of the short one. |
-| FullVCPFP | Equicord | Makes avatars fill the whole call tile. |
-| GameActivityToggle | Vencord | A panel button that turns sharing your activity on and off. |
-| GifPaste | Vencord | Picking a GIF puts its link in the message box instead of sending it. |
-| GifProviderSwitcher † | Vencord | Uses Tenor or Giphy for GIF search instead of Discord's provider. |
-| GlobalBadges † | Equicord | Shows badges from other client mods on profiles. |
-| GreetStickerPicker | Vencord | Choose which greet sticker to send instead of a random one. |
-| IgnoreActivities | Vencord | Hides chosen activities from your status. |
-| ImageZoom | Vencord | A magnifying lens on pictures in the viewer, sized with the wheel. |
-| MemberCount | Vencord | Shows online, total and in-voice member counts in the member list and server tooltip. |
-| MessageClickActions | Vencord | Double-click to edit or reply, and other click and key actions on messages. On by default. |
-| MessageLogger | Vencord | Keeps deleted messages visible in red and shows the edit history of edited ones. |
-| MessagePeek | Equicord | Shows the last message and its time under each DM. |
-| MessageTags | Vencord | Saved text snippets you send with your own slash commands. |
-| MoreCommands † | Equicord | Fifty extra slash commands: dice, coin flip, text transforms, random pictures and more. |
-| MoreQuickReactions | Vencord | Shows more quick reactions in the hover bar and as a scrolling grid in the message menu. |
-| MuteChannelMentions | User plugin | Hides mention badges of channels you pick. |
-| NewGuildSettings | Vencord | Applies your chosen notification settings to servers you join. |
-| NoNitroUpsell | Equicord | Hides Nitro upsells. Discord still applies your real plan. |
-| NoPendingCount | Vencord | Removes the friend request and message request counts. |
-| NoTypingAnimation | Vencord | Draws still typing dots. |
-| OnePingPerDM | Vencord | Plays one sound per DM until you read it, not one per message. |
-| OpenInApp † | Vencord | Opens Spotify, Steam, Epic, Tidal, Apple Music, VRChat and Telegram links in their apps. |
-| PermissionsViewer | Vencord | Shows the permissions of a member, a channel or a server's roles. |
-| PinDMs | Vencord | Pin DMs into categories at the top of the DM list. |
-| PlatformIndicators | Equicord | Shows which clients people are on: desktop, mobile, web and others. |
-| PreviewMessage | Vencord | Shows your message as it will look before you send it. |
-| QuickMention | Vencord | A hover bar button that mentions the message's author. |
-| Quoter | Equicord | Turns a message into a quote picture you can save or send. |
-| ReadAllNotificationsButton | Vencord | A button that marks every server as read. |
-| RelationshipNotifier | Vencord | Tells you when a friend, group DM or server removes you. |
-| RevealAllSpoilers | Vencord | Ctrl-click a spoiler to open every spoiler of the message, Ctrl+Shift-click for the whole chat. |
-| ReverseImageSearch † | Vencord | Search a picture with an image search engine, opened in your browser. |
-| RoleColorEverywhere | Vencord | Uses role colours on mentions, role headers, voice channels and reaction lists. |
-| SearchFix | Equicord | Lets search go past Discord's 5,000-result limit by flipping the sort order. |
-| SedEnhanced | Equicord | Lets `s/find/replace` edits use more separators, regular expressions and replace-all. |
-| ServerInfo | Vencord | A Server Info dialog with friends, mutual, blocked and ignored members. |
-| ServerListIndicators | Vencord | Shows how many friends are online or how many servers you are in, under Home. |
-| ShowConnections | Vencord | Shows people's connected accounts as icons in profiles. |
-| ShowHiddenThings | Vencord | Shows timeout clocks, paused invites and Open in Mod View without moderator permissions. |
-| SilentMessageToggle | Vencord | A chat bar button that sends messages as @silent. |
-| SpotifyCrack | Vencord | Lets Listen Along work without Spotify Premium and keeps Spotify playing while you talk. |
-| SpotifyShareCommands | Vencord | /track, /album and /artist share what you are listening to. |
-| SteamStatusSync | Equicord | Mirrors your Discord status to Steam through the Steam client. |
-| StreamingCodecDisabler | Equicord | Can turn off H.264 encoding for streaming and camera. |
-| SuperReactionTweaks | Vencord | Opens the reaction picker with Super Reactions on. |
-| Translate+ † | Equicord | Translates messages, including Toki Pona, sitelen pona and Shavian. |
-| TypingIndicator | Vencord | Shows who is typing next to the channel's name. |
-| TypingTweaks | Vencord | Shows avatars and role colours in the typing line. |
-| UnlimitedAccounts | Equicord | Raises the number of accounts in Switch Accounts. |
-| UnlockedAvatarZoom | Vencord | Lets you zoom further when cropping an avatar. |
-| UserMessagesPronouns | Vencord | Shows people's pronouns next to their messages. |
-| UserPFP † | Equicord | Shows avatars from the UserPFP list, and lets you set local avatars for anyone. |
-| USRBG † | Vencord | Shows profile banners from USRBG. |
-| ValidReply | Vencord | Hover a reply whose message could not be loaded to fetch it, or to see that it was deleted. |
-| ValidUser | Vencord | Fixes @unknown-user mentions when you hover them. |
-| ViewIcons | Vencord | View avatars, banners, decorations and server icons at full size. |
-| VoiceDownload | Vencord | A download button on voice messages. |
-| VoiceMessages | Vencord | Send voice messages from desktop, recorded or from an audio file. |
-| VoiceStats | Equicord | Shows how long you have spent in voice with each person. |
-| VolumeBooster | Vencord | Lets user and stream volume go past 200%. |
-| WhoReacted | Vencord | Shows the avatars of who reacted next to each reaction. |
-| ZipPreview † | Equicord | Lists the files inside a ZIP attachment. |
+| Plugin | From | Authors | What it does |
+| - | - | - | - |
+| AccountPanelServerProfile | Vencord | Nuckyz, Relitrix | Right-click your account panel to view your profile in the current server. |
+| AltKrispSwitch | Equicord | newwares | The voice panel's noise suppression switch turns suppression off instead of falling back to Standard. |
+| AlwaysAnimate | Vencord | Fiery | Plays animated avatars, server icons, nameplates and gradient role names without hovering. |
+| AlwaysTrust | Vencord | zt, trey | Opens links without the "Leaving Discord" prompt; deleting a server asks a simple confirmation instead of its typed name. |
+| AnonymiseFileNames | Vencord | fawn | Renames uploaded files as they are sent, with a per-file switch. |
+| BetterActivities † | Equicord | D3SOX, ArjixWasTaken, AutumnVN, thororen | Shows activity icons in the member and DM lists, and every activity in profiles. |
+| BetterAudioPlayer | Equicord | creations | Draws a waveform and frequency bars over audio players while they play. |
+| BetterBlockedUsers | Equicord | TheArmagan | Groups blocked and ignored messages and opens a blocked person's profile without the prompt. |
+| BetterCommands | Equicord | thororen | Adds /refresh to reload the command list of the open channel or server. |
+| BetterForwards | Equicord | thororen, sadan, nin0dev, VillainsRule, Davri | Lets you choose which attachments and embeds to forward, and shows where a forward came from. |
+| BetterGifAltText | Vencord | V | Gives GIFs without a description an alt text made from the words of their file name. |
+| BetterPlusReacts | Equicord | Joona | Each extra plus in `+:emoji:` reacts to a message one further back. |
+| BetterRoleContext | Vencord | V, goodbee, NightmareSan | Right-click a role header to edit the role, copy its colour, view its icon or members, or copy its id. |
+| BetterRoleDot | Vencord | V, AutumnVN | Click a role dot to copy its colour; show role dots and coloured names together. |
+| BetterUploadButton | Vencord | fawn, V | Click the upload button to pick a file at once; right-click for its menu. |
+| BiggerStreamPreview | Vencord | phil | View a stream's preview picture at full size from the streamer's menu. |
+| BypassStatus | Equicord | Inbestigator | Still get notifications from chosen people, channels and servers while on Do Not Disturb. |
+| CallTimer | Vencord | V, MaxHerbold, D3SOX | Shows how long you, and optionally everyone, have been in the call. |
+| CancelFriendRequest | Equicord | omaw | Cancel an outgoing friend request from the person's profile or DM. |
+| ClearURLs | Vencord | adryd, thororen | Removes tracking parameters from links you send or edit, with the bundled ClearURLs rules. |
+| ClipsEnhancements | Equicord | niko, Joona, Key | Adds more clip lengths, resolutions and frame rates, and tags clips with your game. |
+| ClipUpload | Equicord | qdnx, BachLe2000, pandaptable, zeyno36, jahsohsani | Uploads a local MP4 file as a Discord clip, with its metadata. |
+| ColorSighted | Vencord | lewisakura | Draws status dots as plain coloured circles, without the colourblind shapes. |
+| CopyUserURLs | Vencord | castdrian | Adds Copy User URL to user menus. |
+| CustomRPC | Vencord | Captain, AutumnVN, nin0dev, c0nnorgg | Sets a fully custom Rich Presence activity on your profile. |
+| DisableCallIdle | Vencord | Nuckyz | Stops a DM call from disconnecting you after three minutes alone. |
+| DownloadAllAttachments | Equicord | dhopcs, sprxsheep | A hover bar button that saves every attachment of a message at once. |
+| Experiments | Vencord | Megumin, V, Nickyux, BanTheNons, Nuckyz | Adds a Staff Only Experiments page where you can override experiment buckets and variants. |
+| ExpressionManager | Vencord | V, Nuckyz, Amelia, sadan | Clone stickers into your servers, and edit, delete or copy stickers and emoji from their menus. |
+| FavoriteEmojiFirst | Vencord | Syncxv, V, justjxke | Puts your favourite emoji first in emoji autocomplete. |
+| FixImagesQuality | Vencord | Nuckyz, V | Loads attachment pictures at their original resolution. |
+| FixYoutubeEmbeds | Vencord | coolelectronics, lillith <3, V, arHSM | Shows a YouTube embed's description, folded until clicked. |
+| FriendInvites | Vencord | afn, Dziurwa | Slash commands to create, view and revoke friend invite links. |
+| FullSearchContext | Vencord | V, Syncxv | Right-click a search result for the full message menu instead of the short one. |
+| FullVCPFP | Equicord | mochie | Makes avatars fill the whole call tile. |
+| GameActivityToggle | Vencord | Nuckyz, RuukuLada | A panel button that turns sharing your activity on and off. |
+| GifPaste | Vencord | V | Picking a GIF puts its link in the message box instead of sending it. |
+| GifProviderSwitcher † | Vencord | Lunascape, V | Uses Tenor or Giphy for GIF search instead of Discord's provider. |
+| GlobalBadges † | Equicord | HypedDomi, wolfieeeeeeee, thororen, August (auggeeo) | Shows badges from other client mods on profiles. |
+| GreetStickerPicker | Vencord | V | Choose which greet sticker to send instead of a random one. |
+| IgnoreActivities | Vencord | Nuckyz, Cookie | Hides chosen activities from your status. |
+| ImageZoom | Vencord | Syncxv | A magnifying lens on pictures in the viewer, sized with the wheel. |
+| MemberCount | Vencord | V, Commandtechno, Apexo | Shows online, total and in-voice member counts in the member list and server tooltip. |
+| MessageClickActions | Vencord | V, Key, ZcraftElite, omaw | Double-click to edit or reply, and other click and key actions on messages. On by default. |
+| MessageLogger | Vencord | rushii, V, AutumnVN, Nickyux, Kyuuhachi, sadan, justjxke, f3tch | Keeps deleted messages visible in red and shows the edit history of edited ones. |
+| MessagePeek | Equicord | prism, justjxke | Shows the last message and its time under each DM. |
+| MessageTags | Vencord | V, Luny | Saved text snippets you send with your own slash commands. |
+| MoreCommands † | Equicord | ArjixWasTaken, Amy, Samu, zyqunix, Shady Goat, thororen, Korbo, verticalsync., Amy, Samwich, Fafa, Jacob.Tm, voidbbg | Fifty extra slash commands: dice, coin flip, text transforms, random pictures and more. |
+| MoreQuickReactions | Vencord | V, Sqaaakoi, i am me | Shows more quick reactions in the hover bar and as a scrolling grid in the message menu. |
+| MuteChannelMentions | User plugin | ShaggyLorean | Hides mention badges of channels you pick. |
+| NewGuildSettings | Vencord | Glitchy, Nuckyz, carince, Mopi, GabiRP | Applies your chosen notification settings to servers you join. |
+| NoNitroUpsell | Equicord | thororen | Hides Nitro upsells. Discord still applies your real plan. |
+| NoPendingCount | Vencord | amia | Removes the friend request and message request counts. |
+| NoTypingAnimation | Vencord | AutumnVN | Draws still typing dots. |
+| OnePingPerDM | Vencord | ProffDea | Plays one sound per DM until you read it, not one per message. |
+| OpenInApp † | Vencord | V, Chloe | Opens Spotify, Steam, Epic, Tidal, Apple Music, VRChat and Telegram links in their apps. |
+| PermissionsViewer | Vencord | Nuckyz, V | Shows the permissions of a member, a channel or a server's roles. |
+| PinDMs | Vencord | V, Syncxv | Pin DMs into categories at the top of the DM list. |
+| PlatformIndicators | Equicord | kemo, sunnie, Nuckyz, V, neoarz | Shows which clients people are on: desktop, mobile, web and others. |
+| PreviewMessage | Vencord | Syncxv | Shows your message as it will look before you send it. |
+| QuickMention | Vencord | kemo | A hover bar button that mentions the message's author. |
+| Quoter | Equicord | Samwich, thororen, neoarz, prism | Turns a message into a quote picture you can save or send. |
+| ReadAllNotificationsButton | Vencord | kemo, krystalskullofficial | A button that marks every server as read. |
+| RelationshipNotifier | Vencord | nick | Tells you when a friend, group DM or server removes you. |
+| RevealAllSpoilers | Vencord | whqwert | Ctrl-click a spoiler to open every spoiler of the message, Ctrl+Shift-click for the whole chat. |
+| ReverseImageSearch † | Vencord | V, Nuckyz | Search a picture with an image search engine, opened in your browser. |
+| RoleColorEverywhere | Vencord | King Fish, lewisakura, AutumnVN, Kyuuhachi, jamesbt365 | Uses role colours on mentions, role headers, voice channels and reaction lists. |
+| SearchFix | Equicord | Jaxx | Lets search go past Discord's 5,000-result limit by flipping the sort order. |
+| SedEnhanced | Equicord | dawn, Willow, kat | Lets `s/find/replace` edits use more separators, regular expressions and replace-all. |
+| ServerInfo | Vencord | V, Nuckyz, Z1xus | A Server Info dialog with friends, mutual, blocked and ignored members. |
+| ServerListIndicators | Vencord | rini, Panniku | Shows how many friends are online or how many servers you are in, under Home. |
+| ShowConnections | Vencord | TheKodeToad | Shows people's connected accounts as icons in profiles. |
+| ShowHiddenThings | Vencord | Dolfies | Shows timeout clocks, paused invites and Open in Mod View without moderator permissions. |
+| SilentMessageToggle | Vencord | Nuckyz, CatNoir, Z1xus | A chat bar button that sends messages as @silent. |
+| SpotifyCrack | Vencord | Cynosphere, Nuckyz | Lets Listen Along work without Spotify Premium and keeps Spotify playing while you talk. |
+| SpotifyShareCommands | Vencord | katlyn | /track, /album and /artist share what you are listening to. |
+| SteamStatusSync | Equicord | niko | Mirrors your Discord status to Steam through the Steam client. |
+| StreamingCodecDisabler | Equicord | davidkra230 | Can turn off H.264 encoding for streaming and camera. |
+| SuperReactionTweaks | Vencord | Fiery, ant0n | Opens the reaction picker with Super Reactions on. |
+| Translate+ † | Equicord | V, Prince527 | Translates messages, including Toki Pona, sitelen pona and Shavian. |
+| TypingIndicator | Vencord | Nuckyz, fawn, Sqaaakoi | Shows who is typing next to the channel's name. |
+| TypingTweaks | Vencord | zt, sadan, MrDiamond | Shows avatars and role colours in the typing line. |
+| UnlimitedAccounts | Equicord | thororen | Raises the number of accounts in Switch Accounts. |
+| UnlockedAvatarZoom | Vencord | nakoyasha | Lets you zoom further when cropping an avatar. |
+| UserMessagesPronouns | Vencord | Tyman, TheKodeToad, V, Elvyra | Shows people's pronouns next to their messages. |
+| UserPFP † | Equicord | Nexpid, thororen, soap phia, sketchmyname | Shows avatars from the UserPFP list, and lets you set local avatars for anyone. |
+| USRBG † | Vencord | AutumnVN, katlyn, pylix, TheKodeToad | Shows profile banners from USRBG. |
+| ValidReply | Vencord | newwares | Hover a reply whose message could not be loaded to fetch it, or to see that it was deleted. |
+| ValidUser | Vencord | V, Dolfies | Fixes @unknown-user mentions when you hover them. |
+| ViewIcons | Vencord | V, TheKodeToad, Nuckyz, verticalsync. | View avatars, banners, decorations and server icons at full size. |
+| VoiceDownload | Vencord | puv | A download button on voice messages. |
+| VoiceMessages | Vencord | V, Vap0r1ze, Nickyux | Send voice messages from desktop, recorded or from an audio file. |
+| VoiceStats | Equicord | Moowi | Shows how long you have spent in voice with each person. |
+| VolumeBooster | Vencord | Nuckyz, sadan | Lets user and stream volume go past 200%. |
+| WhoReacted | Vencord | V, Kanna, newwares, paige | Shows the avatars of who reacted next to each reaction. |
+| ZipPreview † | Equicord | justjxke | Lists the files inside a ZIP attachment. |
 
 </details>
 
