@@ -9,7 +9,7 @@
 //! The confirm step sends `PUT /guilds/<id>/premium/subscriptions` with the slot ids (`VA` of module 559201) and
 //! "Boost Activated" follows (module 636441).
 //!
-//! Measured: the first step, from the owner's capture of the official dialog (480 wide, the stepper of module
+//! Measured: the first step, from a capture of the official dialog (480 wide, the stepper of module
 //! 663803, the styles `quantitySelector*_T4asAA`). Not measured, built from the modules and the style sheets only
 //! (no account at hand held a free Boost): the confirm and the success step. Their header graphic is not in the
 //! snapshot, so its box is left empty: the confirm step's Rive file (module 449349, `4e02ee04….riv`, artboard "Boost

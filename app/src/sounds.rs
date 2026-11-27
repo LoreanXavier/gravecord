@@ -846,7 +846,7 @@ mod tests {
             last_experiment: Some(event.experiment.to_owned()),
         };
         assert_eq!(soundpack_update(&halloween, event, true), None);
-        // The owner switched back to classic during the event: it is not forced again.
+        // The user switched back to classic during the event: it is not forced again.
         let chose_classic = SoundpackState {
             soundpack: Pack::Classic,
             last_experiment: Some(event.experiment.to_owned()),

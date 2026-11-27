@@ -2368,8 +2368,8 @@ struct ForwardCheck {
 /// (`QHrFo6`); then, in a server channel, files without Attach Files (`P7yvbm`), embeds without Embed Links unless the
 /// message has text or a forwarded copy with text or files (`Wr4RIX`), another server's sticker without Use External
 /// Stickers (`0Yyrua`) and a voice message without Send Voice Messages (`quj4DY`). Returns the string key.
-/// GAP: the age-assurance branch of `QHrFo6` (`u5()` with `AGE_GATED_SPACES`) is not run (owner excluded age
-/// verification) and checkpoint-card components (`Wr4RIX` without Embed Links) are not parsed.
+/// GAP: the age-assurance branch of `QHrFo6` (`u5()` with `AGE_GATED_SPACES`) is not run (this client does not
+/// verify ages) and checkpoint-card components (`Wr4RIX` without Embed Links) are not parsed.
 fn destination_unavailable(
     message: &Message,
     check: &ForwardCheck,

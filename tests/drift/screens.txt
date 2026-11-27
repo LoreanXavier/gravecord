@@ -5,8 +5,8 @@
 # Runs are headless, inert (GRAVECORD_INERT=1) and answered by a local replay: nothing here reaches Discord.
 # The scenarios of tests/plugins-off/scenarios.txt are captured too, as `plugins-off/<name>` (structural checks only).
 
-# The profile editor, main and per-server. The owner saw the server profile's left column squeezed with its text cut
-# off and the editor at the wrong size. `premium 2` gives the Nitro state he has (the notice instead of the upsell);
+# The profile editor, main and per-server. These catch the server profile's left column squeezed with its text cut
+# off and the editor at the wrong size. `premium 2` gives a Nitro account's state (the notice instead of the upsell);
 # the other window sizes show faults that only appear away from 1280x720.
 profile-editor | wait 4000; profile-editor open; wait 1500; settle 6000; shot @settings/profile-editor-darker-cozy; profile-editor tab activity; wait 800; settle 4000; shot @settings/profile-editor-activity-tab-darker-cozy; profile-editor tab wishlist; wait 800; settle 4000; shot @settings/profile-editor-wishlist-tab-darker-cozy; profile-editor tab board; profile-editor server first; wait 1500; settle 6000; shot @settings/profile-editor-server-1280; profile-editor server list; wait 800; settle 3000; shot @settings/profile-editor-server-select-1280
 profile-editor-banner | wait 4000; profile-editor open; wait 1500; profile-editor banner-color; wait 1000; settle 5000; shot @settings/profile-editor-banner-color-darker-cozy

@@ -10,7 +10,7 @@
 //! the pinned client.
 //!
 //! GAP: `backfillRecentActivity` (at the start, each streak DM's last 100 messages are read and today's reported) and
-//! `reauthorize` (a refused token is renewed by a silent grant), both left to the owner's own sign-in; `migrate`
+//! `reauthorize` (a refused token is renewed by a silent grant), both left to the user's own sign-in; `migrate`
 //! has nothing to move (no local streaks of the old version here). A day in another person's time zone is taken as
 //! this machine's date or UTC's (the app has no time zone database).
 

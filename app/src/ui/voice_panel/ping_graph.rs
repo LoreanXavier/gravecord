@@ -21,7 +21,7 @@ const EDGE_LABEL_MARGIN: f32 = 24.;
 /// `fontSize = 11`.
 const FONT_SIZE: f64 = 11.;
 /// `graphContainer_BlzJTq` around the inline canvas: the canvas, the line box's descent under it and `padding-bottom:
-/// 2px`, 85 tall in the owner's screenshot of the official popout.
+/// 2px`, 85 tall in a screenshot of the official popout.
 pub(super) const CONTAINER_HEIGHT: f32 = 85.;
 /// `drawTimeLabels` steps by a minute.
 const MINUTE_MS: f64 = 60_000.;
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn the_axis_matches_the_official_label_steps() {
-        // The owner's screenshot: spikes to about 700 ms on a 65 pixel plot read 1000, 500, 0.
+        // The official popout's screenshot: spikes to about 700 ms on a 65 pixel plot read 1000, 500, 0.
         let axis = layout_labels(0., 700., 65., 11.);
         assert_eq!(axis.labels, ["1000", "500", "0"]);
         assert_eq!((axis.min, axis.max), (0., 1000.));

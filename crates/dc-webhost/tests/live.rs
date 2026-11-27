@@ -1,6 +1,6 @@
 //! The captcha page and the relay against a real WebView2, on a hidden owner window. Ignored by default: it needs
 //! WebView2 and the network, and it must run on the hidden desktop (`cargo xtask headless <test exe> --ignored`), never
-//! on the owner's.
+//! on the visible one.
 //!
 //! No captcha is solved here. The widget is rendered with hCaptcha's published test sitekey and left alone (nothing
 //! clicks it), and the relay is shown to pass a fake token that the test's own page posts.

@@ -658,8 +658,8 @@ const SELECT_OPTIONS: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
-/// Noise Suppression's description names what runs. The official one says "Powered by Krisp", which cannot run here
-/// (BLOCKED.md); the owner asked for DeepFilterNet to be shown as itself in the same design (11-08).
+/// Noise Suppression's description names what runs. The official one says "Powered by Krisp", which cannot run here;
+/// DeepFilterNet, which does, is named in the same design.
 const NOISE_DESCRIPTION: Runs = &[
     ("Reduces background noise from your mic. Powered by ", false),
     ("DeepFilterNet", true),

@@ -3,7 +3,7 @@
 //! read once and written through on every change. Never holds tokens.
 //!
 //! Capture runs (`--capture`, or a build with the `capture` feature: the parity harness) keep theirs at
-//! `%LOCALAPPDATA%\gravecord-capture\storage.json`, so tests never read or change the owner's settings, and they
+//! `%LOCALAPPDATA%\gravecord-capture\storage.json`, so tests never read or change the user's settings, and they
 //! do not write it either unless the run sets `GRAVECORD_STORAGE_WRITE=1`.
 
 use serde_json::{Map, Value};
@@ -139,7 +139,7 @@ mod tests {
         assert_ne!(owner, harness);
         assert!(
             !harness.starts_with(owner.parent().unwrap()),
-            "the capture folder is not inside the owner's"
+            "the capture folder is not inside the user's"
         );
     }
 

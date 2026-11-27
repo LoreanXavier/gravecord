@@ -1,6 +1,6 @@
 //! `cargo xtask replay serve <folder> [--port N] [--ready-delay-ms N] [--no-latency]`, and the server behind
 //! `cargo xtask perf --replay <folder>`: a local Discord that answers from a recording, so perf runs and captures never
-//! sign the fixture account in (Discord flagged it on 2026-11-18 after hundreds of logins a day).
+//! sign the fixture account in (Discord flags an account after hundreds of logins a day).
 //!
 //! The recording (`dc_proto::replay`, made by `cargo xtask perf --record <folder>`) holds every REST and CDN answer and
 //! every gateway frame of one signed-in run. One port serves both:

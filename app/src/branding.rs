@@ -1,4 +1,4 @@
-//! Owner-selected application artwork. This preference is local to the active profile.
+//! User-selected application artwork. This preference is local to the active profile.
 use crate::storage;
 use gpui::{Image, ImageFormat};
 use std::{path::Path, sync::Arc};

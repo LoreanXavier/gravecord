@@ -1,7 +1,7 @@
 //! The log file behind Debug Logging (Voice & Video > Advanced): "Saves debug logs to voice module folder that you can
 //! upload to Discord Support". The official switch lives in the native voice module; here it switches a file logger
 //! on and off while the app runs, writing the debug events of gravecord's own crates into a file of the voice folder.
-//! `--log <file>` (live tests driven from outside) keeps writing every debug event to its file, as before.
+//! `--log <file>` (runs driven from outside) keeps writing every debug event to its file, as before.
 //!
 //! Debug events may name user ids, so the files stay on this machine unless the user uploads them (Upload Logs).
 //! Addresses are written as scheme, host and path only: every line passes `dc_http::redact::text` on its way into a

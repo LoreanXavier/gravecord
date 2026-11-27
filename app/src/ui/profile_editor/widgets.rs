@@ -3262,7 +3262,7 @@ mod tests {
         );
     }
 
-    /// `aw` with six options gives the owner's board; variation 1 keeps four.
+    /// `aw` with six options gives the captured board; variation 1 keeps four.
     #[test]
     fn the_suggestions_follow_aw() {
         let titles =

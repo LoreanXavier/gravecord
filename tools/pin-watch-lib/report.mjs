@@ -288,7 +288,7 @@ function renderCoverage(meta) {
 Produced for the candidate by static reading only (no client was started, nothing was installed):
 \`modules/\`, \`MODULE_INDEX.tsv\`, \`dumps/STRINGS/\` (tools/split-modules.mjs and tools/dump-strings.mjs, run unchanged against the candidate tree), and in memory the facts compared above (modules, enums and constants, endpoints, settings ids, menus, stores, action types, experiments, protos, sounds, images, embed types, CSS rules and tokens, seasonal events).
 
-Not produced, because each needs a **running** client (CDP into the page, \`tools/cdp.mjs\` port 9230) and the only way to get one for the candidate is to install it, which this tool never does (the owner's \`AppData\\Local\\Discord\` is only read):
+Not produced, because each needs a **running** client (CDP into the page, \`tools/cdp.mjs\` port 9230) and the only way to get one for the candidate is to install it, which this tool never does (the installed \`AppData\\Local\\Discord\` is only read):
 
 - \`stores.live.json\`, \`dispatcher-nodes.json\`, \`actions.live.json\` (tools/dump-live.mjs): store methods, handler maps, the dispatcher graph. The static store/action lists above are the substitute.
 - \`endpoints.live.json\`: HTTP-method-bearing route functions evaluated in the page. The static route table above holds the templates.
@@ -296,6 +296,6 @@ Not produced, because each needs a **running** client (CDP into the page, \`tool
 - \`design/tokens/<theme>.json\`, \`design/dom/**\`, \`design/golden/**\`: computed styles, DOM and screenshots per screen state. These are the Law 1 inputs; the CSS diff above only says which rules moved.
 - \`TRAFFIC/\`: recordings of a signed-in session.
 
-How to get them without touching the owner's install: unpack the candidate's host distro (kept as \`desktop-raw/host.distro\`; brotli over tar, \`tar -xf\` after decompressing) into a throwaway directory and launch that copy on the hidden desktop with \`cargo xtask headless <exe>\` and a separate \`--user-data-dir\`, then run the live tools against it. That is a pin-move task, not something this watcher does by itself.
+How to get them without touching the installed client: unpack the candidate's host distro (kept as \`desktop-raw/host.distro\`; brotli over tar, \`tar -xf\` after decompressing) into a throwaway directory and launch that copy on the hidden desktop with \`cargo xtask headless <exe>\` and a separate \`--user-data-dir\`, then run the live tools against it. That is a pin-move task, not something this watcher does by itself.
 `;
 }

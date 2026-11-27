@@ -9,7 +9,7 @@ pub(crate) struct State {
     /// The master switch: off, every plugin is off whatever its own switch says.
     pub master: bool,
     /// By plugin id. Plugins that are not ported yet keep what an import gave them, so a later port starts from
-    /// the owner's settings.
+    /// the imported settings.
     pub plugins: BTreeMap<String, Entry>,
 }
 

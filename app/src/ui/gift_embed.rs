@@ -1031,7 +1031,7 @@ mod tests {
         stores
     }
 
-    /// The gift of the owner's capture (30.png): a Shop gift with the Standard Box, sent by the viewer, claimed.
+    /// The gift of a recorded capture: a Shop gift with the Standard Box, sent by the viewer, claimed.
     fn shop_gift() -> Value {
         json!({
             "code": "AbCdEfGhJkMnPqRs",

@@ -685,8 +685,8 @@ pub fn own_visible_activities(local: &[Value], remote: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// A harness run sends a game or scans for one only when it says so with `GRAVECORD_ALLOW_PRESENCE=1` (a live test
-/// the owner asked for).
+/// A harness run sends a game or scans for one only when it says so with `GRAVECORD_ALLOW_PRESENCE=1`, so a
+/// capture run never changes what the account shows others.
 pub fn live_presence_allowed() -> bool {
     std::env::var("GRAVECORD_ALLOW_PRESENCE").as_deref() == Ok("1")
 }

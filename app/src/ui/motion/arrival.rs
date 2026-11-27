@@ -1,5 +1,5 @@
 //! Not in the pinned client: the arrival of a message this account sends, taken from Discord's native client
-//! ("Phoenix", owner decision in `DECISIONS.md`). The pinned build shows a new message at once.
+//! ("Phoenix"), a deliberate departure. The pinned build shows a new message at once.
 //!
 //! Phoenix wraps the row in `MessageArrival` (`discord-desktop-features-ui/src/features_ui/message_arrival.rs`). It
 //! keeps three slots per row: `grow` and `fade`, each run from 0 to 1 by a transition of 300 ms with the curve its

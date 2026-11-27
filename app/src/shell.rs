@@ -43,7 +43,7 @@ pub struct Shell {
     _pump: Option<Task<()>>,
     _art: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
-    /// Capture builds never touch the credential store: a run with a test account must not drop the owner's login.
+    /// Capture builds never touch the credential store: a run with a test account must not drop the user's login.
     persist: bool,
     /// The next session replaces another account's: its main view announces the switch.
     switched: bool,

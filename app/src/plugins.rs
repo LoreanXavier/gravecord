@@ -1,4 +1,4 @@
-//! Built-in plugins: Rust ports of the Vencord and Equicord plugins the owner keeps enabled. Not part of the pinned
+//! Built-in plugins: Rust ports of Vencord and Equicord plugins. Not part of the pinned
 //! client. Each one is a switchable feature with its own settings, listed under the settings sidebar's Gravecord
 //! group (`ui/settings/mods.rs`). Every plugin is off until it is turned on, except the ones whose definition says
 //! otherwise, and the master switch on the Gravecord page turns them all off at once.
@@ -49,7 +49,7 @@ const STORAGE_KEY: &str = "plugins";
 fn cell() -> &'static RwLock<State> {
     static CELL: OnceLock<RwLock<State>> = OnceLock::new();
     CELL.get_or_init(|| {
-        // Unit tests never read the owner's storage: they start from the defaults.
+        // Unit tests never read the user's storage: they start from the defaults.
         let saved = if cfg!(test) {
             None
         } else {

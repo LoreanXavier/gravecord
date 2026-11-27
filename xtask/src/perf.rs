@@ -796,7 +796,7 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
                     );
                 }
             } else {
-                // Every run signs the fixture account in; Discord flagged it on 2026-11-18 after bursts of logins, so
+                // Every run signs the fixture account in, and Discord flags an account after bursts of logins, so
                 // launches are spaced (`GRAVECORD_PERF_GAP_SECS`, default 60).
                 if let Some(gap) = launch_gap(last_launch) {
                     sleep(gap);

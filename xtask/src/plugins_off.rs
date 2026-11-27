@@ -46,7 +46,7 @@ const RUN_LIMIT: Duration = Duration::from_secs(240);
 const SETTLE: &str = "settle 20000";
 
 thread_local! {
-    /// The last signed-in launch: Discord flagged the fixture account after bursts of logins (twice on 2026-11-18), so
+    /// The last signed-in launch: Discord flags an account after bursts of logins, so
     /// launches are spaced like perf's (`perf::launch_gap`, `GRAVECORD_PERF_GAP_SECS`).
     static LAST_LAUNCH: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
     /// `--replay <folder>`: every launch is answered by a local replay of that recording (`replay.rs`) instead of

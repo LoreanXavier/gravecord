@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn a_video_tweet_gets_the_video_slot_not_the_side_thumbnail() {
-        // The fault the owner reported: FxTwitter's rich embed with a video and its poster as thumbnail.
+        // A reported fault: FxTwitter's rich embed with a video and its poster as thumbnail.
         let tweet = embed(json!({
             "type": "rich", "url": "https://fxtwitter.com/a/status/1/video/1",
             "author": {"name": "Heisenberg (@burakalpekn)", "proxy_icon_url": "https://p/a.jpg"},

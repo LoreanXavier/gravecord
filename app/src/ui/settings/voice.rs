@@ -2761,7 +2761,7 @@ mod tests {
         }
     }
 
-    /// What the slider stores reads back as the same volume (the file is JSON; the test leaves the owner's storage alone).
+    /// What the slider stores reads back as the same volume (the file is JSON; the test leaves the user's storage alone).
     #[test]
     fn the_soundboard_volume_survives_a_json_round_trip() {
         for fraction in [0., 0.25, 0.5, 0.9, 1.] {

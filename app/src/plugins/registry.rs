@@ -4131,8 +4131,8 @@ pub(crate) const DEFS: &[Def] = &[
 
 #[cfg(test)]
 mod tests {
-    /// A fresh install has the plugins' master switch on and exactly one plugin on: MessageClickActions, which
-    /// the owner asked for (double-click to edit). Everything else starts as the pinned client.
+    /// A fresh install has the plugins' master switch on and exactly one plugin on: MessageClickActions
+    /// (double-click to edit). Everything else starts as the pinned client.
     #[test]
     fn only_message_click_actions_is_on_by_default() {
         let on: Vec<&str> = DEFS

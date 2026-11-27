@@ -1368,7 +1368,7 @@ mod tests {
 
     #[test]
     fn an_unread_dm_row_is_highlighted_unless_muted_and_at_rest() {
-        // Unread at rest: the pill and the strong name (the owner's report: the row only moved up).
+        // Unread at rest: the pill and the strong name (a reported fault: the row only moved up).
         let look = row_look(false, false, true, false);
         assert!(look.pill && look.highlighted && !look.dimmed);
         assert_eq!((look.row, look.text), ("--text-muted", "--text-strong"));

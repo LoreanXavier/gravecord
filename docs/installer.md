@@ -63,7 +63,7 @@ packaging); `GRAVECORD_PACKAGE_SKIP_BUILD=1` reuses the release build already in
 ## Verification, 2026-11-09
 
 - Unit test: the 18 setup tests passed (payload, paths, manifest, update/removal and icon encoding).
-- Ran live on the hidden desktop: silent install and reinstall of the packaged payload into a scratch folder with
+- Run on the hidden desktop: silent install and reinstall of the packaged payload into a scratch folder with
   `--no-register`; removal with the rebuilt uninstaller preserved a foreign file and removed its own executable.
   The refreshed package was also installed into a second scratch folder: its app hash matched the portable exe,
   and its bundled uninstaller removed the installed files while preserving a foreign file.
@@ -71,7 +71,7 @@ packaging); `GRAVECORD_PACKAGE_SKIP_BUILD=1` reuses the release build already in
   are unverified.
 - Import inspection: the refreshed packaged app and setup import no VCRUNTIME, MSVCP140 or MSVCRT DLL. This checks direct
   imports on this machine, not operation on a clean Windows installation.
-- Registration, shortcuts, running-app refusal, locked portable fallback and data deletion are not live-tested.
+- Registration, shortcuts, running-app refusal, locked portable fallback and data deletion are not tested end to end.
 
 ## Desktop notification identity
 

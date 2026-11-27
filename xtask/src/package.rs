@@ -381,7 +381,7 @@ enum Portable {
 }
 
 /// Refreshes the portable build in `dist`. The exe is replaced first; only when that works are the assets mirrored, so
-/// an old exe is never left with new assets. When the exe is locked (the owner has it open), the existing folder is
+/// an old exe is never left with new assets. When the exe is locked (it is running), the existing folder is
 /// left exactly as it was and the whole new build (exe plus assets) goes to `dist\gravecord-next\`.
 fn refresh_portable(dist: &Path, app_exe: &Path, assets: &Path) -> Result<Portable> {
     let exe_data = std::fs::read(app_exe)?;
@@ -510,7 +510,7 @@ pub fn run(repo: &Path, nightly: bool, allow_dirty: bool) -> Result<()> {
         println!("publish: a release tagged v{version} with gravecord-setup.exe as its only file");
     }
 
-    // The portable folder. The exe may be locked because the owner has it open; the setup is written either way.
+    // The portable folder. The exe may be locked because it is running; the setup is written either way.
     match refresh_portable(&dist, &app_exe, &assets)? {
         Portable::Refreshed => println!("portable: {}", dist.join("gravecord.exe").display()),
         Portable::Beside(next) => println!(

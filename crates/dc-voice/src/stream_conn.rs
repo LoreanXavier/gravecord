@@ -85,7 +85,7 @@ pub fn ended_locally(reason: &DisconnectReason) -> bool {
 pub enum StreamSource {
     /// A display or window with the picker's settings (`dc_media::screen`).
     Screen(screen::Settings),
-    /// A moving test pattern, for capture-only runs that must not touch the owner's screen.
+    /// A moving test pattern, for capture-only runs that must not touch the real screen.
     Synthetic {
         width: u32,
         height: u32,

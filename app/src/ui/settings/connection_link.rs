@@ -17,7 +17,7 @@
 //!    `two_way_link_code` (module 306677 adds `insecure` and `friend_sync`). Success shows the last slide; any failure
 //!    the error slide, PlayStation's with the parent-account text for `UNDER_MINIMUM_AGE` (20024).
 //!
-//! Granting stays the owner's: a capture build sends none of the requests after the browser hand-off (the consent
+//! Granting stays the user's: a capture build sends none of the requests after the browser hand-off (the consent
 //! GETs, the authorize POST, the acknowledgement or the callback); local fixtures (`fetched`, `gw`) stand in for their
 //! answers. `GRAVECORD_ALLOW_AUTHORIZE` lifts that for a deliberate run.
 

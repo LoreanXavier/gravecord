@@ -1,4 +1,4 @@
-//! Starts programs on a hidden Win32 desktop, so their windows never reach the owner's screen.
+//! Starts programs on a hidden Win32 desktop, so their windows never reach the visible screen.
 //!
 //! The desktop is never switched to, so nothing on it is displayed, not even for a moment at launch. It lives as long as
 //! a process is attached to it. CDP and gpui's offscreen rendering still work there, which is all captures need.

@@ -1,7 +1,7 @@
 //! The client mod's Notifications and Notices APIs (Equicord `src/api/Notifications`, `src/api/Notices.tsx`,
 //! GPL-3.0-or-later), for the plugins that use them.
 //!
-//! - `showNotification`: while the window has focus (`useNative` "not-focused", the default and the owner's setting),
+//! - `showNotification`: while the window has focus (`useNative` "not-focused", the default),
 //!   the in-app card (`NotificationComponent`): bottom right, 16px from the edges, `min(25vw, 400px)` wide and at
 //!   least `10vh` high on `--background-base-low` with 6px corners; a 64px icon with 6px corners and 20px of padding
 //!   and gap; the title upper case in 16px semibold `--text-strong`, the dismiss cross at its right (`--interactive-icon

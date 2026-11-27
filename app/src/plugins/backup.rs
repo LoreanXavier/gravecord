@@ -189,7 +189,7 @@ fn apply(
         report.turned_on += 1;
     }
     // A ported plugin keeps only what its settings can hold; other keys (settings this port does not have) are
-    // kept too, unread, so nothing of the owner's is lost.
+    // kept too, unread, so nothing of the backup is lost.
     let mut kept = Map::new();
     for (key, value) in settings {
         match def.setting(&key) {
@@ -215,8 +215,8 @@ fn apply(
 mod tests {
     use super::*;
 
-    /// The shape of an Equicord "Backup & Restore" file, with made-up values (the owner's own file holds account
-    /// ids and other services' tokens and is never copied into the repository).
+    /// The shape of an Equicord "Backup & Restore" file, with made-up values (a real backup holds account ids and
+    /// other services' tokens).
     fn equicord_backup() -> Value {
         json!({
             "settings": {

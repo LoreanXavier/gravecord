@@ -40,7 +40,7 @@ fn obs_virtual_camera_delivers_640x480_frames() {
     let lit_sink = lit.clone();
     let started = Instant::now();
     let started_camera = Camera::start(Some(&obs.id), move |frame| {
-        // Only a count is kept: the picture may show the owner's scene.
+        // Only a count is kept: the picture may show whatever is in front of the camera.
         let count = non_black(&frame.preview.data);
         let mut best = lit_sink.lock().unwrap();
         *best = (*best).max(count);

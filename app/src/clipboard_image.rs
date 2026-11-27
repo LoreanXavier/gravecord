@@ -48,7 +48,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<RgbaImage> {
         .map(|picture| picture.to_rgba8())
 }
 
-/// Puts `picture` on the clipboard as `CF_DIB` and "PNG". In inert capture runs nothing is written: the owner's
+/// Puts `picture` on the clipboard as `CF_DIB` and "PNG". In inert capture runs nothing is written: the system
 /// clipboard is never touched by tests.
 #[cfg(windows)]
 pub(crate) fn write(picture: &RgbaImage) -> Result<(), &'static str> {

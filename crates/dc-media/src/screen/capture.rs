@@ -126,7 +126,7 @@ impl Drop for Frame {
 
 /// `E_ACCESSDENIED`; Windows 11's "Screenshots and screen recording" privacy setting returns it.
 const ACCESS_DENIED: u32 = 0x8007_0005;
-/// Windows 11 blocks programmatic capture for applications the owner has not allowed.
+/// Windows 11 blocks programmatic capture for applications the user has not allowed.
 const DENIED: &str = "Windows blocked screen capture for this app; allow it in Settings, Privacy & security, Screenshots and screen recording";
 /// How often a pending consent wait checks whether the share was cancelled.
 const CONSENT_POLL: Duration = Duration::from_millis(50);
@@ -660,7 +660,7 @@ fn request_access(cancel: &AtomicBool) -> Result<()> {
         std::thread::sleep(CONSENT_POLL);
     }
     match operation.GetResults() {
-        // Only a decision the owner made is trusted: an unpackaged executable reports NotDeclaredByApp even where
+        // Only a decision the user made is trusted: an unpackaged executable reports NotDeclaredByApp even where
         // capture is already allowed, and that decision still belongs to the capture item.
         Ok(status)
             if status == AppCapabilityAccessStatus::DeniedByUser

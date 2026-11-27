@@ -3,7 +3,7 @@
 //!
 //! `--script "click 36 157; wait 800; type hello; key enter; drag 450 330 600 330; note label"`.
 //! `stream start` / `stream stop` run a Go Live stream from the synthetic source (only when alone in the channel).
-//! `note` appends the app's state to `<capture>.log`. The clipboard is shared with the owner's desktop, so scripts never
+//! `note` appends the app's state to `<capture>.log`. The clipboard is shared with the visible desktop, so scripts never
 //! press ctrl-c; `note` reports the selection directly.
 //!
 //! `native move x y` sends Win32 hit-test/move messages to this window. `native state` records the
@@ -1258,8 +1258,8 @@ pub async fn run(
                 let outcome = root.update(cx, |root, cx| root.stream_start_synthetic(false, cx));
                 let _ = writeln!(output, "stream start: {outcome}");
             }
-            // The same pattern with the owner in the channel, for a live test he asked for: it holds nothing of
-            // this machine. Ends by itself like the other.
+            // The same pattern with other people in the channel: it holds nothing of this machine. Ends by itself
+            // like the other.
             ["stream", "start", "with-others"] => {
                 let outcome = root.update(cx, |root, cx| root.stream_start_synthetic(true, cx));
                 let _ = writeln!(output, "stream start: {outcome}");

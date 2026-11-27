@@ -1,9 +1,9 @@
 // node tools/no-local-rpc.mjs
 // The clean capture client is a second Discord on this machine, so it also opens a local RPC pipe (discord-ipc-N).
-// A program that sets Rich Presence connects to the first pipe that answers, and when the owner's own Discord
+// A program that sets Rich Presence connects to the first pipe that answers, and when the main Discord install
 // restarts that can be this one: its activity then shows on the test account and stays there. This watcher closes
 // every RPC socket a local program opens on the capture client, the way the client itself drops a socket, so the
-// activity is cleared and the program reconnects to the owner's Discord. Loopback CDP only.
+// activity is cleared and the program reconnects to the main Discord. Loopback CDP only.
 import { connect } from './cdp.mjs';
 import { PRELUDE } from './webpack.mjs';
 

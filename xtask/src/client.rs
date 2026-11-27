@@ -194,7 +194,7 @@ fn launch(repo: &Path) -> Result<()> {
 }
 
 /// A second instance of the copy for login goldens: its own empty profile and CDP port, never the signed-in one. The
-/// profile must be a new or empty folder outside `design/client`, so it cannot fall back to the owner's session.
+/// profile must be a new or empty folder outside `design/client`, so it cannot fall back to the signed-in session.
 fn launch_isolated(repo: &Path, profile: &Path, port: u16) -> Result<()> {
     let paths = layout(repo);
     if port == CDP_PORT {

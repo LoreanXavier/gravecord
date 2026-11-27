@@ -24,7 +24,7 @@
 // Runs unchanged: tools/split-modules.mjs and tools/dump-strings.mjs, executed on the candidate tree by substituting their
 // snapshot path (the substitution is asserted, so a changed tool fails loudly instead of writing into design/snapshot).
 // Downloads go only to updates.discord.com, *.dl2.discordapp.net, discord.com and its CDN hosts. Nothing is installed or
-// launched; the owner's AppData\Local\Discord is not touched. Exit: 0 current, 10 newer build processed, 1 error.
+// launched; the installed AppData\Local\Discord is not touched. Exit: 0 current, 10 newer build processed, 1 error.
 import { createHash } from 'node:crypto';
 import {
   copyFileSync, createReadStream, createWriteStream, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync,

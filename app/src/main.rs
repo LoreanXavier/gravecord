@@ -212,7 +212,7 @@ struct Capture {
     /// Scripted input, see `harness.rs`.
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     script: Option<String>,
-    /// `--follow <file>`: stay open and run each line added to the file as a script, for live tests driven from
+    /// `--follow <file>`: stay open and run each line added to the file as a script, for runs driven from
     /// outside (a voice call, say). `shot <png>` saves a frame, `quit` ends the run.
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     follow: Option<PathBuf>,
@@ -258,7 +258,7 @@ fn save_frame(image: &image::RgbaImage, path: &Path) -> Result<()> {
 /// Calibrated against the official client with `tools/calibrate-text.py`. 2.2 is the top of gpui's table.
 const TEXT_GAMMA: &str = "2.2";
 
-/// `--log <file>`: debug events go to that file, for live tests (a voice call) driven from outside. Off otherwise:
+/// `--log <file>`: debug events go to that file, for runs (a voice call) driven from outside. Off otherwise:
 /// nothing is logged. Debug events may name user ids, so the file belongs in a scratch folder, never in the repo.
 fn record_log() {
     let args: Vec<String> = std::env::args().collect();
@@ -274,7 +274,7 @@ fn record_log() {
 }
 
 /// A panic on the UI thread aborts the process with nothing on screen, so it is written down first:
-/// The active profile's `panic.log`, newest last. Capture failures stay outside the owner's profile.
+/// The active profile's `panic.log`, newest last. Capture failures stay outside the user's profile.
 fn record_panics() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

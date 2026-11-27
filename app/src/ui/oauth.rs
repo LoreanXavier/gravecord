@@ -8,7 +8,7 @@
 //! "User cancelled authorization", Authorize posts `authorize: true`, then the disclosures are acknowledged and the
 //! `code` of the returned `location` goes back to the page.
 //!
-//! Granting is the owner's decision: a capture build (`--features capture`, the parity and live test harness) never
+//! Granting is the user's decision: a capture build (`--features capture`, the parity and test harness) never
 //! sends an `authorize: true` POST, and does not post the Cancel button's `authorize: false` either; it answers the
 //! page as the close button does. `GRAVECORD_ALLOW_AUTHORIZE` lifts that for a deliberate run.
 
@@ -1162,7 +1162,7 @@ impl Root {
         self.oauth_post(false, cx);
     }
 
-    /// The Authorize button, only ever by the owner's own click.
+    /// The Authorize button, only ever by the user's own click.
     pub(super) fn oauth_authorize(&mut self, cx: &mut Context<Self>) {
         if !grants_allowed() {
             tracing::info!("authorize: nothing is posted from a capture build");

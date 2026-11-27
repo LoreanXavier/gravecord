@@ -1,5 +1,5 @@
 //! A made-up video source: a moving test pattern encoded as H.264 by openh264. It exists for the loopback pipeline
-//! test and for a capture-only harness step that streams without touching the owner's screen or camera; no device is
+//! test and for a capture-only harness step that streams without touching the real screen or camera; no device is
 //! opened and nothing is captured.
 
 use crate::convert::Chroma;

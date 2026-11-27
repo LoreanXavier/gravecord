@@ -3,7 +3,7 @@
 //! Measured in `design/dom/popouts/voice-panel-ping-darker-cozy.json` and `voice-panel-krisp-darker-cozy.json`.
 //!
 //! The official noise popout names Krisp. gravecord does not run Krisp (BLOCKED.md): the same popout names what runs,
-//! DeepFilterNet, the owner's decision in DECISIONS.md.
+//! DeepFilterNet.
 
 mod ping_graph;
 pub(crate) mod rtc_debug;
@@ -1072,8 +1072,8 @@ impl Root {
                 }
                 format!("{} pings", call.stats.pings.len())
             }
-            // Shaped like the owner's screenshot: about 100 ms every five seconds for four and a half minutes, with
-            // spikes to 500-700 ms.
+            // Shaped like a screenshot of the official popout: about 100 ms every five seconds for four and a half
+            // minutes, with spikes to 500-700 ms.
             ["screenshot"] => {
                 call.stats.pings.clear();
                 const SPIKES: [(usize, f64); 7] = [

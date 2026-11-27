@@ -205,8 +205,8 @@ pub struct Detected {
 
 /// Keeps the detected games that draw a window, and launchers. A detectable entry names an executable by a path
 /// suffix, and some suffixes are also the names of console tools: "Mark of the Ninja: Remastered" is `bin/ninja.exe`,
-/// which every `<toolchain>/bin/ninja.exe` of a CMake build matches for the seconds it runs, and showed as a game
-/// (owner report, 2026-11-17). The official client's running games carry the `windowHandle` the native side found for
+/// which every `<toolchain>/bin/ninja.exe` of a CMake build matches for the seconds it runs, and showed as a game.
+/// The official client's running games carry the `windowHandle` the native side found for
 /// them; a process with no visible top-level window is not a game being played.
 pub fn keep_windowed(games: &mut Vec<Detected>, windows: &HashSet<u32>) {
     games.retain(|game| game.is_launcher || windows.contains(&game.pid));

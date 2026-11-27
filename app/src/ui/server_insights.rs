@@ -5,7 +5,7 @@
 //! Go to Server Insights asks `POST /auth/handoff` for a token and opens the developer portal with it; a failed request
 //! opens the portal without one. The token goes only into that link, never to a log.
 //!
-//! Not run: the three analytics reads, the cards and the button, which would open a browser on the owner's desktop.
+//! Not run: the three analytics reads, the cards and the button, which would open a browser on the visible desktop.
 //! Not done: streamer mode's stand-in for the cards (`er.A`), as the app has no streamer mode yet.
 
 use super::tooltip::{Side, Tip};

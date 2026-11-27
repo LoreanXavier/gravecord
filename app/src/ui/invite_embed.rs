@@ -80,7 +80,7 @@ pub(super) fn age_restricted_alert(
         AgeGroup::Unverified => dc_intl::t("qiLic6"),
     };
     // GAP: Confirm Age would open module 871309's age verification (`NSFW_AGE_GATE`); this client does not verify
-    // ages (owner decision 2026-11-12), so the button only closes.
+    // ages, so the button only closes.
     let confirm = |tone| AlertButton {
         id: "age-restricted-confirm",
         label: dc_intl::t("FDSSia").to_owned(),
