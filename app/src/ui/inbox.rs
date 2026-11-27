@@ -212,6 +212,23 @@ impl Root {
         }
     }
 
+    /// `deleteRecentMention` (module 378939): `DELETE /users/@me/mentions/{id}` and `RECENT_MENTION_DELETE`, which
+    /// drops the message from the list at once.
+    pub(super) fn delete_recent_mention(&mut self, message: Id, cx: &mut Context<Self>) {
+        let _ = self.requests.send(crate::net::Request::Rest {
+            key: None,
+            method: reqwest::Method::DELETE,
+            route: format!("/users/@me/mentions/{message}"),
+            body: None,
+        });
+        let id = message.to_string();
+        if let Some(Value::Array(list)) = self.fetched.get_mut(MENTIONS_KEY)
+            && drop_mentions(list, &[id.as_str()])
+        {
+            cx.notify();
+        }
+    }
+
     fn fetch_mentions(&mut self) {
         let _ = self.requests.send(crate::net::Request::Fetch {
             key: MENTIONS_KEY.to_owned(),
@@ -1361,15 +1378,25 @@ impl Root {
                 list.iter()
                     .map(|message| {
                         let jump = message.clone();
-                        let buttons = vec![self.inbox_button(
-                            format!("mention-jump-{}", message.id),
-                            "inbox_jump",
-                            cx,
-                            move |this, cx| {
-                                this.inbox = None;
-                                this.jump_to_message_checked(&jump, cx);
-                            },
-                        )];
+                        let id = message.id;
+                        // Module 713024: Jump to Message, then Mark As Read (`deleteRecentMention`).
+                        let buttons = vec![
+                            self.inbox_button(
+                                format!("mention-jump-{}", message.id),
+                                "inbox_jump",
+                                cx,
+                                move |this, cx| {
+                                    this.inbox = None;
+                                    this.jump_to_message_checked(&jump, cx);
+                                },
+                            ),
+                            self.inbox_button(
+                                format!("mention-read-{}", message.id),
+                                "inbox_mark_read",
+                                cx,
+                                move |this, cx| this.delete_recent_mention(id, cx),
+                            ),
+                        ];
                         div()
                             .mb(px(16.))
                             .rounded(px(12.))
