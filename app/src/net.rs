@@ -3390,13 +3390,25 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     });
                     match fetched {
                         // (`nitro-art:gift-box` is the Gift Inventory's PNG, a different picture.)
-                        Ok(bytes) if key == "nitro-art:gift-box-lottie" => {
+                        Ok(bytes)
+                            if key == "nitro-art:gift-box-lottie"
+                                || key.starts_with(crate::ui::GIFT_BOX_KEY) =>
+                        {
                             // The Gift Nitro box (module 446263, the Standard Box loop file): one frame at twice its
-                            // 435px width, drawn off the UI thread.
+                            // 435px width, drawn off the UI thread. A gift card's box (`gift-box:{style}:{state}`)
+                            // is drawn once at the file's own 900px width, which covers its 234px at any scale the
+                            // card is shown at, and the first frame (what the component shows without motion).
                             let _slot = IMAGE_DRAWS.acquire().await;
+                            let side = if key.starts_with(crate::ui::GIFT_BOX_KEY) {
+                                900
+                            } else {
+                                870
+                            };
                             // Frames 0 to 8 and 60 to 71 are the resting pose the capture shows.
-                            match tokio::task::spawn_blocking(move || gift_box_png(&bytes, 870, 0.))
-                                .await
+                            match tokio::task::spawn_blocking(move || {
+                                gift_box_png(&bytes, side, 0.)
+                            })
+                            .await
                             {
                                 Ok(Some(bytes)) => {
                                     let _ = updates.send(Update::Image { key, bytes });

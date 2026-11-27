@@ -2307,6 +2307,12 @@ pub async fn run(
                 let _ = writeln!(output, "{line}");
             }
             // `shop-embed [buy|orbs|sub-current|unavailable|close]`: Social Layer product embed & plan buttons (50777 + 376374).
+            // `gift-embed state <code>` / `accept <code>` / `dispatch <ACTION> <json>`: a gift card's store state, its
+            // accept dialog, and a GiftCodeStore action from a fixture (the redeem POST is refused in inert runs).
+            ["gift-embed", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_gift_embed(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["shop-embed", rest @ ..] => {
                 let arg = rest.join(" ");
                 let line = root.update(cx, |root, cx| root.script_shop_embed(&arg, cx));

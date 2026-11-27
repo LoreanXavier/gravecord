@@ -140,7 +140,7 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
 }
 
 /// `color` at half opacity laid over the opaque `under`.
-fn half_over(top: gpui::Rgba, base: gpui::Rgba) -> gpui::Rgba {
+pub(super) fn half_over(top: gpui::Rgba, base: gpui::Rgba) -> gpui::Rgba {
     let alpha = top.a * 0.5;
     gpui::Rgba {
         r: top.r * alpha + base.r * (1. - alpha),
@@ -161,7 +161,7 @@ pub(super) fn over(top: gpui::Rgba, base: gpui::Rgba) -> gpui::Rgba {
 }
 
 /// `color` at half its alpha.
-fn half(color: gpui::Rgba) -> gpui::Rgba {
+pub(super) fn half(color: gpui::Rgba) -> gpui::Rgba {
     gpui::Rgba {
         a: color.a * 0.5,
         ..color
