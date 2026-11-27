@@ -1865,6 +1865,7 @@ dependencies = [
  "chrono",
  "dc-intl",
  "dc-proto",
+ "regex",
  "serde_json",
  "unicode-normalization",
 ]
