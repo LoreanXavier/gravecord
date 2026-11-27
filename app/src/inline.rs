@@ -1073,17 +1073,13 @@ impl Inline {
                         .boxed
                         .as_ref()
                         .and_then(|style| style.group);
-                    let inside = over.flatten().is_some_and(|at| {
-                        at == fragment.start
+                    // The piece under the pointer, or another of its group (an empty piece shares its start with
+                    // the next one, so the piece index decides).
+                    let inside = over.flatten().is_some_and(|(at, piece)| {
+                        (at == fragment.start && piece == fragment.piece)
                             || group.is_some_and(|group| {
-                                laid.fragments.iter().any(|other| {
-                                    other.start == at
-                                        && pieces[other.piece]
-                                            .boxed
-                                            .as_ref()
-                                            .and_then(|style| style.group)
-                                            == Some(group)
-                                })
+                                pieces[piece].boxed.as_ref().and_then(|style| style.group)
+                                    == Some(group)
                             })
                     });
                     if crate::ui::motion::hovered(key) != inside {
@@ -1776,7 +1772,11 @@ impl Laid {
     }
 
     /// The start of the fragment under a point, when it is one with a hover look.
-    fn hover_piece_at(&self, position: Point<Pixels>, line_height: Pixels) -> Option<usize> {
+    fn hover_piece_at(
+        &self,
+        position: Point<Pixels>,
+        line_height: Pixels,
+    ) -> Option<(usize, usize)> {
         let line = (position.y / line_height).floor().max(0.) as usize;
         self.fragments
             .iter()
@@ -1785,7 +1785,7 @@ impl Laid {
                     && position.x >= fragment.x
                     && position.x < fragment.x + fragment.width
             })
-            .map(|fragment| fragment.start)
+            .map(|fragment| (fragment.start, fragment.piece))
     }
 
     pub fn index_at(&self, position: Point<Pixels>, line_height: Pixels) -> usize {

@@ -1007,7 +1007,7 @@ impl Root {
         let mut runs = Vec::new();
         for span in dc_markdown::inline(content) {
             let start = text.len();
-            text.push_str(&span.text.replace(['\r', '\n'], " "));
+            text.push_str(&span.source().replace(['\r', '\n'], " "));
             let style = span.style;
             let mut run = gpui::HighlightStyle::default();
             if style.bold {

@@ -1143,6 +1143,14 @@ fn link_types(raw: &str, push: &mut dyn FnMut(Kind, String)) {
 
 /// `ei`: a text's coded links, each code once, at most ten.
 pub fn coded_links_in(content: &str) -> Vec<CodedLink> {
+    // A link needs `//` or `www.` (`I`), which `q` only adds before a bare host: text with none of them has no links,
+    // and messages are read every frame.
+    if !content.contains("//")
+        && !content.to_ascii_lowercase().contains("www.")
+        && !BARE_HOSTS.iter().any(|host| content.contains(host))
+    {
+        return Vec::new();
+    }
     let mut seen: Vec<String> = Vec::new();
     let mut links: Vec<CodedLink> = Vec::new();
     for url in candidate_urls(content) {
@@ -1499,6 +1507,21 @@ mod tests {
             links("<https://discord.gg/angle>"),
             vec![(Kind::Invite, "angle".to_owned())]
         );
+    }
+
+    #[test]
+    fn text_without_a_link_shape_is_skipped_early() {
+        assert!(links("just words, no links here").is_empty());
+        assert_eq!(
+            links("see discord.gg/fast"),
+            vec![(Kind::Invite, "fast".to_owned())]
+        );
+        assert_eq!(
+            links("x https://discord.gg/slash"),
+            vec![(Kind::Invite, "slash".to_owned())]
+        );
+        // `www.` alone matches the url rule but has no host; the result is the same either way.
+        assert!(links("WWW.example.com/events/1/2").is_empty());
     }
 
     #[test]

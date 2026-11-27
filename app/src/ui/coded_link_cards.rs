@@ -491,7 +491,11 @@ impl Root {
                         continue;
                     };
                     // `getGuildEventUserCountsForEmbed` (module 484724, through 826383): the interested count.
-                    if self.coded_links.asked.insert(format!("coded-event-counts:{event}")) {
+                    if self
+                        .coded_links
+                        .asked
+                        .insert(format!("coded-event-counts:{event}"))
+                    {
                         self.event_fetch_counts(guild, event);
                     }
                     if self
@@ -521,7 +525,11 @@ impl Root {
                     else {
                         continue;
                     };
-                    if self.coded_links.asked.insert(format!("coded-event-counts:{event}")) {
+                    if self
+                        .coded_links
+                        .asked
+                        .insert(format!("coded-event-counts:{event}"))
+                    {
                         self.event_fetch_counts(guild, event);
                     }
                 }
@@ -643,6 +651,41 @@ impl Root {
                 key,
                 format!("https://cdn.discordapp.com/guild-events/{event}/{image}?size=1024"),
             );
+        }
+    }
+
+    /// Module 697794 `Y` for the coded links whose click opens a place of this client that no route of the web
+    /// app stands for: a game (`GAME_PROFILE`: the game profile modal) and an App Directory page
+    /// (`APP_DIRECTORY_PROFILE`, `_STOREFRONT`, `_STOREFRONT_SKU`: the app in Discover's Apps). True when handled.
+    pub(super) fn open_coded_link_click(&mut self, url: &str, cx: &mut Context<Self>) -> bool {
+        let Some(link) = coded_links::first_coded_link(url) else {
+            return false;
+        };
+        match link.kind {
+            Kind::GameProfile => {
+                self.open_game_profile(link.code, cx);
+                true
+            }
+            Kind::AppDirectoryProfile | Kind::AppDirectoryStorefront => {
+                let Ok(app) = link.code.parse::<Id>() else {
+                    return false;
+                };
+                self.open_discover(super::discover::Place::App(app), cx);
+                true
+            }
+            Kind::AppDirectoryStorefrontSku => {
+                let Some(app) = link
+                    .code
+                    .split(':')
+                    .next()
+                    .and_then(|app| app.parse::<Id>().ok())
+                else {
+                    return false;
+                };
+                self.open_discover(super::discover::Place::App(app), cx);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -906,7 +949,7 @@ impl Root {
             .scheduled_events
             .get_guild_scheduled_event(event_id)?
             .clone();
-        Some(self.scheduled_event_card(&event, None, cx))
+        Some(self.scheduled_event_card(&event, None, None, cx))
     }
 
     /// Module 427080 for an event: from an event link (`invite` none, module 484724) or from an invite that carries
@@ -915,6 +958,7 @@ impl Root {
         &self,
         event: &dc_state::scheduled_events::ScheduledEvent,
         invite: Option<String>,
+        invite_body: Option<&Value>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let event = event.clone();
@@ -1060,8 +1104,24 @@ impl Root {
                     .child(text)
             });
         // `U`: the server's icon, its name (body-sm/medium) and where the event is (body-xs/normal, 4px below).
-        let (place_icon, place) = self.event_place(&event);
-        let footer_guild = guild.map(|guild| {
+        // `U` reads the server and the channel the card was given: an invite's own when the account is not in that
+        // server (the stores do not hold it).
+        let (place_icon, mut place) = self.event_place(&event);
+        if place.is_empty()
+            && let Some(name) = invite_body.and_then(|body| body["channel"]["name"].as_str())
+        {
+            place = name.to_owned();
+        }
+        let footer = guild
+            .map(|guild| (guild.id, guild.name.clone()))
+            .or_else(|| {
+                let body = invite_body?;
+                Some((
+                    snowflake(&body["guild"]["id"])?,
+                    body["guild"]["name"].as_str()?.to_owned(),
+                ))
+            });
+        let footer_guild = footer.map(|(footer_id, footer_name)| {
             div()
                 .flex_grow(1000.)
                 .flex_shrink_0()
@@ -1070,7 +1130,7 @@ impl Root {
                 .flex()
                 .items_center()
                 .gap(px(16.))
-                .child(self.invite_guild_icon(guild.id, &guild.name))
+                .child(self.invite_guild_icon(footer_id, &footer_name))
                 .child(
                     div()
                         .min_w(px(0.))
@@ -1084,7 +1144,7 @@ impl Root {
                                 .line_height(px(18.))
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--text-default"))
-                                .child(guild.name.clone()),
+                                .child(footer_name.clone()),
                         )
                         .child(
                             div()

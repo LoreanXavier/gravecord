@@ -68,6 +68,17 @@ pub enum Kind {
     },
 }
 
+impl Span {
+    /// The source text the span stands for: a mention drawn from several spans gives it once, from its `Main` part
+    /// (each part carries the whole source).
+    pub fn source(&self) -> &str {
+        match &self.kind {
+            Kind::StaticRoute { part, .. } | Kind::ChannelUrl { part, .. } if *part != Part::Main => "",
+            _ => &self.text,
+        }
+    }
+}
+
 /// One part of a mention drawn from several spans.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Part {

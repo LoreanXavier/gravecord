@@ -497,7 +497,9 @@ impl Root {
         // `INVITE_RESOLVE_SUCCESS` of GuildScheduledEventStore (module 698441): the invite's event is kept.
         if let Some(event_id) = super::coded_link_cards::invite_event(body) {
             let event = body["guild_scheduled_event"].clone();
-            let guild = event["guild_id"].as_str().and_then(|id| id.parse::<Id>().ok());
+            let guild = event["guild_id"]
+                .as_str()
+                .and_then(|id| id.parse::<Id>().ok());
             self.stores.dispatch(
                 "FETCH_GUILD_EVENT",
                 &serde_json::json!({ "guildScheduledEvent": event }),
@@ -699,7 +701,7 @@ impl Root {
                 .scheduled_events
                 .get_guild_scheduled_event(event)
         }) {
-            return Some(self.scheduled_event_card(event, Some(code.to_owned()), cx));
+            return Some(self.scheduled_event_card(event, Some(code.to_owned()), Some(body), cx));
         }
         // Module 679636 `cr`: a guild invite to a voice channel the account can see is drawn as the channel (`dX`).
         if let Some((guild, channel)) = self.voice_invite_channel(body) {

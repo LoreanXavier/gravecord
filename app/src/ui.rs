@@ -12138,7 +12138,7 @@ fn block_text(block: &Block) -> String {
         | Block::Quote(spans)
         | Block::Subtext(spans)
         | Block::Heading { spans, .. }
-        | Block::ListItem { spans, .. } => spans.iter().map(|span| span.text.as_str()).collect(),
+        | Block::ListItem { spans, .. } => spans.iter().map(Span::source).collect(),
         Block::Code { text, .. } => text.clone(),
     }
 }
