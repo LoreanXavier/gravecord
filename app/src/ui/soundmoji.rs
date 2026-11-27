@@ -324,6 +324,7 @@ impl Root {
             radius: px(8.),
             text_line_height: px(inner),
             text_top: px(top + 1.),
+            ..BoxStyle::default()
         }
     }
 
