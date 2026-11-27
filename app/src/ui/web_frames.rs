@@ -92,37 +92,90 @@ pub(super) fn covered_by_layers(
             .any(|at| !reachable(at))
 }
 
-/// Takes the pictures `web` sent of its page, keeping the newest under `anchor` in `stills`, and records in `aside`
-/// whether the loaded view is away (not `visible`). Returns whether what the box draws changed.
-pub(super) fn keep_still(
-    stills: &mut HashMap<String, std::sync::Arc<gpui::Image>>,
-    aside: &mut HashSet<String>,
-    anchor: &str,
-    web: &WebHost,
-    visible: bool,
-) -> bool {
-    let newest = web
-        .poll()
-        .into_iter()
-        .filter_map(|event| match event {
-            dc_webhost::HostEvent::Still(png) => Some(png),
-            _ => None,
-        })
-        .next_back();
-    let mut changed = false;
-    if let Some(png) = newest {
-        stills.insert(
-            anchor.to_owned(),
-            std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)),
-        );
-        changed = !visible;
+/// The pictures the views took of their pages, drawn in a box while its view is away for a layer over it.
+#[derive(Default)]
+pub(super) struct Stills {
+    /// The picture each box draws while away (BGRA, as gpui keeps them).
+    pictures: HashMap<String, std::sync::Arc<gpui::RenderImage>>,
+    /// The boxes whose loaded view is away.
+    aside: HashSet<String>,
+    /// Pictures no box draws any more, whose textures go at the next [`Stills::release`].
+    retired: Vec<std::sync::Arc<gpui::RenderImage>>,
+}
+
+impl Stills {
+    /// The view over `anchor` is `visible` or not. Going away, the box takes the newest picture the view took while
+    /// it showed (the view takes none while hidden, so the picture holds still). Returns whether the box's drawing
+    /// changed.
+    pub(super) fn keep(&mut self, anchor: &str, web: &WebHost, visible: bool) -> bool {
+        if visible {
+            return self.aside.remove(anchor);
+        }
+        let newly = self.aside.insert(anchor.to_owned());
+        let mut replaced = false;
+        if let Some(picture) = web.take_still().and_then(|png| decode_still(&png)) {
+            if let Some(old) = self.pictures.insert(anchor.to_owned(), picture) {
+                self.retired.push(old);
+            }
+            replaced = true;
+        }
+        newly || replaced
     }
-    let moved = if visible {
-        aside.remove(anchor)
-    } else {
-        aside.insert(anchor.to_owned())
-    };
-    changed || moved
+
+    /// What the box `anchor` draws in place of its view, if it is away and has a picture.
+    pub(super) fn shown(&self, anchor: &str) -> Option<std::sync::Arc<gpui::RenderImage>> {
+        self.aside
+            .contains(anchor)
+            .then(|| self.pictures.get(anchor).cloned())
+            .flatten()
+    }
+
+    /// The view over `anchor` closed: its picture goes.
+    pub(super) fn forget(&mut self, anchor: &str) {
+        self.aside.remove(anchor);
+        if let Some(old) = self.pictures.remove(anchor) {
+            self.retired.push(old);
+        }
+    }
+
+    /// Keeps the pictures of the boxes `keep` says.
+    fn retain(&mut self, keep: impl Fn(&String) -> bool) {
+        self.aside.retain(|anchor| keep(anchor));
+        let gone: Vec<String> = self
+            .pictures
+            .keys()
+            .filter(|anchor| !keep(anchor))
+            .cloned()
+            .collect();
+        for anchor in gone {
+            self.forget(&anchor);
+        }
+    }
+
+    /// Frees the textures of the pictures no box draws any more.
+    pub(super) fn release(&mut self, cx: &mut gpui::App) {
+        for old in self.retired.drain(..) {
+            cx.drop_image(old, None);
+        }
+    }
+
+    #[cfg(feature = "capture")]
+    fn counts(&self) -> (usize, usize) {
+        (self.pictures.len(), self.aside.len())
+    }
+}
+
+/// A view's PNG as a picture gpui draws (BGRA).
+fn decode_still(png: &[u8]) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    let mut pixels = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .ok()?
+        .to_rgba8();
+    for pixel in pixels.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    Some(std::sync::Arc::new(gpui::RenderImage::new(vec![
+        image::Frame::new(pixels),
+    ])))
 }
 
 /// A view shows when neither a full-window layer of the app (`covered`) nor a layer drawn over its own box (`layered`)
@@ -269,10 +322,8 @@ pub(super) fn placement_of(bounds: Bounds<Pixels>, clip: Bounds<Pixels>, scale: 
 #[derive(Default)]
 pub(super) struct WebFrames {
     pub(super) painted: Rc<RefCell<Painted>>,
-    /// The last picture each open view gave of its page (`HostEvent::Still`), and the boxes whose view is away for
-    /// a layer: those draw the picture in its place ([`Root::web_frame_still`]).
-    pub(super) stills: HashMap<String, std::sync::Arc<gpui::Image>>,
-    pub(super) aside: HashSet<String>,
+    /// The pictures the views took of their pages, drawn while a view is away ([`Root::web_frame_still`]).
+    pub(super) stills: Stills,
     frames: HashMap<String, Frame>,
     /// The channel/DM whose frames are currently cached; changing it closes all open frames immediately.
     channel: Option<dc_state::Id>,
@@ -472,10 +523,15 @@ impl Root {
             .frames
             .iter()
             .map(|(anchor, frame)| {
+                // The surface's own window as Win32 last left it: the same handle before and after a layer means the
+                // page was hidden and shown again, never reloaded.
+                let surface = frame.web.as_ref().map(WebHost::shown).unwrap_or_default();
                 format!(
-                    "{anchor} open={} shown={}",
+                    "{anchor} open={} shown={} window={:#x} on_screen={}",
                     frame.web.is_some(),
-                    frame.visible
+                    frame.visible,
+                    surface.window,
+                    surface.visible
                 )
             })
             .collect();
@@ -486,8 +542,8 @@ impl Root {
             self.web_surfaces_covered(),
             boxes.join("; "),
             views.join("; "),
-            self.web_frames.stills.len(),
-            self.web_frames.aside.len()
+            self.web_frames.stills.counts().0,
+            self.web_frames.stills.counts().1
         )
     }
 
@@ -513,10 +569,7 @@ impl Root {
     /// What a box draws while its view is away for a layer over it: the page as the view last showed it, when it gave
     /// a picture of it. The box keeps its size either way, so nothing in the chat moves.
     pub(super) fn web_frame_still(&self, anchor: &str) -> Option<AnyElement> {
-        if !self.web_frames.aside.contains(anchor) {
-            return None;
-        }
-        let still = self.web_frames.stills.get(anchor)?.clone();
+        let still = self.web_frames.stills.shown(anchor)?;
         Some(
             gpui::img(still)
                 .absolute()
@@ -570,9 +623,10 @@ impl Root {
                 .any(Option::is_some)
         {
             self.web_frames.channel = current_channel;
-            let WebFrames { stills, aside, .. } = &mut self.web_frames;
-            stills.retain(|anchor, _| !anchor.starts_with("webframe:"));
-            aside.retain(|anchor| !anchor.starts_with("webframe:"));
+            self.web_frames
+                .stills
+                .retain(|anchor| !anchor.starts_with("webframe:"));
+            self.web_frames.stills.release(cx);
             return;
         }
         let covered = self.web_surfaces_covered();
@@ -637,23 +691,16 @@ impl Root {
             self.web_frames.frames.remove(&anchor);
         }
         drop(painted);
-        // The pictures the views sent; a box whose view is away draws the newest.
-        let WebFrames {
-            frames,
-            stills,
-            aside,
-            ..
-        } = &mut self.web_frames;
+        // A box whose view is away draws the picture the view last took.
+        let WebFrames { frames, stills, .. } = &mut self.web_frames;
         let mut redraw = false;
         for (anchor, frame) in frames.iter() {
             if let Some(web) = frame.web.as_ref() {
-                redraw |= keep_still(stills, aside, anchor, web, frame.visible);
+                redraw |= stills.keep(anchor, web, frame.visible);
             }
         }
-        let open =
-            |anchor: &String| !anchor.starts_with("webframe:") || frames.contains_key(anchor);
-        stills.retain(|anchor, _| open(anchor));
-        aside.retain(|anchor| open(anchor));
+        stills.retain(|anchor| !anchor.starts_with("webframe:") || frames.contains_key(anchor));
+        stills.release(cx);
         if redraw {
             cx.notify();
         }

@@ -89,8 +89,7 @@ impl Root {
         }
         // Another embed's player closes: its view no longer follows the box, its picture goes.
         self.web_frames.painted.borrow_mut().unlink(ANCHOR);
-        self.web_frames.stills.remove(ANCHOR);
-        self.web_frames.aside.remove(ANCHOR);
+        self.web_frames.stills.forget(ANCHOR);
         self.provider_player = Some(ProviderPlayer {
             key,
             url,
@@ -125,8 +124,7 @@ impl Root {
             if player.unseen > GRACE_FRAMES {
                 painted.borrow_mut().unlink(ANCHOR);
                 self.provider_player = None;
-                self.web_frames.stills.remove(ANCHOR);
-                self.web_frames.aside.remove(ANCHOR);
+                self.web_frames.stills.forget(ANCHOR);
                 cx.notify();
             }
             return;
@@ -158,13 +156,7 @@ impl Root {
                 player.visible = visible;
             }
             // While a layer is over it the box draws the player as it last looked.
-            if super::web_frames::keep_still(
-                &mut self.web_frames.stills,
-                &mut self.web_frames.aside,
-                ANCHOR,
-                web,
-                visible,
-            ) {
+            if self.web_frames.stills.keep(ANCHOR, web, visible) {
                 cx.notify();
             }
         }

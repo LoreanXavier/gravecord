@@ -763,7 +763,6 @@ impl Root {
                     HostEvent::Loaded => "#loaded",
                     HostEvent::Message { .. } => "#message",
                     HostEvent::Failed(_) => "#failed",
-                    HostEvent::Still(_) => "#still",
                 }
                 .to_owned(),
             );
@@ -803,8 +802,6 @@ impl Root {
                     }
                     actions.extend(host.bridge.handle(&origin, &data, &host.ctx));
                 }
-                // Only provider players send pictures of themselves.
-                HostEvent::Still(_) => {}
             }
         }
         if let Some(why) = failure {
