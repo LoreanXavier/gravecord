@@ -282,6 +282,16 @@ impl Root {
         cx.notify();
     }
 
+    /// The left edge of the chat column whose composer owns the "+" button: the chat beside the sidebars, or an opened
+    /// message request's panel, which sits on the window's right edge.
+    pub(super) fn composer_column_left(&self) -> f32 {
+        if self.message_requests_active() && self.channel.is_some() {
+            self.viewport.0 - self.mr_panel_width(self.viewport.0)
+        } else {
+            self.combined_sidebar_width()
+        }
+    }
+
     /// The menu above the "+" button: 201.44 wide, its bottom 61px above the window's, left edge on the composer's.
     pub(super) fn plus_menu_layer(
         &self,
@@ -347,9 +357,7 @@ impl Root {
             .id("composer-plus-menu")
             .occlude()
             .absolute()
-            .left(px(
-                (self.combined_sidebar_width() + 20.).min((self.viewport.0 - 220.).max(16.))
-            ))
+            .left(px((self.composer_column_left() + 20.).min((self.viewport.0 - 220.).max(16.))))
             .bottom(px(61.))
             .w(px(201.44))
             .p(px(8.))
