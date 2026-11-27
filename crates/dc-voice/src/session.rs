@@ -46,23 +46,21 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    net::{TcpStream, UdpSocket},
+    net::UdpSocket,
     sync::{mpsc, watch},
     time::{Instant, timeout},
 };
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream,
+    WebSocketStream,
     tungstenite::{
         Message,
-        client::IntoClientRequest,
-        http::HeaderValue,
         protocol::{WebSocketConfig, frame::coding::CloseCode},
     },
 };
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
 
-pub(crate) type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+pub(crate) type Socket = WebSocketStream<dc_http::Upgraded>;
 
 /// Time a sole member gives the roster announcement before waiting for a peer (Serein).
 pub(crate) const PEER_GRACE: Duration = Duration::from_millis(500);
@@ -367,6 +365,31 @@ pub(crate) fn sanitized_ws_error(err: &tokio_tungstenite::tungstenite::Error) ->
     }
 }
 
+/// The system language the socket's `Accept-Language` carries, read once.
+fn system_locale() -> &'static str {
+    static LOCALE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LOCALE.get_or_init(|| dc_proto::identity::System::detect().locale)
+}
+
+/// The kind of failure of an opening socket, without its address.
+fn sanitized_socket_error(err: &dc_http::chromium::SocketError) -> String {
+    if err.is_timeout() {
+        "timed_out".to_string()
+    } else if err.is_dns() {
+        "dns".to_string()
+    } else if err.is_tls() {
+        "tls".to_string()
+    } else if err.is_connect() {
+        "connect".to_string()
+    } else if let Some(status) = err.status() {
+        format!("http:{}", status.as_u16())
+    } else if err.is_upgrade() || err.is_websocket() {
+        "upgrade".to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
 pub(crate) fn log_ws_stage_ok(
     kind: &'static str,
     stage: &'static str,
@@ -463,70 +486,28 @@ pub(crate) async fn open_with_stages(
         }
     };
 
-    let tcp_start = Instant::now();
-    let tcp = match timeout(Duration::from_secs(10), TcpStream::connect(&addrs[..])).await {
-        Ok(Ok(stream)) => {
-            let _ = stream.set_nodelay(true);
-            log_ws_stage_ok(
-                kind,
-                "tcp",
-                &host,
-                port,
-                tcp_start.elapsed().as_millis() as u64,
-                None,
-            );
-            stream
-        }
-        Ok(Err(err)) => {
-            log_ws_stage_err(
-                kind,
-                "tcp",
-                &host,
-                port,
-                tcp_start.elapsed().as_millis() as u64,
-                &format!("io:{:?}", err.kind()),
-            );
-            return Err("Voice TLS connection failed");
-        }
-        Err(_) => {
-            log_ws_stage_err(
-                kind,
-                "tcp",
-                &host,
-                port,
-                tcp_start.elapsed().as_millis() as u64,
-                "timed_out",
-            );
-            return Err("Voice connection timed out");
-        }
-    };
-
-    let mut request = url
-        .into_client_request()
-        .map_err(|_| "Invalid Discord voice endpoint")?;
-    let headers = request.headers_mut();
-    headers.insert(
-        "Origin",
-        HeaderValue::from_static(dc_proto::pin::WEBAPP_ORIGIN),
-    );
-    headers.insert(
-        "User-Agent",
-        HeaderValue::from_static(dc_proto::pin::USER_AGENT),
-    );
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_SIGNAL))
         .max_frame_size(Some(MAX_SIGNAL))
         .write_buffer_size(0)
         .max_write_buffer_size(MAX_SIGNAL * 2);
 
+    // TCP, TLS and the upgrade in one stage: the page's socket with Chromium's handshake (`dc_http::chromium`), to
+    // the addresses looked up above. The negotiated TLS version is not exposed by that connection.
     let tls_start = Instant::now();
-    let (ws, _) = match timeout(
-        Duration::from_secs(12),
-        tokio_tungstenite::client_async_tls_with_config(request, tcp, Some(config), None),
+    let ws = match timeout(
+        Duration::from_secs(22),
+        dc_http::chromium::websocket_to(
+            url,
+            (&host, &addrs),
+            dc_proto::pin::WEBAPP_ORIGIN,
+            system_locale(),
+            config,
+        ),
     )
     .await
     {
-        Ok(Ok(pair)) => pair,
+        Ok(Ok(ws)) => ws,
         Ok(Err(err)) => {
             log_ws_stage_err(
                 kind,
@@ -534,7 +515,7 @@ pub(crate) async fn open_with_stages(
                 &host,
                 port,
                 tls_start.elapsed().as_millis() as u64,
-                &sanitized_ws_error(&err),
+                &sanitized_socket_error(&err),
             );
             return Err("Voice TLS connection failed");
         }
@@ -550,16 +531,7 @@ pub(crate) async fn open_with_stages(
             return Err("Voice connection timed out");
         }
     };
-
-    let tls_version = match ws.get_ref() {
-        MaybeTlsStream::Rustls(tls) => match tls.get_ref().1.protocol_version() {
-            Some(rustls::ProtocolVersion::TLSv1_3) => Some("TLSv1.3"),
-            Some(rustls::ProtocolVersion::TLSv1_2) => Some("TLSv1.2"),
-            Some(_) => Some("TLS"),
-            None => None,
-        },
-        _ => None,
-    };
+    let tls_version = None;
     log_ws_stage_ok(
         kind,
         "tls_ws",

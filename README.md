@@ -405,6 +405,10 @@ official releases, and the official builds will refuse theirs.
 - Rust through `rustup`. The toolchain is pinned in `rust-toolchain.toml` (1.98.1, `x86_64-pc-windows-msvc`, with
   rustfmt and clippy); rustup installs it on the first build.
 - The MSVC build tools (Visual Studio Build Tools with the C++ workload), as Zed's Windows build requires.
+- For BoringSSL, which the connections to Discord are built on: CMake, NASM and LLVM (for `libclang`; set
+  `LIBCLANG_PATH` to its `bin` folder if it is not on `PATH`). CMake picks the wrong runtime settings for a NASM
+  whose path contains `Microsoft` (a WinGet install under `AppData\Local\Microsoft\WinGet`): put a copy of
+  `nasm.exe` in a folder without that word first on `PATH`.
 
 **GPUI** is built from a pinned Zed commit with one patch on top, checked out into the gitignored `vendor/zed`:
 
@@ -534,6 +538,8 @@ same terms.
   - echo cancellation
   - DM call plumbing
   - camera capture and H.264 encoding and decoding in `crates/dc-media`
+  - the Chromium TLS and HTTP/2 handshake of every connection to Discord in `crates/dc-http/src/chromium.rs`, on
+    [wreq](https://github.com/0x676e67/wreq) and [wreq-util](https://github.com/0x676e67/wreq-util) (Apache-2.0)
 - **[Yapfast](https://github.com/yapfast/yapfast)** (GPL-3.0) was read as a protocol reference. No code was copied.
 - **[Vencord](https://github.com/Vendicated/Vencord)** and **[Equicord](https://github.com/Equicord/Equicord)**
   (GPL-3.0-or-later). The built-in plugins reimplement their plugins' behaviour, read from their sources. Each port

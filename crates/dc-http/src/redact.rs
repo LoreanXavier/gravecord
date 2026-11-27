@@ -50,6 +50,18 @@ pub fn error(error: reqwest::Error) -> reqwest::Error {
     error.with_url(safe)
 }
 
+/// [`error`] for an error of the Discord client ([`crate::chromium`]).
+pub fn chromium_error(mut error: wreq::Error) -> wreq::Error {
+    if let Some(uri) = error.uri_mut() {
+        let safe = url(&uri.to_string());
+        match safe.parse() {
+            Ok(safe) => *uri = safe,
+            Err(_) => return error.without_uri(),
+        }
+    }
+    error
+}
+
 /// Characters that end an address inside a line of text.
 fn ends_address(c: char) -> bool {
     c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '<' | '>' | ')' | ']' | '}' | '|')

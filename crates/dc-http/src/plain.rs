@@ -4,19 +4,20 @@
 //! `origin` and no referer, not even on a redirect. It keeps no cookies. Its user agent is the pinned one without the
 //! `discord/` and `Electron/` parts, which is what the same Chromium sends as a plain browser.
 //!
-//! Requests to Discord ([`is_discord_url`]) keep the pinned client and its header set unchanged.
+//! Requests to Discord ([`is_discord_url`]) go through the Discord client ([`crate::chromium`]) instead.
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
 /// The registrable domains whose hosts are Discord's own: the API and web assets (`discord.com`, `discordapp.com`),
-/// the CDN and media proxy (`discordapp.net`) and the voice servers (`discord.media`). A host is Discord's when it is
-/// one of these or a subdomain of one. Activities (`discordsays.com`) are not: their pages front other parties'
-/// servers, and they run in a web view anyway.
+/// the CDN and media proxy (`discordapp.net`), the gateway and invite host (`discord.gg`) and the voice servers
+/// (`discord.media`). A host is Discord's when it is one of these or a subdomain of one. Activities (`discordsays.com`)
+/// are not: their pages front other parties' servers, and they run in a web view anyway.
 pub const DISCORD_DOMAINS: &[&str] = &[
     "discord.com",
     "discordapp.com",
     "discordapp.net",
+    "discord.gg",
     "discord.media",
 ];
 
@@ -75,42 +76,6 @@ pub fn client() -> reqwest::Client {
         .clone()
 }
 
-/// The builder for a client outside the pinned one that may be asked for `url`: for a Discord address the bare
-/// builder these requests always had (no user agent, no default headers), so they reach Discord exactly as before;
-/// for any other address the plain [`builder`]. Neither sends a referer on a redirect.
-pub fn builder_for(url: &str) -> reqwest::ClientBuilder {
-    if is_discord_url(url) {
-        reqwest::Client::builder().referer(false)
-    } else {
-        builder()
-    }
-}
-
-/// The shared client for one request to `url` ([`builder_for`]'s choice, reqwest's default redirects).
-pub fn client_for(url: &str) -> reqwest::Client {
-    static BARE: OnceLock<reqwest::Client> = OnceLock::new();
-    if is_discord_url(url) {
-        BARE.get_or_init(|| {
-            reqwest::Client::builder()
-                .referer(false)
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new())
-        })
-        .clone()
-    } else {
-        client()
-    }
-}
-
-/// Whether the pinned client, which carries the Discord identity, may follow a redirect from `previous` to `next`:
-/// to the same host, or to another Discord host. A hop to any other host is refused, so the pinned header set never
-/// reaches a site outside Discord through a redirect (reqwest drops only `authorization` and cookies on such a hop).
-pub fn pinned_may_follow(previous: &reqwest::Url, next: &reqwest::Url) -> bool {
-    next.host_str().is_some_and(is_discord_host)
-        || (next.host_str() == previous.host_str()
-            && next.port_or_known_default() == previous.port_or_known_default())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,6 +90,7 @@ mod tests {
             "https://images-ext-1.discordapp.net/external/x/https/example.com/a.png",
             "wss://c-ams01-1234.discord.media/",
             "https://discord.com/api/v9/gateway",
+            "wss://gateway.discord.gg/?encoding=etf",
             "https://CDN.DiscordApp.com./a",
         ] {
             assert!(is_discord_url(url), "{url}");
@@ -145,33 +111,13 @@ mod tests {
             "https://app-directory-assets.discordactivities.com/lofi/directory_01.gif",
             "https://discord.com.example.net/",
             "https://notdiscordapp.net/",
+            "https://evildiscord.gg/",
             "http://127.0.0.1:47874/cdn.discordapp.com/a",
             "file:///C:/discord.com",
             "not a url",
         ] {
             assert!(!is_discord_url(url), "{url}");
         }
-    }
-
-    #[test]
-    fn the_pinned_client_follows_redirects_only_within_discord() {
-        let url = |text: &str| reqwest::Url::parse(text).unwrap();
-        let cdn = url("https://cdn.discordapp.com/attachments/1/2/a.png");
-        assert!(pinned_may_follow(
-            &cdn,
-            &url("https://media.discordapp.net/a.png")
-        ));
-        assert!(pinned_may_follow(&cdn, &url("https://discord.com/a")));
-        assert!(!pinned_may_follow(&cdn, &url("https://example.com/a.png")));
-        assert!(!pinned_may_follow(
-            &cdn,
-            &url("https://evildiscordapp.net/a")
-        ));
-        // A test or replay server on one host keeps its own redirects.
-        let local = url("http://127.0.0.1:4000/a");
-        assert!(pinned_may_follow(&local, &url("http://127.0.0.1:4000/b")));
-        assert!(!pinned_may_follow(&local, &url("http://127.0.0.1:4001/b")));
-        assert!(!pinned_may_follow(&local, &url("http://localhost:4000/b")));
     }
 
     #[test]

@@ -73,6 +73,8 @@ const CLIENT_CONSTRUCTORS: &[&str] = &[
     "reqwest::ClientBuilder",
     "reqwest::get(",
     "reqwest::blocking",
+    "wreq::Client::builder(",
+    "wreq::Client::new(",
     "Client::builder()",
 ];
 
@@ -83,6 +85,10 @@ const CLIENT_ALLOWED: &[(&str, &str)] = &[
         "the pinned Discord pool; non-Discord requests are handed the plain client by public_http",
     ),
     ("crates/dc-http/src/plain.rs", "the plain client itself"),
+    (
+        "crates/dc-http/src/chromium.rs",
+        "the Discord client: handed out only to Discord-bound code (see DISCORD_CLIENT_ALLOWED)",
+    ),
     (
         "crates/dc-http/src/webhook.rs",
         "posts to pin::API_BASE only",
@@ -116,6 +122,10 @@ const IDENTITY_ALLOWED: &[(&str, &str)] = &[
     (
         "crates/dc-http/src/plain.rs",
         "derives the plain user agent from it, without its discord/ and Electron/ tokens",
+    ),
+    (
+        "crates/dc-http/src/chromium.rs",
+        "the Discord client's user agent and header order",
     ),
     (
         "crates/dc-auth/src/api.rs",
@@ -186,6 +196,7 @@ fn the_pinned_pool_is_taken_only_by_api_routes_and_the_host_check() {
         "post_form",
         "post_files",
         "public_http",
+        "api_request",
     ];
     let root = workspace().join("crates").join("dc-http").join("src");
     let mut found = Vec::new();
@@ -195,6 +206,8 @@ fn the_pinned_pool_is_taken_only_by_api_routes_and_the_host_check() {
         "webhook.rs",
         "spotify.rs",
         "plain.rs",
+        "download.rs",
+        "chromium.rs",
     ] {
         let text = std::fs::read_to_string(root.join(name))
             .unwrap()
@@ -230,6 +243,66 @@ fn the_pinned_pool_is_taken_only_by_api_routes_and_the_host_check() {
     assert!(
         found.is_empty(),
         "a request outside the API routes takes the pinned pool without the host check (use public_http):\n{}",
+        found.join("\n")
+    );
+}
+
+/// Ways of taking the Discord client ([`dc_http::chromium`]): its handshake, user agent and cookies.
+const DISCORD_CLIENT: &[&str] = &[
+    "chromium::builder(",
+    "chromium::client(",
+    "chromium::emulation(",
+    "chromium::websocket",
+];
+
+/// The files allowed to take it, and the Discord host each talks to.
+const DISCORD_CLIENT_ALLOWED: &[(&str, &str)] = &[
+    ("crates/dc-http/src/chromium.rs", "defines it"),
+    (
+        "crates/dc-http/src/lib.rs",
+        "the API pool on api_base; other hosts get the plain client from public_http",
+    ),
+    (
+        "crates/dc-http/src/download.rs",
+        "only for an address is_discord_url accepts",
+    ),
+    (
+        "crates/dc-auth/src/api.rs",
+        "the login client, on pin::API_BASE only",
+    ),
+    (
+        "crates/dc-auth/src/remote.rs",
+        "the QR login socket, remote-auth-gateway.discord.gg",
+    ),
+    (
+        "crates/dc-gateway/src/lib.rs",
+        "the gateway, gateway.discord.gg",
+    ),
+    (
+        "crates/dc-voice/src/session.rs",
+        "the voice servers, *.discord.media",
+    ),
+];
+
+#[test]
+fn only_discord_bound_code_takes_the_discord_client() {
+    let mut found = Vec::new();
+    for (path, text) in shipped_sources() {
+        if DISCORD_CLIENT_ALLOWED
+            .iter()
+            .any(|(allowed, _)| *allowed == path)
+        {
+            continue;
+        }
+        for pattern in DISCORD_CLIENT {
+            if text.contains(pattern) {
+                found.push(format!("{path}: {pattern}"));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "the Discord client is taken outside Discord-bound code:\n{}",
         found.join("\n")
     );
 }

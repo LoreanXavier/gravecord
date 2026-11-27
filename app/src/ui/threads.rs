@@ -867,6 +867,8 @@ impl Root {
                 content,
                 files: Vec::new(),
                 reply: None,
+                // As TRAFFIC/thread-create.json and thread-from-message.json record the first message.
+                context: Some(serde_json::json!({"location": "thread_creation"})),
             });
         }
         if let Some(guild) = created_in {

@@ -1187,6 +1187,7 @@ impl Root {
                         content: extra.to_owned(),
                         files: Vec::new(),
                         reply: None,
+                        context: None,
                     });
                 }
             }
@@ -1205,6 +1206,7 @@ impl Root {
                         content: extra.to_owned(),
                         files: Vec::new(),
                         reply: None,
+                        context: None,
                     });
                 }
             }

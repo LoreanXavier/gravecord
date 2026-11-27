@@ -23,7 +23,7 @@ impl Client {
         let plain = reqwest::Client::builder()
             .user_agent("gravecord-fixture")
             .build()
-            .map_err(|error| Error::Transport(error.without_url()))?;
+            .map_err(|error| Error::Transport(super::Transport::Plain(error.without_url())))?;
         let request = plain.post(url);
         let request = match file {
             None => request.json(payload),
@@ -39,12 +39,12 @@ impl Client {
         let response = request
             .send()
             .await
-            .map_err(|error| Error::Transport(error.without_url()))?;
+            .map_err(|error| Error::Transport(super::Transport::Plain(error.without_url())))?;
         let status = response.status();
         let text = response
             .text()
             .await
-            .map_err(|error| Error::Transport(error.without_url()))?;
+            .map_err(|error| Error::Transport(super::Transport::Plain(error.without_url())))?;
         let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if status.is_success() {
             Ok(value)

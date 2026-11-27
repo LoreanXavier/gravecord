@@ -12554,6 +12554,7 @@ impl Render for Root {
             self.hovered = None;
         }
         self.interaction_modal_frame(window, cx);
+        self.location_frame();
         self.drafts_frame(cx);
         self.composer_voids_frame(cx);
         if std::mem::take(&mut self.chat_extra.back_to_login) {

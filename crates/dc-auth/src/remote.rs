@@ -24,10 +24,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
-use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tracing::{debug, warn};
 
 /// `REMOTE_AUTH_ENDPOINT` of the pinned page, plus the `?v=2` the client appends.
@@ -198,8 +195,6 @@ impl RemoteAuth {
         config: Config,
         events: mpsc::UnboundedSender<RemoteEvent>,
     ) -> Self {
-        // Dependencies pull in more than one rustls backend, so it has to be chosen. Fails harmlessly if already set.
-        let _ = rustls::crypto::ring::default_provider().install_default();
         let restart = Arc::new(Notify::new());
         let task = tokio::spawn(run(api, config, events, restart.clone()));
         Self { restart, task }
@@ -270,13 +265,11 @@ async fn session(
         warn!("remote auth: key generation failed");
         return Ended::Retry;
     };
-    let Ok(mut request) = config.url.as_str().into_client_request() else {
-        return Ended::Retry;
-    };
-    if let Ok(origin) = HeaderValue::from_str(&config.origin) {
-        request.headers_mut().insert("origin", origin);
-    }
-    let Ok((mut socket, _)) = connect_async(request).await else {
+    // Chromium's handshake and upgrade headers, as the login page opens the socket (`dc_http::chromium`).
+    let config_ws = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+    let Ok(mut socket) =
+        dc_http::chromium::websocket(&config.url, &config.origin, api.locale(), config_ws).await
+    else {
         debug!("remote auth: could not connect");
         return Ended::Retry;
     };

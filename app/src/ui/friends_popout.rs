@@ -96,6 +96,7 @@ impl Root {
                 content,
                 files: Vec::new(),
                 reply: None,
+                context: None,
             });
             self.show_success_toast(dc_intl::t("DwAcMz").to_owned(), cx);
         } else {

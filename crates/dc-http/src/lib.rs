@@ -4,13 +4,15 @@ use dc_proto::identity::Identity;
 use dc_proto::pin;
 use dc_proto::secrets::Token;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use reqwest::{Method, Response, StatusCode};
+use reqwest::{Method, StatusCode};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+pub mod chromium;
+pub mod download;
 pub mod plain;
 pub mod redact;
 pub mod spotify;
@@ -18,6 +20,8 @@ mod upload;
 mod webhook;
 
 pub use upload::Progress;
+/// The connection a WebSocket of [`chromium::websocket`] runs on.
+pub use wreq::Upgraded;
 
 /// The answer of [`Client::fetch_public_limited`].
 #[derive(Debug)]
@@ -61,26 +65,51 @@ fn diagnostic_route(route: &str) -> &str {
     }
 }
 
-fn transport_error(error: reqwest::Error, route: &str) -> Error {
-    Error::Transport(if diagnostic_route(route) != route {
-        error.without_url()
+fn transport_error(error: wreq::Error, route: &str) -> Error {
+    Error::Transport(Transport::Chromium(if diagnostic_route(route) != route {
+        error.without_uri()
     } else {
-        redact::error(error)
-    })
+        redact::chromium_error(error)
+    }))
 }
 
 /// A request error keeps only the scheme, host and path of its address ([`redact::error`]), so neither its text nor
 /// its debug form can show a query.
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
-        Error::Transport(redact::error(error))
+        Error::Transport(Transport::Plain(redact::error(error)))
+    }
+}
+
+impl From<wreq::Error> for Error {
+    fn from(error: wreq::Error) -> Self {
+        Error::Transport(Transport::Chromium(redact::chromium_error(error)))
+    }
+}
+
+/// The failure of a request on the wire: from the Discord client ([`chromium`]) or the plain one ([`plain`]).
+#[derive(Debug, Error)]
+pub enum Transport {
+    #[error(transparent)]
+    Chromium(wreq::Error),
+    #[error(transparent)]
+    Plain(reqwest::Error),
+}
+
+impl Transport {
+    /// The status of an answer the request was refused with (`error_for_status`).
+    pub fn status(&self) -> Option<StatusCode> {
+        match self {
+            Transport::Chromium(error) => error.status(),
+            Transport::Plain(error) => error.status(),
+        }
     }
 }
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("request failed: {0}")]
-    Transport(#[source] reqwest::Error),
+    Transport(#[source] Transport),
     /// The text names the route's path only; `route` itself keeps its query for the caller.
     #[error("{} returned {status}", redact::url(route))]
     Status {
@@ -102,7 +131,7 @@ pub enum Error {
 pub struct Client {
     /// The connection pool. Replaced by a fresh one when a request had to be asked again on a new connection
     /// (`get_hedged`): the old pool's connection is the one that stopped answering.
-    http: std::sync::RwLock<reqwest::Client>,
+    http: std::sync::RwLock<wreq::Client>,
     /// Replaced when the account's token is renewed (`UPDATE_TOKEN`, module 631670 `KD`).
     token: std::sync::RwLock<Token>,
     identity: Identity,
@@ -123,7 +152,9 @@ fn is_limited_access(status: StatusCode, body: &Value) -> bool {
             .is_some_and(|code| (340_000..=349_999).contains(&code))
 }
 
-/// The header set every request of the pinned client carries, shared with the login client (`dc-auth`).
+/// The header set every request of the pinned client carries, shared with the login client (`dc-auth`): what module
+/// 596339's `prepareRequest` sets, and what Chromium adds to a same-origin `fetch()` (`TRAFFIC/identify.json`).
+/// `origin` and `referer` depend on the request ([`origin`], [`referer`]), so they are not in it.
 pub fn fixed_headers(identity: &Identity) -> Result<HeaderMap, Error> {
     let mut headers = HeaderMap::new();
     let mut add = |name: &'static str, value: &str| -> Result<(), Error> {
@@ -133,48 +164,102 @@ pub fn fixed_headers(identity: &Identity) -> Result<HeaderMap, Error> {
     };
     add("accept", "*/*")?;
     add("accept-language", &identity.system.locale)?;
-    add("origin", pin::WEBAPP_ORIGIN)?;
-    add("referer", &format!("{}/channels/@me", pin::WEBAPP_ORIGIN))?;
     add("sec-ch-ua", pin::SEC_CH_UA)?;
     add("sec-ch-ua-mobile", "?0")?;
     add("sec-ch-ua-platform", "\"Windows\"")?;
     add("sec-fetch-dest", "empty")?;
     add("sec-fetch-mode", "cors")?;
     add("sec-fetch-site", "same-origin")?;
+    add("priority", "u=1, i")?;
     add("x-debug-options", "bugReporterEnabled")?;
     add("x-discord-locale", &identity.system.locale)?;
     add("x-discord-timezone", &identity.system.timezone)?;
     Ok(headers)
 }
 
+/// The `Origin` of a request from the web app's page: Chromium sends it on every request but a `GET` or `HEAD` from
+/// the same origin (the recorded GETs carry none, the POST, PATCH, PUT and DELETE requests carry
+/// `https://discordapp.com`).
+pub fn origin(method: &Method) -> Option<&'static str> {
+    (method != Method::GET && method != Method::HEAD).then_some(pin::WEBAPP_ORIGIN)
+}
+
+static INSTALLATION: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+static LOCATION: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// `getInstallationForTracking` of `AuthenticationStore` (module 46653): the installation id Discord handed out (the
+/// `installation` of `GET /experiments`, `GET /apex/experiments` or READY's `apex_experiments`), kept in
+/// `installation_id_v3`. Every API request carries it as `X-Installation-ID` once it is known; the first one wins
+/// (`INSTALLATION_ID` keeps a known id).
+pub fn set_installation_id(id: &str) {
+    if id.is_empty() {
+        return;
+    }
+    let mut known = INSTALLATION.write().unwrap_or_else(|e| e.into_inner());
+    if known.is_none() {
+        *known = Some(id.to_owned());
+    }
+}
+
+pub fn installation_id() -> Option<String> {
+    INSTALLATION
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// The path of the page the app shows (`/channels/@me`, `/channels/<guild>/<channel>`): Chromium sends the page's
+/// address as the `Referer` of its requests.
+pub fn set_location(path: &str) {
+    let mut location = LOCATION.write().unwrap_or_else(|e| e.into_inner());
+    if location.as_deref() != Some(path) {
+        *location = Some(path.to_owned());
+    }
+}
+
+/// The `Referer` of an API request: the web app's address of the page shown (`https://discordapp.com/channels/@me`
+/// until a page is known).
+pub fn referer() -> String {
+    let location = LOCATION.read().unwrap_or_else(|e| e.into_inner());
+    format!(
+        "{}{}",
+        pin::WEBAPP_ORIGIN,
+        location.as_deref().unwrap_or("/channels/@me")
+    )
+}
+
 /// The connection pool of a client. Every request to a host rides one HTTP/2 connection: one that stops answering (a
 /// sleep, a changed network) is found by its pings and dropped, so the next requests open a new one instead of waiting
-/// on it. The connect timeout covers the TCP connect and the TLS handshake (reqwest wraps the whole connector).
-fn pool(identity: &Identity) -> Result<reqwest::Client, Error> {
-    Ok(reqwest::Client::builder()
-        .user_agent(pin::USER_AGENT)
+/// on it. The connect timeout covers the TCP connect and the TLS handshake.
+fn pool(identity: &Identity) -> Result<wreq::Client, Error> {
+    let mut emulation = chromium::emulation();
+    if let Some(http2) = &mut emulation.http2_options {
+        http2.keep_alive_interval = Some(Duration::from_secs(20));
+        http2.keep_alive_timeout = Duration::from_secs(10);
+        http2.keep_alive_while_idle = true;
+    }
+    Ok(chromium::builder()
+        .emulation(emulation)
         .default_headers(fixed_headers(identity)?)
-        // Ten hops as reqwest's default, but never off Discord: the header set above would go along.
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() > 10 {
-                attempt.error("too many redirects")
-            } else if attempt
-                .previous()
-                .last()
-                .is_some_and(|previous| plain::pinned_may_follow(previous, attempt.url()))
-            {
-                attempt.follow()
-            } else {
-                attempt.error("redirect away from Discord refused")
-            }
-        }))
         .tcp_nodelay(true)
         .pool_max_idle_per_host(32)
-        .connect_timeout(Duration::from_secs(10))
-        .http2_keep_alive_interval(Duration::from_secs(20))
-        .http2_keep_alive_timeout(Duration::from_secs(10))
-        .http2_keep_alive_while_idle(true)
         .build()?)
+}
+
+/// The client of a request outside the API routes: the pinned one for a Discord host, the plain one for any other.
+enum Http {
+    Chromium(wreq::Client),
+    Plain(reqwest::Client),
+}
+
+/// Runs `$body` with `$client` bound to whichever client `$http` holds: the two have the same request API.
+macro_rules! with_http {
+    ($http:expr, |$client:ident| $body:expr) => {
+        match $http {
+            Http::Chromium($client) => $body,
+            Http::Plain($client) => $body,
+        }
+    };
 }
 
 /// A `multipart/form-data` request (`Client::post_form`).
@@ -201,18 +286,18 @@ impl Client {
         })
     }
 
-    fn http(&self) -> reqwest::Client {
+    fn http(&self) -> wreq::Client {
         self.http.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// The client for a request to `url` outside the API routes: the pinned one (its header set unchanged) for a
     /// Discord host, the plain one ([`plain`]) for every other host. Decided on the address the app asked for, before
     /// a replay run rewrites it onto the local server.
-    fn public_http(&self, url: &str) -> reqwest::Client {
+    fn public_http(&self, url: &str) -> Http {
         if plain::is_discord_url(url) {
-            self.http()
+            Http::Chromium(self.http())
         } else {
-            plain::client()
+            Http::Plain(plain::client())
         }
     }
 
@@ -272,7 +357,7 @@ impl Client {
     }
 
     /// The new pool answered where the old one did not: the requests after this one use it.
-    fn adopt(&self, http: reqwest::Client) {
+    fn adopt(&self, http: wreq::Client) {
         *self.http.write().unwrap_or_else(|e| e.into_inner()) = http;
     }
 
@@ -326,23 +411,50 @@ impl Client {
         }
     }
 
+    /// An API request of the account with what `prepareRequest` (module 596339) adds to it: `Authorization` (unless
+    /// the caller set its own), `X-Super-Properties`, `X-Installation-ID` once known, and the page's `Origin` and
+    /// `Referer`.
+    fn api_request(
+        &self,
+        method: Method,
+        url: &str,
+        authorization: Option<String>,
+    ) -> wreq::RequestBuilder {
+        let mut request = self
+            .http()
+            .request(method.clone(), url)
+            .header(
+                "authorization",
+                authorization.unwrap_or_else(|| self.authorization()),
+            )
+            .header(
+                "x-super-properties",
+                self.identity.super_properties_header(true),
+            )
+            .header("referer", referer());
+        if let Some(installation) = installation_id() {
+            request = request.header("x-installation-id", installation);
+        }
+        if let Some(origin) = origin(&method) {
+            request = request.header("origin", origin);
+        }
+        request
+    }
+
     async fn send(
         &self,
         method: &Method,
         route: &str,
         body: Option<&Value>,
-    ) -> Result<Response, Error> {
+        context: Option<&str>,
+    ) -> Result<wreq::Response, Error> {
         let (route, reason) = split_audit_reason(route);
         let url = format!("{}{route}", self.api_base);
         let url = dc_proto::replay::rewrite(&url).into_owned();
-        let mut request = self
-            .http()
-            .request(method.clone(), url)
-            .header("authorization", self.authorization())
-            .header(
-                "x-super-properties",
-                self.identity.super_properties_header(true),
-            );
+        let mut request = self.api_request(method.clone(), &url, None);
+        if let Some(context) = context {
+            request = request.header("x-context-properties", context);
+        }
         if let Some(reason) = reason {
             // `reason` of the bundle's request options (module 620632) travels as this header, percent-encoded.
             request = request.header("x-audit-log-reason", reason);
@@ -362,13 +474,37 @@ impl Client {
         route: &str,
         body: Option<&Value>,
     ) -> Result<Value, Error> {
+        self.request_in(method, route, body, None).await
+    }
+
+    /// [`Client::request`] with `X-Context-Properties`: the base64 JSON of the request's `context` (module 620632
+    /// `context`), which the official client sends with the requests it makes from a known place (`chat_input` for
+    /// a message from the composer).
+    pub async fn request_with_context(
+        &self,
+        method: Method,
+        route: &str,
+        body: Option<&Value>,
+        context: &Value,
+    ) -> Result<Value, Error> {
+        let encoded = context_properties(context);
+        self.request_in(method, route, body, Some(&encoded)).await
+    }
+
+    async fn request_in(
+        &self,
+        method: Method,
+        route: &str,
+        body: Option<&Value>,
+        context: Option<&str>,
+    ) -> Result<Value, Error> {
         let diagnostic = diagnostic_route(route);
         let mut last_retry_after = None;
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
             let asked = std::time::Instant::now();
-            let response = self.send(&method, route, body).await?;
+            let response = self.send(&method, route, body, context).await?;
             let status = response.status();
-            let content_type = content_type(&response);
+            let content_type = content_type(response.headers());
             debug!("{method} {}: {status}", log_path(route));
             if status == StatusCode::TOO_MANY_REQUESTS {
                 let body: Value = response.json().await.unwrap_or(Value::Null);
@@ -431,13 +567,7 @@ impl Client {
         let url = format!("{}{route}", self.api_base);
         let url = dc_proto::replay::rewrite(&url).into_owned();
         let response = self
-            .http()
-            .get(url)
-            .header("authorization", format!("Bearer {bearer}"))
-            .header(
-                "x-super-properties",
-                self.identity.super_properties_header(true),
-            )
+            .api_request(Method::GET, &url, Some(format!("Bearer {bearer}")))
             .send()
             .await?;
         let status = response.status();
@@ -462,21 +592,15 @@ impl Client {
         let url = dc_proto::replay::rewrite(&url).into_owned();
         let mut last_retry_after = None;
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
-            let file = reqwest::multipart::Part::bytes(form.file.clone())
+            let file = wreq::multipart::Part::bytes(form.file.clone())
                 .file_name(form.file_name.clone())
                 .mime_str(&form.file_type)?;
-            let mut body = reqwest::multipart::Form::new();
+            let mut body = wreq::multipart::Form::new();
             for (name, value) in &form.fields {
                 body = body.text(name.clone(), value.clone());
             }
             let mut request = self
-                .http()
-                .post(&url)
-                .header("authorization", self.authorization())
-                .header(
-                    "x-super-properties",
-                    self.identity.super_properties_header(true),
-                )
+                .api_request(Method::POST, &url, None)
                 .multipart(body.part(form.file_field.clone(), file));
             for (name, value) in &form.headers {
                 request = request.header(name.as_str(), value.as_str());
@@ -528,21 +652,15 @@ impl Client {
     ) -> Result<Value, Error> {
         let url = format!("{}{route}", self.api_base);
         let url = dc_proto::replay::rewrite(&url).into_owned();
-        let mut body = reqwest::multipart::Form::new();
+        let mut body = wreq::multipart::Form::new();
         for (name, bytes) in files {
-            let part = reqwest::multipart::Part::bytes(bytes.clone())
+            let part = wreq::multipart::Part::bytes(bytes.clone())
                 .file_name(name.clone())
                 .mime_str("application/octet-stream")?;
             body = body.part(name.clone(), part);
         }
         let response = self
-            .http()
-            .post(&url)
-            .header("authorization", self.authorization())
-            .header(
-                "x-super-properties",
-                self.identity.super_properties_header(true),
-            )
+            .api_request(Method::POST, &url, None)
             .multipart(body)
             .send()
             .await?;
@@ -567,74 +685,95 @@ impl Client {
     /// A public asset: no authorization, so tokens never reach a CDN.
     pub async fn fetch_public(&self, url: &str) -> Result<Vec<u8>, Error> {
         let asked = std::time::Instant::now();
-        let response = self
-            .public_http(url)
-            .get(dc_proto::replay::rewrite(url).as_ref())
-            .send()
-            .await?;
-        let status = response.status();
-        let content_type = content_type(&response);
-        let response = match response.error_for_status() {
-            Ok(response) => response,
-            Err(error) => {
-                dc_proto::replay::record_http(
-                    "GET",
-                    url,
-                    status.as_u16(),
-                    content_type.as_deref(),
-                    asked.elapsed(),
-                    &[],
-                );
-                return Err(error.into());
-            }
-        };
-        let bytes = response.bytes().await?.to_vec();
-        dc_proto::replay::record_http(
-            "GET",
-            url,
-            status.as_u16(),
-            content_type.as_deref(),
-            asked.elapsed(),
-            &bytes,
-        );
-        Ok(bytes)
+        with_http!(self.public_http(url), |http| {
+            let response = http
+                .get(dc_proto::replay::rewrite(url).as_ref())
+                .send()
+                .await?;
+            let status = response.status();
+            let content_type = content_type(response.headers());
+            let response = match response.error_for_status() {
+                Ok(response) => response,
+                Err(error) => {
+                    dc_proto::replay::record_http(
+                        "GET",
+                        url,
+                        status.as_u16(),
+                        content_type.as_deref(),
+                        asked.elapsed(),
+                        &[],
+                    );
+                    return Err(error.into());
+                }
+            };
+            let bytes = response.bytes().await?.to_vec();
+            dc_proto::replay::record_http(
+                "GET",
+                url,
+                status.as_u16(),
+                content_type.as_deref(),
+                asked.elapsed(),
+                &bytes,
+            );
+            Ok(bytes)
+        })
     }
 
     /// A public JSON POST: no authorization, so tokens never reach the other host.
     pub async fn post_public_json(&self, url: &str, body: &Value) -> Result<Vec<u8>, Error> {
-        let response = self
-            .public_http(url)
-            .post(url)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .json(body)
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(response.bytes().await?.to_vec())
+        with_http!(self.public_http(url), |http| {
+            let mut request = http
+                .post(url)
+                .header(reqwest::header::ACCEPT, "application/json");
+            if plain::is_discord_url(url) {
+                request = request.header("origin", pin::WEBAPP_ORIGIN);
+            }
+            let response = request.json(body).send().await?.error_for_status()?;
+            Ok(response.bytes().await?.to_vec())
+        })
     }
 
     /// Public GET (no authorization) reading at most `limit` bytes of the body: an error status, or a body over the
     /// limit (by its length header or as it streams), comes back as [`LimitedGet`] instead of the bytes.
     pub async fn fetch_public_limited(&self, url: &str, limit: usize) -> Result<LimitedGet, Error> {
-        let mut response = self.public_http(url).get(url).send().await?;
-        let status = response.status();
-        if !status.is_success() {
-            return Ok(LimitedGet::Status(
-                status.as_u16(),
-                status.canonical_reason().unwrap_or_default().to_owned(),
-            ));
-        }
-        if response
-            .content_length()
-            .is_some_and(|length| length > limit as u64)
-        {
-            return Ok(LimitedGet::TooLarge);
+        /// The status and announced length checked: `Some` ends the fetch before the body.
+        fn early(status: StatusCode, length: Option<u64>, limit: usize) -> Option<LimitedGet> {
+            if !status.is_success() {
+                return Some(LimitedGet::Status(
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or_default().to_owned(),
+                ));
+            }
+            length
+                .is_some_and(|length| length > limit as u64)
+                .then_some(LimitedGet::TooLarge)
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            bytes.extend_from_slice(&chunk);
-            if bytes.len() > limit {
-                return Ok(LimitedGet::TooLarge);
+        match self.public_http(url) {
+            Http::Chromium(http) => {
+                let response = http.get(url).send().await?;
+                if let Some(end) = early(response.status(), response.content_length(), limit) {
+                    return Ok(end);
+                }
+                let mut stream = std::pin::pin!(response.bytes_stream());
+                while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+                    bytes.extend_from_slice(&chunk?);
+                    if bytes.len() > limit {
+                        return Ok(LimitedGet::TooLarge);
+                    }
+                }
+            }
+            Http::Plain(http) => {
+                let mut response = http.get(url).send().await?;
+                if let Some(end) = early(response.status(), response.content_length(), limit) {
+                    return Ok(end);
+                }
+                while let Some(chunk) = response.chunk().await? {
+                    bytes.extend_from_slice(&chunk);
+                    if bytes.len() > limit {
+                        return Ok(LimitedGet::TooLarge);
+                    }
+                }
             }
         }
         Ok(LimitedGet::Body(bytes))
@@ -647,53 +786,54 @@ impl Client {
         etag: Option<&str>,
     ) -> Result<ConditionalGet, Error> {
         let asked = std::time::Instant::now();
-        let mut req = self
-            .public_http(url)
-            .get(dc_proto::replay::rewrite(url).as_ref());
-        if let Some(tag) = etag {
-            req = req.header(reqwest::header::IF_NONE_MATCH, tag);
-        }
-        let response = req.send().await?;
-        let next_etag = response
-            .headers()
-            .get(reqwest::header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        if response.status() == StatusCode::NOT_MODIFIED {
-            dc_proto::replay::record_http("GET", url, 304, None, asked.elapsed(), &[]);
-            return Ok(ConditionalGet::NotModified {
-                etag: next_etag.or_else(|| etag.map(str::to_owned)),
-            });
-        }
-        let status = response.status();
-        let content_type = content_type(&response);
-        let response = response.error_for_status()?;
-        let bytes = response.bytes().await?.to_vec();
-        dc_proto::replay::record_http(
-            "GET",
-            url,
-            status.as_u16(),
-            content_type.as_deref(),
-            asked.elapsed(),
-            &bytes,
-        );
-        Ok(ConditionalGet::Ok {
-            etag: next_etag,
-            bytes,
+        with_http!(self.public_http(url), |http| {
+            let mut req = http.get(dc_proto::replay::rewrite(url).as_ref());
+            if let Some(tag) = etag {
+                req = req.header(reqwest::header::IF_NONE_MATCH, tag);
+            }
+            let response = req.send().await?;
+            let next_etag = response
+                .headers()
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            if response.status() == StatusCode::NOT_MODIFIED {
+                dc_proto::replay::record_http("GET", url, 304, None, asked.elapsed(), &[]);
+                return Ok(ConditionalGet::NotModified {
+                    etag: next_etag.or_else(|| etag.map(str::to_owned)),
+                });
+            }
+            let status = response.status();
+            let content_type = content_type(response.headers());
+            let response = response.error_for_status()?;
+            let bytes = response.bytes().await?.to_vec();
+            dc_proto::replay::record_http(
+                "GET",
+                url,
+                status.as_u16(),
+                content_type.as_deref(),
+                asked.elapsed(),
+                &bytes,
+            );
+            Ok(ConditionalGet::Ok {
+                etag: next_etag,
+                bytes,
+            })
         })
     }
 
     /// Puts a file at the signed URL `POST /channels/{id}/attachments` handed out. The URL is the grant, so no
     /// authorization goes with it.
     pub async fn put_upload(&self, url: &str, bytes: Vec<u8>) -> Result<(), Error> {
-        self.public_http(url)
-            .put(dc_proto::replay::rewrite(url).as_ref())
-            .header("content-type", "application/octet-stream")
-            .body(bytes)
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(())
+        with_http!(self.public_http(url), |http| {
+            http.put(dc_proto::replay::rewrite(url).as_ref())
+                .header("content-type", "application/octet-stream")
+                .body(bytes)
+                .send()
+                .await?
+                .error_for_status()?;
+            Ok(())
+        })
     }
 
     pub async fn get(&self, route: &str) -> Result<Value, Error> {
@@ -705,10 +845,15 @@ impl Client {
     }
 }
 
+/// `X-Context-Properties`: the request's context as base64 of its JSON (module 620632).
+pub fn context_properties(context: &Value) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(context.to_string())
+}
+
 /// The answer's `content-type`, for the replay recorder.
-fn content_type(response: &Response) -> Option<String> {
-    response
-        .headers()
+fn content_type(headers: &HeaderMap) -> Option<String> {
+    headers
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
@@ -823,8 +968,21 @@ mod tests {
         let headers = fixed_headers(&identity()).unwrap();
         assert_eq!(headers["x-debug-options"], "bugReporterEnabled");
         assert_eq!(headers["x-discord-timezone"], "Europe/Istanbul");
-        assert_eq!(headers["origin"], "https://discordapp.com");
-        assert_eq!(headers["referer"], "https://discordapp.com/channels/@me");
+        assert_eq!(headers["priority"], "u=1, i");
+        // Per request: a GET from the page carries no origin, the other methods do.
+        assert!(!headers.contains_key("origin"));
+        assert_eq!(origin(&Method::GET), None);
+        assert_eq!(origin(&Method::POST), Some("https://discordapp.com"));
+        assert_eq!(origin(&Method::DELETE), Some("https://discordapp.com"));
+        assert!(referer().starts_with("https://discordapp.com/channels/"));
+    }
+
+    #[test]
+    fn context_properties_are_the_recorded_base64() {
+        assert_eq!(
+            context_properties(&json!({"location": "chat_input"})),
+            "eyJsb2NhdGlvbiI6ImNoYXRfaW5wdXQifQ=="
+        );
     }
 
     /// A local stand-in for a non-Discord host: answers `/start` with a redirect to `/next`, `/next` with a body, and
@@ -938,6 +1096,97 @@ mod tests {
         assert!(heads[1].starts_with("GET /next"));
     }
 
+    /// An API request carries the page's header set in Chromium's order: no origin on a GET, the origin on a POST,
+    /// the page as referer, the installation id once known, and a cookie a Discord answer set.
+    #[tokio::test]
+    async fn api_requests_carry_the_pages_headers_in_chromiums_order() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let heads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = heads.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let kept = kept.clone();
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 8192];
+                    loop {
+                        let mut seen = Vec::new();
+                        while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                            match stream.read(&mut buffer).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(read) => seen.extend_from_slice(&buffer[..read]),
+                            }
+                        }
+                        let head = String::from_utf8_lossy(&seen).into_owned();
+                        kept.lock().unwrap().push(head);
+                        let answer = "HTTP/1.1 200 OK\r\nset-cookie: __dcfduid=fixture; Path=/\r\n\
+                                      content-type: application/json\r\ncontent-length: 2\r\n\r\n{}";
+                        if stream.write_all(answer.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        set_installation_id("1.fixture");
+        set_location("/channels/1/2");
+        let client = Client::new(Token::new("fixture-token"), identity())
+            .unwrap()
+            .with_api_base(format!("http://{address}/api/v9"));
+        let bound = Duration::from_secs(10);
+        let got = tokio::time::timeout(bound, client.get("/users/@me")).await;
+        assert!(
+            matches!(got, Ok(Ok(_))),
+            "{got:?} {:#?}",
+            heads.lock().unwrap()
+        );
+        let posted = tokio::time::timeout(
+            bound,
+            client.post("/channels/2/messages", &json!({"content": "x"})),
+        )
+        .await;
+        assert!(
+            matches!(posted, Ok(Ok(_))),
+            "{posted:?} {:#?}",
+            heads.lock().unwrap()
+        );
+        let heads = heads.lock().unwrap().clone();
+        assert_eq!(heads.len(), 2, "{heads:#?}");
+        let names = |head: &str| -> Vec<String> {
+            let head = head.split("\r\n\r\n").next().unwrap_or_default();
+            head.lines()
+                .skip(1)
+                .filter_map(|line| {
+                    line.split_once(':')
+                        .map(|(name, _)| name.to_ascii_lowercase())
+                })
+                .filter(|name| name != "host")
+                .collect()
+        };
+        for head in &heads {
+            let names = names(head);
+            let ordered: Vec<String> = chromium::FETCH_ORDER
+                .iter()
+                .map(|name| name.to_string())
+                .filter(|name| names.contains(name))
+                .collect();
+            assert_eq!(names, ordered, "{head}");
+            let headers = header_set(head);
+            assert_eq!(headers["referer"], "https://discordapp.com/channels/1/2");
+            assert_eq!(headers["x-installation-id"], "1.fixture");
+            assert_eq!(headers["priority"], "u=1, i");
+            assert_eq!(headers["accept-encoding"], "gzip, deflate, br, zstd");
+            assert_eq!(headers["user-agent"], pin::USER_AGENT);
+        }
+        let (get, post) = (header_set(&heads[0]), header_set(&heads[1]));
+        assert!(!get.contains_key("origin"), "{}", heads[0]);
+        assert!(!get.contains_key("content-type"));
+        assert_eq!(post["origin"], "https://discordapp.com");
+        assert_eq!(post["content-type"], "application/json");
+        assert_eq!(post["cookie"], "__dcfduid=fixture");
+    }
+
     /// The pinned client follows a redirect on its own host, and refuses one to another host that is not Discord's,
     /// which then receives nothing.
     #[tokio::test]
@@ -1038,12 +1287,12 @@ mod tests {
         let route = "/content-inventory/users/@me?feature=inbox&refresh_token=fixture-cursor&for_game_profile=false";
         assert_eq!(diagnostic_route(route), "/content-inventory/users/@me");
         assert_eq!(diagnostic_route("/messages?limit=50"), "/messages?limit=50");
-        let error = reqwest::Client::new()
+        let error = wreq::Client::new()
             .get("https://example.invalid/")
             .header("invalid\nheader", "value")
             .build()
             .unwrap_err()
-            .with_url(reqwest::Url::parse(&format!("https://example.invalid{route}")).unwrap());
+            .with_uri(format!("https://example.invalid{route}").parse().unwrap());
         let safe = transport_error(error, route);
         assert!(!format!("{safe:?}").contains("fixture-cursor"));
         assert!(!format!("{safe}").contains("fixture-cursor"));

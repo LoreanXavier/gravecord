@@ -616,9 +616,6 @@ pub(crate) fn fetch_url_limited(url: &str, max_bytes: usize) -> Result<Vec<u8>, 
 /// A file from a URL and its `Content-Type` (empty when the answer names none).
 pub(crate) fn fetch_url_typed(url: &str, max_bytes: usize) -> Result<(Vec<u8>, String), String> {
     static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
-    // One client for Discord's hosts (the bare one these requests always used) and one, plain, for any other.
-    static DISCORD: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-    static OTHER: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
     let runtime = RUNTIME
         .get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()
@@ -629,52 +626,27 @@ pub(crate) fn fetch_url_typed(url: &str, max_bytes: usize) -> Result<(Vec<u8>, S
         })
         .as_ref()
         .ok_or("no runtime")?;
-    let client = if dc_http::plain::is_discord_url(url) {
-        &DISCORD
-    } else {
-        &OTHER
-    };
-    let client = client
-        .get_or_init(|| {
-            dc_http::plain::builder_for(url)
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(std::time::Duration::from_secs(20))
-                .build()
-                .map_err(|error| error.to_string())
-        })
-        .clone()?;
     let url = url.to_owned();
     runtime.block_on(async move {
         let asked = std::time::Instant::now();
-        let mut response = client
-            .get(dc_proto::replay::rewrite(&url).as_ref())
-            .send()
+        let fetch = dc_http::download::Fetch {
+            max_bytes,
+            timeout: Some(std::time::Duration::from_secs(20)),
+            redirects: 0,
+            https_redirects: false,
+        };
+        let file = dc_http::download::get(&url, fetch)
             .await
             .map_err(|error| error.to_string())?;
-        if !response.status().is_success() {
-            return Err(format!("status {}", response.status()));
-        }
-        let kind = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_owned();
-        if response
-            .content_length()
-            .is_some_and(|size| size > max_bytes as u64)
-        {
-            return Err("file too large".to_owned());
-        }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
-            if chunk.len() > max_bytes - bytes.len() {
-                return Err("file too large".to_owned());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        dc_proto::replay::record_http("GET", &url, 200, Some(&kind), asked.elapsed(), &bytes);
-        Ok((bytes, kind))
+        dc_proto::replay::record_http(
+            "GET",
+            &url,
+            200,
+            Some(&file.content_type),
+            asked.elapsed(),
+            &file.bytes,
+        );
+        Ok((file.bytes, file.content_type))
     })
 }
 

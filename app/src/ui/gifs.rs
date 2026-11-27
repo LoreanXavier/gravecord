@@ -813,7 +813,7 @@ impl Root {
                 body: Some(json!({"id": gif.id, "q": query})),
             });
         }
-        self.start_local_text(channel, gif.url.clone());
+        self.start_local_gif(channel, gif.url.clone());
         self.picker = None;
         cx.notify();
     }
