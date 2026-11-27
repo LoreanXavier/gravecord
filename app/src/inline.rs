@@ -138,6 +138,8 @@ pub struct Selection {
     anchor: Option<Position>,
     head: Option<Position>,
     dragging: bool,
+    /// The original double-clicked word, kept intact when the drag changes direction.
+    word_anchor: Option<(Position, Position)>,
     blocks: BTreeMap<(u64, u32), SelectableBlock>,
     epoch: u64,
 }
@@ -220,16 +222,54 @@ impl Selection {
         self.anchor = Some(at);
         self.head = Some(at);
         self.dragging = true;
+        self.word_anchor = None;
+    }
+
+    /// Double-click selects a word and keeps the held mouse ready to extend by whole words.
+    pub fn begin_word(&mut self, at: Position) {
+        let (start, end) = self.word_range(at);
+        self.select_range(start, end);
+        self.word_anchor = Some((start, end));
+        self.dragging = true;
+    }
+
+    fn word_range(&self, at: Position) -> (Position, Position) {
+        let (start, end) = self
+            .block_text(at.key)
+            .map_or((at.offset, at.offset), |text| {
+                Self::word_range_at(&text, at.offset)
+            });
+        (
+            Position {
+                offset: start,
+                ..at
+            },
+            Position { offset: end, ..at },
+        )
     }
 
     pub fn extend(&mut self, to: Position) {
-        if self.dragging {
+        if !self.dragging {
+            return;
+        }
+        if let Some((start, end)) = self.word_anchor {
+            let (anchor, head) = if to < start {
+                (end, self.word_range(to).0)
+            } else if to > end {
+                (start, self.word_range(to).1)
+            } else {
+                (start, end)
+            };
+            self.anchor = Some(anchor);
+            self.head = Some(head);
+        } else {
             self.head = Some(to);
         }
     }
 
     /// Shift+click extends an existing anchor (or starts from `to` if none yet).
     pub fn extend_click(&mut self, to: Position) {
+        self.word_anchor = None;
         if self.anchor.is_none() {
             self.anchor = Some(to);
         }
@@ -241,10 +281,12 @@ impl Selection {
         self.anchor = Some(from);
         self.head = Some(to);
         self.dragging = false;
+        self.word_anchor = None;
     }
 
     pub fn end(&mut self) {
         self.dragging = false;
+        self.word_anchor = None;
     }
 
     /// Clears only the active selection range (preserving registered selectable blocks across same-frame mouse events).
@@ -252,6 +294,7 @@ impl Selection {
         self.anchor = None;
         self.head = None;
         self.dragging = false;
+        self.word_anchor = None;
     }
 
     /// Clears both the active selection and all registered block geometry (e.g. when switching channels).
@@ -306,12 +349,9 @@ impl Selection {
                 offset: last_block.text.len(),
             }
         };
-        if self.head == Some(target) {
-            false
-        } else {
-            self.head = Some(target);
-            true
-        }
+        let before = (self.anchor, self.head);
+        self.extend(target);
+        before != (self.anchor, self.head)
     }
 
     pub fn word_range_at(text: &str, offset: usize) -> (usize, usize) {
@@ -1306,21 +1346,7 @@ impl Inline {
                         },
                     );
                 } else if event.click_count == 2 {
-                    let (from, to) = selection
-                        .block_text(down.key)
-                        .map_or((at.offset, at.offset), |text| {
-                            Selection::word_range_at(&text, at.offset)
-                        });
-                    selection.select_range(
-                        Position {
-                            key: down.key,
-                            offset: from,
-                        },
-                        Position {
-                            key: down.key,
-                            offset: to,
-                        },
-                    );
+                    selection.begin_word(at);
                 } else if event.modifiers.shift {
                     selection.extend_click(at);
                 } else {
