@@ -153,6 +153,8 @@ pub(crate) struct Def {
     pub origin: Origin,
     /// Where the original lives in its repository.
     pub source: &'static str,
+    /// Who the original credits (its `authors`), for the plugin's card.
+    pub authors: &'static [&'static str],
     /// On before the user ever touched its switch.
     pub default_on: bool,
     pub settings: &'static [Setting],
@@ -400,6 +402,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Right click your account panel in the bottom left to view your profile in the current server",
         origin: Origin::Vencord,
         source: "src/plugins/accountPanelServerProfile/index.tsx",
+        authors: &["Nuckyz", "Relitrix"],
         default_on: false,
         settings: &[Setting {
             key: "prioritizeServerProfile",
@@ -414,6 +417,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Makes the Noise Suppression Popout switch between None and Krisp instead of Krisp and Standard",
         origin: Origin::Equicord,
         source: "src/equicordplugins/altKrispSwitch/index.ts",
+        authors: &["newwares"],
         default_on: false,
         settings: &[],
     },
@@ -423,6 +427,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Animates anything that can be animated",
         origin: Origin::Vencord,
         source: "src/plugins/alwaysAnimate/index.ts",
+        authors: &["Fiery"],
         default_on: false,
         settings: &[
             Setting {
@@ -463,6 +468,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Removes the annoying untrusted domain and suspicious file popup.",
         origin: Origin::Vencord,
         source: "src/plugins/alwaysTrust/index.tsx",
+        authors: &["zt", "trey"],
         default_on: false,
         settings: &[
             Setting {
@@ -497,6 +503,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Anonymise uploaded file names.",
         origin: Origin::Vencord,
         source: "src/plugins/anonymiseFileNames/index.tsx",
+        authors: &["fawn"],
         default_on: false,
         settings: &[
             Setting {
@@ -562,6 +569,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Shows activity icons in the member list and allows showing all activities",
         origin: Origin::Equicord,
         source: "src/equicordplugins/betterActivities/index.tsx",
+        authors: &["D3SOX", "ArjixWasTaken", "AutumnVN", "thororen"],
         default_on: false,
         settings: &[
             Setting {
@@ -631,6 +639,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds a spectrograph and oscilloscope visualizer to audio attachment players.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/betterAudioPlayer.desktop/index.tsx",
+        authors: &["creations"],
         default_on: false,
         settings: &[
             Setting {
@@ -683,6 +692,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Allows you to search in blocked users list, make names selectable in settings, skips blocked profile prompt, and groups blocked / ignored messages.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/betterBlockedUsers/index.tsx",
+        authors: &["TheArmagan"],
         default_on: false,
         settings: &[],
     },
@@ -692,6 +702,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Enhances the command system with miscellaneous improvements.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/betterCommands/index.ts",
+        authors: &["thororen"],
         default_on: false,
         settings: &[Setting {
             key: "autoFillArguments",
@@ -706,6 +717,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Shows server folders on dedicated sidebar and adds folder related improvements",
         origin: Origin::Vencord,
         source: "src/plugins/betterFolders/index.tsx",
+        authors: &["Juby210", "AutumnVN", "Nuckyz"],
         default_on: false,
         settings: &[
             Setting {
@@ -777,6 +789,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Message forward utilities including NSFW bypass and UI improvements.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/betterForwards/index.tsx",
+        authors: &["thororen", "sadan", "nin0dev", "VillainsRule", "Davri"],
         default_on: false,
         settings: &[
             Setting {
@@ -814,6 +827,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Change GIF alt text from simply being 'GIF' to containing the gif tags / filename",
         origin: Origin::Vencord,
         source: "src/plugins/betterGifAltText/index.ts",
+        authors: &["V"],
         default_on: false,
         settings: &[],
     },
@@ -823,6 +837,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "The amount of plus before :emoji: is the message to add it to",
         origin: Origin::Equicord,
         source: "src/equicordplugins/betterPlusReacts/index.ts",
+        authors: &["Joona"],
         default_on: false,
         settings: &[],
     },
@@ -832,6 +847,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Improves the quick react buttons in the message context menu.",
         origin: Origin::Vencord,
         source: "src/plugins/moreQuickReactions/index.ts",
+        authors: &["V", "Sqaaakoi", "i am me"],
         default_on: false,
         settings: &[
             Setting {
@@ -893,6 +909,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds options to copy role color / edit role / view role icon when right clicking roles in the user profile or in the member list",
         origin: Origin::Vencord,
         source: "src/plugins/betterRoleContext/index.tsx",
+        authors: &["V", "goodbee", "NightmareSan"],
         default_on: false,
         settings: &[Setting {
             key: "roleIconFileFormat",
@@ -914,6 +931,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Copy role colour on RoleDot (accessibility setting) click. Also allows using both RoleDot and                       coloured names simultaneously",
         origin: Origin::Vencord,
         source: "src/plugins/betterRoleDot/index.ts",
+        authors: &["V", "AutumnVN"],
         default_on: false,
         settings: &[
             Setting {
@@ -936,6 +954,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Upload with a single click, open menu with right click.",
         origin: Origin::Vencord,
         source: "src/plugins/betterUploadButton/index.ts",
+        authors: &["fawn", "V"],
         default_on: false,
         settings: &[],
     },
@@ -945,6 +964,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "This plugin allows you to enlarge stream previews",
         origin: Origin::Vencord,
         source: "src/plugins/biggerStreamPreview/index.tsx",
+        authors: &["phil"],
         default_on: false,
         settings: &[],
     },
@@ -954,6 +974,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Still get notifications from specific sources when in do not disturb mode. Right-click on users/channels/guilds to set them to bypass do not disturb mode.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/bypassStatus/index.tsx",
+        authors: &["Inbestigator"],
         default_on: false,
         settings: &[
             Setting {
@@ -1023,6 +1044,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Add call timers for all users in voice channels and in the connection status.",
         origin: Origin::Vencord,
         source: "src/plugins/callTimer/index.tsx",
+        authors: &["V", "MaxHerbold", "D3SOX"],
         default_on: false,
         settings: &[
             Setting {
@@ -1081,6 +1103,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds a way to cancel outgoing friend requests from profiles.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/pendingFriendRequest/index.tsx",
+        authors: &["omaw"],
         default_on: false,
         settings: &[],
     },
@@ -1090,6 +1113,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Removes tracking parameters from links in the messages you send and edit.",
         origin: Origin::Vencord,
         source: "src/plugins/clearURLs/index.ts",
+        authors: &["adryd", "thororen"],
         default_on: false,
         settings: &[],
     },
@@ -1099,6 +1123,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Add more Clip FPS and duration options, custom clip length, RPC tagging and more",
         origin: Origin::Equicord,
         source: "src/equicordplugins/clipsEnhancements.discordDesktop/index.tsx",
+        authors: &["niko", "Joona", "Key"],
         default_on: false,
         settings: &[Setting {
             key: "richPresenceTagging",
@@ -1123,6 +1148,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds a button to upload a local video file as a Discord clip.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/clipUpload.desktop/index.tsx",
+        authors: &["qdnx", "BachLe2000", "pandaptable", "zeyno36", "jahsohsani"],
         default_on: false,
         settings: &[],
     },
@@ -1132,6 +1158,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Removes the colorblind-friendly icons from statuses, just like 2015-2017 Discord.",
         origin: Origin::Vencord,
         source: "src/plugins/colorSighted/index.ts",
+        authors: &["lewisakura"],
         default_on: false,
         settings: &[],
     },
@@ -1141,6 +1168,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds a 'Copy User URL' option to the user context menu.",
         origin: Origin::Vencord,
         source: "src/plugins/copyUserURLs/index.tsx",
+        authors: &["castdrian"],
         default_on: false,
         settings: &[],
     },
@@ -1150,6 +1178,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Add a fully customisable Rich Presence (Game status) to your Discord profile",
         origin: Origin::Vencord,
         source: "src/plugins/customRPC/index.tsx",
+        authors: &["Captain", "AutumnVN", "nin0dev", "c0nnorgg"],
         default_on: false,
         settings: &[
             Setting {
@@ -1385,6 +1414,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Create and use your own custom avatar decorations, or pick your favorite from the presets.",
         origin: Origin::Vencord,
         source: "src/plugins/decor/index.tsx",
+        authors: &["Fiery"],
         default_on: false,
         settings: &[
             Setting {
@@ -1410,6 +1440,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Stays in a DM call when you are alone in it, instead of leaving after three minutes.",
         origin: Origin::Vencord,
         source: "src/plugins/disableCallIdle/index.ts",
+        authors: &["Nuckyz"],
         default_on: false,
         settings: &[],
     },
@@ -1419,6 +1450,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds a popover button to download all attachments in a message at once.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/downloadAllAttachments/index.tsx",
+        authors: &["dhopcs", "sprxsheep"],
         default_on: false,
         settings: &[Setting {
             key: "downloadAllFileTypes",
@@ -1433,6 +1465,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Enable Access to Experiments & other dev-only features in Discord!",
         origin: Origin::Vencord,
         source: "src/plugins/experiments/index.tsx",
+        authors: &["Megumin", "V", "Nickyux", "BanTheNons", "Nuckyz"],
         default_on: false,
         settings: &[],
     },
@@ -1442,6 +1475,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Clone Emotes & Stickers. Adds context menu options to quickly clone, edit, or delete them. Also adds Copy & Save options for stickers",
         origin: Origin::Vencord,
         source: "src/plugins/expressionManager/index.tsx",
+        authors: &["V", "Nuckyz", "Amelia", "sadan"],
         default_on: false,
         settings: &[
             Setting {
@@ -1470,6 +1504,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Puts your favorite emoji first in the emoji autocomplete and also has emoji alias.",
         origin: Origin::Vencord,
         source: "src/plugins/favEmojiFirst/index.tsx",
+        authors: &["Syncxv", "V", "justjxke"],
         default_on: false,
         settings: &[],
     },
@@ -1479,6 +1514,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Improves quality of images by loading them at their original resolution.",
         origin: Origin::Vencord,
         source: "src/plugins/fixImagesQuality/index.tsx",
+        authors: &["Nuckyz", "V"],
         default_on: false,
         settings: &[Setting {
             key: "originalImagesInChat",
@@ -1493,6 +1529,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Bypasses youtube videos being blocked from display on Discord (for example by UMG)",
         origin: Origin::Vencord,
         source: "src/plugins/fixYoutubeEmbeds.desktop/index.tsx",
+        authors: &["coolelectronics", "lillith <3", "V", "arHSM"],
         default_on: false,
         settings: &[Setting {
             key: "youtubeDescription",
@@ -1507,6 +1544,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Create and manage friend invite links via slash commands (/create friend invite, /view friend invites, /revoke friend invites).",
         origin: Origin::Vencord,
         source: "src/plugins/friendInvites/index.ts",
+        authors: &["afn", "Dziurwa"],
         default_on: false,
         settings: &[],
     },
@@ -1516,6 +1554,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Makes the message context menu in message search results have all options you'd expect",
         origin: Origin::Vencord,
         source: "src/plugins/fullSearchContext/index.tsx",
+        authors: &["V", "Syncxv"],
         default_on: false,
         settings: &[],
     },
@@ -1525,6 +1564,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Makes avatars take up the entire vc tile",
         origin: Origin::Equicord,
         source: "src/equicordplugins/fullVcPfp/index.tsx",
+        authors: &["mochie"],
         default_on: false,
         settings: &[],
     },
@@ -1535,6 +1575,7 @@ pub(crate) const DEFS: &[Def] = &[
                       toggle Spotify activity.",
         origin: Origin::Vencord,
         source: "src/plugins/gameActivityToggle/index.tsx",
+        authors: &["Nuckyz", "RuukuLada"],
         default_on: false,
         settings: &[
             Setting {
@@ -1563,6 +1604,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Create and caption GIFs from any media in chat or the GIF picker.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/gifMaker/index.tsx",
+        authors: &["Leon135", "Benjii"],
         default_on: false,
         settings: &[
             Setting {
@@ -1661,6 +1703,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Picking a GIF puts its link in the message box instead of sending it.",
         origin: Origin::Vencord,
         source: "src/plugins/gifPaste/index.ts",
+        authors: &["V"],
         default_on: false,
         settings: &[],
     },
@@ -1670,6 +1713,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds global badges from other client mods",
         origin: Origin::Equicord,
         source: "src/equicordplugins/globalBadges/index.tsx",
+        authors: &["HypedDomi", "wolfieeeeeeee", "thororen", "August (auggeeo)"],
         default_on: false,
         settings: &[
             Setting {
@@ -1785,6 +1829,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Allows you to use any greet sticker instead of only the random one by right-clicking the 'Wave to say hi!' button",
         origin: Origin::Vencord,
         source: "src/plugins/greetStickerPicker/index.tsx",
+        authors: &["V"],
         default_on: false,
         settings: &[Setting {
             key: "greetMode",
@@ -1805,6 +1850,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Ignore activities from showing up on your status ONLY. You can configure which ones are specifically ignored from the Registered Games and Activities tabs, or use the general settings below",
         origin: Origin::Vencord,
         source: "src/plugins/ignoreActivities/index.tsx",
+        authors: &["Nuckyz", "Cookie"],
         default_on: false,
         settings: &[
             Setting {
@@ -1863,6 +1909,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Lets you zoom in to images and gifs. Use scroll wheel to zoom in and shift + scroll wheel to increase lens radius / size",
         origin: Origin::Vencord,
         source: "src/plugins/imageZoom/index.tsx",
+        authors: &["Syncxv"],
         default_on: false,
         settings: &[
             Setting {
@@ -1930,6 +1977,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Sends a notification if a given message matches certain keywords or regexes",
         origin: Origin::Equicord,
         source: "src/equicordplugins/keywordNotify/index.tsx",
+        authors: &["camila314", "x3rt", "benjas333"],
         default_on: false,
         settings: &[
             Setting {
@@ -1957,6 +2005,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds a slider for screenshare resolution and fps.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/limitlessScreenshare/index.tsx",
+        authors: &["KawaiianPizza"],
         default_on: false,
         settings: &[
             Setting {
@@ -1995,6 +2044,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Shows the number of online members, total members, and users in voice channels on the server - in the member list and tooltip.",
         origin: Origin::Vencord,
         source: "src/plugins/memberCount/index.tsx",
+        authors: &["V", "Commandtechno", "Apexo"],
         default_on: false,
         settings: &[
             Setting {
@@ -2023,6 +2073,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Customize click actions on messages: hold Backspace and click to delete, double-click to edit or reply, and more.",
         origin: Origin::Vencord,
         source: "src/plugins/messageClickActions/index.ts",
+        authors: &["V", "Key", "ZcraftElite", "omaw"],
         // Double-click to edit was always on before plugins existed; it stays on until turned off.
         default_on: true,
         settings: &[
@@ -2187,6 +2238,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Temporarily logs deleted and edited messages.",
         origin: Origin::Vencord,
         source: "src/plugins/messageLogger/index.tsx",
+        authors: &["rushii", "V", "AutumnVN", "Nickyux", "Kyuuhachi", "sadan", "justjxke", "f3tch"],
         default_on: false,
         settings: &[
             Setting {
@@ -2296,6 +2348,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Improves MessageLogger with edited message history, ghost ping detection and more",
         origin: Origin::Equicord,
         source: "src/equicordplugins/messageLoggerEnhanced/index.tsx",
+        authors: &["Syncxv", "Key"],
         default_on: false,
         settings: &[
             Setting {
@@ -2508,6 +2561,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Shows the last message preview and timestamp in the Direct Messages list.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/messagePeek/index.tsx",
+        authors: &["prism", "justjxke"],
         default_on: false,
         settings: &[Setting {
             key: "hideMuted",
@@ -2522,6 +2576,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Allows you to create custom slash commands / tags",
         origin: Origin::Vencord,
         source: "src/plugins/customCommands/index.ts",
+        authors: &["V", "Luny"],
         default_on: false,
         settings: &[],
     },
@@ -2531,6 +2586,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds various fun and useful commands",
         origin: Origin::Equicord,
         source: "src/equicordplugins/moreCommands/index.ts",
+        authors: &["ArjixWasTaken", "Amy", "Samu", "zyqunix", "Shady Goat", "thororen", "Korbo", "verticalsync.", "Amy", "Samwich", "Fafa", "Jacob.Tm", "voidbbg"],
         default_on: false,
         settings: &[
             Setting {
@@ -2559,6 +2615,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Hides mention badges from the channels you pick, both on the channel and on the server icon.                       Nothing is sent to Discord.",
         origin: Origin::Equicord,
         source: "src/userplugins/muteChannelMentions/index.tsx",
+        authors: &["ShaggyLorean"],
         default_on: false,
         settings: &[
             Setting {
@@ -2584,6 +2641,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Automatically mute new servers and change various other settings upon joining",
         origin: Origin::Vencord,
         source: "src/plugins/newGuildSettings/index.tsx",
+        authors: &["Glitchy", "Nuckyz", "carince", "Mopi", "GabiRP"],
         default_on: false,
         settings: &[
             Setting {
@@ -2656,6 +2714,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/noNitroUpsell/index.ts",
+        authors: &["thororen"],
         default_on: false,
         settings: &[],
     },
@@ -2665,6 +2724,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Removes the ping count of incoming friend requests, message requests, and Nitro offers.",
         origin: Origin::Vencord,
         source: "src/plugins/noPendingCount/index.ts",
+        authors: &["amia"],
         default_on: false,
         settings: &[
             Setting {
@@ -2693,6 +2753,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Shows the typing dots still instead of pulsing.",
         origin: Origin::Vencord,
         source: "src/plugins/noTypingAnimation/index.ts",
+        authors: &["AutumnVN"],
         default_on: false,
         settings: &[],
     },
@@ -2702,6 +2763,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "If unread messages are sent by a user in DMs multiple times, you'll only receive one audio ping. Read the messages to reset the limit.",
         origin: Origin::Vencord,
         source: "src/plugins/onePingPerDM/index.ts",
+        authors: &["ProffDea"],
         default_on: false,
         settings: &[
             Setting {
@@ -2752,6 +2814,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Open links in their respective apps instead of your browser",
         origin: Origin::Vencord,
         source: "src/plugins/openInApp/index.ts",
+        authors: &["V", "Chloe"],
         default_on: false,
         settings: &[
             Setting {
@@ -2804,6 +2867,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "View the permissions a user or channel has, and the roles of a server",
         origin: Origin::Vencord,
         source: "src/plugins/permissionsViewer/index.tsx",
+        authors: &["Nuckyz", "V"],
         default_on: false,
         settings: &[Setting {
             key: "permissionsSortOrder",
@@ -2821,6 +2885,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs",
         origin: Origin::Vencord,
         source: "src/plugins/pinDms/index.tsx",
+        authors: &["V", "Syncxv"],
         default_on: false,
         settings: &[
             Setting {
@@ -2861,6 +2926,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds platform indicators (Desktop, Mobile, Web...) to users.",
         origin: Origin::Equicord,
         source: "src/plugins/platformIndicators/index.tsx",
+        authors: &["kemo", "sunnie", "Nuckyz", "V", "neoarz"],
         default_on: false,
         settings: &[
             Setting {
@@ -2914,6 +2980,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Lets you preview your message before sending it.",
         origin: Origin::Vencord,
         source: "src/plugins/previewMessage/index.tsx",
+        authors: &["Syncxv"],
         default_on: false,
         settings: &[],
     },
@@ -2923,6 +2990,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds a quick mention button to the message actions bar.",
         origin: Origin::Vencord,
         source: "src/plugins/quickMention/index.tsx",
+        authors: &["kemo"],
         default_on: false,
         settings: &[],
     },
@@ -2932,6 +3000,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Reply to (ctrl + up/down) and edit (ctrl + shift + up/down) messages via keybinds",
         origin: Origin::Vencord,
         source: "src/plugins/quickReply/index.ts",
+        authors: &["fawn", "V", "pylix"],
         default_on: false,
         settings: &[
             Setting {
@@ -2961,6 +3030,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds the ability to create an inspirational quote image from a message.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/quoter/index.tsx",
+        authors: &["Samwich", "thororen", "neoarz", "prism"],
         default_on: false,
         settings: &[
             Setting {
@@ -2998,6 +3068,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Read all server notifications with a single button click!",
         origin: Origin::Vencord,
         source: "src/plugins/readAllNotificationsButton/index.tsx",
+        authors: &["kemo", "krystalskullofficial"],
         default_on: false,
         settings: &[Setting {
             key: "compact",
@@ -3012,6 +3083,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Notifies you when a friend, group chat, or server removes you.",
         origin: Origin::Vencord,
         source: "src/plugins/relationshipNotifier/index.ts",
+        authors: &["nick"],
         default_on: false,
         settings: &[
             Setting {
@@ -3058,6 +3130,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Ctrl-click a spoiler to open every spoiler in its message, Ctrl+Shift-click for the whole channel.",
         origin: Origin::Vencord,
         source: "src/plugins/revealAllSpoilers/index.ts",
+        authors: &["whqwert"],
         default_on: false,
         settings: &[],
     },
@@ -3067,6 +3140,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds ImageSearch to image context menus.",
         origin: Origin::Vencord,
         source: "src/plugins/reverseImageSearch/index.tsx",
+        authors: &["V", "Nuckyz"],
         default_on: false,
         settings: &[],
     },
@@ -3076,6 +3150,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds the top role color anywhere possible",
         origin: Origin::Vencord,
         source: "src/plugins/roleColorEverywhere/index.tsx",
+        authors: &["King Fish", "lewisakura", "AutumnVN", "Kyuuhachi", "jamesbt365"],
         default_on: false,
         settings: &[
             Setting {
@@ -3133,6 +3208,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Fixes the annoying \"We dropped the magnifying glass!\" error.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/searchFix/index.tsx",
+        authors: &["Jaxx"],
         default_on: false,
         settings: &[],
     },
@@ -3142,6 +3218,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Expands on Discord's rudimentary `sed` support.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/sedEnhanced/index.ts",
+        authors: &["dawn", "Willow", "kat"],
         default_on: false,
         settings: &[Setting {
             key: "regexByDefault",
@@ -3156,6 +3233,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Allows you to view info about a server",
         origin: Origin::Vencord,
         source: "src/plugins/serverInfo/index.tsx",
+        authors: &["V", "Nuckyz", "Z1xus"],
         default_on: false,
         settings: &[Setting {
             key: "sorting",
@@ -3177,6 +3255,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Add online friend count or server count in the server list.",
         origin: Origin::Vencord,
         source: "src/plugins/serverListIndicators/index.tsx",
+        authors: &["rini", "Panniku"],
         default_on: false,
         settings: &[Setting {
             key: "mode",
@@ -3198,6 +3277,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Show connected accounts in user popouts and the DM sidebar.",
         origin: Origin::Vencord,
         source: "src/plugins/showConnections/index.tsx",
+        authors: &["TheKodeToad"],
         default_on: false,
         settings: &[
             Setting {
@@ -3244,6 +3324,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Displays various hidden & moderator-only things regardless of permissions.",
         origin: Origin::Vencord,
         source: "src/plugins/showHiddenThings/index.ts",
+        authors: &["Dolfies"],
         default_on: false,
         settings: &[
             Setting {
@@ -3272,6 +3353,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds a button to the chat bar to toggle sending a silent message.",
         origin: Origin::Vencord,
         source: "src/plugins/silentMessageToggle/index.tsx",
+        authors: &["Nuckyz", "CatNoir", "Z1xus"],
         default_on: false,
         settings: &[
             Setting {
@@ -3304,6 +3386,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Free listen along, no auto-pausing in voice chat, and allows activity to continue playing when idling",
         origin: Origin::Vencord,
         source: "src/plugins/spotifyCrack/index.ts",
+        authors: &["Cynosphere", "Nuckyz"],
         default_on: false,
         settings: &[
             Setting {
@@ -3326,6 +3409,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Share your current Spotify track, album or artist via slash command (/track, /album, /artist)",
         origin: Origin::Vencord,
         source: "src/plugins/spotifyShareCommands/index.ts",
+        authors: &["katlyn"],
         default_on: false,
         settings: &[],
     },
@@ -3335,6 +3419,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Sync your status to Steam! (Online, Away, Invisible, or Offline.)",
         origin: Origin::Equicord,
         source: "src/equicordplugins/steamStatusSync/index.tsx",
+        authors: &["niko"],
         default_on: false,
         settings: &[
             Setting {
@@ -3411,6 +3496,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Shows a streak next to a user when you exchange DMs with them on consecutive days.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/streaks/index.tsx",
+        authors: &["Moowi", "thororen"],
         default_on: false,
         settings: &[
             Setting {
@@ -3496,6 +3582,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Disable video codecs of your choice for streaming and cameras.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/streamingCodecDisabler/index.ts",
+        authors: &["davidkra230"],
         default_on: false,
         settings: &[
             Setting {
@@ -3536,6 +3623,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Customize the limit of Super Reactions playing at once, and super react by default",
         origin: Origin::Vencord,
         source: "src/plugins/superReactionTweaks/index.ts",
+        authors: &["Fiery", "ant0n"],
         default_on: false,
         settings: &[
             Setting {
@@ -3569,6 +3657,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Allows you to use Tenor or Giphy GIF search instead of Klipy",
         origin: Origin::Vencord,
         source: "src/plugins/gifProviderSwitcher/index.tsx",
+        authors: &["Lunascape", "V"],
         default_on: false,
         settings: &[Setting {
             key: "provider",
@@ -3590,6 +3679,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Vencord's translate plugin but with support for artistic languages!",
         origin: Origin::Equicord,
         source: "src/equicordplugins/translatePlus/index.tsx",
+        authors: &["V", "Prince527"],
         default_on: false,
         settings: &[
             Setting {
@@ -3627,6 +3717,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds an indicator if someone is typing on a channel.",
         origin: Origin::Vencord,
         source: "src/plugins/typingIndicator/index.tsx",
+        authors: &["Nuckyz", "fawn", "Sqaaakoi"],
         default_on: false,
         settings: &[
             Setting {
@@ -3674,6 +3765,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Show avatars and role colours in the typing indicator",
         origin: Origin::Vencord,
         source: "src/plugins/typingTweaks/index.tsx",
+        authors: &["zt", "sadan", "MrDiamond"],
         default_on: false,
         settings: &[
             Setting {
@@ -3708,6 +3800,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Lets the account switcher hold more than five accounts.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/unlimitedAccounts/index.ts",
+        authors: &["thororen"],
         default_on: false,
         settings: &[Setting {
             key: "maxAccounts",
@@ -3727,6 +3820,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Allows you to zoom in further in the image crop tool when changing your avatar",
         origin: Origin::Vencord,
         source: "src/plugins/unlockedAvatarZoom/index.ts",
+        authors: &["nakoyasha"],
         default_on: false,
         settings: &[Setting {
             key: "zoomMultiplier",
@@ -3746,6 +3840,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds pronouns to chat user messages",
         origin: Origin::Vencord,
         source: "src/plugins/userMessagesPronouns/index.ts",
+        authors: &["Tyman", "TheKodeToad", "V", "Elvyra"],
         default_on: false,
         settings: &[
             Setting {
@@ -3774,6 +3869,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Allows you to set local static or animated avatars for yourself and other users",
         origin: Origin::Equicord,
         source: "src/equicordplugins/userpfp/index.tsx",
+        authors: &["Nexpid", "thororen", "soap phia", "sketchmyname"],
         default_on: false,
         settings: &[
             Setting {
@@ -3808,6 +3904,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Displays user banners from USRBG, allowing anyone to get a banner without Nitro",
         origin: Origin::Vencord,
         source: "src/plugins/usrbg/index.tsx",
+        authors: &["AutumnVN", "katlyn", "pylix", "TheKodeToad"],
         default_on: false,
         settings: &[
             Setting {
@@ -3836,6 +3933,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Fixes \"Message could not be loaded\" upon hovering over the reply",
         origin: Origin::Vencord,
         source: "src/plugins/validReply/index.ts",
+        authors: &["newwares"],
         default_on: false,
         settings: &[],
     },
@@ -3845,6 +3943,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Fix mentions for unknown users showing up as '@unknown-user' (hover over a mention to fix it)",
         origin: Origin::Vencord,
         source: "src/plugins/validUser/index.tsx",
+        authors: &["V", "Dolfies"],
         default_on: false,
         settings: &[],
     },
@@ -3854,6 +3953,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Makes avatars and banners in user profiles clickable, adds View Icon/Banner/Avatar Decoration entries in the user, server and group channel context menu.",
         origin: Origin::Vencord,
         source: "src/plugins/viewIcons/index.tsx",
+        authors: &["V", "TheKodeToad", "Nuckyz", "verticalsync."],
         default_on: false,
         settings: &[
             Setting {
@@ -3893,6 +3993,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Adds a download to voice messages. (Opens a new browser tab)",
         origin: Origin::Vencord,
         source: "src/plugins/voiceDownload/index.tsx",
+        authors: &["puv"],
         default_on: false,
         settings: &[],
     },
@@ -3902,6 +4003,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Allows you to send voice messages like on mobile. To do so, right click the upload button and click Send Voice Message",
         origin: Origin::Vencord,
         source: "src/plugins/voiceMessages/index.tsx",
+        authors: &["V", "Vap0r1ze", "Nickyux"],
         default_on: false,
         settings: &[
             Setting {
@@ -3924,6 +4026,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "On-device transcriptions for voice messages powered by Whisper",
         origin: Origin::Equicord,
         source: "src/equicordplugins/voiceMessageTranscriber.desktop/index.tsx",
+        authors: &["sunnie", "_.tt"],
         default_on: false,
         settings: &[
             Setting {
@@ -3975,6 +4078,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Shows how long you've spent in voice with each user in their profile.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/voiceStats/index.tsx",
+        authors: &["Moowi"],
         default_on: false,
         settings: &[],
     },
@@ -3984,6 +4088,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Allows you to set the user and stream volume above the default maximum.",
         origin: Origin::Vencord,
         source: "src/plugins/volumeBooster/index.ts",
+        authors: &["Nuckyz", "sadan"],
         default_on: false,
         settings: &[Setting {
             key: "multiplier",
@@ -4003,6 +4108,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Renders the avatars of users who reacted to a message",
         origin: Origin::Vencord,
         source: "src/plugins/whoReacted/index.tsx",
+        authors: &["V", "Kanna", "newwares", "paige"],
         default_on: false,
         settings: &[Setting {
             key: "clickableAvatars",
@@ -4017,6 +4123,7 @@ pub(crate) const DEFS: &[Def] = &[
         description: "Previews ZIP contents inside file attachments.",
         origin: Origin::Equicord,
         source: "src/equicordplugins/zipPreview/index.tsx",
+        authors: &["justjxke"],
         default_on: false,
         settings: &[],
     },
@@ -4037,6 +4144,16 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn every_port_credits_the_authors_of_its_original() {
+        let uncredited: Vec<&str> = DEFS
+            .iter()
+            .filter(|def| def.authors.is_empty() || def.authors.iter().any(|name| name.is_empty()))
+            .map(|def| def.id)
+            .collect();
+        assert!(uncredited.is_empty(), "no authors: {uncredited:?}");
+    }
 
     #[test]
     fn ids_are_unique_and_listed_by_name() {

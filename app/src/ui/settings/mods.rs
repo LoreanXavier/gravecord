@@ -414,6 +414,14 @@ impl Root {
                             .line_height(px(16.))
                             .text_color(color("--text-muted"))
                             .child(format!("Based on {}'s {}", def.origin.name(), def.source)),
+                    )
+                    // Vencord's plugin modal names the original's authors; here they follow its source.
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-muted"))
+                            .child(format!("By {}", def.authors.join(", "))),
                     ),
             )
             .children(fold)
