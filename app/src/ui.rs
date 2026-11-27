@@ -14775,7 +14775,7 @@ impl Render for Root {
             .children(locale_error)
             .children(self.splash_layer(window, cx))
             // Last: ends the frame's record of where the web views' boxes were painted (`web_frames.rs`).
-            .child(self.web_frames.sweep());
+            .child(self.web_frames.sweep(cx.entity_id()));
         // Capture only: the display name style comparison sheet (`name-sheet` step).
         #[cfg(feature = "capture")]
         let element = element
@@ -15400,7 +15400,9 @@ impl Root {
                     .absolute()
                     .right(px(96.))
                     .bottom(px(74.))
-                    .child(card),
+                    .child(card)
+                    // A web view under the coachmark steps aside while it shows (`web_frames.rs`).
+                    .child(web_frames::layer_probe()),
             )
             .with_priority(3)
             .into_any_element(),

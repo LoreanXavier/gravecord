@@ -326,7 +326,7 @@ impl Root {
                     .text_color(color("--text-strong"))
             })
             .child(div().size(px(16.)).flex_none().child(leading))
-            .child(div().flex_1().child(label))
+            .child(div().flex_1().min_w(px(0.)).truncate().child(label))
             .children(trailing)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered && let Some(popout) = this.status_popout.as_mut() {

@@ -1723,6 +1723,8 @@ impl Root {
             gpui::deferred(
                 div()
                     .id("coupon-complete-backdrop")
+                    // A web view under the backdrop steps aside while it shows (`web_frames.rs`).
+                    .child(super::super::web_frames::layer_probe())
                     .absolute()
                     .inset_0()
                     .bg(rgba(0x000000b3))

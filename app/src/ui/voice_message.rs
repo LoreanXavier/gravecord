@@ -703,7 +703,12 @@ impl Root {
             // (`plugin_hooks/voice_message_transcriber.rs`).
             .children(super::plugin_hooks::transcriber_button(&key, &url, salt));
         match super::plugin_hooks::transcriber_embed(&key, salt) {
-            Some(embed) => div().flex().flex_col().child(pill).child(embed).into_any_element(),
+            Some(embed) => div()
+                .flex()
+                .flex_col()
+                .child(pill)
+                .child(embed)
+                .into_any_element(),
             None => pill.into_any_element(),
         }
     }
@@ -741,7 +746,12 @@ impl Root {
             .h(px(24.))
             .cursor_pointer()
             .when(fluid, |this| this.flex_1().min_w(px(0.)).ml(px(4.)))
-            .when(!fluid, |this| this.flex_none().w(px(fixed_width)));
+            // `.canvas_CNmkpo{flex:1;min-width:0}` with `style={{width}}` (module 408822): the pill's natural width
+            // takes the length's width, and in a column narrower than that only the waveform gives way, so the time,
+            // the rate pill and the volume button stay inside the pill.
+            .when(!fluid, |this| {
+                this.w(px(fixed_width)).flex_shrink(1.).min_w(px(0.))
+            });
         container
             .on_mouse_down(
                 MouseButton::Left,
@@ -758,12 +768,8 @@ impl Root {
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, window, _| {
-                        let width = if fluid {
-                            f32::from(bounds.size.width)
-                        } else {
-                            fixed_width
-                        };
-                        let bars = voice_wave::bar_count(width);
+                        // 408822 counts the bars from the canvas's measured width (`P`), fluid or not.
+                        let bars = voice_wave::bar_count(f32::from(bounds.size.width));
                         let values =
                             voice_wave::bars(waveform.as_deref().or(Some(&[0.; 5])), bars, fluid);
                         let lit = voice_wave::lit_bars(played, current, duration, bars);

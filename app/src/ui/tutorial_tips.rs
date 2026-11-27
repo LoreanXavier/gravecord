@@ -955,7 +955,8 @@ impl Root {
                 .anchor(corner)
                 .position(point(px(x + dx), px(y + dy)))
                 .snap_to_window_with_margin(px(8.))
-                .child(frame),
+                // A web view under the tip steps aside while it shows (`web_frames.rs`).
+                .child(frame.child(super::web_frames::layer_probe())),
         )
         .with_priority(1)
         .into_any_element()

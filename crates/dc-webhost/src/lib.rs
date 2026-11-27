@@ -155,6 +155,9 @@ pub enum HostEvent {
     Failed(String),
 }
 
+/// The newest picture a provider player took of its page (PNG), replaced by the next: [`WebHost::take_still`].
+type StillSlot = Arc<Mutex<Option<Vec<u8>>>>;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("the window has no Win32 handle")]
@@ -287,6 +290,7 @@ pub struct WebHost {
     events: Receiver<HostEvent>,
     waker: Arc<Waker>,
     shown: Arc<Mutex<Shown>>,
+    still: StillSlot,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -347,6 +351,64 @@ fn wait(_: &Waker, timeout: Duration) {
 
 /// How often the surface checks its owner window without being told to: a net under the owner's own events.
 const RECHECK: Duration = Duration::from_millis(250);
+/// How often a provider player on screen takes a picture of itself ([`WebHost::take_still`]).
+pub const STILL_EVERY: Duration = Duration::from_secs(2);
+
+/// Asks the view for a PNG of what it shows; the picture replaces the one in `slot` when WebView2 has made it (on this
+/// thread, from its message pump). Nothing changes when it cannot.
+#[cfg(windows)]
+fn capture_still(view: &WebView, slot: &StillSlot) {
+    use webview2_com::CapturePreviewCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
+    use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
+    use wry::WebViewExtWindows;
+    // SAFETY: COM calls on the thread that made the view; the stream lives until the handler has read it.
+    unsafe {
+        let Ok(core) = view.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(stream) = CreateStreamOnHGlobal(Default::default(), true) else {
+            return;
+        };
+        let read = stream.clone();
+        let slot = slot.clone();
+        let handler = CapturePreviewCompletedHandler::create(Box::new(move |result| {
+            if result.is_ok()
+                && let Some(png) = read_stream(&read)
+                && let Ok(mut newest) = slot.lock()
+            {
+                *newest = Some(png);
+            }
+            Ok(())
+        }));
+        let _ = core.CapturePreview(
+            COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+            &stream,
+            &handler,
+        );
+    }
+}
+
+/// All the bytes of a stream, from its start.
+#[cfg(windows)]
+fn read_stream(stream: &windows::Win32::System::Com::IStream) -> Option<Vec<u8>> {
+    use windows::Win32::System::Com::{STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET};
+    // SAFETY: reads of a stream this thread owns into a buffer of the size the stream reports.
+    unsafe {
+        let mut stat = STATSTG::default();
+        stream.Stat(&mut stat, STATFLAG_NONAME).ok()?;
+        let size = usize::try_from(stat.cbSize).ok().filter(|size| *size > 0)?;
+        stream.Seek(0, STREAM_SEEK_SET, None).ok()?;
+        let mut bytes = vec![0u8; size];
+        let mut read = 0u32;
+        stream
+            .Read(bytes.as_mut_ptr().cast(), size as u32, Some(&mut read))
+            .ok()
+            .ok()?;
+        bytes.truncate(read as usize);
+        Some(bytes)
+    }
+}
 
 #[cfg(windows)]
 mod owner_events {
@@ -709,8 +771,12 @@ fn run(
     page: Page,
     commands: Receiver<Command>,
     sender: Sender<HostEvent>,
-    (waker, shown): (Arc<Waker>, Arc<Mutex<Shown>>),
+    (waker, shown, still): (Arc<Waker>, Arc<Mutex<Shown>>, StillSlot),
 ) {
+    #[cfg(windows)]
+    let stills = matches!(page, Page::Url { .. });
+    #[cfg(not(windows))]
+    let _ = (&still, matches!(page, Page::Url { .. }));
     #[cfg(windows)]
     // SAFETY: once per thread, before any COM use.
     unsafe {
@@ -789,6 +855,9 @@ fn run(
     };
     let mut dirty = true;
     let mut checked = std::time::Instant::now();
+    // A provider player sends pictures of itself; the app's own pages (activities, captcha) do not.
+    #[cfg(windows)]
+    let mut still_at = stills.then(std::time::Instant::now);
     loop {
         if !pump() {
             return;
@@ -831,6 +900,15 @@ fn run(
             surface.apply(&view);
             dirty = false;
             checked = std::time::Instant::now();
+        }
+        #[cfg(windows)]
+        if let Some(at) = still_at.as_mut()
+            && at.elapsed() >= STILL_EVERY
+            && surface.view_visible
+            && surface.wanted
+        {
+            capture_still(&view, &still);
+            *at = std::time::Instant::now();
         }
         wait(&waker, RECHECK);
     }
@@ -906,11 +984,13 @@ impl WebHost {
         let (event_sender, events) = channel();
         let waker = Arc::new(Waker::new());
         let shown = Arc::new(Mutex::new(Shown::default()));
+        let still = StillSlot::default();
         let thread = std::thread::Builder::new()
             .name("dc-webhost".to_owned())
             .spawn({
                 let waker = waker.clone();
                 let shown = shown.clone();
+                let still = still.clone();
                 move || {
                     run(
                         parent,
@@ -919,7 +999,7 @@ impl WebHost {
                         page,
                         command_receiver,
                         event_sender,
-                        (waker, shown),
+                        (waker, shown, still),
                     )
                 }
             })
@@ -929,6 +1009,7 @@ impl WebHost {
             events,
             waker,
             shown,
+            still,
             thread: Some(thread),
         })
     }
@@ -979,6 +1060,12 @@ impl WebHost {
     /// What the surface's window last did.
     pub fn shown(&self) -> Shown {
         self.shown.lock().map(|shown| *shown).unwrap_or_default()
+    }
+
+    /// The newest picture a provider player took of its page while on screen (PNG), taken out of the slot; `None`
+    /// when none was taken since the last call. Only the newest is kept.
+    pub fn take_still(&self) -> Option<Vec<u8>> {
+        self.still.lock().ok()?.take()
     }
 }
 
