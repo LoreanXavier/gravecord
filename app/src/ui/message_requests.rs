@@ -2,8 +2,12 @@
 //! its Requests and Spam tabs, the rows with Accept DM / Ignore, and the preview panel of an opened request.
 //!
 //! Confirmed against captures: the header, the tabs and both empty states
-//! (`design/golden/windows/message-requests/*`). Everything with rows in it is built from the modules and CSS only,
-//! because a real request needs a stranger's message; it is unconfirmed until one is captured.
+//! (`design/golden/windows/message-requests/*`). The rows and the opened request are built from the modules and CSS:
+//! the row from 793706 with CSS `messageRequestItem_rRxPBT`, `container_OVKWNO`, `*_42Xsjf` and `*_nMe-a6`; the
+//! opened request is `tf` / `B`, the ordinary chat of the request channel (699344 with `chatInputType` SIDEBAR) under
+//! a DM header bar, in the resizable chat sidebar of module 812771. That sidebar is the channel browser's preview
+//! (`channel-browser-preview/pt*` captures), so the frame follows that port. No capture of a page with a request
+//! exists yet: the clean capture client must be signed in again first.
 use super::dm::{Tone, small_button};
 use super::motion::{self, Transitions as _};
 use super::{Root, avatar_source, color, icon};
@@ -54,9 +58,39 @@ pub(super) struct State {
     pub hovered: Option<Id>,
     pub busy: HashMap<Id, Busy>,
     pub scroll: ScrollHandle,
-    pub sidebar_scroll: ScrollHandle,
     /// Channels whose previews were asked for and have not come back.
     pub loading: HashSet<Id>,
+    /// The panel's width once dragged (`messageRequestSidebarWidth`, read from storage at first use).
+    pub width: Option<f32>,
+    /// Pointer x and panel width when a drag of the resize handle began.
+    pub resize_from: Option<(f32, f32)>,
+}
+
+/// Module 812771's minimum width.
+const PANEL_MIN: f32 = 450.;
+/// `--chat-resize-handle-width`.
+const RESIZE_HANDLE: f32 = 8.;
+
+/// 812771 with `maxWidth: pageWidth - 650` (`tf` of 793706): the width the panel takes and whether it floats over the
+/// list (743898 `P`: `maxWidth <= minWidth`). The stored width is raised to the minimum, then `clamp(w, 450, max)`,
+/// which, as lodash's, takes the upper bound first, so a floating panel is always 450.
+pub(super) fn panel_layout(page_width: f32, stored: Option<f32>) -> (f32, bool) {
+    let max = page_width - 650.;
+    let wanted = stored.unwrap_or(PANEL_MIN).max(PANEL_MIN);
+    (wanted.min(max).max(PANEL_MIN), max <= PANEL_MIN)
+}
+
+/// Which rows of the list draw their top border (`messageRequestItem_rRxPBT:not(.firstItem)`): not the first, and not
+/// one whose own box or whose previous row is hovered (`:hover`, `:hover + .messageRequestItem`). The selected row
+/// (`selected_nMe-a6`) keeps its border; `siblingSelected` only drops a bottom border these rows do not have.
+pub(super) fn row_has_border(index: usize, hovered: Option<usize>) -> bool {
+    index > 0 && hovered != Some(index) && hovered != Some(index - 1)
+}
+
+/// The resting second line of a row (`tt`): "No Mutual Servers" alone is one 18px line; the icons' row
+/// (`mutualGuildsContainer_42Xsjf`) adds 4px above. The hover line rolls by 107% of this.
+fn roll_height(has_mutual: bool) -> f32 {
+    if has_mutual { 22. } else { 18. }
 }
 
 // ---- the calls the official sends (module 966107) ----
@@ -143,20 +177,19 @@ fn placeholder(message: &dc_state::Message) -> Option<&'static str> {
     }
 }
 
-/// The height the roll moves by: one line of the row's second line (the mutual-servers line, 16px icons plus 4px).
-const ROLL_HEIGHT: f32 = 20.;
-
 /// The motion key of one row's roll.
 fn roll_key(channel: Id) -> u64 {
     channel ^ 0x6d72_726f_6c6c_0000
 }
 
 impl Root {
-    /// The page is the Home content while its flag is set and no other Home page took the content area.
+    /// The page is the Home content while its flag is set and no other Home page took the content area. The open
+    /// request's channel is the selected one while its panel shows (as the channel browser's preview), and the page
+    /// stays the content.
     pub(super) fn message_requests_active(&self) -> bool {
         self.message_requests.open
             && self.guild.is_none()
-            && self.channel.is_none()
+            && (self.channel.is_none() || self.channel == self.message_requests.sidebar)
             && !self.nitro_open
             && !self.discover.open
             && !self.shop.open
@@ -197,6 +230,40 @@ impl Root {
         self.message_requests.sidebar = None;
         self.rebuild_rows();
         self.request_images();
+        cx.notify();
+    }
+
+    /// `openPrivateChannelAsSidebar` (`ta` / `th` of 793706): the request's chat opens in the panel. Its channel is
+    /// the one the chat list, the welcome and the composer read, while the page keeps the content area.
+    fn mr_open_panel(&mut self, channel: Id, cx: &mut Context<Self>) {
+        self.message_requests.sidebar = Some(channel);
+        self.channel = Some(channel);
+        self.unread_from = None;
+        self.menu = None;
+        self.submenu = None;
+        self.open_channel_messages(channel);
+        // The welcome's mutual servers come from the other person's profile, as for any DM.
+        let recipient = self
+            .current_dm()
+            .and_then(|dm| self.stores.dm_recipient(dm))
+            .map(|user| user.id);
+        if let Some(user) = recipient {
+            let route = self.dm_profile_route(user);
+            self.fetch_user_profile(user, route);
+        }
+        self.rebuild_rows();
+        self.request_images();
+        cx.notify();
+    }
+
+    /// `closeChannelSidebar`: the panel goes and nothing is selected again.
+    pub(super) fn mr_close_panel(&mut self, cx: &mut Context<Self>) {
+        let open = self.message_requests.sidebar.take();
+        self.message_requests.resize_from = None;
+        if open.is_some() && self.channel == open {
+            self.channel = None;
+            self.rebuild_rows();
+        }
         cx.notify();
     }
 
@@ -305,13 +372,14 @@ impl Root {
                     // `MESSAGE_REQUEST_ACCEPT_OPTIMISTIC`, then `onAcceptSuccess`: the panel closes and, when this was
                     // the only request, the channel opens.
                     let single = self.stores.message_requests_count() == 1;
+                    let spam = self.stores.is_spam_request(channel);
                     self.stores.message_request_accept_optimistic(channel);
-                    self.message_requests.sidebar = None;
-                    if single && !self.stores.is_spam_request(channel) {
+                    self.mr_close_panel(cx);
+                    if single && !spam {
                         self.select_home(Some(channel));
                     }
                 } else if ok {
-                    self.message_requests.sidebar = None;
+                    self.mr_close_panel(cx);
                 } else if !refused {
                     // `EDYbS+`.
                     self.put_app_toast(
@@ -391,9 +459,12 @@ impl Root {
 
     // ---- the page ----
 
+    /// `tb`: the page (header and list), and beside it, over the page's whole height, the opened request (`tf`).
+    /// `messages` is the chat list of the selected channel, which is the open request's while the panel shows.
     pub(super) fn message_requests_page(
         &mut self,
         window: &mut Window,
+        messages: AnyElement,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.mr_load();
@@ -401,37 +472,96 @@ impl Root {
         let sidebar = self
             .message_requests
             .sidebar
+            .filter(|id| self.channel == Some(*id))
             .filter(|id| self.stores.is_message_request(*id) || self.stores.is_spam_request(*id));
         let body = if ids.is_empty() {
             self.mr_empty()
         } else {
             self.mr_list(&ids, cx)
         };
-        let _ = window;
+        // `p.A` hands `tb` the width of the content area.
+        let page_width = f32::from(window.viewport_size().width) - self.combined_sidebar_width();
+        let stored = self.message_requests.width.or_else(|| {
+            crate::storage::get("messageRequestSidebarWidth")
+                .and_then(|value| value.as_f64())
+                .map(|width| width as f32)
+        });
+        let (width, floating) = panel_layout(page_width, stored);
+        let page = div().flex_1().min_w(px(0.)).h_full().pt(px(1.)).child(
+            div()
+                .relative()
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(color("--background-base-lower"))
+                .child(self.mr_header(cx))
+                .child(div().flex_1().min_h(px(0.)).w_full().relative().child(body)),
+        );
+        let panel = sidebar.map(|id| self.mr_sidebar(id, messages, width, floating, cx));
         div()
+            .relative()
             .flex_1()
             .min_w(px(0.))
             .h_full()
-            .pt(px(1.))
-            .child(
-                div()
-                    .relative()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .bg(color("--background-base-lower"))
-                    .child(self.mr_header(cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h(px(0.))
-                            .w_full()
-                            .flex()
-                            .child(div().relative().flex_1().min_w(px(0.)).h_full().child(body))
-                            .children(sidebar.map(|id| self.mr_sidebar(id, cx))),
-                    ),
+            .flex()
+            .child(page)
+            .when_some(panel, |this, panel| {
+                if floating {
+                    // `floating_FrbQJp`: over the list at the right edge, the drag handle off.
+                    this.child(div().absolute().top_0().right_0().bottom_0().child(panel))
+                } else {
+                    // The reserved space (`minWidth: width + handle`), the 8px handle, then the panel.
+                    this.child(self.mr_resize_handle(width, cx)).child(panel)
+                }
+            })
+            .into_any_element()
+    }
+
+    /// `resizeHandle_FrbQJp`: dragging left widens the panel up to the page's width less 650.
+    fn mr_resize_handle(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("mr-panel-resize")
+            .w(px(RESIZE_HANDLE))
+            .h_full()
+            .flex_none()
+            .cursor_ew_resize()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.message_requests.resize_from = Some((f32::from(event.position.x), width));
+                    cx.stop_propagation();
+                }),
             )
             .into_any_element()
+    }
+
+    pub(super) fn mr_move_resize(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.message_requests_active() || !event.dragging() {
+            return;
+        }
+        let Some((start_x, start_width)) = self.message_requests.resize_from else {
+            return;
+        };
+        let page_width = f32::from(window.viewport_size().width) - self.combined_sidebar_width();
+        let wanted = start_width + start_x - f32::from(event.position.x);
+        let (width, _) = panel_layout(page_width, Some(wanted));
+        self.message_requests.width = Some(width);
+        cx.notify();
+    }
+
+    /// The drag's end saves the width (`updatedUnsyncedSettings`).
+    pub(super) fn mr_end_resize(&mut self) {
+        if self.message_requests.resize_from.take().is_some()
+            && let Some(width) = self.message_requests.width
+            && !crate::storage::settings_writes_blocked()
+        {
+            crate::storage::set("messageRequestSidebarWidth", serde_json::json!(width));
+        }
     }
 
     /// The same header as the Friends page: 49px, icon 22px in, title 6px after it, a 4px dot, the tabs.
@@ -465,9 +595,9 @@ impl Root {
                         })
                 })
                 .rule(motion::Rule::TabItem)
+                // `onItemSelect` of `tb` only changes the section: an opened request stays open.
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.message_requests.tab = which;
-                    this.message_requests.sidebar = None;
                     cx.notify();
                 }))
                 .child(label)
@@ -554,7 +684,10 @@ impl Root {
         let spam = self.message_requests.tab == Tab::Spam;
         let count = ids.len();
         let staff = self.mr_is_staff();
-        let focused = self.message_requests.sidebar;
+        let hovered = self
+            .message_requests
+            .hovered
+            .and_then(|hovered| ids.iter().position(|id| *id == hovered));
         let rows: Vec<AnyElement> = ids
             .iter()
             .enumerate()
@@ -565,8 +698,7 @@ impl Root {
                     .iter()
                     .find(|known| known.id == *id)?
                     .clone();
-                let sibling_of_focus = index > 0 && focused == Some(ids[index - 1]);
-                Some(self.mr_row(&channel, index, spam, sibling_of_focus, cx))
+                Some(self.mr_row(&channel, index, spam, row_has_border(index, hovered), cx))
             })
             .collect();
         let scroll = self.message_requests.scroll.clone();
@@ -619,19 +751,22 @@ impl Root {
             .into_any_element()
     }
 
-    /// One request: `.messageRequestItem` (16px 10px, a 1px top border except on the first, hover and the open one on
-    /// `--interactive-background-hover` with 8px corners) holding `container_OVKWNO` (the person, the buttons).
+    /// One request (`ek` holding `ti`, or `tu` on the Spam tab): `messageRequestItem_rRxPBT` (16px 10px,
+    /// `body-md/medium`), on `--interactive-background-hover` with 8px corners while hovered, and on
+    /// `--interactive-background-selected` (`selected_nMe-a6`) while its chat is open. Inside, `container_OVKWNO`
+    /// (centred, spread): the 40px avatar 12px before the person (`userPreview_42Xsjf`: as wide as its content, at
+    /// least a quarter of the row, 16px before the buttons), then the buttons at the end.
     fn mr_row(
         &self,
         channel: &PrivateChannel,
         index: usize,
         spam: bool,
-        after_focus: bool,
+        border: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = channel.id;
         let user: Option<User> = self.stores.dm_recipient(channel).cloned();
-        let active = self.message_requests.sidebar == Some(id);
+        let selected = self.message_requests.sidebar == Some(id) && self.channel == Some(id);
         let hovered = self.message_requests.hovered == Some(id);
         let busy =
             self.message_requests.busy.contains_key(&id) || self.stores.is_accepted_optimistic(id);
@@ -639,9 +774,12 @@ impl Root {
             || "Unknown User".to_owned(),
             |user| self.dm_display_name(user),
         );
+        // `DiscordTag` with `showAccountIdentifier` (297413): the username follows, 5px on (`infoSpacing_PTA1Mz`), in
+        // `--text-muted` (`globalName_42Xsjf`) for a person with a global name; without one its class is
+        // `discriminator_42Xsjf`, `display: none`.
         let secondary = user
             .as_ref()
-            .filter(|user| user.global_name.is_some() || self.nickname_for(user.id).is_some())
+            .filter(|user| user.global_name.is_some())
             .map(|user| user.username.clone());
         let avatar = user.as_ref().and_then(|user| {
             let (key, url) = avatar_source(user);
@@ -667,61 +805,69 @@ impl Root {
         let age = then_ms
             .map(|then| age_label(now_ms, then))
             .unwrap_or_default();
-        // `e2`: the error line, the deleted-last-message line, or the message itself (`BZHld2`, `0KfDxM`).
-        let hover_text = if preview.error {
-            "Error loading message preview.".to_owned()
+        // `e2`: the error line, the deleted-last-message line or a placeholder, in italics (`messageReplacement_c3PP-T`),
+        // or the message itself (`messageContent_c3PP-T`); all at 16px on 18px lines, `--text-muted`, one line.
+        let (hover_text, replacement) = if preview.error {
+            ("Error loading message preview.".to_owned(), true)
         } else if !preview.loaded {
-            String::new()
+            (String::new(), false)
         } else {
             match preview.message.as_ref() {
                 Some(message) => match placeholder(message) {
-                    Some(line) => line.to_owned(),
-                    None => message.content.replace('\n', " "),
+                    Some(line) => (line.to_owned(), true),
+                    None => (message.content.replace('\n', " "), false),
                 },
-                None => "The last message was deleted.".to_owned(),
+                None => ("The last message was deleted.".to_owned(), true),
             }
         };
-        let mutual = user.as_ref().map(|user| self.mr_mutual(user.id));
-        let line = |tint: &'static str| {
-            div()
-                .text_size(px(14.))
-                .line_height(px(18.))
-                .font_weight(FontWeight(400.))
-                .text_color(color(tint))
+        let (mutual, has_mutual) = match user.as_ref() {
+            Some(user) => self.mr_mutual(user.id),
+            None => (div().into_any_element(), false),
         };
-        // `hoverRoll_Dq3ch1` (module 433664, CSS 564447): the resting line leaves up (opacity 0, translate3d(0,-107%,0))
-        // while the hover line comes from below (translate3d(0,107%,0) to 0, opacity 1), `transition: all .22s ease`.
-        // Rows keep it forced on while hovered or open (`forceHover`).
+        let height = roll_height(has_mutual);
+        // `hoverRoll_Dq3ch1` (module 29160, CSS 433664): the resting line leaves up (translate3d(0,-107%,0), opacity 0)
+        // while the hover line comes up from below, `transition: all .22s ease`. `ek` hands the row's own hover in as
+        // `forceHover`; an open row does not keep it.
         let roll = crate::ui::motion::value(
             roll_key(id),
-            if hovered || active { 1. } else { 0. },
+            if hovered { 1. } else { 0. },
             crate::ui::motion::css(220., crate::ui::motion::Ease::Ease),
         );
         let second_line = div()
             .relative()
+            .flex()
+            .flex_col()
+            .h(px(height))
             .overflow_hidden()
-            .w_full()
             .child(
                 div()
                     .relative()
-                    .top(px(-ROLL_HEIGHT * 1.07 * roll))
+                    .top(px(-height * 1.07 * roll))
                     .opacity(1. - roll)
-                    .child(mutual.unwrap_or_else(|| div().h(px(ROLL_HEIGHT)).into_any_element())),
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(mutual),
             )
             .child(
-                line("--text-muted")
+                div()
                     .absolute()
                     .left_0()
-                    .w_full()
-                    .top(px(ROLL_HEIGHT * 1.07 * (1. - roll)))
+                    .right_0()
+                    .h(px(height))
+                    .top(px(height * 1.07 * (1. - roll)))
                     .opacity(roll)
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
+                    .text_size(px(16.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(400.))
+                    .text_color(color("--text-muted"))
+                    .when(replacement, |this| this.italic())
                     .child(hover_text),
-            )
-            .into_any_element();
+            );
         let buttons = if spam {
+            // `tu`: Accept DM as a secondary button, then Report Spam (`to`) while the message is known.
             div()
                 .flex()
                 .gap(px(8.))
@@ -735,17 +881,22 @@ impl Root {
                         }),
                     ),
                 )
-                .child(
-                    // `to`: Report Spam, only while the message is known (it reports that message).
-                    small_button(
-                        "mr-report",
-                        "Report Spam",
-                        Tone::CriticalPrimary,
-                        preview.message.is_some(),
-                    )
-                    .on_click(cx.listener(move |_, _, _, cx| cx.stop_propagation())),
+                .when(
+                    preview.message.is_some() || !(preview.loaded || preview.error),
+                    |this| {
+                        this.child(
+                            small_button(
+                                "mr-report",
+                                "Report Spam",
+                                Tone::CriticalPrimary,
+                                preview.message.is_some(),
+                            )
+                            .on_click(cx.listener(move |_, _, _, cx| cx.stop_propagation())),
+                        )
+                    },
                 )
         } else {
+            // `actions_OVKWNO`: Ignore, 16px (`button_OVKWNO:not(:last-child)`), Accept DM.
             div()
                 .flex()
                 .flex_none()
@@ -779,13 +930,18 @@ impl Root {
             .text_size(px(16.))
             .line_height(px(20.))
             .font_weight(FontWeight(500.))
-            .when(index > 0 && !hovered && !active && !after_focus, |this| {
-                this.border_t_1().border_color(color("--border-subtle"))
+            .when(index > 0, |this| {
+                this.border_t_1().border_color(if border {
+                    color("--border-subtle")
+                } else {
+                    gpui::transparent_black().into()
+                })
             })
-            .when(index > 0 && (hovered || active || after_focus), |this| {
-                this.border_t_1().border_color(gpui::transparent_black())
+            .when(selected && !hovered, |this| {
+                this.bg(color("--interactive-background-selected"))
+                    .rounded(px(8.))
             })
-            .when(hovered || active, |this| {
+            .when(hovered, |this| {
                 this.bg(color("--interactive-background-hover"))
                     .rounded(px(8.))
             })
@@ -797,11 +953,7 @@ impl Root {
                 }
                 cx.notify();
             }))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.message_requests.sidebar = Some(id);
-                let _ = this.requests.send(Request::LoadMessages { channel: id });
-                cx.notify();
-            }))
+            .on_click(cx.listener(move |this, _, _, cx| this.mr_open_panel(id, cx)))
             .child(
                 div()
                     .flex()
@@ -810,72 +962,74 @@ impl Root {
                     .w_full()
                     .child(
                         div()
+                            .flex_none()
+                            .mr(px(12.))
+                            .size(px(40.))
+                            .when(loading_avatar, |this| {
+                                this.rounded_full().bg(color("--background-mod-subtle"))
+                            })
+                            .children(
+                                avatar.map(|avatar| img(avatar).size(px(40.)).rounded_full()),
+                            ),
+                    )
+                    .child(
+                        div()
                             .flex()
-                            .flex_1()
-                            .min_w(px(0.))
+                            .flex_col()
+                            .mr(px(16.))
+                            .min_w(gpui::relative(0.25))
+                            .overflow_hidden()
                             .child(
-                                div()
-                                    .flex_none()
-                                    .mr(px(12.))
-                                    .size(px(40.))
-                                    .when(loading_avatar, |this| {
-                                        this.rounded_full().bg(color("--background-mod-subtle"))
-                                    })
-                                    .children(
-                                        avatar
-                                            .map(|avatar| img(avatar).size(px(40.)).rounded_full()),
-                                    ),
-                            )
-                            .child(
+                                // `userContainerWithPreview_42Xsjf`: the name and the age, centred, 8px apart.
                                 div()
                                     .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .mr(px(16.))
-                                    .min_w(px(0.))
-                                    .overflow_hidden()
+                                    .items_center()
+                                    .gap(px(8.))
                                     .child(
+                                        // `info_PTA1Mz tagContainer_42Xsjf`.
                                         div()
                                             .flex()
-                                            .items_center()
-                                            .gap(px(8.))
+                                            .items_end()
+                                            .mt(px(2.))
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
                                             .child(
                                                 div()
-                                                    .flex()
-                                                    .items_end()
-                                                    .mt(px(2.))
-                                                    .child(
-                                                        div()
-                                                            .font_weight(FontWeight(600.))
-                                                            .text_color(color("--text-strong"))
-                                                            .child(name),
-                                                    )
-                                                    .children(secondary.map(|secondary| {
-                                                        div()
-                                                            .ml(px(5.))
-                                                            .text_color(color("--text-muted"))
-                                                            .child(secondary)
-                                                    })),
+                                                    .flex_none()
+                                                    .font_weight(FontWeight(600.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(name),
                                             )
-                                            .child(
+                                            .children(secondary.map(|secondary| {
                                                 div()
-                                                    .text_size(px(12.))
-                                                    .line_height(px(16.))
-                                                    .font_weight(FontWeight(400.))
+                                                    .ml(px(5.))
                                                     .text_color(color("--text-muted"))
-                                                    .child(age),
-                                            ),
+                                                    .child(secondary)
+                                            })),
                                     )
-                                    .child(div().pt(px(4.)).child(second_line)),
-                            ),
+                                    .child(
+                                        // `timestampWithPreview_42Xsjf`, `body-xs/normal`.
+                                        div()
+                                            .whitespace_nowrap()
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .font_weight(FontWeight(400.))
+                                            .text_color(color("--text-muted"))
+                                            .child(age),
+                                    ),
+                            )
+                            .child(second_line),
                     )
                     .child(buttons),
             )
             .into_any_element()
     }
 
-    /// `tt`: the guilds' icons (16px, 3 at most, overlapping by 3px) and "N Mutual Servers", or "No Mutual Servers".
-    fn mr_mutual(&self, user: Id) -> AnyElement {
+    /// `tt`: the guilds' icons (16px, 3 at most, overlapping by 3px) and "N Mutual Servers" on a 4px-padded row
+    /// (`mutualGuildsContainer_42Xsjf`), or "No Mutual Servers" alone; `body-sm/normal`, `--text-muted`. The flag says
+    /// which, for the roll's height.
+    fn mr_mutual(&self, user: Id) -> (AnyElement, bool) {
         let guilds: Vec<Id> = self
             .fetched
             .get(&format!("profile:{user}"))
@@ -896,13 +1050,17 @@ impl Root {
         };
         if guilds.is_empty() {
             // `jpY0X5`.
-            return text("No Mutual Servers".to_owned()).into_any_element();
+            return (
+                text("No Mutual Servers".to_owned()).into_any_element(),
+                false,
+            );
         }
         let count = guilds.len();
-        div()
+        let row = div()
             .flex()
             .items_center()
             .gap(px(4.))
+            .pt(px(4.))
             .child(
                 div()
                     .flex()
@@ -924,114 +1082,152 @@ impl Root {
                 "1 Mutual Server".to_owned()
             } else {
                 format!("{count} Mutual Servers")
-            }))
-            .into_any_element()
+            }));
+        (row.into_any_element(), true)
     }
 
     // ---- the opened request ----
 
-    /// The preview panel (`tf`, `B` in 793706): a 450px column on the right with its header (the person and a close
-    /// button), the spam banner, and the DM start with the buttons the request offers (`aE` in 891522).
-    fn mr_sidebar(&self, channel: Id, cx: &mut Context<Self>) -> AnyElement {
+    /// The width the opened request's chat lays its messages out in.
+    pub(super) fn mr_panel_width(&self, viewport_width: f32) -> f32 {
+        let stored = self.message_requests.width.or_else(|| {
+            crate::storage::get("messageRequestSidebarWidth")
+                .and_then(|value| value.as_f64())
+                .map(|width| width as f32)
+        });
+        panel_layout(viewport_width - self.combined_sidebar_width(), stored).0
+    }
+
+    /// The opened request (`tf` / `B` of 793706): module 812771's frame (`container_FrbQJp`, drawn as the channel
+    /// browser's preview draws it, with `floating_FrbQJp`'s border and shadow over the list), the DM header bar whose
+    /// toolbar is only Close (`zF` with `inSidebar` gives 849205: the 20px avatar with its status, 8px, the name), the
+    /// spam banner, then the request's own chat (699344): the chat list of the selected channel, whose welcome carries
+    /// Accept DM, Ignore and Report Spam (`aE` of 891522), and the composer.
+    fn mr_sidebar(
+        &self,
+        channel: Id,
+        messages: AnyElement,
+        width: f32,
+        floating: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let spam = self.stores.is_spam_request(channel);
-        let known = self
-            .stores
-            .private_channels
-            .iter()
-            .find(|c| c.id == channel);
-        let user = known
-            .and_then(|known| self.stores.dm_recipient(known))
+        let user = self
+            .current_dm()
+            .and_then(|dm| self.stores.dm_recipient(dm))
             .cloned();
         let name = user.as_ref().map_or_else(
             || "Unknown User".to_owned(),
             |user| self.dm_display_name(user),
         );
-        let avatar = user.as_ref().and_then(|user| {
-            let (key, url) = avatar_source(user);
-            let image = self.images.get(&key).cloned();
-            if image.is_none() {
-                self.want_image(key, url, cx);
-            }
-            image
-        });
-        let loading_avatar = avatar.is_none();
         let busy = self.message_requests.busy.contains_key(&channel)
             || self.stores.is_accepted_optimistic(channel);
-        let preview = self.stores.message_request_preview(channel);
-        let messages: Vec<dc_state::Message> = self
-            .stores
-            .messages
-            .get(&channel)
-            .map(|list| list.to_vec())
-            .unwrap_or_default();
-        let empty = self.stores.window(channel).ready && messages.is_empty();
-        let mut buttons = div().flex().gap(px(8.)).mt(px(16.));
-        buttons = buttons
+        let close = div()
+            .id("mr-panel-close")
+            .group("mr-panel-close")
+            .size(px(32.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
             .child(
-                small_button("mr-side-accept", "Accept DM", Tone::Primary, !busy)
-                    .on_click(cx.listener(move |this, _, _, cx| this.mr_accept(channel, cx))),
-            )
-            .when(!spam, |this| {
+                gpui::svg()
+                    .path("icons/ob_x.svg")
+                    .size(px(20.))
+                    .text_color(color("--text-muted"))
+                    .group_hover("mr-panel-close", |style| {
+                        style.text_color(color("--interactive-text-default"))
+                    }),
+            );
+        let header = div()
+            .parity_below("message-request-panel-header", 1.)
+            .h(px(49.))
+            .flex_none()
+            .pl(px(16.))
+            .pr(px(8.))
+            .border_b_1()
+            .border_color(color("--border-subtle"))
+            .flex()
+            .items_center()
+            .when_some(user.clone(), |this, user| {
+                // `avatar_z_gUBg`: 20px with the status cut into its corner, 8px before the title; the hidden
+                // "Direct Message" prefix before it takes 1px.
+                let presence = self.stores.status(user.id).to_owned();
+                let (key, url) = avatar_source(&user);
+                let picture = self.images.get(&key).cloned();
+                if picture.is_none() {
+                    self.want_image(key, url, cx);
+                }
                 this.child(
-                    small_button("mr-side-ignore", "Ignore", Tone::Secondary, !busy)
-                        .on_click(cx.listener(move |this, _, _, cx| this.mr_reject(channel, cx))),
+                    div()
+                        .ml(px(1.))
+                        .relative()
+                        .size(px(20.))
+                        .flex_none()
+                        .children(picture.map(|picture| img(picture).size(px(20.)).rounded_full()))
+                        .child(super::status_dot_small(
+                            &presence,
+                            "--background-base-lower",
+                        )),
                 )
             })
-            .when(preview.message.is_some(), |this| {
-                this.child(small_button(
-                    "mr-side-report",
-                    "Report Spam",
-                    Tone::CriticalPrimary,
-                    true,
-                ))
-            });
-        let scroll = self.message_requests.sidebar_scroll.clone();
-        div()
-            .id("mr-sidebar")
-            .flex_none()
-            .w(px(450.))
-            .max_w(gpui::relative(0.5))
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(color("--background-base-lower"))
-            .border_l_1()
-            .border_color(color("--background-mod-subtle"))
             .child(
                 div()
-                    .flex_none()
-                    .h(px(49.))
-                    .pl(px(16.))
-                    .pr(px(8.))
-                    .flex()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(color("--background-mod-subtle"))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child(name.clone()),
-                    )
-                    .child(
-                        div()
-                            .id("mr-side-close")
-                            .size(px(32.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.message_requests.sidebar = None;
-                                cx.notify();
-                            }))
-                            // `cpT0Cq`: Close.
-                            .child(icon("close", 20., "--interactive-icon-default")),
-                    ),
+                    .ml(px(8.))
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child(name),
             )
+            .child(div().flex_1())
+            .child(
+                // `toolbar_ybUK7Z`: 8px in, then Close (`cpT0Cq`).
+                div().pl(px(8.)).child(
+                    self.with_tip(
+                        "mr-panel-close",
+                        super::tooltip::Tip::text("Close", super::tooltip::Side::Bottom),
+                        close,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.mr_close_panel(cx))),
+                ),
+            );
+        div()
+            .parity("message-request-panel")
+            .id("mr-sidebar")
+            .w(px(width))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .rounded_tl(px(12.))
+            .border_t_1()
+            .border_l_1()
+            .border_r_1()
+            .border_color(color(if floating {
+                "--background-base-lower"
+            } else {
+                "--border-subtle"
+            }))
+            .bg(color("--background-base-lower"))
+            .when(floating, |this| {
+                // `floating_FrbQJp`: `box-shadow: 0 8px 40px var(--opacity-black-52)`.
+                this.shadow(vec![gpui::BoxShadow {
+                    color: color("--opacity-black-52").into(),
+                    offset: gpui::point(px(0.), px(8.)),
+                    blur_radius: px(40.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+            })
+            .child(header)
             .when(spam, |this| {
                 // `hamBanner_aVwxbe`: 10px 16px on `--background-mod-normal`, text and a 12px-in button.
                 this.child(
@@ -1070,76 +1266,14 @@ impl Root {
             })
             .child(
                 div()
-                    .id("mr-side-body")
+                    .parity("message-request-panel-messages")
+                    .relative()
                     .flex_1()
                     .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .track_scroll(&scroll)
-                    .px(px(16.))
-                    .pt(px(16.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .size(px(80.))
-                                    .when(loading_avatar, |this| {
-                                        this.rounded_full().bg(color("--background-mod-subtle"))
-                                    })
-                                    .children(
-                                        avatar
-                                            .map(|avatar| img(avatar).size(px(80.)).rounded_full()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .mt(px(8.))
-                                    .text_size(px(32.))
-                                    .line_height(px(40.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(color("--text-strong"))
-                                    .child(name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(16.))
-                                    .line_height(px(20.))
-                                    .text_color(color("--text-muted"))
-                                    // `Qvg+6+`.
-                                    .child(format!(
-                                        "This is the beginning of your direct message history with {name}."
-                                    )),
-                            )
-                            .child(buttons),
-                    )
-                    .children(messages.iter().map(|message| {
-                        div()
-                            .mt(px(16.))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--text-strong"))
-                                    .child(message.author.display_name().to_owned()),
-                            )
-                            .child(
-                                div()
-                                    .text_color(color("--text-default"))
-                                    .child(message.content.clone()),
-                            )
-                    }))
-                    .when(empty, |this| {
-                        // `eeJvfA`.
-                        this.child(
-                            div()
-                                .mt(px(16.))
-                                .text_color(color("--text-muted"))
-                                .child("This DM is empty \u{1f997}"),
-                        )
-                    }),
+                    .child(messages)
+                    .children(self.new_messages_bar(cx)),
             )
+            .child(self.composer_bar(cx).into_any_element())
             .into_any_element()
     }
 }
@@ -1171,38 +1305,62 @@ mod fixture {
         base + index as u64
     }
 
-    /// `CHANNEL_CREATE` for the `index`-th request: `is_message_request`, `is_spam` and the request time, with the
-    /// stranger in `recipients`.
-    pub fn channel(index: usize, spam: bool, now_ms: u64) -> (Value, Value) {
+    /// More of what each person says after the first line, so the opened chat has a group to draw.
+    const FOLLOW_UPS: [&str; 3] = [
+        "no rush btw",
+        "I can send the details here if that works for you",
+        "anyway, have a good one",
+    ];
+
+    /// `CHANNEL_CREATE` for the `index`-th request (`is_message_request`, `is_spam` and the request time, with the
+    /// stranger in `recipients`) and its messages, oldest first: for a request, three a minute apart (one group) and
+    /// a fourth 15 minutes on (a new group); for spam, one.
+    pub fn channel(index: usize, spam: bool, now_ms: u64) -> (Value, Vec<Value>) {
         let (display, handle) = NAMES[index % NAMES.len()];
         let user = fake(9_100_000_000_000_000_000, index + usize::from(spam) * 100);
-        let channel = dc_state::read_state::snowflake_at(
-            now_ms - (index as u64 + 1) * 7 * 60_000 - u64::from(spam) * 90_000,
-        );
-        let message_id =
-            dc_state::read_state::snowflake_at(now_ms - (index as u64 + 1) * 7 * 60_000 + 30_000);
-        let text = if spam {
-            "FREE NITRO for the first 100 people, claim it at example.invalid/claim".to_owned()
-        } else {
-            SAYS[index % SAYS.len()].to_owned()
+        let base = now_ms - (index as u64 + 1) * 25 * 60_000 - u64::from(spam) * 90_000;
+        let channel = dc_state::read_state::snowflake_at(base);
+        let stamp_at = |ms: u64| {
+            chrono::DateTime::from_timestamp_millis(ms as i64)
+                .map(|time| time.to_rfc3339())
+                .unwrap_or_default()
         };
-        let stamp = chrono::DateTime::from_timestamp_millis(
-            (now_ms - (index as u64 + 1) * 7 * 60_000) as i64,
-        )
-        .map(|time| time.to_rfc3339())
-        .unwrap_or_default();
         let author = json!({"id": user.to_string(), "username": handle, "global_name": display,
             "avatar": null, "discriminator": "0"});
+        let said: Vec<(u64, String)> = if spam {
+            vec![(
+                30_000,
+                "FREE NITRO for the first 100 people, claim it at example.invalid/claim".to_owned(),
+            )]
+        } else {
+            vec![
+                (30_000, SAYS[index % SAYS.len()].to_owned()),
+                (90_000, FOLLOW_UPS[0].to_owned()),
+                (150_000, FOLLOW_UPS[1].to_owned()),
+                (15 * 60_000, FOLLOW_UPS[2].to_owned()),
+            ]
+        };
+        let messages: Vec<Value> = said
+            .into_iter()
+            .map(|(offset, text)| {
+                let id = dc_state::read_state::snowflake_at(base + offset);
+                json!({
+                    "id": id.to_string(), "channel_id": channel.to_string(), "type": 0,
+                    "author": author.clone(), "content": text, "timestamp": stamp_at(base + offset),
+                    "attachments": [], "embeds": []
+                })
+            })
+            .collect();
+        let last = messages
+            .last()
+            .map(|message| message["id"].clone())
+            .unwrap_or(Value::Null);
         let channel_json = json!({
-            "id": channel.to_string(), "type": 1, "last_message_id": message_id.to_string(),
-            "recipients": [author.clone()], "is_message_request": true, "is_spam": spam,
-            "is_message_request_timestamp": stamp, "flags": 0
+            "id": channel.to_string(), "type": 1, "last_message_id": last,
+            "recipients": [author], "is_message_request": true, "is_spam": spam,
+            "is_message_request_timestamp": stamp_at(base), "flags": 0
         });
-        let message = json!({
-            "id": message_id.to_string(), "channel_id": channel.to_string(), "type": 0,
-            "author": author, "content": text, "timestamp": stamp, "attachments": [], "embeds": []
-        });
-        (channel_json, message)
+        (channel_json, messages)
     }
 }
 
@@ -1227,9 +1385,19 @@ impl Root {
                 };
                 for (count, is_spam) in [(requests, false), (spam, true)] {
                     for index in 0..count {
-                        let (channel, message) = fixture::channel(index, is_spam, now_ms);
+                        let (channel, messages) = fixture::channel(index, is_spam, now_ms);
                         self.stores.dispatch("CHANNEL_CREATE", &channel);
-                        self.stores.dispatch("MESSAGE_CREATE", &message);
+                        for message in &messages {
+                            self.stores.dispatch("MESSAGE_CREATE", message);
+                        }
+                        // The whole history is here, as after the fetch of a short DM: the chat starts with the
+                        // welcome and nothing is requested.
+                        if let Some(id) = channel["id"].as_str().and_then(|id| id.parse::<Id>().ok()) {
+                            let window = self.stores.windows.entry(id).or_default();
+                            window.ready = true;
+                            window.has_fetched = true;
+                            window.has_more_before = false;
+                        }
                     }
                 }
                 self.request_images();
@@ -1256,8 +1424,7 @@ impl Root {
                 let Some(id) = n.parse::<usize>().ok().and_then(|n| self.mr_ids().get(n).copied()) else {
                     return "message requests: no such row".into();
                 };
-                self.message_requests.sidebar = Some(id);
-                cx.notify();
+                self.mr_open_panel(id, cx);
                 format!("message requests: panel {id}")
             }
             ["accepted", n] | ["removed", n] => {
@@ -1273,8 +1440,7 @@ impl Root {
                 } else {
                     self.stores.dispatch("CHANNEL_DELETE", &json!({"id": id.to_string(), "type": 1}));
                 }
-                self.message_requests.sidebar = None;
-                cx.notify();
+                self.mr_close_panel(cx);
                 format!("message requests: {} {id}", args[0])
             }
             ["state"] => format!(
@@ -1367,6 +1533,36 @@ mod tests {
             age_label(1_800_000_000_000, 1_700_000_000_000),
             "November 14, 2023"
         );
+    }
+
+    #[test]
+    fn the_panel_floats_at_450_until_the_page_leaves_room_beside_it() {
+        // 1280 wide with the 72px rail and the 240px channel list: 968 of page, 318 of room, so it floats.
+        assert_eq!(panel_layout(968., None), (450., true));
+        assert_eq!(panel_layout(968., Some(700.)), (450., true));
+        // 1100 is the edge: `maxWidth <= minWidth` still floats.
+        assert_eq!(panel_layout(1100., None), (450., true));
+        assert_eq!(panel_layout(1101., None), (450., false));
+        // Docked, a stored width is kept between 450 and the page less 650.
+        assert_eq!(panel_layout(1500., Some(600.)), (600., false));
+        assert_eq!(panel_layout(1500., Some(900.)), (850., false));
+        assert_eq!(panel_layout(1500., Some(200.)), (450., false));
+    }
+
+    #[test]
+    fn a_hovered_row_and_the_one_after_it_lose_their_top_border() {
+        assert!(!row_has_border(0, None));
+        assert!(row_has_border(1, None));
+        assert!(!row_has_border(2, Some(2)));
+        assert!(!row_has_border(3, Some(2)));
+        assert!(row_has_border(4, Some(2)));
+        assert!(row_has_border(1, Some(3)));
+    }
+
+    #[test]
+    fn the_roll_is_one_line_or_the_padded_icon_row() {
+        assert_eq!(roll_height(false), 18.);
+        assert_eq!(roll_height(true), 22.);
     }
 
     #[test]

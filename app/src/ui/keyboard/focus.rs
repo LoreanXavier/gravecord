@@ -463,6 +463,7 @@ impl Root {
             || self.shop_active()
             || self.guild_guide_open
             || self.channel_browser_open
+            || self.message_requests_active()
             || self.screening_pending()
             || self.member_view.is_some()
             || self.voice_view_open()
