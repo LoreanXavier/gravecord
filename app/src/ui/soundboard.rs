@@ -950,7 +950,10 @@ impl Root {
                 cx.notify();
             }
             // A soundmoji chip's border follows its play (module 632760).
-            super::soundmoji::PLAY_START | super::soundmoji::PLAY_END => cx.notify(),
+            super::soundmoji::PLAY_START | super::soundmoji::PLAY_END => {
+                super::soundmoji::sounding(name, data["sound_id"].as_str());
+                cx.notify();
+            }
             _ => {}
         }
     }

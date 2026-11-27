@@ -90,6 +90,20 @@ pub(super) struct Scope {
 thread_local! {
     static SCOPE: RefCell<Option<Scope>> = const { RefCell::new(None) };
     static PLAYING: RefCell<Option<(String, dc_voice::sound::Handle)>> = const { RefCell::new(None) };
+    /// The sound whose play started and has not ended (`onplay` / `onpause` / `onended` of module 584014).
+    static SOUNDING: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Follows the player's start and end (the [`PLAY_START`] and [`PLAY_END`] it sends back).
+pub(super) fn sounding(name: &str, sound: Option<&str>) {
+    SOUNDING.with(|sounding| {
+        let mut sounding = sounding.borrow_mut();
+        match (name, sound) {
+            (PLAY_START, Some(sound)) => *sounding = Some(sound.to_owned()),
+            (PLAY_END, Some(sound)) if sounding.as_deref() == Some(sound) => *sounding = None,
+            _ => {}
+        }
+    });
 }
 
 /// The scope of one message's text; the previous one comes back when it is dropped.
@@ -167,13 +181,15 @@ fn decoded() -> &'static DecodedSounds {
     DECODED.get_or_init(Mutex::default)
 }
 
-/// Whether the chip of this sound plays now (`isPlaying` of module 584014).
+/// Whether the chip of this sound plays now (`isPlaying` of module 584014: from the audio's `play` event until it
+/// pauses or ends).
 pub(super) fn playing(sound: &str) -> bool {
-    PLAYING.with(|playing| {
-        playing.borrow().as_ref().is_some_and(|(id, handle)| {
-            id == sound && !handle.is_finished() && !handle.is_stopped()
+    SOUNDING.with(|sounding| sounding.borrow().as_deref() == Some(sound))
+        && PLAYING.with(|playing| {
+            playing.borrow().as_ref().is_some_and(|(id, handle)| {
+                id == sound && !handle.is_finished() && !handle.is_stopped()
+            })
         })
-    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -343,10 +359,12 @@ impl Root {
                         let url = format!("https://cdn.discordapp.com/soundboard-sounds/{id}");
                         let Ok(bytes) = crate::sounds::fetch_url(&url) else {
                             tracing::debug!("soundmoji file unavailable");
+                            handle.stop();
                             return;
                         };
                         let Ok(sound) = dc_voice::sound::decode_any(bytes) else {
                             tracing::debug!("soundmoji file not playable");
+                            handle.stop();
                             return;
                         };
                         let sound = Arc::new(sound);
@@ -857,6 +875,21 @@ mod tests {
         );
         assert!(resolve(true, None, "6", Some(stored("6", "0")), true).is_some());
         assert!(resolve(true, None, "6", Some(stored("6", "0")), false).is_none());
+    }
+
+    /// Module 584014: playing from the start until that sound ends; another sound's end changes nothing.
+    #[test]
+    fn a_chip_plays_from_its_start_to_its_end() {
+        let now = || SOUNDING.with(|sounding| sounding.borrow().clone());
+        sounding(PLAY_START, Some("5"));
+        assert_eq!(now().as_deref(), Some("5"));
+        sounding(PLAY_END, Some("6"));
+        assert_eq!(now().as_deref(), Some("5"));
+        sounding(PLAY_END, Some("5"));
+        assert_eq!(now(), None);
+        // Nothing plays without a player either.
+        sounding(PLAY_START, Some("5"));
+        assert!(!playing("5"));
     }
 
     /// Module 69945.

@@ -9061,6 +9061,12 @@ impl Root {
                 // The inline `color` outranks the stylesheet's white; only the background deepens.
                 Some((color, _)) => (role_tint(color, 0.3), tint),
                 None => (hsla("--brand-500"), hsla("--white")),
+            })
+            // A soundmoji chip is a button (`cursor: pointer`); its own colours stay under the pointer.
+            .or_else(|| {
+                soundmoji
+                    .as_ref()
+                    .map(|_| (hsla("--card-background-default"), tint))
             }),
             // `.anchor:hover` underlines a link.
             hover_underline: matches!(span.kind, Kind::Link(_) | Kind::AttachmentLink(_)),
