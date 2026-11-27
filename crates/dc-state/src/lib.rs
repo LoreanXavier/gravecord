@@ -21,6 +21,7 @@ pub mod experiments;
 pub mod folders;
 pub mod frecency;
 pub mod game_relationships;
+pub mod gift_codes;
 mod gateway_extra;
 pub mod grouping;
 pub mod guild_bans;
@@ -2479,6 +2480,8 @@ pub struct Stores {
     pub message_requests: message_requests::MessageRequests,
     /// `EntitlementStore`.
     pub entitlements: entitlements::Entitlements,
+    /// `GiftCodeStore`.
+    pub gift_codes: gift_codes::GiftCodeStore,
     /// `GuildAutomodMessageStore`.
     pub automod: automod_messages::AutomodMessages,
     /// `NotificationCenterItemsStore`.
@@ -3264,6 +3267,7 @@ impl Stores {
     fn after_dispatch(&mut self, name: &str, data: &Value) {
         self.message_requests_dispatch(name, data);
         self.entitlements_dispatch(name, data);
+        self.gift_codes_dispatch(name, data);
         self.automod_dispatch(name, data);
         self.notification_center_dispatch(name, data);
         self.join_requests_dispatch(name, data);
