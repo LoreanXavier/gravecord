@@ -98,14 +98,20 @@ pub(super) fn resolve_route(code: &str) -> String {
     format!("{GIFT_CODES}{code}?with_application=false&with_subscription_plan=false")
 }
 
+/// The lookup GiftCodeStore sends for a code in a message (`resolveGiftCode(code, false, true)`, module 30793).
+pub(in crate::ui) fn message_resolve_route(code: &str) -> String {
+    format!("{GIFT_CODES}{code}?with_application=false&with_subscription_plan=true")
+}
+
 pub(super) fn redeem_route(code: &str) -> String {
     format!("{GIFT_CODES}{code}/redeem")
 }
 
-/// The body `redeemGiftCode` sends without a channel or a payment source: `payment_source_id` is `undefined` (left
+/// The body `redeemGiftCode` (module 75255) sends without a payment source: `channel_id` is the channel the gift was
+/// opened from (the embed's `channelContext`, `null` from Gift Inventory), `payment_source_id` is `undefined` (left
 /// out of the JSON) and `gateway_checkout_context` is `null` (`ob`, module 739508).
-pub(super) fn redeem_body() -> Value {
-    json!({"channel_id": null, "gateway_checkout_context": null})
+pub(super) fn redeem_body(channel: Option<dc_state::Id>) -> Value {
+    json!({"channel_id": channel.map(|id| id.to_string()), "gateway_checkout_context": null})
 }
 
 fn resolve_request(code: &str) -> Request {
@@ -117,12 +123,12 @@ fn resolve_request(code: &str) -> Request {
     }
 }
 
-fn redeem_request(code: &str) -> Request {
+fn redeem_request(code: &str, channel: Option<dc_state::Id>) -> Request {
     Request::Rest {
         key: Some(REDEEM_KEY.to_owned()),
         method: reqwest::Method::POST,
         route: redeem_route(code),
-        body: Some(redeem_body()),
+        body: Some(redeem_body(channel)),
     }
 }
 
@@ -158,9 +164,12 @@ pub(super) fn error_message(code: Option<i64>, nitro: bool) -> String {
             dc_intl::tr("Bummer! You couldn't claim this gift because it has been revoked.").to_owned()
         }
         // `4YTHKw` with `lG6a5x` or `FSOz78`
-        Some(INVALID_GIFT_REDEMPTION_SUBSCRIPTION_INCOMPATIBLE) => format!(
-            "Oops! You're unable to accept this gift because you're already subscribed to {}.",
-            if nitro { dc_intl::tr("Nitro") } else { dc_intl::tr("Nitro Classic") }
+        Some(INVALID_GIFT_REDEMPTION_SUBSCRIPTION_INCOMPATIBLE) => dc_intl::format(
+            "4YTHKw",
+            &[(
+                "planName",
+                if nitro { dc_intl::t("lG6a5x") } else { dc_intl::t("FSOz78") }.into(),
+            )],
         ),
         // `9i1J30`
         Some(INVALID_GIFT_REDEMPTION_SUBSCRIPTION_MANAGED) => {
@@ -196,7 +205,7 @@ fn tier_of(sku: &str) -> Option<u64> {
 /// A subscription plan: its interval (1 month, 2 year) and the number of them. The official reads the plan from the
 /// subscription plan store; the ids are the `F` constants of module 682901.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct Plan {
+pub(in crate::ui) struct Plan {
     pub year: bool,
     pub count: u64,
 }
@@ -221,7 +230,7 @@ fn plan_of(id: &str) -> Option<Plan> {
 
 /// What the lookup answered, as `GiftCode.createFromServer` (module 7133) reads it.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct Gift {
+pub(in crate::ui) struct Gift {
     pub code: String,
     pub sku_id: String,
     pub sku_name: String,
@@ -231,6 +240,8 @@ pub(super) struct Gift {
     pub gift_style: Option<i64>,
     pub sender: String,
     pub promotion: bool,
+    /// The resolve's `subscription_plan` (SubscriptionPlanStore), when it came with the answer.
+    pub plan_detail: Option<Plan>,
 }
 
 impl Gift {
@@ -253,7 +264,38 @@ impl Gift {
             gift_style: body["gift_style"].as_i64(),
             sender,
             promotion: !body["promotion"].is_null(),
+            plan_detail: dc_state::gift_codes::SubscriptionPlan::from_value(
+                &body["subscription_plan"],
+            )
+            .map(|plan| Plan {
+                year: !plan.is_month(),
+                count: plan.interval_count,
+            }),
         })
+    }
+
+    /// The accept dialog's gift from GiftCodeStore's record, the SKU's name and the gifter's name (the embed's
+    /// `handleAccept`).
+    pub(in crate::ui) fn from_store(
+        gift: &dc_state::gift_codes::GiftCode,
+        sku_name: &str,
+        sender: &str,
+    ) -> Self {
+        Self {
+            code: gift.code.clone(),
+            sku_id: gift.sku_id.clone(),
+            sku_name: sku_name.to_owned(),
+            plan_id: gift.subscription_plan_id.clone(),
+            uses: gift.uses,
+            max_uses: gift.max_uses,
+            gift_style: gift.gift_style.map(|style| style as i64),
+            sender: sender.to_owned(),
+            promotion: gift.promotion,
+            plan_detail: gift.subscription_plan.as_ref().map(|plan| Plan {
+                year: !plan.is_month(),
+                count: plan.interval_count,
+            }),
+        }
     }
 
     /// `isSubscription`.
@@ -267,13 +309,14 @@ impl Gift {
     }
 
     fn plan(&self) -> Option<Plan> {
-        self.plan_id.as_deref().and_then(plan_of)
+        self.plan_detail
+            .or_else(|| self.plan_id.as_deref().and_then(plan_of))
     }
 }
 
 /// The steps of the dialog (`frR`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Step {
+pub(in crate::ui) enum Step {
     Open,
     Confirm,
     Success,
@@ -281,7 +324,7 @@ pub(super) enum Step {
 }
 
 /// The accept dialog's state (`tR`'s `state` and the store's accepting flag).
-pub(super) struct Modal {
+pub(in crate::ui) struct Modal {
     pub gift: Gift,
     /// The API error code of a failed redeem; `Some(None)` is a failure without one.
     pub error: Option<Option<i64>>,
@@ -290,10 +333,12 @@ pub(super) struct Modal {
     pub opened: bool,
     /// A gift with a style is shown wrapped first (`isCustomGift`).
     custom: bool,
+    /// The channel the gift was opened from (`channelContext`), sent with the redeem.
+    pub channel: Option<dc_state::Id>,
 }
 
 impl Modal {
-    fn new(gift: Gift) -> Self {
+    pub(in crate::ui) fn new(gift: Gift, channel: Option<dc_state::Id>) -> Self {
         let custom = gift.gift_style.is_some();
         Self {
             gift,
@@ -302,16 +347,16 @@ impl Modal {
             accepting: false,
             opened: false,
             custom,
+            channel,
         }
     }
 
-    /// `v3`: the library application is never known here (the gift's game is not modelled), so it is `null`.
-    pub(super) fn step(&self) -> Step {
+    /// `v3`: with no error, a wrapped gift that is not opened, accepted or being accepted is the Open step; an accepted
+    /// subscription is Success; the rest is Confirm. The library application is never known here (the gift's game is
+    /// not modelled), so it is `null`, which keeps an error-free dialog out of the Error step.
+    pub(in crate::ui) fn step(&self) -> Step {
         if self.error.is_some() {
             return Step::Error;
-        }
-        if !self.accepted && !self.accepting {
-            return Step::Confirm;
         }
         if self.custom && !self.opened && !self.accepted && !self.accepting {
             return Step::Open;
@@ -324,35 +369,30 @@ impl Modal {
     }
 }
 
-fn interval_phrase(plan: Plan) -> String {
-    let unit = if plan.year { "year" } else { "month" };
-    if plan.count == 1 {
-        format!("1 {unit}")
-    } else {
-        format!("{} {unit}s", plan.count)
-    }
+fn plain(nodes: Vec<(String, Option<Box<str>>)>) -> String {
+    nodes.into_iter().map(|(text, _)| text).collect()
 }
 
 /// `UJ`: the dialog's one button.
 pub(super) fn button_text(step: Step, gift: &Gift, custom: bool) -> &'static str {
     match step {
-        Step::Error => dc_intl::tr("Oh ok."),
-        Step::Success if gift.is_subscription() => dc_intl::tr("Sweet!"),
-        Step::Success => dc_intl::tr("Go to my Library"),
-        Step::Open => dc_intl::tr("Open gift"),
+        Step::Error => dc_intl::t("w19zb6"),
+        Step::Success if gift.is_subscription() => dc_intl::t("ex5TKr"),
+        Step::Success => dc_intl::t("OOkjql"),
+        Step::Open => dc_intl::t("F8ktci"),
         Step::Confirm => {
             if custom {
-                dc_intl::tr("Woo! Accept Gift")
+                dc_intl::t("n6I6k4")
             } else if gift.gift_style.is_some() {
                 if gift.is_claimed() {
-                    dc_intl::tr("Heck Yeah! Add to Library")
+                    dc_intl::t("OgpR0c")
                 } else {
-                    dc_intl::tr("Gimme")
+                    dc_intl::t("2BWscv")
                 }
             } else if gift.is_subscription() {
-                dc_intl::tr("I accept")
+                dc_intl::t("wQ1FHy")
             } else {
-                dc_intl::tr("Heck Yeah! Add to Library")
+                dc_intl::t("OgpR0c")
             }
         }
     }
@@ -361,35 +401,53 @@ pub(super) fn button_text(step: Step, gift: &Gift, custom: bool) -> &'static str
 /// `n$`, and the custom branches of `firstHeaderText` (module 935263).
 pub(super) fn header_text(modal: &Modal, step: Step, me: &str) -> String {
     let gift = &modal.gift;
+    let sad_trombone = || plain(dc_intl::format_runs("JUvC0s", &[]));
     if modal.custom && step == Step::Error {
-        return "Sad Trombone".to_owned();
+        return sad_trombone();
     }
     if modal.custom && !modal.accepted {
         if !modal.opened {
-            // `xHzRub`
-            return format!("To: {me}");
+            return dc_intl::format("xHzRub", &[("recipientDisplayName", me.into())]);
         }
-        // `0UR0u4` / `E7QYGI`, `U4Ko2y` without a plan.
+        // `0UR0u4`; `E7QYGI` (several months) lives in a bundle the string dump does not hold, so its en-US text is
+        // written here. A Shop gift's item type (`collectiblesItemType`) is not fetched, so it takes `U4Ko2y`.
         return match gift.plan() {
             Some(plan) if !plan.year && plan.count > 1 => format!(
                 "{} has gifted you Nitro for {} months!",
                 gift.sender, plan.count
             ),
-            Some(plan) => format!(
-                "{} has gifted you Nitro for 1 {}!",
-                gift.sender,
-                if plan.year { "year" } else { "month" }
+            Some(plan) => dc_intl::format(
+                "0UR0u4",
+                &[
+                    ("sender", gift.sender.as_str().into()),
+                    (
+                        "timeInterval",
+                        if plan.year {
+                            dc_intl::t("tfqrhj")
+                        } else {
+                            dc_intl::t("FPybU7")
+                        }
+                        .into(),
+                    ),
+                ],
             ),
-            None => format!("{} has sent you a gift!", gift.sender),
+            None => dc_intl::format("U4Ko2y", &[("sender", gift.sender.as_str().into())]),
         };
     }
+    let sku = || [("skuName", gift.sku_name.as_str().into())];
     match step {
-        Step::Error => "Sad Trombone".to_owned(),
-        Step::Success if gift.is_subscription() => format!("You got {}!", gift.sku_name),
-        Step::Success => dc_intl::tr("Noice!").to_owned(),
-        _ if gift.is_subscription() => format!("You've been gifted {}", gift.sku_name),
-        _ => dc_intl::tr("Accept this gift?").to_owned(),
+        Step::Error => sad_trombone(),
+        Step::Success if gift.is_subscription() => dc_intl::format("1C2BG/", &sku()),
+        Step::Success => dc_intl::t("+BNMcF").to_owned(),
+        _ if gift.is_subscription() => dc_intl::format("2VN4N9", &sku()),
+        _ => dc_intl::t("RmamAI").to_owned(),
     }
+}
+
+/// `secondHeaderText`: a wrapped gift names its sender until it is opened (`DDO4Wz`).
+pub(super) fn second_header_text(modal: &Modal) -> Option<String> {
+    (modal.custom && !modal.opened && !modal.accepted)
+        .then(|| dc_intl::format("DDO4Wz", &[("sender", modal.gift.sender.as_str().into())]))
 }
 
 /// `e_` and `D`: the text under the header.
@@ -398,34 +456,35 @@ pub(super) fn body_text(modal: &Modal, step: Step, nitro: bool) -> Option<String
     if modal.custom && !modal.opened {
         return None;
     }
+    let sku = || [("skuName", gift.sku_name.as_str().into())];
     Some(match step {
         Step::Error => error_message(modal.error.flatten(), nitro),
         Step::Success => match (gift.plan(), tier_of(&gift.sku_id)) {
-            (Some(plan), Some(2)) => format!(
-                "Thanks to another generous human, you now have access to enhanced chat perks and Server Boosts for {}.",
-                interval_phrase(plan)
-            ),
-            (Some(plan), Some(1)) => format!(
-                "Thanks to another generous human, you now have access to enhanced chat perks for {}.",
-                interval_phrase(plan)
-            ),
-            (Some(_), _) => dc_intl::tr("Go forth and enjoy your gift!").to_owned(),
-            (None, _) => format!(
-                "{} is now available in your library. Go forth and play!",
-                gift.sku_name
-            ),
+            (Some(plan), Some(tier @ (1 | 2))) => {
+                let key = match (tier, plan.year) {
+                    (2, false) => "O2bEOt",
+                    (2, true) => "ZEvHF+",
+                    (_, false) => "gjKbF4",
+                    (_, true) => "GIe7Bw",
+                };
+                dc_intl::format(
+                    key,
+                    &[("intervalCount", dc_intl::Arg::Num(plan.count as f64))],
+                )
+            }
+            (Some(_), _) => dc_intl::t("5ayf7w").to_owned(),
+            (None, _) => dc_intl::format("3CPsbo", &sku()),
         },
         Step::Confirm | Step::Open => match gift.plan() {
             // `P9eTKt` / `d8rUdy`, the count in bold.
-            Some(plan) => format!(
-                "Once you accept you will have {} for {}.",
-                gift.sku_name,
-                interval_phrase(plan)
-            ),
-            None => format!(
-                "Once you accept, {} will be yours FOR-EV-ERRRRRR!",
-                gift.sku_name
-            ),
+            Some(plan) => plain(dc_intl::format_runs(
+                if plan.year { "d8rUdy" } else { "P9eTKt" },
+                &[
+                    ("skuName", gift.sku_name.as_str().into()),
+                    ("intervalCount", dc_intl::Arg::Num(plan.count as f64)),
+                ],
+            )),
+            None => dc_intl::format("l6Ea4Z", &sku()),
         },
     })
 }
@@ -441,7 +500,7 @@ pub(in crate::ui) struct State {
     promo: bool,
     /// The code the lookup in flight asked about.
     asked: String,
-    pub(super) modal: Option<Modal>,
+    pub(in crate::ui) modal: Option<Modal>,
     /// The last request's outcome for the log and the harness.
     pub last: Option<String>,
 }
@@ -524,6 +583,9 @@ impl Root {
         let gift = &mut self.settings_extra.gift;
         gift.submitting = true;
         gift.asked = code.clone();
+        // `resolveGiftCode` dispatches `GIFT_CODE_RESOLVE` before its request (module 869038).
+        self.stores
+            .dispatch("GIFT_CODE_RESOLVE", &json!({"code": code.clone()}));
         let _ = self.requests.send(resolve_request(&code));
         cx.notify();
     }
@@ -539,6 +601,18 @@ impl Root {
         let status = body["status"].as_u64().unwrap_or(0);
         match key {
             RESOLVE_KEY => {
+                let asked = self.settings_extra.gift.asked.clone();
+                if ok {
+                    self.stores.dispatch(
+                        "GIFT_CODE_RESOLVE_SUCCESS",
+                        &json!({"giftCode": body["body"].clone()}),
+                    );
+                } else {
+                    self.stores.dispatch(
+                        "GIFT_CODE_RESOLVE_FAILURE",
+                        &json!({"code": asked, "error": body["body"].clone()}),
+                    );
+                }
                 let gift = &mut self.settings_extra.gift;
                 gift.submitting = false;
                 let found = ok.then(|| Gift::from_json(&body["body"])).flatten();
@@ -551,7 +625,7 @@ impl Root {
                     }
                     Some(found) => {
                         gift.error = false;
-                        gift.modal = Some(Modal::new(found));
+                        gift.modal = Some(Modal::new(found, None));
                         if let Some(editor) = gift.editor.as_ref() {
                             editor.update(cx, |editor, _| editor.set_text(""));
                         }
@@ -560,6 +634,25 @@ impl Root {
                 }
             }
             REDEEM_KEY => {
+                if let Some(code) = self
+                    .settings_extra
+                    .gift
+                    .modal
+                    .as_ref()
+                    .map(|modal| modal.gift.code.clone())
+                {
+                    if ok {
+                        self.stores.dispatch(
+                            "GIFT_CODE_REDEEM_SUCCESS",
+                            &json!({"code": code, "entitlement": body["body"].clone()}),
+                        );
+                    } else {
+                        self.stores.dispatch(
+                            "GIFT_CODE_REDEEM_FAILURE",
+                            &json!({"code": code, "error": body["body"].clone()}),
+                        );
+                    }
+                }
                 let gift = &mut self.settings_extra.gift;
                 gift.last = Some(format!("redeem {status}"));
                 if let Some(modal) = gift.modal.as_mut() {
@@ -591,7 +684,11 @@ impl Root {
                 }
                 modal.accepting = true;
                 let code = modal.gift.code.clone();
-                let _ = self.requests.send(redeem_request(&code));
+                let channel = modal.channel;
+                // `redeemGiftCode` (module 75255): `GIFT_CODE_REDEEM`, then the POST.
+                self.stores
+                    .dispatch("GIFT_CODE_REDEEM", &json!({"code": code.clone()}));
+                let _ = self.requests.send(redeem_request(&code, channel));
             }
         }
         cx.notify();
@@ -617,8 +714,7 @@ impl Root {
         } else {
             modal::Tone::Primary
         };
-        let second = (modal.custom && !modal.opened && !modal.accepted)
-            .then(|| format!("From: {}", modal.gift.sender));
+        let second = second_header_text(modal);
         let body = body_text(modal, step, nitro);
         Some(modal::Spec {
             id: "settings-gift-modal",
@@ -889,14 +985,23 @@ mod tests {
             "/entitlements/gift-codes/abcdefghjkmnpqrs/redeem"
         );
         assert_eq!(
-            redeem_body(),
+            redeem_body(None),
             json!({"channel_id": null, "gateway_checkout_context": null})
+        );
+        // From a gift card, the channel it sits in (`channelContext`).
+        assert_eq!(
+            redeem_body(Some(1146185577396469791)),
+            json!({"channel_id": "1146185577396469791", "gateway_checkout_context": null})
+        );
+        assert_eq!(
+            message_resolve_route("abc"),
+            "/entitlements/gift-codes/abc?with_application=false&with_subscription_plan=true"
         );
         match resolve_request("abc") {
             Request::Rest { method, .. } => assert_eq!(method, reqwest::Method::GET),
             _ => panic!("the lookup is a REST read"),
         }
-        match redeem_request("abc") {
+        match redeem_request("abc", None) {
             Request::Rest { method, body, .. } => {
                 assert_eq!(method, reqwest::Method::POST);
                 assert!(body.is_some());
@@ -908,7 +1013,7 @@ mod tests {
     #[test]
     fn the_redeem_is_a_write_and_the_lookup_is_a_read_for_the_inert_run() {
         assert_eq!(resolve_request("abc").inert(), crate::net::Inert::Allow);
-        assert_eq!(redeem_request("abc").inert(), crate::net::Inert::Deny);
+        assert_eq!(redeem_request("abc", None).inert(), crate::net::Inert::Deny);
     }
 
     #[test]
@@ -953,7 +1058,7 @@ mod tests {
 
     #[test]
     fn a_subscription_gift_walks_confirm_success() {
-        let mut modal = Modal::new(nitro_gift());
+        let mut modal = Modal::new(nitro_gift(), None);
         assert_eq!(modal.step(), Step::Confirm);
         assert_eq!(
             header_text(&modal, Step::Confirm, "me"),
@@ -978,7 +1083,7 @@ mod tests {
 
     #[test]
     fn a_failed_redeem_is_the_error_step() {
-        let mut modal = Modal::new(nitro_gift());
+        let mut modal = Modal::new(nitro_gift(), None);
         modal.error = Some(Some(50051));
         assert_eq!(modal.step(), Step::Error);
         assert_eq!(header_text(&modal, Step::Error, "me"), "Sad Trombone");
@@ -994,15 +1099,30 @@ mod tests {
         let mut gift = nitro_gift();
         gift.gift_style = Some(1);
         gift.plan_id = Some("642251038925127690".to_owned());
-        let mut modal = Modal::new(gift);
+        let mut modal = Modal::new(gift, None);
         assert!(modal.custom);
-        assert_eq!(modal.step(), Step::Confirm);
-        assert_eq!(header_text(&modal, Step::Confirm, "Me"), "To: Me");
-        assert_eq!(body_text(&modal, Step::Confirm, true), None);
+        // `v3`: a wrapped gift starts at Open.
+        assert_eq!(modal.step(), Step::Open);
+        assert_eq!(button_text(Step::Open, &modal.gift, true), "Open gift");
+        assert_eq!(header_text(&modal, Step::Open, "Me"), "To: Me");
+        assert_eq!(second_header_text(&modal).as_deref(), Some("From: Wumpus"));
+        assert_eq!(body_text(&modal, Step::Open, true), None);
         modal.opened = true;
+        assert_eq!(modal.step(), Step::Confirm);
+        assert_eq!(second_header_text(&modal), None);
         assert_eq!(
             header_text(&modal, Step::Confirm, "Me"),
             "Wumpus has gifted you Nitro for 3 months!"
+        );
+        assert_eq!(
+            button_text(Step::Confirm, &modal.gift, true),
+            "Woo! Accept Gift"
+        );
+        // Accepting a styled one-month gift names its interval.
+        modal.gift.plan_id = Some("511651880837840896".to_owned());
+        assert_eq!(
+            header_text(&modal, Step::Confirm, "Me"),
+            "Wumpus has gifted you Nitro for 1 month!"
         );
     }
 

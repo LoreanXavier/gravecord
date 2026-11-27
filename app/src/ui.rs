@@ -146,6 +146,7 @@ mod inventory_feed;
 mod inventory_popout;
 mod integration_apps;
 mod invite;
+mod gift_embed;
 mod invite_embed;
 mod join_request_page;
 mod keyboard;
@@ -349,6 +350,7 @@ mod status_menu;
 mod stream_failed;
 mod third_party_promos;
 mod video_pip;
+pub(crate) use gift_embed::GIFT_BOX_KEY;
 pub(crate) use plugin_hooks::expression_sticker_url;
 pub(crate) use plugin_hooks::more_commands_outgoing;
 pub(crate) use plugin_hooks::spotify_premium_forced;
@@ -1392,6 +1394,8 @@ pub struct Root {
     setting_choices: HashMap<&'static str, settings::Choice>,
     /// Dialogs and fetched state of the settings pages' buttons and account-route switches.
     settings_extra: settings::ActionsState,
+    /// The width the gift cards of the last frame were laid out in (`withSize` of module 456412).
+    gift_embed_width: Rc<std::cell::Cell<f32>>,
     /// Voice & Video's stored choices, microphone preview, Mic Test, keybind recorder and slider drags.
     voice: settings::VoiceState,
     /// The Clips page's stored settings, keybind recorder, select and slider.
@@ -1987,6 +1991,7 @@ impl Root {
             settings: None,
             setting_choices,
             settings_extra: settings::ActionsState::default(),
+            gift_embed_width: Rc::new(std::cell::Cell::new(0.)),
             voice,
             clips: settings::ClipsState::restore(),
             fetched: HashMap::new(),
@@ -3080,6 +3085,9 @@ impl Root {
                     return;
                 }
                 if self.connection_authorize_answered(&key, &body, cx) {
+                    return;
+                }
+                if self.gift_code_answered(&key, &body, cx) {
                     return;
                 }
                 if self.settings_fetched(&key, &body) {
@@ -4827,6 +4835,7 @@ impl Root {
         // Other rows: a link the pointer was last found over may be gone (`inline::middle_press_on_link`).
         crate::inline::forget_link_under_pointer();
         self.request_invites();
+        self.request_gift_codes();
         // A command mention needs the channel's command index to know whether it is a link (module 990474).
         if self
             .channel
@@ -10044,6 +10053,8 @@ impl Root {
 
     fn accessories(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
         let parts: Vec<AnyElement> = [
+            // `renderGiftCodes` (module 679636): after the coded links, before the attachments.
+            self.gift_cards(message, cx),
             self.attachments(message, cx),
             self.files(message, cx),
             self.embeds(message, cx),
@@ -10522,6 +10533,8 @@ impl Root {
                         .when(
                             !self.hides_inline_media_content(message)
                                 && !self.command_replaces_content(message)
+                                // Module 891522: a custom gift message draws no content (its gift card does).
+                                && message.kind != dc_state::message_kinds::CUSTOM_GIFT
                                 && (!message.content.is_empty()
                                     || message.edited
                                     || self.automod_blocked_edit(id)),
