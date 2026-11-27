@@ -1594,4 +1594,36 @@ mod tests {
         assert!(kinds("hello @here!").contains(&Kind::Everyone));
         assert!(kinds("(@everyone)").contains(&Kind::Everyone));
     }
+
+    /// Text mixing letters of two to four bytes with every markup character, so no rule cuts inside a letter.
+    fn mixed_texts(count: usize) -> Vec<String> {
+        const PIECES: &[&str] = &[
+            "ç", "ş", "ğ", "ı", "İ", "ö", "ü", "😀", "e\u{301}", "a", "1", " ", "\n", "*", "_", "~", "|", "`",
+            "@", "#", ":", "<", ">", "/", "\\", "[", "]", "(", ")", "-", ".", ">>> ", "# ", "https://", "<@",
+            "<#", "<t:", "<:", "<sound:", "<id:", "discord.gg/", "||", "```", "**", "__", "~~",
+        ];
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        (0..count)
+            .map(|_| {
+                let mut text = String::new();
+                state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                for _ in 0..(state >> 59) + 1 {
+                    state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                    text.push_str(PIECES[(state >> 33) as usize % PIECES.len()]);
+                }
+                text
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mixed_letters_and_markup_never_cut_inside_a_letter() {
+        for text in mixed_texts(20_000) {
+            let _ = parse(&text);
+            let _ = inline(&text);
+            let _ = inline_reply(&text, true);
+            let _ = embed_title(&text, true);
+            let _ = attachment_link(&text);
+        }
+    }
 }

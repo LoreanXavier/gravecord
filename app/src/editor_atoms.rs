@@ -247,7 +247,8 @@ fn delimiter(c: char, hash: bool) -> bool {
 /// delimiter after the word to be there already: a mention turns into a void once the word is finished.
 fn raw_at(rest: &str) -> Option<(RawKind, usize)> {
     let first = rest.chars().next()?;
-    let body = &rest[1..];
+    // Past the first character, not its first byte: a word may start with a letter of two or more bytes (`ç`).
+    let body = &rest[first.len_utf8()..];
     match first {
         '@' => {
             // `@[^@#]+(?:#0|#\d{4})`, within the line.
@@ -525,5 +526,53 @@ mod tests {
             "hey @alice in #general <@3>"
         );
         assert_eq!(plain_text(text, 0..3, &atoms, label), "hey");
+    }
+
+    #[test]
+    fn words_that_start_with_a_letter_of_several_bytes_are_scanned_without_a_panic() {
+        // A word starting with `ç`, `ş`, `ğ` or an emoji once cut the text inside that letter.
+        for text in [
+            "çok güzel @ali şimdi #genel",
+            "ç",
+            "ğ@ş:#",
+            "@çağrı ",
+            "#çay ",
+            ":çiçek:",
+            "😀 @😀 #😀 :😀: ",
+            "e\u{301}@x ",
+            "İstanbul ıı @İ: #ş\n@ç#1234 ",
+        ] {
+            let found = raw_mentions(text, |kind| Some(format!("{kind:?}")));
+            for (range, _) in &found {
+                assert!(text.is_char_boundary(range.start) && text.is_char_boundary(range.end));
+            }
+            let atoms = find_atoms(text);
+            let _ = plain_text(text, 0..text.len(), &atoms, |_| None);
+        }
+        let found = raw_mentions("merhaba @çağrı ", |kind| match kind {
+            RawKind::At { name, .. } => Some(format!("<@{name}>")),
+            _ => None,
+        });
+        assert_eq!(found, vec![(8..17, "<@çağrı>".to_owned())]);
+    }
+
+    #[test]
+    fn mixed_letters_and_mention_marks_never_cut_inside_a_letter() {
+        const PIECES: &[&str] = &[
+            "ç", "ş", "ğ", "ı", "İ", "😀", "e\u{301}", "a", "1", " ", "\n", "@", "#", ":", "\"", "\\", "<@",
+            "<#", "<:", ">", "`", "```", "0", "1234",
+        ];
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..20_000 {
+            let mut text = String::new();
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            for _ in 0..(state >> 59) + 1 {
+                state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                text.push_str(PIECES[(state >> 33) as usize % PIECES.len()]);
+            }
+            let atoms = find_atoms(&text);
+            let _ = plain_text(&text, 0..text.len(), &atoms, |_| None);
+            let _ = raw_mentions(&text, |kind| Some(format!("{kind:?}")));
+        }
     }
 }
