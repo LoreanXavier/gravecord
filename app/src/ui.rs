@@ -14775,7 +14775,7 @@ impl Render for Root {
             .children(locale_error)
             .children(self.splash_layer(window, cx))
             // Last: ends the frame's record of where the web views' boxes were painted (`web_frames.rs`).
-            .child(self.web_frames.sweep());
+            .child(self.web_frames.sweep(cx.entity_id()));
         // Capture only: the display name style comparison sheet (`name-sheet` step).
         #[cfg(feature = "capture")]
         let element = element

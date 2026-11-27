@@ -153,6 +153,9 @@ pub enum HostEvent {
     Message { origin: String, data: Value },
     /// The surface could not be made.
     Failed(String),
+    /// A picture of a provider player's page as it shows now (PNG), taken every [`STILL_EVERY`] while it is on screen:
+    /// what the app draws in its place while it is hidden under one of the app's layers.
+    Still(Vec<u8>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -347,6 +350,63 @@ fn wait(_: &Waker, timeout: Duration) {
 
 /// How often the surface checks its owner window without being told to: a net under the owner's own events.
 const RECHECK: Duration = Duration::from_millis(250);
+/// How often a provider player on screen sends a picture of itself ([`HostEvent::Still`]).
+pub const STILL_EVERY: Duration = Duration::from_secs(2);
+
+/// Asks the view for a PNG of what it shows; the picture is sent as [`HostEvent::Still`] when WebView2 has made it
+/// (on this thread, from its message pump). Nothing is sent when it cannot.
+#[cfg(windows)]
+fn capture_still(view: &WebView, sender: &Sender<HostEvent>) {
+    use webview2_com::CapturePreviewCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
+    use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
+    use wry::WebViewExtWindows;
+    // SAFETY: COM calls on the thread that made the view; the stream lives until the handler has read it.
+    unsafe {
+        let Ok(core) = view.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(stream) = CreateStreamOnHGlobal(Default::default(), true) else {
+            return;
+        };
+        let read = stream.clone();
+        let sender = sender.clone();
+        let handler = CapturePreviewCompletedHandler::create(Box::new(move |result| {
+            if result.is_ok()
+                && let Some(png) = read_stream(&read)
+            {
+                let _ = sender.send(HostEvent::Still(png));
+            }
+            Ok(())
+        }));
+        let _ = core.CapturePreview(
+            COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+            &stream,
+            &handler,
+        );
+    }
+}
+
+/// All the bytes of a stream, from its start.
+#[cfg(windows)]
+fn read_stream(stream: &windows::Win32::System::Com::IStream) -> Option<Vec<u8>> {
+    use windows::Win32::System::Com::{STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET};
+    // SAFETY: reads of a stream this thread owns into a buffer of the size the stream reports.
+    unsafe {
+        let mut stat = STATSTG::default();
+        stream.Stat(&mut stat, STATFLAG_NONAME).ok()?;
+        let size = usize::try_from(stat.cbSize).ok().filter(|size| *size > 0)?;
+        stream.Seek(0, STREAM_SEEK_SET, None).ok()?;
+        let mut bytes = vec![0u8; size];
+        let mut read = 0u32;
+        stream
+            .Read(bytes.as_mut_ptr().cast(), size as u32, Some(&mut read))
+            .ok()
+            .ok()?;
+        bytes.truncate(read as usize);
+        Some(bytes)
+    }
+}
 
 #[cfg(windows)]
 mod owner_events {
@@ -712,6 +772,8 @@ fn run(
     (waker, shown): (Arc<Waker>, Arc<Mutex<Shown>>),
 ) {
     #[cfg(windows)]
+    let stills = matches!(page, Page::Url { .. });
+    #[cfg(windows)]
     // SAFETY: once per thread, before any COM use.
     unsafe {
         let _ = windows::Win32::System::Ole::OleInitialize(None);
@@ -789,6 +851,9 @@ fn run(
     };
     let mut dirty = true;
     let mut checked = std::time::Instant::now();
+    // A provider player sends pictures of itself; the app's own pages (activities, captcha) do not.
+    #[cfg(windows)]
+    let mut still_at = stills.then(std::time::Instant::now);
     loop {
         if !pump() {
             return;
@@ -831,6 +896,15 @@ fn run(
             surface.apply(&view);
             dirty = false;
             checked = std::time::Instant::now();
+        }
+        #[cfg(windows)]
+        if let Some(at) = still_at.as_mut()
+            && at.elapsed() >= STILL_EVERY
+            && surface.view_visible
+            && surface.wanted
+        {
+            capture_still(&view, &sender);
+            *at = std::time::Instant::now();
         }
         wait(&waker, RECHECK);
     }

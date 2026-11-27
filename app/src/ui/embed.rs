@@ -915,6 +915,7 @@ impl Root {
                     .rounded(px(4.))
                     .overflow_hidden()
                     .bg(color("--black"))
+                    .children(self.web_frame_still(super::provider_player::ANCHOR))
                     .child(
                         self.web_frames
                             .probe(super::provider_player::ANCHOR.to_owned(), None),

@@ -2502,6 +2502,7 @@ pub async fn run(
                     .update(cx, |_, window, _| native::web_surfaces(window, chat))
                     .unwrap_or_else(|error| format!("webframes: {error}\n"));
                 output.push_str(&report);
+                output.push_str(&root.read_with(cx, |root, _| root.script_web_layers()));
             }
             // Capture only: `popout click <x> <y>` clicks in the popped-out call window, `popout shot <png>` saves it.
             ["popout", "click", x, y] => {

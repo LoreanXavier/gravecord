@@ -356,6 +356,8 @@ impl Element for Placed {
         let shake = point(px(self.shake.0), px(self.shake.1));
         let origin = point(origin.x + shake.x, origin.y + shake.y);
         let placed = Bounds::new(origin, laid_body.size);
+        // A web view under the tooltip steps aside while it shows (`web_frames.rs`).
+        super::web_frames::cover(window.window_handle().window_id(), placed);
         let caret_at = caret_origin(self.anchor, placed, self.side);
         window.with_element_offset(origin - laid_body.origin, |window| {
             self.body.prepaint(window, cx);

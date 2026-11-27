@@ -87,8 +87,10 @@ impl Root {
         if url.is_empty() {
             return;
         }
-        // Another embed's player closes: its view no longer follows the box.
+        // Another embed's player closes: its view no longer follows the box, its picture goes.
         self.web_frames.painted.borrow_mut().unlink(ANCHOR);
+        self.web_frames.stills.remove(ANCHOR);
+        self.web_frames.aside.remove(ANCHOR);
         self.provider_player = Some(ProviderPlayer {
             key,
             url,
@@ -112,7 +114,7 @@ impl Root {
             return;
         }
         let seen = self.web_frames.painted.borrow().last_place(ANCHOR);
-        let covered = self.web_surfaces_covered();
+        let shown = self.web_surface_shown(ANCHOR, self.web_surfaces_covered());
         let painted = self.web_frames.painted.clone();
         let Some(player) = self.provider_player.as_mut() else {
             return;
@@ -123,12 +125,14 @@ impl Root {
             if player.unseen > GRACE_FRAMES {
                 painted.borrow_mut().unlink(ANCHOR);
                 self.provider_player = None;
+                self.web_frames.stills.remove(ANCHOR);
+                self.web_frames.aside.remove(ANCHOR);
                 cx.notify();
             }
             return;
         };
         player.unseen = 0;
-        let visible = !covered;
+        let visible = shown;
         if player.web.is_none() {
             let Some(dir) = crate::storage::data_dir().map(|dir| dir.join("webview")) else {
                 return;
@@ -148,11 +152,21 @@ impl Root {
             }
             return;
         }
-        if let Some(web) = player.web.as_ref()
-            && visible != player.visible
-        {
-            web.set_visible(visible);
-            player.visible = visible;
+        if let Some(web) = player.web.as_ref() {
+            if visible != player.visible {
+                web.set_visible(visible);
+                player.visible = visible;
+            }
+            // While a layer is over it the box draws the player as it last looked.
+            if super::web_frames::keep_still(
+                &mut self.web_frames.stills,
+                &mut self.web_frames.aside,
+                ANCHOR,
+                web,
+                visible,
+            ) {
+                cx.notify();
+            }
         }
     }
 }
