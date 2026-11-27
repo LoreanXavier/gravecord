@@ -321,7 +321,7 @@ impl Root {
                 .child(
                     div()
                         .absolute()
-                        .left(px((self.combined_sidebar_width() + 25.)
+                        .left(px((self.composer_column_left() + 25.)
                             .min((self.viewport.0 - 420.).max(16.))))
                         .top(px((self.viewport.1 * 0.33).clamp(48., 240.)))
                         .child(upload_content(caption, card)),
