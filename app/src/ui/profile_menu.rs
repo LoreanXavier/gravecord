@@ -221,7 +221,8 @@ impl Root {
                     })
                     .rounded(px(4.))
             })
-            .child(div().flex_1().child(label))
+            // `label_M3qk4j`: one line, cut with an ellipsis.
+            .child(div().flex_1().min_w(px(0.)).truncate().child(label))
             .when(caret, |this| {
                 this.child(
                     // `.focused .caret_M3qk4j` turns white.
@@ -552,6 +553,9 @@ impl Root {
                         .relative()
                         .child(self.anchor_probe("profile-menu"))
                         .occlude()
+                        // `flexible_M3qk4j` (frame dm-profile-more: 153.8 wide): 144 to 320, longer labels cut.
+                        .min_w(px(super::menu::FLEXIBLE_MIN_WIDTH))
+                        .max_w(px(super::menu::FLEXIBLE_MAX_WIDTH))
                         .p(px(8.))
                         .rounded(px(8.))
                         .border_1()

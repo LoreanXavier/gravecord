@@ -308,6 +308,39 @@ impl Root {
         if !self.plus_menu {
             return None;
         }
+        let share_clip = cfg!(windows) && !crate::storage::is_capture_run() && self.clips_listed();
+        // `menu_M3qk4j flexible_M3qk4j` (frame composer-plus: 201.44 for "Schedule Message" and its caret): as wide as
+        // the widest row, from 144 to 320; a longer label is cut with an ellipsis (`label_M3qk4j`).
+        let rows: Vec<(&str, bool)> = [
+            Some((dc_intl::tr("Upload a File"), false)),
+            Some((dc_intl::tr("Create Thread"), false)),
+            Some((dc_intl::tr("Create Poll"), false)),
+            Some((dc_intl::tr("Use Apps"), false)),
+            self.schedule_offered()
+                .then(|| (dc_intl::tr("Schedule Message"), true)),
+            self.record_voice_offered()
+                .then(|| (dc_intl::tr("Record Voice Message"), false)),
+            share_clip.then(|| (dc_intl::tr("Share a Clip"), false)),
+            self.voice_messages_plus_label().map(|label| (label, false)),
+            self.clip_upload_plus_label().map(|label| (label, false)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let natural = super::menu::flexible_width_unclamped(
+            rows.iter()
+                .map(|(label, caret)| {
+                    plus_row_width(
+                        super::threads::measure_text(window, label, 14., 500.),
+                        *caret,
+                    )
+                })
+                .fold(0., f32::max),
+        );
+        let width = super::menu::flexible_width_clamp(natural);
+        // Only a menu stopped at its max width has labels to cut; the others fit their widest label by construction
+        // (kept on one line, so a fraction of a pixel lost to the layout's pixel snapping cuts nothing).
+        let cut = natural > width;
         let row = |id: &'static str,
                    glyph: &'static str,
                    label: &'static str,
@@ -334,7 +367,14 @@ impl Root {
                 .text_color(color("--text-default"))
                 .child(icon(glyph, 20., "--interactive-icon-default"))
                 // `label_M3qk4j`: `flex: 1 1 auto`, one line, cut with an ellipsis.
-                .child(div().flex_1().min_w(px(0.)).truncate().child(label))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .whitespace_nowrap()
+                        .when(cut, |label| label.truncate())
+                        .child(label),
+                )
                 .when(caret, |this| {
                     this.child(icon("pm_chevron", 20., "--interactive-icon-default"))
                 })
@@ -360,35 +400,6 @@ impl Root {
                 })
         };
         let record_finalizing = self.record_voice_disabled();
-        let share_clip = cfg!(windows) && !crate::storage::is_capture_run() && self.clips_listed();
-        // `menu_M3qk4j flexible_M3qk4j` (frame composer-plus: 201.44 for "Schedule Message" and its caret): as wide as
-        // the widest row, from 144 to 320; a longer label is cut with an ellipsis (`label_M3qk4j`).
-        let rows: Vec<(&str, bool)> = [
-            Some((dc_intl::tr("Upload a File"), false)),
-            Some((dc_intl::tr("Create Thread"), false)),
-            Some((dc_intl::tr("Create Poll"), false)),
-            Some((dc_intl::tr("Use Apps"), false)),
-            self.schedule_offered()
-                .then(|| (dc_intl::tr("Schedule Message"), true)),
-            self.record_voice_offered()
-                .then(|| (dc_intl::tr("Record Voice Message"), false)),
-            share_clip.then(|| (dc_intl::tr("Share a Clip"), false)),
-            self.voice_messages_plus_label().map(|label| (label, false)),
-            self.clip_upload_plus_label().map(|label| (label, false)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let width = super::menu::flexible_width(
-            rows.iter()
-                .map(|(label, caret)| {
-                    plus_row_width(
-                        super::threads::measure_text(window, label, 14., 500.),
-                        *caret,
-                    )
-                })
-                .fold(0., f32::max),
-        );
         let menu = div()
             .parity_with_border("plus-menu", 1.)
             .id("composer-plus-menu")

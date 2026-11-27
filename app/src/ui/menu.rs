@@ -30,7 +30,17 @@ pub(super) const FLEXIBLE_MAX_WIDTH: f32 = 320.;
 /// 8px sides and the 1px border, kept between the menu's min and max width. Rows narrower than that take the menu's
 /// width; a label that does not fit is cut with an ellipsis (`label_M3qk4j`).
 pub(super) fn flexible_width(widest_row: f32) -> f32 {
-    (widest_row + 2. * 8. + 2. * 1.).clamp(FLEXIBLE_MIN_WIDTH, FLEXIBLE_MAX_WIDTH)
+    flexible_width_clamp(flexible_width_unclamped(widest_row))
+}
+
+/// The menu's width before its min and max: the widest row, the scroller's 8px sides and the 1px border.
+pub(super) fn flexible_width_unclamped(widest_row: f32) -> f32 {
+    widest_row + 2. * 8. + 2. * 1.
+}
+
+/// `min-width: 144px; max-width: 320px` on a width.
+pub(super) fn flexible_width_clamp(width: f32) -> f32 {
+    width.clamp(FLEXIBLE_MIN_WIDTH, FLEXIBLE_MAX_WIDTH)
 }
 
 /// The label a message menu row shows. Not in the pinned client: a plugin's row keeps its English label, as the
@@ -79,6 +89,12 @@ fn message_row_width(label: f32, icon: bool, trailing: bool) -> f32 {
 /// when a row needs more, up to `flexible_M3qk4j`'s 320.
 fn message_menu_width(rows: impl Iterator<Item = f32>) -> f32 {
     flexible_width(rows.fold(0., f32::max)).max(MENU_WIDTH)
+}
+
+/// A menu label's width (14px, weight 500) as shaped, rounded up to the whole pixel: the layout snaps boxes to
+/// whole pixels, and a label box a fraction narrower than its text would cut it with an ellipsis.
+pub(super) fn menu_label_width(window: &Window, text: &str) -> f32 {
+    super::threads::measure_text(window, text, 14., 500.).ceil()
 }
 
 /// The hover bar menu's top and max-height for a More button at `button_top` (ReferencePositionLayer, module 623646).
@@ -1962,12 +1978,12 @@ impl Root {
         // `flexible_M3qk4j`: the captured menus are 222 wide; a plugin's longer label widens the menu up to 320.
         let menu_width = message_menu_width(items.iter().filter_map(|item| match *item {
             Item::Entry(label, icon, run, caret) => Some(message_row_width(
-                super::threads::measure_text(window, message_row_label(label, run), 14., 500.),
+                menu_label_width(window, message_row_label(label, run)),
                 !icon.is_empty(),
                 caret || message_row_trailing(run),
             )),
             Item::Danger(label, icon, run) => Some(message_row_width(
-                super::threads::measure_text(window, message_row_label(label, run), 14., 500.),
+                menu_label_width(window, message_row_label(label, run)),
                 !icon.is_empty(),
                 run == Action::RemoveReactions,
             )),
