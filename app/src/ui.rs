@@ -12574,6 +12574,7 @@ impl Render for Root {
         ));
         self.selection.borrow_mut().begin_frame();
         motion::set_window_active(window.is_window_active());
+        dc_http::set_focused(window.is_window_active());
         self.video_note_window(window, cx);
         // Not in the pinned client: VoiceStats follows its own switch (`plugin_hooks/voice_stats.rs`).
         self.voice_stats_observe(cx);

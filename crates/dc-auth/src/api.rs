@@ -149,7 +149,7 @@ impl AuthApi {
             .request(method.clone(), url)
             .header(
                 "x-super-properties",
-                self.identity.super_properties_header(true),
+                self.identity.super_properties_header(dc_http::focused()),
             )
             .header("referer", format!("{}{LOGIN_PAGE}", pin::WEBAPP_ORIGIN));
         if let Some(installation) = dc_http::installation_id() {

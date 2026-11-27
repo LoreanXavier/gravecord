@@ -184,6 +184,18 @@ pub fn origin(method: &Method) -> Option<&'static str> {
     (method != Method::GET && method != Method::HEAD).then_some(pin::WEBAPP_ORIGIN)
 }
 
+static FOCUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether the app's window has focus: `client_app_state` of the client information of every request
+/// (`focused` or `unfocused`, as the recorded requests of an unfocused client carry it).
+pub fn set_focused(focused: bool) {
+    FOCUSED.store(focused, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn focused() -> bool {
+    FOCUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static INSTALLATION: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 static LOCATION: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 
@@ -429,7 +441,7 @@ impl Client {
             )
             .header(
                 "x-super-properties",
-                self.identity.super_properties_header(true),
+                self.identity.super_properties_header(focused()),
             )
             .header("referer", referer());
         if let Some(installation) = installation_id() {

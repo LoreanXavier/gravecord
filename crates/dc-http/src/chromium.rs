@@ -31,9 +31,13 @@ pub fn emulation() -> wreq::Emulation {
     emulation
 }
 
-/// The header order of a `fetch()` from the web app's page, as Chromium writes it: the page's own headers in the order
-/// Blink hands them over (the recorded `requestHeaders` of `TRAFFIC/identify.json`, without the two the network
-/// stack adds itself), then the ones the network stack adds. A header not listed goes after these.
+/// The header order of a `fetch()` from the web app's page. The page's own headers, from `sec-ch-ua-platform` to
+/// `content-type`, are in the order Blink hands them over, as the recorded `requestHeaders` of `TRAFFIC` list them
+/// (`X-Context-Properties` between the time zone and the client information in `gif-send.json` and
+/// `thread-create.json`), without `Referer` and `Accept-Language`, which the network stack sets. Not recorded: where
+/// `content-length`, `x-fingerprint`, `x-captcha-*` and `x-audit-log-reason` go, and the order of the headers the
+/// network stack adds (`accept` to `priority`; the recordings list those alphabetically). Those follow Chromium's
+/// usual HTTP/2 request. A header not listed goes after these.
 pub const FETCH_ORDER: &[&str] = &[
     "content-length",
     "sec-ch-ua-platform",
@@ -43,9 +47,9 @@ pub const FETCH_ORDER: &[&str] = &[
     "sec-ch-ua",
     "sec-ch-ua-mobile",
     "x-discord-timezone",
+    "x-context-properties",
     "x-super-properties",
     "x-discord-locale",
-    "x-context-properties",
     "x-fingerprint",
     "x-captcha-key",
     "x-captcha-rqtoken",
