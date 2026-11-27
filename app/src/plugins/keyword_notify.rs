@@ -184,11 +184,12 @@ pub(crate) fn highlight<'a>(
     Some((&text[..at], &text[at..end], &text[end..]))
 }
 
-/// The log as kept: newest first by time, each message once, at most `keep`.
+/// The log as kept: newest first by time, each message once, at most `keep`. True when the message stayed in it.
 pub(crate) fn add_to_log(log: &mut Vec<Value>, message: Value, keep: usize) -> bool {
     if log.iter().any(|known| known["id"] == message["id"]) {
         return false;
     }
+    let id = message["id"].clone();
     log.push(message);
     // `timestamp` is ISO 8601 with the same offset, so the text sorts as the time does.
     log.sort_by(|a, b| {
@@ -198,7 +199,7 @@ pub(crate) fn add_to_log(log: &mut Vec<Value>, message: Value, keep: usize) -> b
             .cmp(a["timestamp"].as_str().unwrap_or_default())
     });
     log.truncate(keep);
-    true
+    log.iter().any(|known| known["id"] == id)
 }
 
 #[cfg(test)]
@@ -298,6 +299,8 @@ mod tests {
         assert!(add_to_log(&mut log, at("2", "2026-01-01T00:00:03"), 2));
         assert!(!add_to_log(&mut log, at("2", "2026-01-01T00:00:03"), 2));
         assert!(add_to_log(&mut log, at("3", "2026-01-01T00:00:02"), 2));
+        // Older than everything kept: dropped at once, nothing changed.
+        assert!(!add_to_log(&mut log, at("4", "2026-01-01T00:00:00"), 2));
         let ids: Vec<&str> = log.iter().map(|m| m["id"].as_str().unwrap()).collect();
         assert_eq!(ids, ["2", "3"]);
     }

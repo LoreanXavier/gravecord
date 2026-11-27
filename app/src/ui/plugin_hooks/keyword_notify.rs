@@ -136,7 +136,8 @@ fn store_log() {
 }
 
 impl Root {
-    /// `applyKeywordEntries` on one message: you join its mentions when an entry matches; true when it did.
+    /// `applyKeywordEntries` on one message: you join its mentions when an entry matches; true when the log changed
+    /// (the caller stores it).
     fn keyword_notify_apply(&self, message: &mut Value, page_channel: Option<Id>) -> bool {
         let channel = message["channel_id"]
             .as_str()
@@ -185,11 +186,9 @@ impl Root {
                 logged["channel_id"] = Value::from(channel);
             }
             let keep = keep();
-            if with_log(|log| rules::add_to_log(log, logged, keep)) {
-                store_log();
-            }
+            return with_log(|log| rules::add_to_log(log, logged, keep));
         }
-        true
+        false
     }
 
     /// The interceptor for a gateway event: `MESSAGE_CREATE` and `MESSAGE_UPDATE` carry the message.
@@ -197,7 +196,9 @@ impl Root {
         if !matches!(name, "MESSAGE_CREATE" | "MESSAGE_UPDATE") || !on() {
             return data;
         }
-        self.keyword_notify_apply(&mut data, None);
+        if self.keyword_notify_apply(&mut data, None) {
+            store_log();
+        }
         data
     }
 
@@ -206,10 +207,14 @@ impl Root {
         if !on() {
             return page;
         }
+        let mut changed = false;
         if let Some(messages) = page.as_array_mut() {
             for message in messages {
-                self.keyword_notify_apply(message, Some(channel));
+                changed |= self.keyword_notify_apply(message, Some(channel));
             }
+        }
+        if changed {
+            store_log();
         }
         page
     }
