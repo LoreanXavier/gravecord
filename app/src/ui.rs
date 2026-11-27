@@ -2614,7 +2614,7 @@ impl Root {
                 started_ms,
             } => {
                 // Not in the pinned client: the plugins' look at a loaded page (`plugin_hooks.rs`).
-                let page = self.plugins_loaded_page(channel, page);
+                let page = self.plugins_loaded_page(channel, true, false, page);
                 let anchor = self.scroll_anchor();
                 self.stores.load_messages_since(channel, &page, started_ms);
                 self.reinsert_local_sends(channel);
@@ -3603,6 +3603,14 @@ impl Root {
                     self.warm_gifs();
                 }
                 cx.notify();
+            }
+            // Not in the pinned client: MessageLoggerEnhanced's saved attachments
+            // (`plugin_hooks/message_logger_enhanced.rs`).
+            Update::Image { key, bytes } if key.starts_with(plugin_hooks::MLE_IMAGE_PREFIX) => {
+                self.message_logger_enhanced_image(&key, Some(bytes));
+            }
+            Update::ImageFailed { key, .. } if key.starts_with(plugin_hooks::MLE_IMAGE_PREFIX) => {
+                self.message_logger_enhanced_image(&key, None);
             }
             Update::ImageFailed { key, .. } if key.starts_with(notifications::ICON_PREFIX) => {
                 self.notification_icon(&key, None, cx);
@@ -6061,6 +6069,9 @@ impl Root {
                         }
                         })
                     })
+                    // Not in the pinned client: MessageLoggerEnhanced's Open Logs
+                    // (`plugin_hooks/message_logger_enhanced.rs`).
+                    .children(self.message_logger_enhanced_button(cx))
                     .child({
                         let inbox_open = self.inbox.is_some();
                         let overdue = self.has_overdue_reminder();
@@ -14390,6 +14401,8 @@ impl Render for Root {
             .children(self.permissions_viewer_dialog(window, cx))
             // Not in the pinned client: MessageLogger's edit history (`plugin_hooks/message_logger.rs`).
             .children(self.message_logger_dialog(cx))
+            // Not in the pinned client: MessageLoggerEnhanced's log view (`plugin_hooks/message_logger_enhanced.rs`).
+            .children(self.message_logger_enhanced_dialog(cx))
             // Not in the pinned client: ExpressionManager's clone dialog and confirmations
             // (`plugin_hooks/expression_manager.rs`).
             .children(self.expression_manager_dialogs(cx))

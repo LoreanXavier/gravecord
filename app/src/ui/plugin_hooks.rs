@@ -65,6 +65,10 @@ pub(in crate::ui) use message_logger::{
     message_logger_history, message_logger_menu, message_logger_on, message_logger_scope,
     scoped_token,
 };
+mod message_logger_enhanced;
+pub(in crate::ui) use message_logger_enhanced::{
+    IMAGE_PREFIX as MLE_IMAGE_PREFIX, message_logger_enhanced_on,
+};
 mod message_peek;
 mod message_pronouns;
 mod message_tags;
@@ -781,17 +785,26 @@ pub(in crate::ui) fn has_own_section(id: &str) -> bool {
             | "Streaks"
             | "VoiceMessageTranscriber"
             | "KeywordNotify"
+            | "MessageLoggerEnhanced"
     )
 }
 
 impl super::Root {
     /// A loaded page of a channel's messages before the stores see it (`LOAD_MESSAGES_SUCCESS`): KeywordNotify marks
-    /// its matches.
-    pub(in crate::ui) fn plugins_loaded_page(&self, channel: Id, page: Value) -> Value {
+    /// its matches, MessageLoggerEnhanced puts its logged deleted messages back. `start`: the page reaches the
+    /// channel's newest message; `end`: its first.
+    pub(in crate::ui) fn plugins_loaded_page(
+        &self,
+        channel: Id,
+        start: bool,
+        end: bool,
+        page: Value,
+    ) -> Value {
         if crate::plugins::bypassed() {
             return page;
         }
-        self.keyword_notify_page(channel, page)
+        let page = self.keyword_notify_page(channel, page);
+        self.message_logger_enhanced_page(channel, start, end, page)
     }
 
     /// A plugin's own section on its card: MessageTags' Registered Tags (`SettingsTagList`), ClipsEnhancements'
@@ -815,6 +828,7 @@ impl super::Root {
             "Streaks" => Some(self.streaks_settings(cx)),
             "VoiceMessageTranscriber" => Some(self.transcriber_settings(cx)),
             "KeywordNotify" => Some(self.keyword_notify_settings(cx)),
+            "MessageLoggerEnhanced" => Some(self.message_logger_enhanced_settings(cx)),
             "SearchFix" => Some(
                 gpui::div()
                     .text_size(gpui::px(14.))

@@ -345,6 +345,9 @@ pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
 pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[
     // `hidden: true`: the default of entries stored without their own Ignore Bots.
     ("KeywordNotify", "ignoreBots", ""),
+    // COMPONENT settings that also keep a value: the card's own section shows and changes the two folders.
+    ("MessageLoggerEnhanced", "imageCacheDir", ""),
+    ("MessageLoggerEnhanced", "logsDir", ""),
     // CustomRPC's private settings (`withPrivateSettings`): its own form edits them.
     ("CustomRPC", "appID", ""),
     ("CustomRPC", "appName", ""),
@@ -2283,6 +2286,218 @@ pub(crate) const DEFS: &[Def] = &[
                 key: "separatedDiffs",
                 label: "Separated Diffs",
                 description: "Separate addition and removals in diffs for a more readable differential",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
+        id: "MessageLoggerEnhanced",
+        name: "MessageLoggerEnhanced",
+        description: "Improves MessageLogger with edited message history, ghost ping detection and more",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/messageLoggerEnhanced/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "saveMessages",
+                label: "Save Messages",
+                description: "Whether to save the deleted and edited messages.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "saveImages",
+                label: "Save Images",
+                description: "Save deleted attachments.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "sortNewest",
+                label: "Sort Newest",
+                description: "Sort logs by newest.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "cacheMessagesFromServers",
+                label: "Cache Messages From Servers",
+                description: "Usually message logger only logs from whitelisted ids and dms, enabling this would mean it would log messages from all servers as well. Note that this may cause the cache to exceed its limit, resulting in some messages being missed. If you are in a lot of servers, this may significantly increase the chances of messages being logged, which can result in a large message record and the inclusion of irrelevant messages.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreBots",
+                label: "Ignore Bots",
+                description: "Whether to ignore messages by bots",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreWebhooks",
+                label: "Ignore Webhooks",
+                description: "Whether to ignore messages by webhooks",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreSelf",
+                label: "Ignore Self",
+                description: "Whether to ignore messages by yourself",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreMutedGuilds",
+                label: "Ignore Muted Guilds",
+                description: "Messages in muted guilds will not be logged. Whitelisted users/channels in muted guilds will still be logged.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreMutedCategories",
+                label: "Ignore Muted Categories",
+                description: "Messages in channels belonging to muted categories will not be logged. Whitelisted users/channels in muted guilds will still be logged.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreMutedChannels",
+                label: "Ignore Muted Channels",
+                description: "Messages in muted channels will not be logged. Whitelisted users/channels in muted guilds will still be logged.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "alwaysLogDirectMessages",
+                label: "Always Log Direct Messages",
+                description: "Always log DMs",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "alwaysLogCurrentChannel",
+                label: "Always Log Current Channel",
+                description: "Always log current selected channel. Blacklisted channels/users will still be ignored.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "permanentlyRemoveLogByDefault",
+                label: "Permanently Remove Log By Default",
+                description: "Vencord's base MessageLogger remove log button wiil delete logs permanently",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ShowLogsButton",
+                label: "Show Logs Button",
+                description: "Toggle to whenever show the toolbox or not",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "ShowWhereMessageIsFrom",
+                label: "Show Where Message Is From",
+                description: "Show message channel/author name and server name",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "messagesToDisplayAtOnceInLogs",
+                label: "Messages To Display At Once In Logs",
+                description: "Number of messages to display at once in logs & number of messages to load when loading more messages in logs.",
+                kind: Kind::Number {
+                    default: 100.,
+                    min: 1.,
+                    max: 10000.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "messageLimit",
+                label: "Message Limit",
+                description: "Maximum number of messages to save. Older messages are deleted when the limit is reached. 0 means there is no limit",
+                kind: Kind::Number {
+                    default: 200.,
+                    min: 0.,
+                    max: 100000.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "attachmentSizeLimitInMegabytes",
+                label: "Attachment Size Limit In Megabytes",
+                description: "Maximum size of an attachment in megabytes to save. Attachments larger than this size will not be saved.",
+                kind: Kind::Number {
+                    default: 12.,
+                    min: 0.,
+                    max: 1000.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "attachmentFileExtensions",
+                label: "Attachment File Extensions",
+                description: "Comma separated list of file extensions to save. Attachments with file extensions not in this list will not be saved.",
+                kind: Kind::Text {
+                    default: "png,jpg,jpeg,gif,webp,mp4,webm,mp3,ogg,wav",
+                    max_len: 1000,
+                },
+            },
+            Setting {
+                key: "cacheLimit",
+                label: "Cache Limit",
+                description: "Maximum number of messages to store in the cache. Older messages are deleted when the limit is reached. This helps reduce memory usage and improve performance. 0 means there is no limit",
+                kind: Kind::Number {
+                    default: 1000.,
+                    min: 0.,
+                    max: 100000.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "timeBasedCleanupMinutes",
+                label: "Time Based Cleanup Minutes",
+                description: "Automatically remove messages from servers that are older than this many minutes. Set to 0 to disable time-based cleanup.",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 525600.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "preserveCurrentChannel",
+                label: "Preserve Current Channel",
+                description: "When enabled, messages in your currently selected channel are not affected by time-based cleanup.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "whitelistedIds",
+                label: "Whitelisted Ids",
+                description: "Server, channel, or user IDs to always show in message log.",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "blacklistedIds",
+                label: "Blacklisted Ids",
+                description: "Server, channel, or user IDs to never show in message log.",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "imageCacheDir",
+                label: "Image Cache Dir",
+                description: "Select saved images directory",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 1000,
+                },
+            },
+            Setting {
+                key: "logsDir",
+                label: "Logs Dir",
+                description: "Select logs directory",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 1000,
+                },
+            },
+            Setting {
+                key: "clearLogsOnRestart",
+                label: "Clear Logs On Restart",
+                description: "Clear logs when Discord restarts.",
                 kind: Kind::Switch { default: false },
             },
         ],

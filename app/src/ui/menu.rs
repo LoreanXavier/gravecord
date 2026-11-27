@@ -138,6 +138,9 @@ pub(super) enum Action {
     PluginToggleDeletedHighlight,
     PluginToggleDiffView,
     PluginClearMessageHistory,
+    /// Not in the pinned client: MessageLoggerEnhanced's "Message Logger" submenu
+    /// (`plugin_hooks/message_logger_enhanced.rs`).
+    PluginMessageLogger,
     /// "Save File" of a voice message (module 761304 `save-voice-message-audio`): its audio file is downloaded.
     SaveVoiceFile,
     /// "Favorite Emoji" / "Unfavorite Emoji" of the emoji under the pointer (module 253925).
@@ -202,6 +205,8 @@ pub(super) struct SavedState {
     /// Not in the pinned client: MessageLogger's state of a message with history: deleted, and the diff toggle
     /// (whether it is off) while diffs are shown.
     pub logged: Option<(bool, Option<bool>)>,
+    /// Not in the pinned client: MessageLoggerEnhanced's "Message Logger" submenu ends the menu.
+    pub message_logger: bool,
     /// A voice message with its audio file: Save File joins the picture rows' group.
     pub voice_file: bool,
     /// The pointer was on a video: "Stats for Nerds" ends the picture rows' group.
@@ -369,6 +374,8 @@ pub(super) enum SubmenuKind {
     RemoveReactions,
     /// Not in the pinned client: ReverseImageSearch's engines (`plugin_hooks.rs`).
     SearchImage,
+    /// Not in the pinned client: MessageLoggerEnhanced's rows (`plugin_hooks/message_logger_enhanced.rs`).
+    MessageLogger,
 }
 
 /// The submenu hanging off a menu row.
@@ -890,6 +897,18 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         ));
         push_menu_group(&mut items, logger);
     }
+    // Not in the pinned client: MessageLoggerEnhanced's submenu, last (`plugin_hooks/message_logger_enhanced.rs`).
+    if saved.message_logger {
+        push_menu_group(
+            &mut items,
+            vec![Item::Entry(
+                "Message Logger",
+                "plugin_history",
+                Action::PluginMessageLogger,
+                true,
+            )],
+        );
+    }
     items
 }
 
@@ -1023,6 +1042,7 @@ impl Root {
             translate,
             clone_sticker,
             logged,
+            message_logger: super::plugin_hooks::message_logger_enhanced_on(),
             pinned,
             reacted,
             manage_reactions: reacted
@@ -1221,6 +1241,8 @@ impl Root {
                 self.message_logger_clear(found.channel_id, message);
                 cx.notify();
             }
+            // Its rows are in its submenu.
+            Action::PluginMessageLogger => {}
             Action::CopyText => {
                 let text = if found.content.is_empty() {
                     parse_block_text(&found.content)
@@ -1645,6 +1667,7 @@ impl Root {
                 Action::Apps => Some(SubmenuKind::Apps),
                 Action::RemoveReactions => Some(SubmenuKind::RemoveReactions),
                 Action::SearchImage => Some(SubmenuKind::SearchImage),
+                Action::PluginMessageLogger => Some(SubmenuKind::MessageLogger),
                 _ => None,
             };
             if kind == Some(SubmenuKind::Apps) {
@@ -1691,6 +1714,7 @@ impl Root {
                             | Action::Apps
                             | Action::RemoveReactions
                             | Action::SearchImage
+                            | Action::PluginMessageLogger
                     ) {
                         // These rows open their submenus, on a click as on a hover.
                         let kind = if run == Action::Apps {
@@ -1700,6 +1724,8 @@ impl Root {
                             SubmenuKind::RemoveReactions
                         } else if run == Action::SearchImage {
                             SubmenuKind::SearchImage
+                        } else if run == Action::PluginMessageLogger {
+                            SubmenuKind::MessageLogger
                         } else {
                             SubmenuKind::Reminder
                         };
@@ -1751,6 +1777,7 @@ impl Root {
                             | Action::PluginToggleDeletedHighlight
                             | Action::PluginToggleDiffView
                             | Action::PluginClearMessageHistory
+                            | Action::PluginMessageLogger
                     ) {
                         label
                     } else {
@@ -2026,6 +2053,9 @@ impl Root {
             }
             SubmenuKind::RemoveReactions => self.remove_reaction_rows(channel, submenu.message, cx),
             SubmenuKind::SearchImage => self.search_image_rows(cx),
+            SubmenuKind::MessageLogger => {
+                self.message_logger_enhanced_message_rows(channel, submenu.message, cx)
+            }
         };
         Some(self.submenu_frame(rows, submenu.row, window))
     }

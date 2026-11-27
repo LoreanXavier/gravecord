@@ -3297,6 +3297,13 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                         let _ = updates.send(Update::Image { key, bytes });
                         return;
                     }
+                    // Not in the pinned client: a picture MessageLoggerEnhanced saved, read from its file.
+                    if let Some(bytes) =
+                        crate::plugins::message_logger_enhanced::saved_image_bytes(&url)
+                    {
+                        let _ = updates.send(Update::Image { key, bytes });
+                        return;
+                    }
                     // A Shop or CDN picture kept on disk is drawn at once; a stale one is fetched again behind it.
                     let shop_box = shop_art_box(&key);
                     let cache_raw =

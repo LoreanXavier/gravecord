@@ -230,7 +230,12 @@ impl Root {
     ) {
         let channel = spec.channel;
         // Not in the pinned client: the plugins' look at a loaded page (`plugin_hooks.rs`).
-        let page = self.plugins_loaded_page(channel, page);
+        let newest = spec.before.is_none() && spec.after.is_none() && spec.jump.is_none();
+        let first = spec.before.is_some()
+            && page
+                .as_array()
+                .is_some_and(|list| list.len() < spec.limit as usize);
+        let page = self.plugins_loaded_page(channel, newest, first, page);
         let anchor = self.scroll_anchor();
         self.stores.messages_loaded(&spec, &page);
         self.reinsert_local_sends(channel);

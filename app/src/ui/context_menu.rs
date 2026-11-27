@@ -448,6 +448,9 @@ pub(super) enum Act {
     PluginViewPermissions,
     /// Not in the pinned client: MessageLogger's Clear Message Log (`plugin_hooks/message_logger.rs`).
     PluginClearMessageLog,
+    /// Not in the pinned client: MessageLoggerEnhanced's "Message Logger" submenu
+    /// (`plugin_hooks/message_logger_enhanced.rs`).
+    PluginMessageLogger,
     /// Not in the pinned client: GifMaker's Make GIF and Edit GIF (`plugin_hooks/gif_maker.rs`).
     PluginMakeGif,
     /// Not in the pinned client: ExpressionManager's rows (`plugin_hooks/expression_manager.rs`).
@@ -519,7 +522,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 202] = [
+    pub(super) const ALL: [Act; 203] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -683,6 +686,7 @@ impl Act {
         Act::PluginDecorDelete,
         Act::PluginViewPermissions,
         Act::PluginClearMessageLog,
+        Act::PluginMessageLogger,
         Act::PluginCloneSticker,
         Act::PluginEditExpression,
         Act::PluginDeleteExpression,
@@ -929,6 +933,7 @@ impl Act {
             Act::PluginMakeGif => 199,
             Act::PluginDecorCopyHash => 200,
             Act::PluginDecorDelete => 201,
+            Act::PluginMessageLogger => 202,
         }
     }
 }
@@ -1017,6 +1022,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginDecorDelete
         | Act::PluginViewPermissions
         | Act::PluginClearMessageLog
+        | Act::PluginMessageLogger
         | Act::PluginCloneSticker
         | Act::PluginEditExpression
         | Act::PluginDeleteExpression
@@ -5925,6 +5931,8 @@ impl Root {
         let items = self.with_permissions_viewer_row(items, target);
         // Not in the pinned client: MessageLogger's Clear Message Log (`plugin_hooks/message_logger.rs`).
         let items = self.with_message_logger_row(items, target);
+        // Not in the pinned client: MessageLoggerEnhanced's submenu (`plugin_hooks/message_logger_enhanced.rs`).
+        let items = self.with_message_logger_enhanced_row(items, target);
         // Not in the pinned client: ExpressionManager's expression rows (`plugin_hooks/expression_manager.rs`).
         let items = self.with_expression_manager_rows(items, target);
         // Not in the pinned client: GifMaker's row (`plugin_hooks/gif_maker.rs`).
@@ -8297,6 +8305,8 @@ impl Root {
             Act::MoveTo => self.move_rows(target),
             // Not in the pinned client: PinDMs' submenu (`plugin_hooks/pin_dms.rs`).
             Act::PluginPinDms => self.pin_dms_sub_rows(target),
+            // Not in the pinned client: MessageLoggerEnhanced (`plugin_hooks/message_logger_enhanced.rs`).
+            Act::PluginMessageLogger => self.message_logger_enhanced_sub_rows(target),
             Act::EditTags => match target {
                 Target::Thread(thread) => self
                     .post_tags(thread)
@@ -8489,6 +8499,10 @@ impl Root {
             // Not in the pinned client: PinDMs' submenu (`plugin_hooks/pin_dms.rs`).
             Act::PluginPinDms => {
                 self.pin_dms_run_sub(target, index, cx);
+            }
+            // Not in the pinned client: MessageLoggerEnhanced (`plugin_hooks/message_logger_enhanced.rs`).
+            Act::PluginMessageLogger => {
+                self.message_logger_enhanced_run_sub(target, index, cx);
             }
             Act::EditTags => {
                 if let (Some(row), Target::Thread(thread)) = (row, target)

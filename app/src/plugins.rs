@@ -24,6 +24,7 @@ pub(crate) mod gif_maker;
 pub(crate) mod gif_provider;
 pub(crate) mod keyword_notify;
 pub(crate) mod limitless_screenshare;
+pub(crate) mod message_logger_enhanced;
 pub(crate) mod quoter;
 mod registry;
 pub(crate) mod sed_enhanced;

@@ -273,6 +273,35 @@ pub(in crate::ui) fn message_logger_scope(message: Id) -> Scope {
     Scope(red)
 }
 
+/// The deleted text colours for a message MessageLoggerEnhanced's log view draws.
+pub(in crate::ui) fn message_logger_red_scope() -> Scope {
+    SCOPED.set(true);
+    Scope(true)
+}
+
+/// MessageLoggerEnhanced puts a logged message back: deleted (with its attachments) and its logged edits, as if this
+/// plugin had kept them.
+pub(in crate::ui) fn message_logger_restore(
+    message: Id,
+    channel: Id,
+    deleted: bool,
+    attachments: &[Id],
+    edits: Vec<Edit>,
+) {
+    LOGGED.with(|logged| {
+        let mut logged = logged.borrow_mut();
+        if deleted {
+            logged.deleted.insert(message, channel);
+            for attachment in attachments {
+                logged.attachment_owner.insert(*attachment, message);
+            }
+        }
+        if !edits.is_empty() {
+            logged.history.entry(message).or_insert(edits);
+        }
+    });
+}
+
 /// `createWordDiff`'s parts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::ui) enum Part {
@@ -480,6 +509,8 @@ impl Root {
 
     /// Before the stores see a dispatch: what a delete keeps, what an edit replaces.
     pub(in crate::ui) fn message_logger_before(&mut self, name: &str, data: &Value) {
+        // MessageLoggerEnhanced's look first: its log, and the deletes it lets go (`message_logger_enhanced.rs`).
+        self.message_logger_enhanced_before(name, data);
         if !matches!(
             name,
             "MESSAGE_DELETE" | "MESSAGE_DELETE_BULK" | "MESSAGE_UPDATE"
@@ -525,6 +556,7 @@ impl Root {
                                     message.flags & EPHEMERAL != EPHEMERAL
                                         && !self.message_logger_ignored(&settings, message, false)
                                 })
+                            && !super::message_logger_enhanced::message_logger_enhanced_ignored(*id)
                     })
                     .collect();
                 LOGGED.with(|logged| logged.borrow_mut().keep = keep);
@@ -574,6 +606,7 @@ impl Root {
         if name != "MESSAGE_UPDATE" {
             if name == "MESSAGE_DELETE" || name == "MESSAGE_DELETE_BULK" {
                 LOGGED.with(|logged| logged.borrow_mut().keep.clear());
+                super::message_logger_enhanced::message_logger_enhanced_after();
             }
             return;
         }
@@ -652,6 +685,8 @@ impl Root {
 
     /// `clearMessageHistory`: a deleted message goes for good, another loses its edits and deleted attachments.
     pub(in crate::ui) fn message_logger_clear(&mut self, channel: Id, message: Id) {
+        // MessageLoggerEnhanced's `permanentlyRemoveLogByDefault` (`message_logger_enhanced.rs`).
+        self.message_logger_enhanced_clear(message, false);
         let deleted = LOGGED.with(|logged| logged.borrow_mut().deleted.remove(&message).is_some());
         if deleted {
             // The original dispatches `MESSAGE_DELETE` with `mlDeleted`; its MessageStore drops the message, and the
