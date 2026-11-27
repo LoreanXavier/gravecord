@@ -2614,9 +2614,13 @@ impl Root {
                 started_ms,
             } => {
                 // Not in the pinned client: the plugins' look at a loaded page (`plugin_hooks.rs`).
-                let page = self.plugins_loaded_page(channel, true, false, page);
+                let hooked = self.plugins_loaded_page(channel, true, false, &page);
                 let anchor = self.scroll_anchor();
-                self.stores.load_messages_since(channel, &page, started_ms);
+                self.stores.load_messages_since(
+                    channel,
+                    hooked.as_ref().unwrap_or(&page),
+                    started_ms,
+                );
                 self.reinsert_local_sends(channel);
                 if Some(channel) == self.channel {
                     self.read_current_channel();
@@ -13621,7 +13625,10 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape"
-                    && (this.oauth_escape(cx)
+                    // Not in the pinned client: MessageLoggerEnhanced's log view, over the rest
+                    // (`plugin_hooks/message_logger_enhanced.rs`).
+                    && (this.message_logger_enhanced_escape(cx)
+                        || this.oauth_escape(cx)
                         || this.now_playing_escape(cx)
                         || this.activity_dialog_escape(cx)
                         || this.activity_shelf_escape(cx))

@@ -67,7 +67,7 @@ pub(in crate::ui) use message_logger::{
 };
 mod message_logger_enhanced;
 pub(in crate::ui) use message_logger_enhanced::{
-    IMAGE_PREFIX as MLE_IMAGE_PREFIX, message_logger_enhanced_on,
+    IMAGE_PREFIX as MLE_IMAGE_PREFIX, message_logger_enhanced_on, message_logger_enhanced_view_open,
 };
 mod message_peek;
 mod message_pronouns;
@@ -793,18 +793,21 @@ impl super::Root {
     /// A loaded page of a channel's messages before the stores see it (`LOAD_MESSAGES_SUCCESS`): KeywordNotify marks
     /// its matches, MessageLoggerEnhanced puts its logged deleted messages back. `start`: the page reaches the
     /// channel's newest message; `end`: its first.
+    /// `None` while none of them acts on it; the server's page itself stays as it came (the start cache keeps it).
     pub(in crate::ui) fn plugins_loaded_page(
         &self,
         channel: Id,
         start: bool,
         end: bool,
-        page: Value,
-    ) -> Value {
-        if crate::plugins::bypassed() {
-            return page;
+        page: &Value,
+    ) -> Option<Value> {
+        if crate::plugins::bypassed()
+            || !(self.keyword_notify_tab() || message_logger_enhanced_on())
+        {
+            return None;
         }
-        let page = self.keyword_notify_page(channel, page);
-        self.message_logger_enhanced_page(channel, start, end, page)
+        let page = self.keyword_notify_page(channel, page.clone());
+        Some(self.message_logger_enhanced_page(channel, start, end, page))
     }
 
     /// A plugin's own section on its card: MessageTags' Registered Tags (`SettingsTagList`), ClipsEnhancements'

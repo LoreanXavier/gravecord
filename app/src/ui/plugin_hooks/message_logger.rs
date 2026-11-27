@@ -490,7 +490,7 @@ impl Root {
     }
 
     /// A message of the stores by its channel and id, in the list or the window's caches.
-    fn message_logger_find(&self, channel: Id, message: Id) -> Option<&Message> {
+    pub(in crate::ui) fn message_logger_find(&self, channel: Id, message: Id) -> Option<&Message> {
         let window = self.stores.windows.get(&channel);
         self.stores
             .messages

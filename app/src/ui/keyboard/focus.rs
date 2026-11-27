@@ -421,6 +421,9 @@ impl Root {
                 self.guild_events.is_some(),
                 self.keys.help.is_some(),
                 self.keys.explainer.open,
+                // Not in the pinned client: MessageLoggerEnhanced's log view
+                // (`plugin_hooks/message_logger_enhanced.rs`).
+                super::super::plugin_hooks::message_logger_enhanced_view_open(),
             ]
             .into_iter()
             .filter(|open| *open)

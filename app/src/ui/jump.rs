@@ -235,7 +235,9 @@ impl Root {
             && page
                 .as_array()
                 .is_some_and(|list| list.len() < spec.limit as usize);
-        let page = self.plugins_loaded_page(channel, newest, first, page);
+        let page = self
+            .plugins_loaded_page(channel, newest, first, &page)
+            .unwrap_or(page);
         let anchor = self.scroll_anchor();
         self.stores.messages_loaded(&spec, &page);
         self.reinsert_local_sends(channel);

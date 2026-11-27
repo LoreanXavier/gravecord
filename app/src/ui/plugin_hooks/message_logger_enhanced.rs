@@ -342,12 +342,52 @@ fn readded(record: &Record) -> Value {
     let mut message = record.message.clone();
     if let Some(attachments) = message["attachments"].as_array_mut() {
         for attachment in attachments {
-            if let Some(name) = attachment["path"].as_str().map(str::to_owned) {
+            let picture = attachment["content_type"]
+                .as_str()
+                .is_some_and(|content| content.starts_with("image/"));
+            if picture && let Some(name) = attachment["path"].as_str().map(str::to_owned) {
                 attachment["proxy_url"] = Value::from(format!("{SAVED_SCHEME}{name}"));
             }
         }
     }
     message
+}
+
+/// A message the stores hold, as the JSON the log keeps, for one the cache did not see (the original falls back on
+/// MessageStore): what the log view and a re-added message draw.
+fn message_json(message: &Message) -> Value {
+    let author = &message.author;
+    json!({
+        "id": message.id.to_string(),
+        "channel_id": message.channel_id.to_string(),
+        "type": message.kind,
+        "content": message.content,
+        "timestamp": message.timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "edited_timestamp": message.edited_at.map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        "flags": message.flags,
+        "webhook_id": message.webhook_id.map(|id| id.to_string()),
+        "mention_everyone": message.mention_everyone,
+        "mentions": message.mention_user_ids.iter().map(|id| json!({"id": id.to_string()})).collect::<Vec<_>>(),
+        "author": {
+            "id": author.id.to_string(),
+            "username": author.username,
+            "global_name": author.global_name,
+            "avatar": author.avatar,
+            "discriminator": author.discriminator,
+            "bot": author.bot,
+        },
+        "attachments": message.attachments.iter().map(|attachment| json!({
+            "id": attachment.id.to_string(),
+            "filename": attachment.filename,
+            "url": attachment.url,
+            "proxy_url": attachment.proxy_url,
+            "content_type": attachment.content_type,
+            "width": attachment.width,
+            "height": attachment.height,
+            "size": attachment.size,
+        })).collect::<Vec<_>>(),
+        "embeds": [],
+    })
 }
 
 /// Shallow `{...cached, ...update}`: the update's fields over the known message.
@@ -453,7 +493,10 @@ impl Root {
                     return;
                 };
                 let known = KEPT.with(|kept| kept.borrow().cache.messages.get(&id).cloned());
-                let Some((known, ours)) = known else {
+                let Some((known, ours)) = known.or_else(|| {
+                    self.message_logger_find(channel, id)
+                        .map(|found| (message_json(found), false))
+                }) else {
                     return;
                 };
                 let mut message = merged(&known, data);
@@ -501,7 +544,10 @@ impl Root {
                 }
                 for id in ids {
                     let known = KEPT.with(|kept| kept.borrow().cache.messages.get(&id).cloned());
-                    let Some((mut message, _)) = known else {
+                    let Some((mut message, _)) = known.or_else(|| {
+                        self.message_logger_find(channel, id)
+                            .map(|found| (message_json(found), false))
+                    }) else {
                         continue;
                     };
                     message["deleted"] = Value::Bool(true);
@@ -2057,6 +2103,31 @@ impl Root {
 /// The message menu ends with "Message Logger" while the plugin is on.
 pub(in crate::ui) fn message_logger_enhanced_on() -> bool {
     on()
+}
+
+/// The log view is open (a modal for the key layer).
+pub(in crate::ui) fn message_logger_enhanced_view_open() -> bool {
+    KEPT.with(|kept| kept.borrow().view.is_some()) && on()
+}
+
+impl Root {
+    /// Escape closes what the log view has open on top first: the row menu, the question, then the view.
+    pub(in crate::ui) fn message_logger_enhanced_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        let closed = KEPT.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            let Some(view) = kept.view.as_mut() else {
+                return false;
+            };
+            if view.menu.take().is_none() && view.confirm.take().is_none() {
+                kept.view = None;
+            }
+            true
+        });
+        if closed {
+            cx.notify();
+        }
+        closed
+    }
 }
 
 /// What the view's list is drawn from.
