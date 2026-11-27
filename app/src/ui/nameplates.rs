@@ -20,6 +20,10 @@ use std::{
 
 pub(super) const ANIMATION_PREFIX: &str = "nameplate-animation:";
 
+/// The decoded clips kept at once. A clip is every frame at the file's size (5 to 18 MB): past this the plates that
+/// would play next keep their still picture until one leaves the screen.
+const CLIP_BUDGET: usize = 64 * 1024 * 1024;
+
 /// Where the nameplate is placed (module 88686 / 351952).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Placement {
@@ -53,6 +57,14 @@ pub(super) struct Cache {
     deadline: Option<Instant>,
     generation: u64,
     retired_frames: u64,
+    /// The users whose plate was painted on screen since the last `prepare`.
+    seen: HashSet<Id>,
+    /// Those of the frame before: the plates on screen, which alone may play (a row out of view, or in a member
+    /// list that is not shown, has no element in the original, so no video plays for it).
+    visible: HashSet<Id>,
+    /// Clips left still for want of room in `CLIP_BUDGET`, until the set of playing plates changes.
+    over_budget: HashSet<Id>,
+    active_skus: Vec<Id>,
 }
 
 impl Default for Cache {
@@ -70,6 +82,10 @@ impl Default for Cache {
             deadline: None,
             generation: 0,
             retired_frames: 0,
+            seen: HashSet::new(),
+            visible: HashSet::new(),
+            over_budget: HashSet::new(),
+            active_skus: Vec::new(),
         }
     }
 }
@@ -83,6 +99,8 @@ struct CachedFrame {
 struct Frame {
     image: Arc<RenderImage>,
     retired: Option<Arc<RenderImage>>,
+    /// The plate was not on screen in the frame before: the main view prepares again, so it may start playing.
+    newly_seen: bool,
 }
 #[derive(Default)]
 struct Preparation {
@@ -95,8 +113,43 @@ struct Preparation {
 
 impl Cache {
     fn prepare(&mut self, active: &[(Id, Id, bool)], members: &[(Id, Id)]) -> Preparation {
+        self.visible = std::mem::take(&mut self.seen);
+        let active: Vec<(Id, Id, bool)> = active
+            .iter()
+            .filter(|(user, _, _)| self.visible.contains(user))
+            .copied()
+            .collect();
+        let mut active_skus: Vec<Id> = active.iter().map(|(_, sku, _)| *sku).collect();
+        active_skus.sort_unstable();
+        active_skus.dedup();
+        if active_skus != self.active_skus {
+            self.over_budget.clear();
+            self.active_skus.clone_from(&active_skus);
+        }
+        // In sku order, so the budget's choice holds from frame to frame.
+        let mut used = 0;
+        for sku in &active_skus {
+            if let Some(Some(clip)) = self.animations.get(sku) {
+                let bytes = clip_bytes(clip);
+                if used + bytes > CLIP_BUDGET {
+                    self.animations.remove(sku);
+                    self.over_budget.insert(*sku);
+                } else {
+                    used += bytes;
+                }
+            }
+        }
+        let active_skus: HashSet<Id> = active_skus
+            .into_iter()
+            .filter(|sku| !self.over_budget.contains(sku))
+            .collect();
+        let active: Vec<(Id, Id, bool)> = active
+            .iter()
+            .filter(|(_, sku, _)| active_skus.contains(sku))
+            .copied()
+            .collect();
+        let active = active.as_slice();
         let active_users: HashSet<_> = active.iter().map(|(user, _, _)| *user).collect();
-        let active_skus: HashSet<_> = active.iter().map(|(_, sku, _)| *sku).collect();
         let member_users: HashSet<_> = members.iter().map(|(user, _)| *user).collect();
         let member_skus: HashSet<_> = members.iter().map(|(_, sku)| *sku).collect();
         let now = self.epoch.elapsed();
@@ -141,6 +194,10 @@ impl Cache {
                 }
             }
         }
+        // One wake per slot of the 60 Hz grid, however many plates play out of step.
+        preparation.deadline = preparation
+            .deadline
+            .map(|wake| super::gif_tiles::on_grid(wake, Instant::now()));
         let idle: HashSet<_> = super::member_avatars::idle_keys(&self.touched, Instant::now())
             .into_iter()
             .collect();
@@ -164,7 +221,10 @@ impl Cache {
             }
         });
         for sku in active_skus {
-            if self.animations.contains_key(&sku) || self.decoding.contains(&sku) {
+            if self.animations.contains_key(&sku)
+                || self.decoding.contains(&sku)
+                || used >= CLIP_BUDGET
+            {
                 continue;
             }
             if let Some(bytes) = self.encoded.get(&sku) {
@@ -179,6 +239,8 @@ impl Cache {
 
     fn frame(&mut self, user: Id, sku: Id, encoded: &[u8], spec: Spec) -> Option<Frame> {
         self.touched.insert(user, Instant::now());
+        self.seen.insert(user);
+        let newly_seen = !self.visible.contains(&user);
         let frozen = self.frozen.get(&user).filter(|(known, _, _)| *known == sku);
         let index = frozen.map(|(_, index, _)| *index);
         if let Some(known) = self.frames.get(&user)
@@ -189,6 +251,7 @@ impl Cache {
             return Some(Frame {
                 image: known.image.clone(),
                 retired: None,
+                newly_seen,
             });
         }
         let source = if let Some((_, _, source)) = frozen {
@@ -226,8 +289,14 @@ impl Cache {
         Some(Frame {
             image: frame,
             retired,
+            newly_seen,
         })
     }
+}
+
+/// The memory a decoded clip holds: every frame's pixels.
+fn clip_bytes(clip: &Clip) -> usize {
+    clip.frames.iter().map(|frame| frame.as_raw().len()).sum()
 }
 
 fn gradient_alpha(position: f32, hovered: bool, selected: bool, placement: Placement) -> f32 {
@@ -619,6 +688,9 @@ impl Root {
                                 if let Some(retired) = frame.retired {
                                     cx.drop_image(retired, Some(window));
                                 }
+                                if frame.newly_seen {
+                                    super::regions::notify_root_next_frame(window);
+                                }
                                 let _ = window.paint_image(
                                     bounds,
                                     bounds,
@@ -677,6 +749,7 @@ mod tests {
         let pixel = Arc::new(RgbaImage::new(1, 1));
         cache.frozen.insert(2, (20, 3, pixel.clone()));
         cache.frozen.insert(3, (30, 4, pixel));
+        cache.seen.insert(1);
         let cleanup = cache.prepare(&[(1, 10, true)], &[(1, 10), (2, 20)]);
         assert_eq!(cache.animations.len(), 1);
         assert!(cache.animations.contains_key(&10));
@@ -684,6 +757,110 @@ mod tests {
         assert!(!cache.frozen.contains_key(&3));
         assert_eq!(cleanup.forgotten, [30]);
         assert_eq!(cache.encoded.len(), 2);
+    }
+
+    /// A clip of `frames` frames of `side` x `side` pixels, 100 ms each.
+    fn clip(frames: usize, side: u32) -> Arc<Clip> {
+        Clip::from_frames((0..frames).map(|_| {
+            (
+                std::time::Duration::from_millis(100),
+                RgbaImage::new(side, side),
+            )
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn only_a_plate_painted_on_screen_plays_and_keeps_its_clip() {
+        let mut cache = Cache::default();
+        cache.animations.insert(10, Some(clip(3, 4)));
+        cache.animations.insert(20, Some(clip(3, 4)));
+        cache.seen.insert(1);
+        let members = [(1, 10), (2, 20)];
+        let work = cache.prepare(&[(1, 10, false), (2, 20, false)], &members);
+        assert!(cache.animations.contains_key(&10));
+        assert!(
+            !cache.animations.contains_key(&20),
+            "user 2 was not painted"
+        );
+        assert!(cache.clocks.get(&1).is_some_and(|(_, clock)| clock.playing));
+        assert!(!cache.clocks.contains_key(&2));
+        assert!(work.deadline.is_some());
+        // Nothing painted since: the plate left the screen, so it stops and nothing wakes.
+        let work = cache.prepare(&[(1, 10, false), (2, 20, false)], &members);
+        assert!(cache.animations.is_empty());
+        assert!(work.deadline.is_none());
+        assert!(work.decode.is_empty() && work.fetch.is_empty());
+    }
+
+    #[test]
+    fn a_plate_coming_into_view_asks_for_another_prepare_once() {
+        let source = RgbaImage::from_pixel(4, 4, Rgba([255, 0, 0, 255]));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        source
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let spec = Spec {
+            width: 8,
+            height: 4,
+            mask_start: 0f32.to_bits(),
+            scale: 1f32.to_bits(),
+            tint: None,
+            hovered: false,
+            selected: false,
+            placement: Placement::MemberList,
+        };
+        let mut cache = Cache::default();
+        assert!(
+            cache
+                .frame(1, 2, encoded.get_ref(), spec)
+                .unwrap()
+                .newly_seen
+        );
+        cache.prepare(&[], &[(1, 2)]);
+        assert!(
+            !cache
+                .frame(1, 2, encoded.get_ref(), spec)
+                .unwrap()
+                .newly_seen
+        );
+    }
+
+    #[test]
+    fn clips_past_the_budget_stay_still_until_the_playing_set_changes() {
+        // 64 frames of 512 x 512: 64 MB, the whole budget, for each clip.
+        let big = clip(64, 512);
+        assert_eq!(clip_bytes(&big), CLIP_BUDGET);
+        let mut cache = Cache::default();
+        cache.animations.insert(10, Some(big.clone()));
+        cache.animations.insert(20, Some(big));
+        cache.encoded.insert(20, Arc::new(vec![0]));
+        let members = [(1, 10), (2, 20)];
+        let active = [(1, 10, false), (2, 20, false)];
+        cache.seen.extend([1, 2]);
+        let work = cache.prepare(&active, &members);
+        assert!(cache.animations.contains_key(&10));
+        assert!(!cache.animations.contains_key(&20));
+        assert!(work.decode.is_empty(), "no room: not decoded again");
+        cache.seen.extend([1, 2]);
+        let work = cache.prepare(&active, &members);
+        assert!(work.decode.is_empty());
+        // The first plate left the screen: the second may play now.
+        cache.seen.insert(2);
+        let work = cache.prepare(&active, &members);
+        assert_eq!(work.decode.len(), 1);
+        assert_eq!(work.decode[0].0, 20);
+    }
+
+    #[test]
+    fn plates_out_of_step_wake_at_most_once_per_sixtieth_of_a_second() {
+        let mut cache = Cache::default();
+        cache.animations.insert(10, Some(clip(3, 4)));
+        cache.seen.insert(1);
+        let asked = Instant::now();
+        let work = cache.prepare(&[(1, 10, false)], &[(1, 10)]);
+        let wake = work.deadline.unwrap();
+        assert!(wake.duration_since(asked) >= std::time::Duration::from_nanos(16_666_667));
     }
 
     #[test]

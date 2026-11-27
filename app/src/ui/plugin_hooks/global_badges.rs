@@ -105,6 +105,11 @@ fn parse(body: &Value) -> HashMap<Id, Vec<GlobalBadge>> {
         .collect()
 }
 
+/// The image cache key and URL of a badge's picture.
+fn picture_source(badge: &GlobalBadge) -> (String, String) {
+    (format!("global-badge:{}", badge.image), badge.image.clone())
+}
+
 /// `getGlobalBadges`: the badges shown for `user` (none while the plugin is off).
 pub(in crate::ui) fn global_badges(user: Id) -> Vec<GlobalBadge> {
     if crate::plugins::bypassed() {
@@ -150,7 +155,9 @@ impl Root {
         });
     }
 
-    /// The list arrived. True when the key was ours.
+    /// The list arrived. True when the key was ours. No picture is asked for here: the list names every badge of
+    /// every user the mods know (thousands), and the original's `<img>` loads a badge's picture only once a profile
+    /// shows it (`global_badge_elements`).
     pub(in crate::ui) fn global_badges_fetched(
         &mut self,
         key: &str,
@@ -162,9 +169,6 @@ impl Root {
         }
         if body.is_object() {
             let parsed = parse(body);
-            for badge in parsed.values().flatten() {
-                self.request_image(format!("global-badge:{}", badge.image), badge.image.clone());
-            }
             BADGES.with(|badges| *badges.borrow_mut() = parsed);
             cx.notify();
         }
@@ -268,10 +272,11 @@ impl Root {
             .into_iter()
             .enumerate()
             .map(|(index, badge)| {
-                let picture = self
-                    .images
-                    .get(&format!("global-badge:{}", badge.image))
-                    .cloned();
+                let (key, url) = picture_source(&badge);
+                let picture = self.images.get(&key).cloned();
+                if picture.is_none() {
+                    self.want_image(key, url, cx);
+                }
                 let (name, link) = (badge.tooltip.clone(), badge.image.clone());
                 let target = div()
                     .id(gpui::SharedString::from(format!(
@@ -331,6 +336,20 @@ mod tests {
         assert_eq!(
             api_url(&state).as_deref(),
             Some("https://badges.equicord.org/users")
+        );
+    }
+
+    #[test]
+    fn a_drawn_badge_asks_for_its_own_picture_under_one_key() {
+        let parsed = parse(&json!({"users": {"5": [
+            {"badge": "https://b/1.png", "tooltip": "One", "mod": "aero"}
+        ]}}));
+        assert_eq!(
+            picture_source(&parsed[&5][0]),
+            (
+                "global-badge:https://b/1.png".to_owned(),
+                "https://b/1.png".to_owned()
+            )
         );
     }
 }
