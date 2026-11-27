@@ -574,6 +574,33 @@ impl Root {
         let mut hash = std::hash::DefaultHasher::new();
         url.hash(&mut hash);
         let key = format!("{PREFIX}lb:{item_key}:{:x}", hash.finish());
+        self.always_playing_video(key, url, size, 0., cx)
+    }
+
+    /// Silent looping layer for a GIF picker tile whose picture is an MP4 (a GIFV favourite): drawn over the tile's
+    /// first-frame poster once decoded, with the tile's 5px corners. Picker tiles always play, like its GIF tiles.
+    pub(super) fn picker_inline_video(
+        &self,
+        gif_id: &str,
+        url: &str,
+        size: (u32, u32),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut hash = std::hash::DefaultHasher::new();
+        gif_id.hash(&mut hash);
+        url.hash(&mut hash);
+        let key = format!("{PREFIX}pk:{:x}", hash.finish());
+        self.always_playing_video(key, url, size, 5., cx)
+    }
+
+    fn always_playing_video(
+        &self,
+        key: String,
+        url: &str,
+        size: (u32, u32),
+        radius: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         self.inline_videos.borrow_mut().register_with_play(
             &key,
             url,
@@ -615,7 +642,7 @@ impl Root {
                             let _ = window.paint_image(
                                 bounds,
                                 bounds,
-                                Corners::all(px(0.)),
+                                Corners::all(px(radius)),
                                 image,
                                 0,
                                 false,
