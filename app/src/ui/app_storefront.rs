@@ -27,6 +27,7 @@
 use super::modal::{self, Tone};
 use super::{Root, color, icon};
 use crate::net::Request;
+use dc_state::Id;
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, ObjectFit, SharedString, Window, deferred, div,
     img, prelude::*, px,
@@ -79,6 +80,9 @@ pub(super) struct Open {
     pub app: String,
     pub guild: Option<u64>,
     pub detail: Option<StorefrontDetail>,
+    /// Opened by a Premium button of a message (module 232430 `V`): only the details modal shows, and closing it
+    /// closes everything (there is no storefront behind it).
+    pub from_button: bool,
 }
 
 /// A benefit of a subscription listing (`{id, name, description, icon}`).
@@ -300,7 +304,191 @@ fn heading(glyph: Option<&'static str>, label: &str) -> gpui::Div {
         .child(label.to_owned())
 }
 
+/// The read a Premium button makes for its SKU (`D` of module 232430: `STOREFRONT_PREMIUM_BUTTON`,
+/// `/applications/storefront/interactions/premium-button/{sku}`). Its answer lands in `fetched` like the modal's.
+pub(super) fn premium_button_key(sku: Id) -> String {
+    format!("{KEY_PREFIX}premium-button:{sku}")
+}
+
+/// `SKUFlags.AVAILABLE` (module 122817).
+const SKU_AVAILABLE: u64 = 1 << 2;
+
+/// What a Premium button shows (`C` of module 232430 `V`).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum PremiumButton {
+    /// The SKU, its listing or (for a subscription) its parent SKU is not known yet: the button loads.
+    Loading,
+    /// "Product Unavailable" (`CHa0vN`), disabled.
+    Unavailable,
+    /// the SKU and its price (`c6Q+B3`); a click opens the details modal of the app's store.
+    Buy {
+        label: String,
+        app: String,
+        detail: Box<StorefrontDetail>,
+        /// A subscription's plans, which its details modal reads.
+        plans: Vec<Value>,
+    },
+}
+
+/// `C` of module 232430 over the premium-button answer: the loader puts `store_listings` in StoreListingStore,
+/// `subscription_plans` in SubscriptionPlanStore and `skus` in SKUStore (which also takes each listing's `sku` and
+/// `child_skus`, and learns a parent from `bundled_sku_ids`, module 67480). A subscription SKU without a parent, a
+/// SKU or listing not in the answer, or no answer yet, is still loading; an unavailable SKU (`available`: the
+/// AVAILABLE flag or an external purchase URL), a subscription with no plan or an item without a price is
+/// "Product Unavailable"; otherwise the label names the SKU and its price (the first plan's for a subscription).
+pub(super) fn premium_button(body: Option<&Value>, sku_id: Id) -> PremiumButton {
+    let Some(body) = body else {
+        return PremiumButton::Loading;
+    };
+    let wanted = sku_id.to_string();
+    let listings: Vec<&Value> = body["store_listings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .collect();
+    let skus: Vec<&Value> = body["skus"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(listings.iter().map(|listing| &listing["sku"]))
+        .chain(
+            listings
+                .iter()
+                .flat_map(|listing| listing["child_skus"].as_array().into_iter().flatten()),
+        )
+        .filter(|sku| sku.is_object())
+        .collect();
+    let named = |value: &Value| text_of(value).as_deref() == Some(wanted.as_str());
+    // SKUStore keeps the fullest record: one that carries a name and a type beats a listing's bare `sku`.
+    let Some(sku) = skus
+        .iter()
+        .filter(|sku| named(&sku["id"]))
+        .max_by_key(|sku| sku["type"].is_u64() as u8 + sku["name"].is_string() as u8)
+    else {
+        return PremiumButton::Loading;
+    };
+    let Some(listing) = listings.iter().find(|listing| named(&listing["sku"]["id"])) else {
+        return PremiumButton::Loading;
+    };
+    let subscription = sku["type"].as_u64() == Some(SUBSCRIPTION);
+    let parent = skus.iter().any(|other| {
+        other["bundled_sku_ids"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(named))
+    });
+    if subscription && !parent {
+        return PremiumButton::Loading;
+    }
+    let available = sku["flags"].as_u64().unwrap_or(0) & SKU_AVAILABLE != 0
+        || sku["external_purchase_url"].is_string();
+    if !available {
+        return PremiumButton::Unavailable;
+    }
+    let name = sku["name"].as_str().unwrap_or_default();
+    let app = text_of(&sku["application_id"]).unwrap_or_default();
+    let label = |amount: i64, currency: &str| {
+        dc_intl::format(
+            "c6Q+B3",
+            &[
+                ("skuName", name.into()),
+                ("price", money(amount, currency).as_str().into()),
+            ],
+        )
+    };
+    if subscription {
+        let plans: Vec<Value> = body["subscription_plans"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|plan| plan["sku_id"].is_null() || named(&plan["sku_id"]))
+            .cloned()
+            .collect();
+        let Some(first) = parse_plans(&Value::Array(plans.clone())).into_iter().next() else {
+            return PremiumButton::Unavailable;
+        };
+        let Some(mut detail) = parse_listing(listing) else {
+            return PremiumButton::Loading;
+        };
+        if detail.sku_flags == 0 {
+            detail.sku_flags = sku["flags"].as_u64().unwrap_or(0);
+        }
+        return PremiumButton::Buy {
+            label: label(first.price, &first.currency),
+            app,
+            detail: Box::new(StorefrontDetail::Subscription(detail)),
+            plans,
+        };
+    }
+    let Some(amount) = sku["price"]["amount"].as_i64() else {
+        return PremiumButton::Unavailable;
+    };
+    let currency = sku["price"]["currency"]
+        .as_str()
+        .unwrap_or("usd")
+        .to_owned();
+    PremiumButton::Buy {
+        label: label(amount, &currency),
+        app,
+        detail: Box::new(StorefrontDetail::Item(Sku {
+            id: wanted.clone(),
+            kind: sku["type"].as_u64().unwrap_or(0),
+            name: name.to_owned(),
+            price: Some((amount, currency)),
+            description: localized(&listing["description"]),
+            header: text_of(&listing["header_background"]["id"]),
+        })),
+        plans: Vec::new(),
+    }
+}
+
 impl Root {
+    /// What a Premium button of this SKU shows now.
+    pub(super) fn premium_button_state(&self, sku: Id) -> PremiumButton {
+        premium_button(self.fetched.get(&premium_button_key(sku)), sku)
+    }
+
+    /// Asks once for a Premium button's SKU (`load` of module 232430 `D`); an answer that never comes, or fails,
+    /// leaves the button loading as the official one does.
+    pub(super) fn request_premium_button(&mut self, sku: Id) {
+        let key = premium_button_key(sku);
+        if self.requested.insert(key.clone()) {
+            let _ = self.requests.send(Request::Fetch {
+                key,
+                route: format!("/applications/storefront/interactions/premium-button/{sku}"),
+            });
+        }
+    }
+
+    /// A Premium button's click (module 232430 `V`): the subscription's `SubscriptionDetailsModal` (module 168393)
+    /// or the item's `ItemDetailsModal` (963179) over the app's store data, as the store's own cards open them.
+    /// Nothing is bought here.
+    pub(super) fn open_premium_button(&mut self, button: PremiumButton, cx: &mut Context<Self>) {
+        let PremiumButton::Buy {
+            app, detail, plans, ..
+        } = button
+        else {
+            return;
+        };
+        if let StorefrontDetail::Subscription(listing) = detail.as_ref() {
+            self.fetched
+                .insert(key_plans(&app, &listing.sku), Value::Array(plans));
+        }
+        let key = key("app", &app);
+        if !self.fetched.contains_key(&key) {
+            let _ = self.requests.send(Request::Fetch {
+                key,
+                route: format!("/applications/{app}/public?with_guild=false"),
+            });
+        }
+        self.app_storefront = Some(Open {
+            app,
+            guild: None,
+            detail: Some(*detail),
+            from_button: true,
+        });
+        cx.notify();
+    }
+
     /// Store of module 571077: the modal, with its reads.
     pub(crate) fn open_app_storefront(
         &mut self,
@@ -334,6 +522,7 @@ impl Root {
             app,
             guild,
             detail: None,
+            from_button: false,
         });
         cx.notify();
     }
@@ -476,6 +665,10 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let open = self.app_storefront.clone()?;
+        if open.from_button && open.detail.is_none() {
+            self.app_storefront = None;
+            return None;
+        }
         if let Some(detail) = open.detail.clone() {
             return Some(self.storefront_detail_modal(&open.app, &detail, cx));
         }
@@ -2261,6 +2454,7 @@ col.child(gpui::deferred(div()
                     app: "12345".to_owned(),
                     guild: self.guild,
                     detail: Some(StorefrontDetail::Unavailable),
+                    from_button: false,
                 });
                 cx.notify();
                 "app-guild-sub: unavailable".to_owned()
@@ -2329,6 +2523,66 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    /// Module 232430 `C`: loading until the SKU, its listing and (for a subscription) its parent are known; then the
+    /// unavailable label or the SKU and its price (`c6Q+B3`).
+    #[test]
+    fn the_premium_button_follows_the_sku_it_was_answered() {
+        use super::{PremiumButton, StorefrontDetail, premium_button};
+        use serde_json::json;
+        assert_eq!(premium_button(None, 9), PremiumButton::Loading);
+        let item = json!({
+            "skus": [{"id": "9", "type": 2, "name": "Gem Pack", "application_id": "77", "flags": 4,
+                      "price": {"amount": 499, "currency": "usd"}}],
+            "store_listings": [{"id": "90", "sku": {"id": "9"}, "description": "shiny",
+                                "header_background": {"id": "5"}}],
+        });
+        let PremiumButton::Buy { app, detail, .. } = premium_button(Some(&item), 9) else {
+            panic!("an available item with a price is for sale");
+        };
+        assert_eq!(app, "77");
+        let StorefrontDetail::Item(sku) = *detail else {
+            panic!("an item opens the item details");
+        };
+        assert_eq!(sku.price, Some((499, "usd".to_owned())));
+        assert_eq!(sku.description.as_deref(), Some("shiny"));
+        assert_eq!(sku.header.as_deref(), Some("5"));
+        // Another SKU's answer, or no listing for it, keeps it loading.
+        assert_eq!(premium_button(Some(&item), 8), PremiumButton::Loading);
+        let unlisted = json!({"skus": item["skus"], "store_listings": []});
+        assert_eq!(premium_button(Some(&unlisted), 9), PremiumButton::Loading);
+        // Not AVAILABLE, or without a price: Product Unavailable.
+        let mut hidden = item.clone();
+        hidden["skus"][0]["flags"] = json!(0);
+        assert_eq!(premium_button(Some(&hidden), 9), PremiumButton::Unavailable);
+        hidden["skus"][0]["external_purchase_url"] = json!("https://example.invalid");
+        assert!(matches!(
+            premium_button(Some(&hidden), 9),
+            PremiumButton::Buy { .. }
+        ));
+        let mut free = item.clone();
+        free["skus"][0]["price"] = json!(null);
+        assert_eq!(premium_button(Some(&free), 9), PremiumButton::Unavailable);
+        // A subscription waits for its parent group, then prices its first plan.
+        let mut sub = json!({
+            "skus": [{"id": "3", "type": 5, "name": "Gold", "application_id": "77", "flags": 260}],
+            "store_listings": [{"id": "30", "sku": {"id": "3", "flags": 260}, "summary": "gold tier"}],
+            "subscription_plans": [{"id": "31", "sku_id": "3", "price": 299, "currency": "usd",
+                                    "interval": 1, "interval_count": 1}],
+        });
+        assert_eq!(premium_button(Some(&sub), 3), PremiumButton::Loading);
+        sub["skus"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id": "2", "type": 6, "bundled_sku_ids": ["3"]}));
+        let PremiumButton::Buy { detail, plans, .. } = premium_button(Some(&sub), 3) else {
+            panic!("a subscription with a parent and a plan is for sale");
+        };
+        assert!(matches!(*detail, StorefrontDetail::Subscription(listing) if listing.sku == "3"));
+        assert_eq!(plans.len(), 1);
+        sub["subscription_plans"] = json!([]);
+        assert_eq!(premium_button(Some(&sub), 3), PremiumButton::Unavailable);
+    }
+
     use super::*;
     use serde_json::json;
 

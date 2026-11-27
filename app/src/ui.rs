@@ -4166,6 +4166,7 @@ impl Root {
         );
         users.extend(self.stage_people());
         let mut media = Vec::new();
+        let mut premium_skus = Vec::new();
         // The messages thread starters stand for are drawn in their place, so their people and media are needed too.
         let starters: Vec<Message> = self
             .channel
@@ -4230,10 +4231,14 @@ impl Root {
                     self.pref_on("animate_gifs", true) && !motion::reduced(),
                     self.pref_on("animate_emojis", true),
                 ));
+                premium_skus.extend(components::premium_skus(message));
             }
         }
         for (key, url) in media {
             self.request_image(key, url);
+        }
+        for sku in premium_skus {
+            self.request_premium_button(sku);
         }
         for user in users {
             let (key, url) = avatar_source(&user);

@@ -87,6 +87,41 @@ pub(super) fn wanted(message: &Message) -> Vec<(String, String)> {
     out
 }
 
+/// The SKUs of the message's Premium buttons (a forward's included), each read once for its label (module 232430 `D`).
+pub(super) fn premium_skus(message: &Message) -> Vec<Id> {
+    fn walk(component: &Component, out: &mut Vec<Id>) {
+        match component {
+            Component::Button {
+                style: ButtonStyle::Premium,
+                sku_id: Some(sku),
+                ..
+            } => out.push(*sku),
+            Component::ActionRow { components, .. } | Component::Container { components, .. } => {
+                components.iter().for_each(|inner| walk(inner, out));
+            }
+            Component::Section {
+                components,
+                accessory,
+                ..
+            } => {
+                components.iter().for_each(|inner| walk(inner, out));
+                walk(accessory, out);
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for component in &message.extra.components {
+        walk(component, &mut out);
+    }
+    if let Some(copy) = message.forwarded_copy() {
+        for component in &copy.extra.components {
+            walk(component, &mut out);
+        }
+    }
+    out
+}
+
 pub(super) fn media_key(message: Id, component: &str, index: usize) -> String {
     format!("comp:{message}:{component}:{index}")
 }
@@ -1077,14 +1112,45 @@ impl Root {
         let visual = self.visual(message, component);
         let colors = look(style);
         let link = style == ButtonStyle::Link;
-        let inert = disabled || visual != Visual::Normal && !link || (link && url.is_none());
+        // `V` of module 232430: a Premium button with a SKU names the SKU and its price itself, with the shop icon
+        // before it; it loads until the SKU is known and opens the store's details modal instead of interacting.
+        let premium = match component {
+            Component::Button {
+                sku_id: Some(sku), ..
+            } if style == ButtonStyle::Premium => Some(self.premium_button_state(*sku)),
+            _ => None,
+        };
+        let premium_label = match &premium {
+            Some(super::app_storefront::PremiumButton::Buy { label, .. }) => Some(label.clone()),
+            Some(super::app_storefront::PremiumButton::Unavailable) => {
+                Some(dc_intl::t("CHa0vN").to_owned())
+            }
+            _ => None,
+        };
+        let label = if premium.is_some() {
+            premium_label.as_deref()
+        } else {
+            label
+        };
+        let disabled = disabled
+            || matches!(
+                premium,
+                Some(super::app_storefront::PremiumButton::Unavailable)
+            );
+        let premium_loading =
+            matches!(premium, Some(super::app_storefront::PremiumButton::Loading));
+        let inert = disabled
+            || visual != Visual::Normal && !link
+            || (link && url.is_none())
+            || premium_loading
+            || self.components.inert.get();
         let key = format!("comp-{}-{id}", message.id);
         let handle = self.stop(&key, cx);
         let (message_id, component_id) = (message.id, id.to_owned());
         let target = url.map(str::to_owned);
         let text = label.unwrap_or_default().to_owned();
         let _ = custom_id;
-        let loading = visual == Visual::Loading;
+        let loading = visual == Visual::Loading || premium_loading;
         let content = div()
             .flex()
             .items_center()
@@ -1092,6 +1158,16 @@ impl Root {
             .m_auto()
             .min_w(px(32.))
             .when(loading, |this| this.invisible())
+            // `shopIcon_ZMR-xe`: ShopIcon `xs` (16) in white, 4 before what follows.
+            .when(premium.is_some(), |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .mr(px(4.))
+                        .child(icon("shop", 16., "--white")),
+                )
+            })
             .when_some(
                 emoji.and_then(|emoji| self.component_emoji(emoji, 20.)),
                 |this, shown| {
@@ -1163,7 +1239,9 @@ impl Root {
                 .hover(move |style| style.bg(color(hover)))
                 .active(move |style| style.bg(color(active)))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if link {
+                    if let Some(premium) = &premium {
+                        this.open_premium_button(premium.clone(), cx);
+                    } else if link {
                         if let Some(url) = &target {
                             this.follow_link(url, "", cx);
                         }
