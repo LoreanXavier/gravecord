@@ -500,7 +500,7 @@ impl Cache {
 }
 
 /// `wake` moved up to the next slot of `GRID` counted from `now`.
-fn on_grid(wake: Instant, now: Instant) -> Instant {
+pub(super) fn on_grid(wake: Instant, now: Instant) -> Instant {
     let ahead = wake.saturating_duration_since(now).as_nanos();
     let slots = ahead.div_ceil(GRID.as_nanos()).max(1);
     now + Duration::from_nanos((slots * GRID.as_nanos()) as u64)
