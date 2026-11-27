@@ -606,7 +606,9 @@ impl Root {
             }
             (ObscureKind::Spoiler, true) => Some(
                 spoiler_cover(&format!("obscure-spoiler-{attachment_id}"), true)
+                    // `parity` makes its element relative (capture builds): the cover goes back over the tile.
                     .parity("attachment-spoiler-cover")
+                    .absolute()
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.reveal_spoiler_attachment(attachment_id, cx);
                         cx.stop_propagation();
