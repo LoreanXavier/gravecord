@@ -343,6 +343,8 @@ pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
 /// Settings shown only while a switch of the same plugin is on (`hidden` in the original); an empty switch is never
 /// on, so its setting is never listed (`hidden: true`).
 pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[
+    // `hidden: true`: the default of entries stored without their own Ignore Bots.
+    ("KeywordNotify", "ignoreBots", ""),
     // CustomRPC's private settings (`withPrivateSettings`): its own form edits them.
     ("CustomRPC", "appID", ""),
     ("CustomRPC", "appName", ""),
@@ -1915,6 +1917,33 @@ pub(crate) const DEFS: &[Def] = &[
                     min: 0.1,
                     max: 5.,
                     step: 0.1,
+                },
+            },
+        ],
+    },
+    Def {
+        id: "KeywordNotify",
+        name: "KeywordNotify",
+        description: "Sends a notification if a given message matches certain keywords or regexes",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/keywordNotify/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "ignoreBots",
+                label: "Ignore Bots",
+                description: "Ignore messages from bots",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "amountToKeep",
+                label: "Amount To Keep",
+                description: "Amount of messages to keep in the log",
+                kind: Kind::Number {
+                    default: 50.,
+                    min: 0.,
+                    max: 1000.,
+                    step: 1.,
                 },
             },
         ],

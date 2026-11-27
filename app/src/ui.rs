@@ -2229,6 +2229,8 @@ impl Root {
                 total,
             } => self.send_progress(&nonce, index, sent, total, cx),
             Update::Dispatch { name, data } => {
+                // Not in the pinned client: KeywordNotify's interceptor (`plugin_hooks/keyword_notify.rs`).
+                let data = self.keyword_notify_dispatch(&name, data);
                 if self.expand_voice_batch(&name, &data, cx) {
                     return;
                 }
@@ -2611,6 +2613,8 @@ impl Root {
                 page,
                 started_ms,
             } => {
+                // Not in the pinned client: the plugins' look at a loaded page (`plugin_hooks.rs`).
+                let page = self.plugins_loaded_page(channel, page);
                 let anchor = self.scroll_anchor();
                 self.stores.load_messages_since(channel, &page, started_ms);
                 self.reinsert_local_sends(channel);

@@ -93,6 +93,8 @@ pub(crate) enum InboxTab {
     Bookmarks,
     Reminders,
     Scheduled,
+    /// Not in the pinned client: KeywordNotify's log (`plugin_hooks/keyword_notify.rs`).
+    Keywords,
 }
 
 /// One saved message from the saved-messages answer: the message and its reminder time, if any.
@@ -391,7 +393,11 @@ impl Root {
     }
 
     /// `channelHeader_8ZcKCk`: the guild's 32px icon, a chevron, `#name` over "guild › category", and the buttons.
-    fn inbox_channel_header(&self, message: &Message, buttons: Vec<AnyElement>) -> AnyElement {
+    pub(in crate::ui) fn inbox_channel_header(
+        &self,
+        message: &Message,
+        buttons: Vec<AnyElement>,
+    ) -> AnyElement {
         let guild: Option<&Guild> = self.stores.guilds.iter().find(|guild| {
             guild
                 .channels
@@ -495,6 +501,17 @@ impl Root {
 
     /// `singleMessage_0JZW4Z`: the message as the list draws a group's first line, 72px in, 12px above and below.
     fn inbox_message(&self, message: &Message, cx: &mut Context<Self>) -> AnyElement {
+        let content = self.content(message);
+        self.inbox_message_with(message, content, cx)
+    }
+
+    /// The same, with the content drawn by the caller.
+    pub(in crate::ui) fn inbox_message_with(
+        &self,
+        message: &Message,
+        content: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let jump = message.clone();
         let avatar = self.images.get(&avatar_source(&message.author).0).cloned();
         let time = super::settings::prefs::clock(&message.local_time());
@@ -540,11 +557,11 @@ impl Root {
                             .child(time),
                     ),
             )
-            .child(self.content(message))
+            .child(content)
             .into_any_element()
     }
 
-    fn inbox_button(
+    pub(in crate::ui) fn inbox_button(
         &self,
         id: String,
         name: &'static str,
@@ -1568,6 +1585,7 @@ impl Root {
                         .collect()
                 }
             }
+            InboxTab::Keywords => self.keyword_notify_page_cards(cx),
             InboxTab::Unreads => {
                 let mut list = Vec::new();
                 if crate::storage::get(TUTORIAL_SEEN).is_none() {
@@ -1614,6 +1632,13 @@ impl Root {
             (InboxTab::Scheduled, dc_intl::tr("Scheduled").to_owned()),
         ]
         .into_iter()
+        // Not in the pinned client: KeywordNotify's tab after Scheduled (`plugin_hooks/keyword_notify.rs`).
+        .chain(self.keyword_notify_tab().then(|| {
+            (
+                InboxTab::Keywords,
+                super::plugin_hooks::KEYWORD_TAB_LABEL.to_owned(),
+            )
+        }))
         .map(|(which, label)| {
             let selected = which == tab;
             div()
@@ -1711,6 +1736,9 @@ impl Root {
                                             },
                                         )),
                                 )
+                            })
+                            .when(tab == InboxTab::Keywords, |this| {
+                                this.child(self.keyword_notify_clear_all(cx))
                             })
                             .when(tab == InboxTab::Unreads, |this| {
                                 this.child(div().mr(px(8.)).child(self.inbox_button_shift(

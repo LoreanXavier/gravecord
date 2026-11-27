@@ -229,6 +229,8 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         let channel = spec.channel;
+        // Not in the pinned client: the plugins' look at a loaded page (`plugin_hooks.rs`).
+        let page = self.plugins_loaded_page(channel, page);
         let anchor = self.scroll_anchor();
         self.stores.messages_loaded(&spec, &page);
         self.reinsert_local_sends(channel);

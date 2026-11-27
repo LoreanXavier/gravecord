@@ -50,6 +50,8 @@ mod global_badges;
 mod greet_sticker_picker;
 mod ignore_activities;
 mod image_zoom;
+mod keyword_notify;
+pub(in crate::ui) use keyword_notify::TAB_LABEL as KEYWORD_TAB_LABEL;
 mod limitless_screenshare;
 pub(in crate::ui) use limitless_screenshare::{
     limitless_fpss, limitless_resolutions, limitless_settings, limitless_stored_fps,
@@ -778,10 +780,20 @@ pub(in crate::ui) fn has_own_section(id: &str) -> bool {
             | "Decor"
             | "Streaks"
             | "VoiceMessageTranscriber"
+            | "KeywordNotify"
     )
 }
 
 impl super::Root {
+    /// A loaded page of a channel's messages before the stores see it (`LOAD_MESSAGES_SUCCESS`): KeywordNotify marks
+    /// its matches.
+    pub(in crate::ui) fn plugins_loaded_page(&self, channel: Id, page: Value) -> Value {
+        if crate::plugins::bypassed() {
+            return page;
+        }
+        self.keyword_notify_page(channel, page)
+    }
+
     /// A plugin's own section on its card: MessageTags' Registered Tags (`SettingsTagList`), ClipsEnhancements'
     /// `clipsLink` button to Clips settings.
     pub(in crate::ui) fn plugin_own_section(
@@ -802,6 +814,7 @@ impl super::Root {
             "Decor" => Some(self.decor_settings(cx)),
             "Streaks" => Some(self.streaks_settings(cx)),
             "VoiceMessageTranscriber" => Some(self.transcriber_settings(cx)),
+            "KeywordNotify" => Some(self.keyword_notify_settings(cx)),
             "SearchFix" => Some(
                 gpui::div()
                     .text_size(gpui::px(14.))
