@@ -112,17 +112,8 @@ pub(super) fn wanted(
             ));
         }
     }
-    if let Some(forwarded) = &message.forwarded {
+    if let Some(copy) = message.forwarded_copy() {
         // `forwarded_block` renders this copy with the forwarding message's cache keys.
-        let copy = Message {
-            content: forwarded.content.clone(),
-            attachments: forwarded.attachments.clone(),
-            embeds: forwarded.embeds.clone(),
-            flags: forwarded.flags,
-            reactions: Vec::new(),
-            forwarded: None,
-            ..message.clone()
-        };
         media.extend(wanted(&copy, animate_gifs, animate_emoji));
     }
     media

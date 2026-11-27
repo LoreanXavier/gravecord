@@ -242,6 +242,52 @@ pub struct MessageExtra {
     pub components: Vec<super::components::Component>,
     /// `referenced_message` was sent as `null`: the message this one points at was deleted.
     pub reference_deleted: bool,
+    /// `soundboard_sounds`: the sounds the message's soundmoji name, which a sent message draws them from (module
+    /// 470020; the soundboard store is only asked for a message not yet sent).
+    pub soundboard_sounds: Vec<MessageSound>,
+}
+
+/// A sound a message carries for its soundmoji (`soundboard_sounds[]`, made a sound record by `N0` of module 807348:
+/// `guild_id` is "0" for a default sound, `available` is true unless it says otherwise).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MessageSound {
+    pub sound_id: String,
+    pub guild_id: String,
+    pub name: String,
+    pub volume: f64,
+    pub emoji_id: Option<String>,
+    pub emoji_name: Option<String>,
+    pub available: bool,
+}
+
+impl MessageSound {
+    fn from_value(value: &Value) -> Option<Self> {
+        let string = |value: &Value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| value.as_u64().map(|number| number.to_string()))
+        };
+        Some(Self {
+            sound_id: string(&value["sound_id"])?,
+            guild_id: string(&value["guild_id"]).unwrap_or_else(|| "0".to_owned()),
+            name: text(&value["name"]).unwrap_or_default(),
+            volume: value["volume"].as_f64().unwrap_or(1.),
+            emoji_id: string(&value["emoji_id"]),
+            emoji_name: text(&value["emoji_name"]),
+            available: value["available"].as_bool().unwrap_or(true),
+        })
+    }
+
+    /// Every sound of a `soundboard_sounds` list.
+    pub fn list(value: &Value) -> Vec<Self> {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Self::from_value)
+            .collect()
+    }
 }
 
 /// `poll`: what a poll message shows.
@@ -329,6 +375,7 @@ impl MessageExtra {
                 .as_array()
                 .is_some_and(|components| !components.is_empty()),
             components: super::components::parse(&value["components"]),
+            soundboard_sounds: MessageSound::list(&value["soundboard_sounds"]),
         }
     }
 }

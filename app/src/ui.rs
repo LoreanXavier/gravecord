@@ -9924,18 +9924,9 @@ impl Root {
     /// content and files, and a footer naming where it came from, which jumps there.
     fn forwarded_block(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
         let forwarded = message.forwarded.as_ref()?;
-        // The copy renders as a message of its own so content, files and embeds look the same.
-        let copy = Message {
-            content: forwarded.content.clone(),
-            attachments: forwarded.attachments.clone(),
-            embeds: forwarded.embeds.clone(),
-            flags: forwarded.flags,
-            reactions: Vec::new(),
-            edited: false,
-            edited_at: None,
-            forwarded: None,
-            ..message.clone()
-        };
+        // The copy renders as a message of its own (module 387408), so its content, files, embeds, stickers and
+        // components look the same.
+        let copy = message.forwarded_copy()?;
         let source = forwarded
             .channel_id
             .and_then(|channel| {

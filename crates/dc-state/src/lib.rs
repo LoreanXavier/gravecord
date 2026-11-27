@@ -1954,6 +1954,12 @@ pub struct Forwarded {
     pub embeds: Vec<Embed>,
     /// The original's message flags (the copy of a voice message keeps `IS_VOICE_MESSAGE`).
     pub flags: u64,
+    /// The original's stickers and components, which module 387408 merges into the copy as well (`stickerItems`,
+    /// `stickers`, `components`).
+    pub sticker_items: Vec<(Id, String, u64)>,
+    pub components: Vec<components::Component>,
+    /// The sounds the original's soundmoji name (`soundboard_sounds`), which module 470020 reads from the snapshot.
+    pub soundboard_sounds: Vec<message_kinds::MessageSound>,
     pub guild_id: Option<Id>,
     pub channel_id: Option<Id>,
     pub message_id: Option<Id>,
@@ -1984,6 +1990,9 @@ impl Forwarded {
                 .collect(),
             embeds: Embed::list(&snapshot["embeds"], None),
             flags: snapshot["flags"].as_u64().unwrap_or(0),
+            sticker_items: sticker_items(snapshot),
+            components: components::parse(&snapshot["components"]),
+            soundboard_sounds: message_kinds::MessageSound::list(&snapshot["soundboard_sounds"]),
             guild_id: id(&message["message_reference"]["guild_id"]),
             channel_id: id(&message["message_reference"]["channel_id"]),
             message_id: id(&message["message_reference"]["message_id"]),
@@ -1993,6 +2002,23 @@ impl Forwarded {
     pub fn local_time(&self) -> DateTime<Local> {
         self.timestamp.with_timezone(&Local)
     }
+}
+
+/// `sticker_items` (else `stickers`) of a message or a snapshot: (id, name, `format_type`).
+fn sticker_items(value: &Value) -> Vec<(Id, String, u64)> {
+    value["sticker_items"]
+        .as_array()
+        .or_else(|| value["stickers"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|sticker| {
+            Some((
+                id(&sticker["id"])?,
+                text(&sticker["name"])?,
+                sticker["format_type"].as_u64()?,
+            ))
+        })
+        .collect()
 }
 
 /// `IS_VOICE_MESSAGE` in the message flags (module 652215, `pr7`).
@@ -2015,6 +2041,31 @@ pub fn split_silent_prefix(content: &str) -> (bool, &str) {
 }
 
 impl Message {
+    /// The forwarded copy drawn inside a forward: this message with the snapshot's content, attachments, embeds,
+    /// flags, components, timestamp and stickers in place of its own, no reactions, no edit and no snapshot (`A` of
+    /// module 387408), and the snapshot's `soundboard_sounds` for its soundmoji (module 470020 reads them there).
+    pub fn forwarded_copy(&self) -> Option<Message> {
+        let forwarded = self.forwarded.as_ref()?;
+        let mut extra = self.extra.clone();
+        extra.has_components = !forwarded.components.is_empty();
+        extra.components = forwarded.components.clone();
+        extra.soundboard_sounds = forwarded.soundboard_sounds.clone();
+        Some(Message {
+            content: forwarded.content.clone(),
+            attachments: forwarded.attachments.clone(),
+            embeds: forwarded.embeds.clone(),
+            flags: forwarded.flags,
+            timestamp: forwarded.timestamp,
+            sticker_items: forwarded.sticker_items.clone(),
+            extra,
+            reactions: Vec::new(),
+            edited: false,
+            edited_at: None,
+            forwarded: None,
+            ..self.clone()
+        })
+    }
+
     /// A voice message: the message flag is set (`hasFlag(IS_VOICE_MESSAGE)`), the player is drawn for its attachment.
     pub fn is_voice_message(&self) -> bool {
         self.flags & VOICE_MESSAGE_FLAG != 0
@@ -2116,19 +2167,7 @@ impl Message {
             reference_channel_id: id(&value["message_reference"]["channel_id"]),
             reference_guild_id: id(&value["message_reference"]["guild_id"]),
             extra: message_kinds::MessageExtra::from_value(value),
-            sticker_items: value["sticker_items"]
-                .as_array()
-                .or_else(|| value["stickers"].as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(|sticker| {
-                    Some((
-                        id(&sticker["id"])?,
-                        text(&sticker["name"])?,
-                        sticker["format_type"].as_u64()?,
-                    ))
-                })
-                .collect(),
+            sticker_items: sticker_items(value),
         })
     }
 
@@ -4895,6 +4934,55 @@ mod tests {
             super::VOICE_MESSAGE_FLAG
         );
         assert_eq!(copy.attachments[0].duration_secs, Some(6.0065));
+    }
+
+    /// Module 387408: the forwarded copy takes the snapshot's stickers, components and timestamp, not the
+    /// forwarding message's, and keeps the snapshot's soundmoji sounds (470020).
+    #[test]
+    fn a_forwarded_copy_carries_the_snapshot_stickers_components_and_sounds() {
+        let forward = serde_json::json!({
+            "id": "5", "channel_id": "7", "type": 0, "content": "", "flags": 0,
+            "timestamp": "2026-11-11T10:00:00.000000+00:00",
+            "author": {"id": "1", "username": "a"},
+            "sticker_items": [], "components": [],
+            "message_reference": {"type": 1, "message_id": "4", "channel_id": "7"},
+            "message_snapshots": [{"message": {
+                "content": "look <sound:0:3>", "flags": 32768,
+                "timestamp": "2026-11-10T09:00:00.000000+00:00",
+                "attachments": [], "embeds": [],
+                "sticker_items": [{"id": "11", "name": "wave", "format_type": 1}],
+                "components": [{"type": 10, "content": "hi"}],
+                "soundboard_sounds": [{"sound_id": "3", "name": "quack", "volume": 0.5,
+                    "emoji_name": "\u{1f986}", "guild_id": "0"}],
+            }}],
+        });
+        let message = super::Message::from_value(&forward).unwrap();
+        assert!(message.sticker_items.is_empty());
+        let copy = message.forwarded_copy().unwrap();
+        assert_eq!(copy.id, 5);
+        assert_eq!(copy.content, "look <sound:0:3>");
+        assert_eq!(copy.sticker_items, vec![(11, "wave".to_owned(), 1)]);
+        assert!(copy.extra.has_components);
+        assert!(matches!(
+            copy.extra.components.as_slice(),
+            [super::components::Component::TextDisplay { content, .. }] if content == "hi"
+        ));
+        assert_eq!(copy.extra.soundboard_sounds[0].name, "quack");
+        assert_eq!(copy.extra.soundboard_sounds[0].volume, 0.5);
+        assert!(copy.extra.soundboard_sounds[0].available);
+        assert_eq!(copy.flags, 32768);
+        assert_eq!(copy.timestamp.to_rfc3339(), "2026-11-10T09:00:00+00:00");
+        assert!(copy.reactions.is_empty() && copy.forwarded.is_none());
+        // A message that is not a forward has no copy.
+        let plain = super::Message::from_value(&serde_json::json!({
+            "id": "6", "channel_id": "7", "type": 0, "content": "x",
+            "timestamp": "2026-11-11T10:00:00.000000+00:00", "author": {"id": "1", "username": "a"},
+            "soundboard_sounds": [{"sound_id": 9, "name": "a"}],
+        }))
+        .unwrap();
+        assert!(plain.forwarded_copy().is_none());
+        assert_eq!(plain.extra.soundboard_sounds[0].sound_id, "9");
+        assert_eq!(plain.extra.soundboard_sounds[0].guild_id, "0");
     }
 
     /// Module 677413: `^@silent(\s|$)`, then the rest trimmed.
