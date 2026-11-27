@@ -195,9 +195,11 @@ pub fn invite_eyebrow(inv: &ResolvedInvite) -> String {
 }
 
 impl Root {
-    /// Opens the Accept Invite modal (module `654000`) and resolves `GET /invites/{code}`.
+    /// Opens the Accept Invite modal (module `654000`) and resolves `GET /invites/{code}`. `code` may be an invite
+    /// key (`code?event=...`, module 21599): the modal shows and joins with its base code, the resolve sends its query.
     pub(super) fn open_accept_invite_modal(&mut self, code: &str, cx: &mut Context<Self>) {
-        let cleaned = code.trim().to_owned();
+        let key = code.trim().to_owned();
+        let cleaned = dc_state::coded_links::split_invite_key(&key).base_code;
         let guild_cap = if self.stores.account.premium_type == Some(2) {
             200
         } else {
@@ -216,9 +218,7 @@ impl Root {
         });
         let _ = self.requests.send(Request::Fetch {
             key: format!("{RESOLVE_KEY_PREFIX}{cleaned}"),
-            route: format!(
-                "/invites/{cleaned}?with_counts=true&with_expiration=true&with_permissions=true"
-            ),
+            route: super::coded_link_cards::invite_resolve_route(&key),
         });
         cx.notify();
     }

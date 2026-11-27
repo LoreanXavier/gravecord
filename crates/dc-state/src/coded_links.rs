@@ -248,7 +248,6 @@ pub fn parse_url(raw: &str) -> ParsedUrl {
         None => fixed.push_str(&raw.replace('\\', "/")),
     }
     let mut rest: &str = fixed.trim();
-    let simple_rest;
     // The `s` fast path: no protocol, one or two leading slashes, no `#` (a path only).
     if !fixed.contains('#') && rest.starts_with('/') && !rest.starts_with("///") {
         let path_end = rest.find(['?']).unwrap_or(rest.len());
@@ -278,9 +277,9 @@ pub fn parse_url(raw: &str) -> ParsedUrl {
     };
     let auth_like = rest.starts_with("//") && {
         let after = &rest[2..];
-        after
-            .split_once('@')
-            .is_some_and(|(user, host)| !user.is_empty() && !user.contains('/') && !host.is_empty() && !host.starts_with('/'))
+        after.split_once('@').is_some_and(|(user, host)| {
+            !user.is_empty() && !user.contains('/') && !host.is_empty() && !host.starts_with('/')
+        })
     };
     let mut slashes = false;
     if (protocol.is_some() || auth_like) && rest.starts_with("//") && !hostless {
@@ -289,8 +288,7 @@ pub fn parse_url(raw: &str) -> ParsedUrl {
     }
     // `m[w]` is read with the protocol as written.
     let written_slashed = slashed(&protocol);
-    let mut owned_rest: String;
-    if !hostless && (slashes || (protocol.is_some() && !written_slashed)) {
+    let simple_rest = if !hostless && (slashes || (protocol.is_some() && !written_slashed)) {
         let host_end = rest.find(['/', '?', '#']);
         let at_sign = match host_end {
             None => rest.rfind('@'),
@@ -300,10 +298,12 @@ pub fn parse_url(raw: &str) -> ParsedUrl {
             rest = &rest[at + 1..];
         }
         let end = rest
-            .find(|c: char| matches!(c, '%' | '/' | '?' | ';' | '#') || AUTO_ESCAPE.contains(&c) || c == '\t')
+            .find(|c: char| {
+                matches!(c, '%' | '/' | '?' | ';' | '#') || AUTO_ESCAPE.contains(&c) || c == '\t'
+            })
             .unwrap_or(rest.len());
         let host = &rest[..end];
-        owned_rest = rest[end..].to_owned();
+        let mut owned_rest = rest[end..].to_owned();
         // `parseHost`: a trailing `:digits` is the port.
         let (mut hostname, port) = match host.rfind(':') {
             Some(colon) if host[colon + 1..].bytes().all(|b| b.is_ascii_digit()) => {
@@ -331,11 +331,15 @@ pub fn parse_url(raw: &str) -> ParsedUrl {
                 if valid(&ascii) {
                     continue;
                 }
-                let mut good: Vec<String> = parts[..index].iter().map(|p| (*p).to_owned()).collect();
-                let mut not_host: Vec<String> = parts[index + 1..].iter().map(|p| (*p).to_owned()).collect();
+                let mut good: Vec<String> =
+                    parts[..index].iter().map(|p| (*p).to_owned()).collect();
+                let mut not_host: Vec<String> =
+                    parts[index + 1..].iter().map(|p| (*p).to_owned()).collect();
                 let lead = part
                     .char_indices()
-                    .take_while(|(i, c)| *i < 63 && (c.is_ascii_alphanumeric() || matches!(c, '+' | '_' | '-')))
+                    .take_while(|(i, c)| {
+                        *i < 63 && (c.is_ascii_alphanumeric() || matches!(c, '+' | '_' | '-'))
+                    })
                     .count();
                 let (head, tail) = part.split_at(lead);
                 good.push(head.to_owned());
@@ -360,10 +364,10 @@ pub fn parse_url(raw: &str) -> ParsedUrl {
         if bracketed && !owned_rest.starts_with('/') {
             owned_rest.insert(0, '/');
         }
-        simple_rest = owned_rest;
+        owned_rest
     } else {
-        simple_rest = rest.to_owned();
-    }
+        rest.to_owned()
+    };
     let mut rest = simple_rest;
     if !hostless {
         for c in AUTO_ESCAPE.iter().chain(['\t'].iter()) {
@@ -424,8 +428,11 @@ pub fn primary_path(url: &ParsedUrl) -> Option<String> {
 /// `N`: `^/([a-zA-Z0-9-]+)$`, the single segment of a short host.
 fn single_segment(path: &str) -> Option<&str> {
     let segment = path.strip_prefix('/')?;
-    (!segment.is_empty() && segment.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
-        .then_some(segment)
+    (!segment.is_empty()
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    .then_some(segment)
 }
 
 fn is_digits(text: &str) -> bool {
@@ -524,7 +531,10 @@ fn query_string(query: &str) -> Vec<(String, Value)> {
 }
 
 fn lookup<'a>(query: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
-    query.iter().find(|(name, _)| name == key).map(|(_, value)| value)
+    query
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value)
 }
 
 /// `qg` of module 488428 (Node's querystring): `+` is `%20`, duplicates become arrays, a key with no `=` is `""`.
@@ -555,7 +565,10 @@ fn encode_component(text: &str) -> String {
     let mut out = String::new();
     for byte in text.bytes() {
         if byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')')
+            || matches!(
+                byte,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            )
         {
             out.push(byte as char);
         } else {
@@ -685,15 +698,21 @@ fn game_shop_path(path: &str) -> Option<(String, Option<String>)> {
     match segments.as_slice() {
         ["", "game-shop", guild, rest @ ..] if is_digits(guild) => match rest {
             [] => Some(((*guild).to_owned(), None)),
-            [sku] | [sku, _] if is_digits(sku) && rest.get(1).is_none_or(|slug| !slug.is_empty()) => {
+            [sku] | [sku, _]
+                if is_digits(sku) && rest.get(1).is_none_or(|slug| !slug.is_empty()) =>
+            {
                 Some(((*guild).to_owned(), Some((*sku).to_owned())))
             }
             _ => None,
         },
-        ["", "channels", guild, "game-shop", channel, rest @ ..] if is_digits(guild) && is_digits(channel) => {
+        ["", "channels", guild, "game-shop", channel, rest @ ..]
+            if is_digits(guild) && is_digits(channel) =>
+        {
             match rest {
                 [] => Some(((*guild).to_owned(), None)),
-                [sku] | [sku, _] if is_digits(sku) && rest.get(1).is_none_or(|slug| !slug.is_empty()) => {
+                [sku] | [sku, _]
+                    if is_digits(sku) && rest.get(1).is_none_or(|slug| !slug.is_empty()) =>
+                {
                     Some(((*guild).to_owned(), Some((*sku).to_owned())))
                 }
                 _ => None,
@@ -775,7 +794,12 @@ fn app_directory_store(path: &str) -> Option<(&str, Option<&str>)> {
 }
 
 /// One segment after a prefix, optionally followed by a slash: `^{prefix}(class+)/?$` (or without the slash).
-fn one_segment<'a>(path: &'a str, prefix: &str, ok: fn(u8) -> bool, slash: bool) -> Option<&'a str> {
+fn one_segment<'a>(
+    path: &'a str,
+    prefix: &str,
+    ok: fn(u8) -> bool,
+    slash: bool,
+) -> Option<&'a str> {
     let rest = path.strip_prefix(prefix)?;
     let rest = if slash {
         rest.strip_suffix('/').unwrap_or(rest)
@@ -879,21 +903,30 @@ fn conjure_application(url: &ParsedUrl) -> Option<String> {
 /// `arrayFormat: "bracket"`: `key[]` collects, a plain key given twice keeps the last value.
 fn oauth2_query(query: &str) -> (String, Vec<String>) {
     let mut parsed: Vec<(String, Value)> = Vec::new();
-    for (key, value) in query_string(query).into_iter().flat_map(|(key, value)| match value {
-        Value::Many(items) => items
-            .into_iter()
-            .map(|item| (key.clone(), item.map_or(Value::Null, Value::One)))
-            .collect::<Vec<_>>(),
-        other => vec![(key, other)],
-    }) {
+    for (key, value) in query_string(query)
+        .into_iter()
+        .flat_map(|(key, value)| match value {
+            Value::Many(items) => items
+                .into_iter()
+                .map(|item| (key.clone(), item.map_or(Value::Null, Value::One)))
+                .collect::<Vec<_>>(),
+            other => vec![(key, other)],
+        })
+    {
         match key.strip_suffix("[]") {
             Some(name) => match parsed.iter_mut().find(|(existing, _)| existing == name) {
                 Some((_, Value::Many(items))) => items.push(value.as_str().map(str::to_owned)),
                 Some((_, slot)) => {
                     let previous = std::mem::replace(slot, Value::Null);
-                    *slot = Value::Many(vec![previous.as_str().map(str::to_owned), value.as_str().map(str::to_owned)]);
+                    *slot = Value::Many(vec![
+                        previous.as_str().map(str::to_owned),
+                        value.as_str().map(str::to_owned),
+                    ]);
                 }
-                None => parsed.push((name.to_owned(), Value::Many(vec![value.as_str().map(str::to_owned)]))),
+                None => parsed.push((
+                    name.to_owned(),
+                    Value::Many(vec![value.as_str().map(str::to_owned)]),
+                )),
             },
             None => match parsed.iter_mut().find(|(existing, _)| *existing == key) {
                 Some((_, slot)) => *slot = value,
@@ -989,9 +1022,7 @@ fn link_types(raw: &str, push: &mut dyn FnMut(Kind, String)) {
         && path.starts_with("/oauth2/authorize")
     {
         let (client, scopes) = oauth2_query(query);
-        if !client.is_empty()
-            && scopes.iter().all(|scope| scope == APPLICATIONS_COMMANDS)
-        {
+        if !client.is_empty() && scopes.iter().all(|scope| scope == APPLICATIONS_COMMANDS) {
             push(Kind::AppOauth2Link, client);
         }
     }
@@ -1004,7 +1035,8 @@ fn link_types(raw: &str, push: &mut dyn FnMut(Kind, String)) {
             None => push(Kind::AppDirectoryStorefront, app.to_owned()),
         }
     }
-    if let Some(app) = path.and_then(|path| one_segment(path, "/activities/", digit_or_dash, true)) {
+    if let Some(app) = path.and_then(|path| one_segment(path, "/activities/", digit_or_dash, true))
+    {
         push(Kind::ActivityBookmark, app.to_owned());
     }
     if let Some(path) = path
@@ -1035,10 +1067,14 @@ fn link_types(raw: &str, push: &mut dyn FnMut(Kind, String)) {
     if let Some(game) = path.and_then(game_profile) {
         push(Kind::GameProfile, game.to_owned());
     }
-    if let Some(code) = path.and_then(|path| one_segment(path, "/game-servers/share/", token, false)) {
+    if let Some(code) =
+        path.and_then(|path| one_segment(path, "/game-servers/share/", token, false))
+    {
         push(Kind::GameServerShare, code.to_owned());
     }
-    if let Some(code) = path.and_then(|path| one_segment(path, "/game-organizations/invite/", token, true)) {
+    if let Some(code) =
+        path.and_then(|path| one_segment(path, "/game-organizations/invite/", token, true))
+    {
         push(Kind::GameOrganizationInvite, code.to_owned());
     }
     if let Some(user) = path.and_then(|path| one_segment(path, "/users/", digit, true)) {
@@ -1082,7 +1118,10 @@ fn link_types(raw: &str, push: &mut dyn FnMut(Kind, String)) {
         };
         match application {
             Some(application) if !skus.is_empty() => {
-                push(Kind::SocialLayerStorefrontApp, storefront_code(&skus, application));
+                push(
+                    Kind::SocialLayerStorefrontApp,
+                    storefront_code(&skus, application),
+                );
             }
             _ => {
                 // `${n ?? ""}`: an array joins with commas, a `null` reads as nothing.
@@ -1157,7 +1196,9 @@ mod tests {
     #[test]
     fn invite_links_on_every_host() {
         assert_eq!(
-            links("https://discord.gg/abc-1 http://discord.com/invite/Def2 https://canary.discord.com/invite/x3"),
+            links(
+                "https://discord.gg/abc-1 http://discord.com/invite/Def2 https://canary.discord.com/invite/x3"
+            ),
             vec![
                 (Kind::Invite, "abc-1".to_owned()),
                 (Kind::Invite, "Def2".to_owned()),
@@ -1166,7 +1207,9 @@ mod tests {
         );
         // `www.` is dropped from the host; ptb and discordapp count.
         assert_eq!(
-            links("https://www.discord.gg/w1 https://ptb.discord.com/invite/p1/ https://discordapp.com/invite/d1."),
+            links(
+                "https://www.discord.gg/w1 https://ptb.discord.com/invite/p1/ https://discordapp.com/invite/d1."
+            ),
             vec![
                 (Kind::Invite, "w1".to_owned()),
                 (Kind::Invite, "p1".to_owned()),
@@ -1177,9 +1220,18 @@ mod tests {
 
     #[test]
     fn bare_hosts_need_the_start_or_whitespace() {
-        assert_eq!(links("discord.gg/start"), vec![(Kind::Invite, "start".to_owned())]);
-        assert_eq!(links("join\tdiscord.gg/tab"), vec![(Kind::Invite, "tab".to_owned())]);
-        assert_eq!(links("join\ndiscord.gg/line"), vec![(Kind::Invite, "line".to_owned())]);
+        assert_eq!(
+            links("discord.gg/start"),
+            vec![(Kind::Invite, "start".to_owned())]
+        );
+        assert_eq!(
+            links("join\tdiscord.gg/tab"),
+            vec![(Kind::Invite, "tab".to_owned())]
+        );
+        assert_eq!(
+            links("join\ndiscord.gg/line"),
+            vec![(Kind::Invite, "line".to_owned())]
+        );
         // Glued to a word: no scheme is added, and the URL rule needs one (or `www.`).
         assert!(links("xdiscord.gg/glued").is_empty());
         assert!(links("(discord.gg/paren)").is_empty());
@@ -1188,13 +1240,19 @@ mod tests {
         // `www.` alone is matched but `url.parse` finds no host in it.
         assert!(links("www.discord.gg/nohost").is_empty());
         // Right after a scheme the link is already whole.
-        assert_eq!(links("https://discord.gg/after"), vec![(Kind::Invite, "after".to_owned())]);
+        assert_eq!(
+            links("https://discord.gg/after"),
+            vec![(Kind::Invite, "after".to_owned())]
+        );
     }
 
     #[test]
     fn host_case_and_port() {
         // The parser lowercases the host; a port keeps it from matching.
-        assert_eq!(links("https://DISCORD.GG/Up"), vec![(Kind::Invite, "Up".to_owned())]);
+        assert_eq!(
+            links("https://DISCORD.GG/Up"),
+            vec![(Kind::Invite, "Up".to_owned())]
+        );
         assert!(links("https://discord.gg:443/port").is_empty());
     }
 
@@ -1205,7 +1263,9 @@ mod tests {
             vec![(Kind::Invite, "abc?event=1234567890123456789".to_owned())]
         );
         assert_eq!(
-            links("https://discord.com/invite/abc?message=12345678901234567&channel=12345678901234568&utm=x"),
+            links(
+                "https://discord.com/invite/abc?message=12345678901234567&channel=12345678901234568&utm=x"
+            ),
             vec![(
                 Kind::Invite,
                 "abc?channel=12345678901234568&message=12345678901234567".to_owned()
@@ -1264,7 +1324,10 @@ mod tests {
             ]
         );
         // The event rule reads the path of any host, and needs the event id.
-        assert_eq!(links("https://example.com/events/5/6"), vec![(Kind::Event, "5-6".to_owned())]);
+        assert_eq!(
+            links("https://example.com/events/5/6"),
+            vec![(Kind::Event, "5-6".to_owned())]
+        );
         assert!(links("https://discord.com/events/111/").is_empty());
     }
 
@@ -1298,11 +1361,21 @@ mod tests {
             links("https://discord.com/oauth2/authorize?client_id=56"),
             vec![(Kind::AppOauth2Link, "56".to_owned())]
         );
-        assert!(links("https://discord.com/oauth2/authorize?client_id=57&scope=bot+applications.commands").is_empty());
-        assert!(links("https://discord.com/oauth2/authorize?scope=applications.commands").is_empty());
+        assert!(
+            links(
+                "https://discord.com/oauth2/authorize?client_id=57&scope=bot+applications.commands"
+            )
+            .is_empty()
+        );
+        assert!(
+            links("https://discord.com/oauth2/authorize?scope=applications.commands").is_empty()
+        );
         // No query, or one over a thousand characters, is not read.
         assert!(links("https://discord.com/oauth2/authorize").is_empty());
-        let long = format!("https://discord.com/oauth2/authorize?client_id=58&x={}", "a".repeat(1000));
+        let long = format!(
+            "https://discord.com/oauth2/authorize?client_id=58&x={}",
+            "a".repeat(1000)
+        );
         assert!(links(&long).is_empty());
     }
 
@@ -1334,10 +1407,16 @@ mod tests {
             links("https://discord.com/shop?tab=orbs#itemSkuId=77"),
             vec![(Kind::CollectiblesShop, "orbs-77".to_owned())]
         );
-        assert_eq!(links("https://discord.com/shop"), vec![(Kind::CollectiblesShop, "-".to_owned())]);
+        assert_eq!(
+            links("https://discord.com/shop"),
+            vec![(Kind::CollectiblesShop, "-".to_owned())]
+        );
         // `/shop` must be the whole path.
         assert!(links("https://discord.com/shop/collection/1").is_empty());
-        assert_eq!(split_storefront_code("1,2-9"), Some(("9".to_owned(), vec!["1".to_owned(), "2".to_owned()])));
+        assert_eq!(
+            split_storefront_code("1,2-9"),
+            Some(("9".to_owned(), vec!["1".to_owned(), "2".to_owned()]))
+        );
         assert_eq!(split_storefront_code("1-2-3"), None);
     }
 
@@ -1377,7 +1456,9 @@ mod tests {
             links("https://discord.gg/123 https://discord.com/users/123"),
             vec![(Kind::Invite, "123".to_owned())]
         );
-        let many: Vec<String> = (0..12).map(|n| format!("https://discord.gg/c{n}")).collect();
+        let many: Vec<String> = (0..12)
+            .map(|n| format!("https://discord.gg/c{n}"))
+            .collect();
         let found = links(&many.join(" "));
         assert_eq!(found.len(), 10);
         assert_eq!(found[9].1, "c9");
@@ -1392,7 +1473,10 @@ mod tests {
         assert!(links("```https://discord.gg/open").is_empty());
         // A span closed by a longer run is not a span; the backticks then stay in the link, escaped by the parser.
         assert!(links("`https://discord.gg/x1``").is_empty());
-        assert_eq!(links("`https://discord.gg/x2 ``"), vec![(Kind::Invite, "x2".to_owned())]);
+        assert_eq!(
+            links("`https://discord.gg/x2 ``"),
+            vec![(Kind::Invite, "x2".to_owned())]
+        );
         assert_eq!(
             links("`code` https://discord.gg/after"),
             vec![(Kind::Invite, "after".to_owned())]
@@ -1402,10 +1486,19 @@ mod tests {
 
     #[test]
     fn trailing_punctuation_is_trimmed() {
-        assert_eq!(links("see https://discord.gg/abc."), vec![(Kind::Invite, "abc".to_owned())]);
+        assert_eq!(
+            links("see https://discord.gg/abc."),
+            vec![(Kind::Invite, "abc".to_owned())]
+        );
         // `!` is not trimmed; it ends up in the query.
-        assert_eq!(links("https://discord.gg/abc?!"), vec![(Kind::Invite, "abc".to_owned())]);
-        assert_eq!(links("<https://discord.gg/angle>"), vec![(Kind::Invite, "angle".to_owned())]);
+        assert_eq!(
+            links("https://discord.gg/abc?!"),
+            vec![(Kind::Invite, "abc".to_owned())]
+        );
+        assert_eq!(
+            links("<https://discord.gg/angle>"),
+            vec![(Kind::Invite, "angle".to_owned())]
+        );
     }
 
     #[test]
@@ -1425,10 +1518,22 @@ mod tests {
         assert_eq!(url.search.as_deref(), Some("?c=d"));
         assert_eq!(url.query.as_deref(), Some("c=d"));
         assert_eq!(url.hash.as_deref(), Some("#e"));
-        assert_eq!(parse_url("http://discord.gg").pathname.as_deref(), Some("/"));
+        assert_eq!(
+            parse_url("http://discord.gg").pathname.as_deref(),
+            Some("/")
+        );
         assert_eq!(parse_url("//discord.gg/x").host, None);
-        assert_eq!(parse_url("https://discord.gg/a'b").pathname.as_deref(), Some("/a%27b"));
-        assert_eq!(short_host_code("https://discord.gift/AbC", "discord.gift").as_deref(), Some("AbC"));
-        assert_eq!(short_host_code("https://discord.gift/a/b", "discord.gift"), None);
+        assert_eq!(
+            parse_url("https://discord.gg/a'b").pathname.as_deref(),
+            Some("/a%27b")
+        );
+        assert_eq!(
+            short_host_code("https://discord.gift/AbC", "discord.gift").as_deref(),
+            Some("AbC")
+        );
+        assert_eq!(
+            short_host_code("https://discord.gift/a/b", "discord.gift"),
+            None
+        );
     }
 }

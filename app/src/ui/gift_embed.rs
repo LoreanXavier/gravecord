@@ -659,7 +659,7 @@ impl Root {
                                     cx,
                                 );
                             } else {
-                                this.open_gift_accept(&code, channel, cx);
+                                this.open_gift_accept(&code, Some(channel), cx);
                             }
                         },
                         cx,
@@ -860,11 +860,12 @@ impl Root {
             .into_any_element()
     }
 
-    /// `handleAccept`: the accept dialog (module 499454 opening module 935263), with the card's channel.
+    /// `handleAccept`: the accept dialog (module 499454 opening module 935263), with the card's channel (none from a
+    /// `/gifts/<code>` link).
     pub(super) fn open_gift_accept(
         &mut self,
         code: &str,
-        channel: dc_state::Id,
+        channel: Option<dc_state::Id>,
         cx: &mut Context<Self>,
     ) {
         let Some(gift) = self.stores.gift_code(code) else {
@@ -887,7 +888,7 @@ impl Root {
             })
             .unwrap_or_default();
         let gift = Gift::from_store(gift, &sku_name, &sender);
-        self.settings_extra.gift.modal = Some(Modal::new(gift, Some(channel)));
+        self.settings_extra.gift.modal = Some(Modal::new(gift, channel));
         cx.notify();
     }
 }
@@ -995,7 +996,7 @@ impl Root {
             ),
             ["accept", code] => {
                 let channel = self.channel.unwrap_or_default();
-                self.open_gift_accept(code, channel, cx);
+                self.open_gift_accept(code, Some(channel), cx);
                 format!(
                     "gift-embed: accept {code}, modal {:?}",
                     self.settings_extra.gift.modal.as_ref().map(|m| m.step())

@@ -17,25 +17,6 @@ use gpui::{
 };
 use std::borrow::Cow;
 
-/// Extracts a quest id from a message containing `https://discord.com/quests/{id}` (or `ptb.` / `canary.`).
-pub fn extract_quest_link_id(content: &str) -> Option<&str> {
-    for token in content.split_whitespace() {
-        let trimmed = token.trim_matches(|c| matches!(c, '<' | '>' | '(' | ')' | '"' | '\''));
-        let rest = trimmed
-            .strip_prefix("https://discord.com/quests/")
-            .or_else(|| trimmed.strip_prefix("https://ptb.discord.com/quests/"))
-            .or_else(|| trimmed.strip_prefix("https://canary.discord.com/quests/"))
-            .or_else(|| trimmed.strip_prefix("https://discordapp.com/quests/"));
-        if let Some(rest) = rest {
-            let id = rest.split(['/', '?', '#']).next().unwrap_or("");
-            if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
-                return Some(id);
-            }
-        }
-    }
-    None
-}
-
 /// Formats `124232.js` countdown string `HH:MM:SS` until `blocked_until` ISO-8601 timestamp.
 pub fn format_blocked_countdown(blocked_until: &str, now_ms: i64) -> String {
     let target_ms = chrono::DateTime::parse_from_rfc3339(blocked_until)
@@ -1047,14 +1028,23 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A quest link is a coded link (`QUESTS_EMBED` of module 486889).
+    fn extract_quest_link_id(content: &str) -> Option<String> {
+        dc_state::coded_links::coded_links_in(content)
+            .into_iter()
+            .find(|link| link.kind == dc_state::coded_links::Kind::QuestsEmbed)
+            .map(|link| link.code)
+    }
+
     #[test]
     fn quest_link_extraction_handles_discord_urls() {
         assert_eq!(
-            extract_quest_link_id("check out https://discord.com/quests/123456789012345678 now!"),
+            extract_quest_link_id("check out https://discord.com/quests/123456789012345678 now!")
+                .as_deref(),
             Some("123456789012345678")
         );
         assert_eq!(
-            extract_quest_link_id("<https://canary.discord.com/quests/999888?foo=1>"),
+            extract_quest_link_id("<https://canary.discord.com/quests/999888?foo=1>").as_deref(),
             Some("999888")
         );
         assert_eq!(

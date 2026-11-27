@@ -138,6 +138,7 @@ impl Root {
             radius: px(0.),
             text_line_height: px(line),
             text_top: px(0.),
+            ..BoxStyle::default()
         });
         pieces.push(icon);
         pieces.extend(

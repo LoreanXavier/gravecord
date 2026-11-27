@@ -15,7 +15,7 @@ const SERIES_PAGE: usize = 4;
 
 impl Root {
     /// Opens the detail view of an event on its Event Info tab and asks for its count and who is interested.
-    pub(super) fn open_event_detail(&mut self, event: Id, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn open_event_detail(&mut self, event: Id, cx: &mut Context<Self>) {
         let Some(guild) = self.guild_events.as_ref().map(|open| open.guild) else {
             return;
         };
