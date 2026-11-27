@@ -18,6 +18,9 @@ use std::sync::Arc;
 pub struct BoxStyle {
     /// An icon before the text, with the room it takes.
     pub icon: Option<(SharedString, Pixels, Pixels)>,
+    /// A picture before the text, after the padding, as large as the room it takes (a soundmoji's emoji,
+    /// `soundmojiEmoji_t3sUMN`), drawn over the box.
+    pub picture: Option<(Arc<Image>, Pixels)>,
     pub padding_x: Pixels,
     pub height: Pixels,
     pub top: Pixels,
@@ -658,7 +661,12 @@ fn lay_out(
             .boxed
             .as_ref()
             .and_then(|style| style.icon.as_ref())
-            .map_or(px(0.), |(_, _, room)| *room);
+            .map_or(px(0.), |(_, _, room)| *room)
+            + piece
+                .boxed
+                .as_ref()
+                .and_then(|style| style.picture.as_ref())
+                .map_or(px(0.), |(_, size)| *size);
         let cfg = SegmentBox {
             max_width,
             truncate,
@@ -1481,6 +1489,19 @@ impl Element for Inline {
                         style.border,
                         BorderStyle::Solid,
                     ));
+                    if let Some((image, image_size)) = &style.picture
+                        && let Some(data) = image.clone().use_render_image(window, cx)
+                    {
+                        gpui::note_painted_image(window, image, &data);
+                        let at = point(
+                            (left + style.padding_x).round(),
+                            (top + style.top + (style.height - *image_size) / 2.).round(),
+                        );
+                        let area = Bounds::new(at, gpui::size(*image_size, *image_size));
+                        let frame = crate::ui::frame_clock::frame_index(&data, window);
+                        let _ =
+                            window.paint_image(area, area, Corners::default(), data, frame, false);
+                    }
                     (
                         point(left + fragment.text_offset, top + style.text_top),
                         style.text_line_height,

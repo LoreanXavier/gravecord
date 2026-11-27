@@ -45,6 +45,13 @@ pub enum Kind {
         name: String,
         id: u64,
     },
+    /// `<sound:guild:id>` (the soundboard rule of module 605275, `ds` of module 113051): a soundmoji. The span's text
+    /// stays the token as written, which is what shows wherever the sound cannot be drawn (`o.A` of 937862) and in
+    /// the rule sets that leave the rule out (reply previews, embeds' titles).
+    Sound {
+        guild: u64,
+        id: u64,
+    },
 }
 
 /// The name of a command mention: one to three words of 1 to 32 letters, numbers, `-` or `_` (Devanagari and Thai
@@ -379,6 +386,14 @@ fn angle_token(rest: &str, mentions: bool) -> Option<(usize, Kind, String)> {
     }
     if let Some(id) = inner.strip_prefix('#').and_then(whole_number) {
         return Some((consumed, Kind::Channel(id), raw));
+    }
+    // `^<sound:(\d+):(\d+)>`
+    if let Some((guild, id)) = inner
+        .strip_prefix("sound:")
+        .and_then(|sound| sound.split_once(':'))
+        .and_then(|(guild, id)| Some((whole_number(guild)?, whole_number(id)?)))
+    {
+        return Some((consumed, Kind::Sound { guild, id }, raw));
     }
     if let Some((name, id)) = inner
         .strip_prefix('/')
@@ -767,6 +782,27 @@ mod tests {
         let spans = inline("hi \u{1f600} there");
         assert_eq!(spans[1].kind, Kind::Unicode);
         assert_eq!(spans[2].text, " there");
+    }
+
+    /// Module 113051 `ds`: `<sound:guild:id>`, both numbers; the span keeps the token as its text.
+    #[test]
+    fn a_soundmoji_token_becomes_a_sound_span() {
+        let spans = inline("play <sound:0:1234> now");
+        assert_eq!(spans[1].kind, Kind::Sound { guild: 0, id: 1234 });
+        assert_eq!(spans[1].text, "<sound:0:1234>");
+        assert_eq!(spans[2].text, " now");
+        for raw in [
+            "<sound:0:>",
+            "<sound:a:1>",
+            "<sound:1>",
+            "<sound:1:2:3>",
+            "<sounds:1:2>",
+        ] {
+            assert!(
+                inline(raw).iter().all(|span| span.kind == Kind::Text),
+                "{raw} is no soundmoji"
+            );
+        }
     }
 
     #[test]

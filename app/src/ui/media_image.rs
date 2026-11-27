@@ -104,6 +104,22 @@ pub(super) fn wanted(
             }
         }
     }
+    // The emoji of the soundmoji chips (module 632760), from the sounds the message carries.
+    for sound in &message.extra.soundboard_sounds {
+        if let Some(id) = &sound.emoji_id {
+            media.push((
+                format!("custom:{id}"),
+                format!("https://cdn.discordapp.com/emojis/{id}.webp?size=96"),
+            ));
+        } else if let Some(name) = &sound.emoji_name
+            && let Some(file) = dc_tokens::emoji_file(name)
+        {
+            media.push((
+                format!("emoji:{name}"),
+                format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN),
+            ));
+        }
+    }
     for reaction in &message.reactions {
         if let Some(file) = dc_tokens::emoji_file(&reaction.name) {
             media.push((

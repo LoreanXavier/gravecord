@@ -125,6 +125,7 @@ impl Root {
         // `<Icon height={16} width={16} />` with `margin-right: .25em`, on the text's baseline.
         let mut icon = self.piece(&plain(String::new()), muted, size, 400., emoji);
         icon.boxed = Some(BoxStyle {
+            picture: None,
             icon: Some((
                 "icons/plugin_translate.svg".into(),
                 px(16.),

@@ -8895,6 +8895,10 @@ impl Root {
             Kind::Timestamp { unix, format } => format_timestamp(*unix, *format),
             // Module 990474 `E`: "/" and the command's name, as a link or as plain text.
             Kind::Command { name, .. } => format!("/{name}"),
+            // Module 632760 `_`: " {name} " in the chip, else the token as written (937862).
+            Kind::Sound { id, .. } => self
+                .soundmoji_sound(*id)
+                .map_or_else(|| span.text.clone(), |sound| format!(" {} ", sound.name)),
             Kind::Text
             | Kind::Link(_)
             | Kind::AttachmentLink(_)
@@ -8974,7 +8978,13 @@ impl Root {
             _ if style.spoiler => hsla("--spoiler-hidden-background"),
             _ => base,
         };
-        let boxed = if style.code {
+        let soundmoji = match span.kind {
+            Kind::Sound { id, .. } => self.soundmoji_sound(id),
+            _ => None,
+        };
+        let boxed = if let Some(sound) = &soundmoji {
+            Some(self.soundmoji_box(sound, size, (size * 1.375).round()))
+        } else if style.code {
             Some(inline_code_box())
         } else if style.spoiler {
             Some(pill(0., 4., "--spoiler-hidden-background"))
@@ -9193,6 +9203,14 @@ impl Root {
             .iter()
             .map(|span| match &span.kind {
                 Kind::Timestamp { unix, .. } => message_tips::stamp_tip(*unix),
+                // Module 632760: the sound's card after 500ms (`delay: 500`, `position: "top"`).
+                Kind::Sound { id, .. } => self.soundmoji_sound(*id).map(|sound| {
+                    Tip::body(
+                        Body::Rich(sound.name.into(), dc_intl::t("D6eYmf").into()),
+                        Side::Top,
+                    )
+                    .after(500)
+                }),
                 _ => None,
             })
             .collect();
@@ -9426,6 +9444,34 @@ impl Root {
                         this.press_command_mention(name, id, window, cx);
                     }
                 });
+            });
+        }
+        // A soundmoji plays when clicked (module 632760 `v`); a hidden spoiler takes the first click.
+        let sounds: Vec<Option<soundmoji::Shown>> = spans
+            .iter()
+            .zip(spoilers.iter().chain(std::iter::repeat(&None)))
+            .map(|(span, spoiler)| match span.kind {
+                Kind::Sound { id, .. }
+                    if spoiler.is_none_or(|start| {
+                        self.spoilers_shown()
+                            || self.revealed.contains(&(key.0, key.1, start))
+                            || plugin_hooks::all_spoilers_revealed(&self.revealed, key.0)
+                    }) =>
+                {
+                    self.soundmoji_sound(id)
+                }
+                _ => None,
+            })
+            .collect();
+        if sounds.iter().any(Option::is_some) {
+            let root = self.weak.clone();
+            element = element.also_on_piece_click(move |piece, _, cx| {
+                if let Some(Some(sound)) = sounds.get(piece) {
+                    let _ = root.update(cx, |this, cx| {
+                        this.play_soundmoji(sound);
+                        cx.notify();
+                    });
+                }
             });
         }
         element
@@ -10112,6 +10158,7 @@ impl Root {
             .get()
             .unwrap_or_else(|| color("--text-default"));
         let blocks = parse(&message.content);
+        let _sounds = soundmoji::enter(message);
         let gaps = block_gaps(&blocks);
         // The last item's bottom margin stays inside the message.
         let trailing = if matches!(blocks.last(), Some(Block::ListItem { .. })) {
@@ -12137,6 +12184,7 @@ fn role_tint(color: u32, alpha: f32) -> Hsla {
 /// A rounded box behind inline text: mentions, stamps and spoilers.
 fn pill(padding: f32, radius: f32, background: &str) -> BoxStyle {
     BoxStyle {
+        picture: None,
         icon: None,
         padding_x: px(padding),
         height: px(21.),
@@ -12201,6 +12249,7 @@ fn relative_time(seconds_ago: i64) -> String {
 /// `code.inline` from the captured DOM: 0.2em padding plus the border, 20px tall, 1px below the line top.
 fn inline_code_box() -> BoxStyle {
     BoxStyle {
+        picture: None,
         icon: None,
         padding_x: px(3.72),
         height: px(20.),
@@ -12231,6 +12280,7 @@ fn preview_box(mut boxed: BoxStyle) -> BoxStyle {
 /// Inline code inside a reply preview: 0.85 of 14px, so its box is smaller than in the message.
 fn preview_code_box() -> BoxStyle {
     BoxStyle {
+        picture: None,
         icon: None,
         padding_x: px(3.38),
         height: px(18.),
