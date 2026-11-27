@@ -3960,10 +3960,43 @@ index 55f18b5..9fe3928 100644
          gpui::profiler::save_task_timing();
      }
 diff --git a/crates/gpui_windows/src/events.rs b/crates/gpui_windows/src/events.rs
-index 4dd0c38..355cee5 100644
+index 4dd0c38..2171816 100644
 --- a/crates/gpui_windows/src/events.rs
 +++ b/crates/gpui_windows/src/events.rs
-@@ -1346,6 +1346,8 @@ impl WindowsWindowInner {
+@@ -1167,7 +1167,7 @@ impl WindowsWindowInner {
+         None
+     }
+ 
+-    fn handle_cursor_changed(&self, lparam: LPARAM) -> Option<isize> {
++    fn handle_cursor_changed(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
+         let had_cursor = self.state.current_cursor.get().is_some();
+ 
+         self.state.current_cursor.set(if lparam.0 == 0 {
+@@ -1176,7 +1176,13 @@ impl WindowsWindowInner {
+             Some(HCURSOR(lparam.0 as _))
+         });
+ 
+-        if had_cursor != self.state.current_cursor.get().is_some() {
++        // While this window holds the mouse capture (a button went down in it), Windows sends no `WM_SETCURSOR`,
++        // so a cursor changed then (the panning cursor of middle-button autoscroll, say) is set here, as Chromium's
++        // `SetCursor` does at once.
++        let captured = unsafe { GetCapture() } == handle;
++        if had_cursor != self.state.current_cursor.get().is_some()
++            || (captured && self.state.cursor_visible.load(Ordering::Relaxed))
++        {
+             unsafe { SetCursor(self.state.current_cursor.get()) };
+         }
+ 
+@@ -1315,7 +1321,7 @@ impl WindowsWindowInner {
+             return None;
+         }
+         match message {
+-            WM_GPUI_CURSOR_STYLE_CHANGED => self.handle_cursor_changed(lparam),
++            WM_GPUI_CURSOR_STYLE_CHANGED => self.handle_cursor_changed(handle, lparam),
+             WM_GPUI_FORCE_UPDATE_WINDOW => self.draw_window(handle, true),
+             WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
+             _ => unreachable!(),
+@@ -1346,6 +1352,8 @@ impl WindowsWindowInner {
  
      fn handle_dm_pointer_hit_test(&self, wparam: WPARAM) -> Option<isize> {
          self.state.direct_manipulation.on_pointer_hit_test(wparam);
@@ -3972,7 +4005,7 @@ index 4dd0c38..355cee5 100644
          None
      }
  
-@@ -1358,16 +1360,21 @@ impl WindowsWindowInner {
+@@ -1358,16 +1366,21 @@ impl WindowsWindowInner {
              }
              // Validate the region so a nested message pump doesn't keep
              // re-dispatching WM_PAINT for the still-invalid region in a busy
@@ -3998,7 +4031,7 @@ index 4dd0c38..355cee5 100644
  
          let events = self.state.direct_manipulation.drain_events();
          if !events.is_empty() {
-@@ -1397,6 +1404,7 @@ impl WindowsWindowInner {
+@@ -1397,6 +1410,7 @@ impl WindowsWindowInner {
          });
  
          self.state.callbacks.request_frame.set(Some(request_frame));

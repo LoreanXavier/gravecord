@@ -23,9 +23,9 @@
 //! the vertical set.
 
 use gpui::{
-    CursorStyle, DispatchPhase, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent,
-    ScrollSource, Styled, TouchPhase, point, px,
+    CursorStyle, DispatchPhase, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, PlatformInput, Point,
+    ScrollDelta, ScrollEvent, ScrollSource, Styled, TouchPhase, point, px,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -181,9 +181,42 @@ impl super::Root {
     }
 }
 
-/// A zero-size element that listens on the whole window, sets the panning cursor and sends the scroll steps while
-/// autoscroll is on.
-pub(super) fn layer(state: Shared) -> impl IntoElement {
+/// Whether autoscroll is on.
+pub(super) fn active(state: &Shared) -> bool {
+    state.borrow().is_some()
+}
+
+/// The element that listens on the whole window, sets the panning cursor and sends the scroll steps while autoscroll
+/// is on. While it is on it also covers the window: Blink's autoscroll takes the mouse, so nothing under the pointer
+/// is hovered (no message hover bar, no hover backgrounds) and no press reaches the page; the wheel steps this module
+/// sends still reach the scroller under the press point.
+pub(super) fn layer(state: Shared, window_size: (f32, f32)) -> impl IntoElement {
+    let cover = state.borrow().as_ref().map(|auto| auto.cursor);
+    gpui::div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_0()
+        .child(listener(state))
+        // Deferred above every other layer (the highest priority in use is 99): gpui only blocks the hover of
+        // hitboxes inserted before the blocking one.
+        .children(cover.map(|cursor| {
+            gpui::deferred(
+                gpui::div()
+                    .id("autoscroll-cover")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w(px(window_size.0))
+                    .h(px(window_size.1))
+                    .block_mouse_except_scroll()
+                    .cursor(cursor),
+            )
+            .with_priority(1000)
+        }))
+}
+
+fn listener(state: Shared) -> impl IntoElement {
     gpui::canvas(
         |_, _, _| (),
         move |_, (), window, cx| {
@@ -231,7 +264,7 @@ pub(super) fn layer(state: Shared) -> impl IntoElement {
                 }
             });
             let moved = state.clone();
-            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, _| {
                 if phase != DispatchPhase::Capture {
                     return;
                 }
@@ -245,7 +278,8 @@ pub(super) fn layer(state: Shared) -> impl IntoElement {
                     if !auto.toggled && (away.x.abs() > RADIUS || away.y.abs() > RADIUS) {
                         auto.holding = true;
                     }
-                    window.refresh();
+                    // The frame loop below draws every frame while autoscroll is on and reads the pointer then; a
+                    // refresh here would rebuild every cached view on each move and drop frames.
                 }
             });
             let wheel = state.clone();

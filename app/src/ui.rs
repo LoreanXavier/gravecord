@@ -12445,6 +12445,10 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "capture")]
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Autoscroll takes the mouse (Blink's `AutoscrollController`): no message keeps its hover bar while it is on.
+        if autoscroll::active(&self.autoscroll) {
+            self.hovered = None;
+        }
         self.interaction_modal_frame(window, cx);
         self.drafts_frame(cx);
         self.composer_voids_frame(cx);
@@ -14018,7 +14022,7 @@ impl Render for Root {
                 .absolute()
                 .size_0()
             })
-            .child(autoscroll::layer(self.autoscroll.clone()))
+            .child(autoscroll::layer(self.autoscroll.clone(), self.viewport))
             .children(self.theme_preview_panel(cx))
             .children(self.custom_theme_panel(cx))
             .children(self.settings_layer(window, cx))
