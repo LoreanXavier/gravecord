@@ -470,6 +470,8 @@ impl Root {
                 gpui::deferred(
                     div()
                         .id(gpui::SharedString::from(format!("incoming-call-{id}")))
+                        // A web view under the card steps aside while it shows (`web_frames.rs`).
+                        .child(super::web_frames::layer_probe())
                         .absolute()
                         .left(px(left))
                         .top(px(top))

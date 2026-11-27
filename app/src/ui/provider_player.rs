@@ -3,7 +3,7 @@
 //! player in the embed's box (`autoplay=1&auto_play=1&pageType=2` for YouTube, `utm_source=discord.gg` for TikTok,
 //! Twitch's `parent` list and `autoplay=true`). The player is a system web view (`dc_webhost::WebHost::player`) laid
 //! over the box as `web_frames.rs` lays the Spotify frames: it follows the box as the chat scrolls, cut to the chat's
-//! visible part, hides while a menu, popout or dialog is over it, and closes when the
+//! visible part, hides while a layer of the app is drawn over it, and closes when the
 //! box is no longer drawn (the message scrolled out of the list or the channel changed), as the official list unmounts
 //! the frame. One player plays at a time; Play on another embed moves it there.
 use super::Root;
@@ -113,7 +113,7 @@ impl Root {
             return;
         }
         let seen = self.web_frames.painted.borrow().last_place(ANCHOR);
-        let shown = self.web_surface_shown(ANCHOR, self.web_surfaces_covered());
+        let shown = self.web_surface_shown(ANCHOR);
         let painted = self.web_frames.painted.clone();
         let Some(player) = self.provider_player.as_mut() else {
             return;

@@ -14,10 +14,11 @@
 //! later, as the official list unmounts the iframe.
 //!
 //! A native window cannot be drawn under gpui's layers, so a view steps aside (hidden, its page kept running and never
-//! reloaded) while anything of the app's own is drawn over its box: the known full-window layers at once
-//! ([`Root::web_surfaces_covered`]), and any other layer from the frame it was drawn in ([`covered_by_layers`]). Each box
-//! leaves a hitbox where it is painted; after the frame, the box is covered where a mouse-blocking hitbox drawn above
-//! it (every menu, popout, picker and dialog scrim, plugin dialogs included) or a tooltip lies over it.
+//! reloaded) while anything of the app's own is drawn over its box, and only then: a menu elsewhere leaves it showing,
+//! as the official iframe shows round a menu that does not reach it ([`covered_by_layers`]). Each box leaves a hitbox
+//! where it is painted; after the frame, the box is covered where a mouse-blocking hitbox drawn above it (every menu,
+//! popout, picker, full-window page and dialog scrim, plugin dialogs included) or a layer that takes no pointer (a
+//! tooltip, a toast, a coachmark: [`layer_probe`]) lies over it.
 //!
 //! The provider players (`provider_player.rs`) use the same boxes and the same paint-time placement.
 use super::Root;
@@ -37,13 +38,29 @@ use std::rc::Rc;
 const SAMPLE_STEP: f32 = 24.;
 
 thread_local! {
-    /// Tooltips drawn this frame (they take no pointer, so no hitbox says they are there): their window and box.
+    /// Layers drawn this frame that take no pointer, so no hitbox says they are there (tooltips, toasts, coachmarks):
+    /// their window and box.
     static TIP_COVERS: RefCell<Vec<(WindowId, Bounds<Pixels>)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A tooltip is drawn at `bounds` in `window`: a web view under it steps aside ([`covered_by_layers`]).
+/// A layer that takes no pointer is drawn at `bounds` in `window`: a web view under it steps aside
+/// ([`covered_by_layers`]).
 pub(super) fn cover(window: WindowId, bounds: Bounds<Pixels>) {
     TIP_COVERS.with(|covers| covers.borrow_mut().push((window, bounds)));
+}
+
+/// Laid over a layer's card (absolute, its full size) when the card blocks no pointer: records where it is drawn, so a
+/// web view under it steps aside ([`cover`]). It takes nothing from the pointer.
+pub(super) fn layer_probe() -> AnyElement {
+    canvas(
+        |bounds, window, _| cover(window.window_handle().window_id(), bounds),
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+    .into_any_element()
 }
 
 /// The points a box's visible part `area` is tested at: its corners, its edges every `step` and a grid of the same
@@ -176,12 +193,6 @@ fn decode_still(png: &[u8]) -> Option<std::sync::Arc<gpui::RenderImage>> {
     Some(std::sync::Arc::new(gpui::RenderImage::new(vec![
         image::Frame::new(pixels),
     ])))
-}
-
-/// A view shows when neither a full-window layer of the app (`covered`) nor a layer drawn over its own box (`layered`)
-/// is there.
-pub(super) fn view_shown(covered: bool, layered: bool) -> bool {
-    !covered && !layered
 }
 
 /// Views kept alive per channel at once: scrolling up and down within the same channel/DM keeps loaded
@@ -537,9 +548,8 @@ impl Root {
             .collect();
         views.sort();
         format!(
-            "web layers: covered={} boxes=[{}] views=[{}] stills={} aside={}
+            "web layers: boxes=[{}] views=[{}] stills={} aside={}
 ",
-            self.web_surfaces_covered(),
             boxes.join("; "),
             views.join("; "),
             self.web_frames.stills.counts().0,
@@ -580,29 +590,10 @@ impl Root {
         )
     }
 
-    /// Something of the app's own is over the chat (a menu, a popout, a picker, a dialog, settings, a full-window
-    /// layer): the web views, which are windows above the app's own drawing, step aside, as the official iframe goes
-    /// under the layer. The same test serves every web view laid over the chat.
-    /// Whether the view over the box `anchor` shows: nothing of the app's own over the chat (`covered`, from
-    /// [`Self::web_surfaces_covered`]) nor over the box itself ([`covered_by_layers`]).
-    pub(super) fn web_surface_shown(&self, anchor: &str, covered: bool) -> bool {
-        view_shown(
-            covered,
-            self.web_frames.painted.borrow().layered.contains(anchor),
-        )
-    }
-
-    pub(super) fn web_surfaces_covered(&self) -> bool {
-        self.modal_open() > 0
-            || self.any_layer_open()
-            || self.lightbox.is_some()
-            || self.game_profile.is_some()
-            || self.settings.is_some()
-            || self.profile.is_some()
-            || self.full_profile.is_some()
-            || self.server_settings.is_some()
-            || self.channel_settings.is_some()
-            || crate::intl::load_error().is_some()
+    /// Whether the view over the box `anchor` shows: no layer of the app's own lay over the box in the last frame
+    /// tested ([`covered_by_layers`]).
+    pub(super) fn web_surface_shown(&self, anchor: &str) -> bool {
+        !self.web_frames.painted.borrow().layered.contains(anchor)
     }
 
     /// Called every frame: opens, shows, hides and closes the views from where their boxes were drawn in the last
@@ -629,7 +620,6 @@ impl Root {
             self.web_frames.stills.release(cx);
             return;
         }
-        let covered = self.web_surfaces_covered();
         let painted = self.web_frames.painted.clone();
         let mut painted = painted.borrow_mut();
         let evicted = reconcile_slots(
@@ -644,7 +634,7 @@ impl Root {
         }
         let mut failed = Vec::new();
         for (anchor, frame) in self.web_frames.frames.iter_mut() {
-            let visible = view_shown(covered, painted.layered.contains(anchor));
+            let visible = !painted.layered.contains(anchor);
             let Some(placement) = painted.last_place(anchor) else {
                 // Scrolled out of the viewport within the same channel: Painted::finish already hid
                 // the popup and suspended WebView2 rendering; keep the frame parked until the user
@@ -738,7 +728,7 @@ mod tests {
         // A Spotify album box, 400 by 352, in the chat.
         let player = bounds(400., 200., 400., 352.);
         let shown = |layers: Vec<Bounds<Pixels>>, tips: &[Bounds<Pixels>]| {
-            view_shown(false, covered_by_layers(player, tips, blocked_by(layers)))
+            !covered_by_layers(player, tips, blocked_by(layers))
         };
         // Nothing over it: shown.
         assert!(shown(vec![], &[]));
@@ -755,8 +745,6 @@ mod tests {
         // A tooltip, which takes no pointer, over its top edge.
         assert!(!shown(vec![], &[bounds(560., 180., 80., 30.)]));
         assert!(shown(vec![], &[bounds(560., 150., 80., 30.)]));
-        // A full-window layer the app knows of hides it whatever the hitboxes say.
-        assert!(!view_shown(true, false));
     }
 
     #[test]

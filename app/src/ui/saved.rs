@@ -232,6 +232,9 @@ fn toast_view(
             .justify_center()
             .child(
                 div()
+                    .relative()
+                    // A toast blocks no pointer: a web view under it steps aside (`web_frames.rs`).
+                    .child(super::web_frames::layer_probe())
                     .p(px(12.))
                     .rounded(px(12.))
                     .border_1()
@@ -502,6 +505,8 @@ impl Root {
                                 .absolute()
                                 .right(px(0.))
                                 .top(px(0.))
+                                // The toast blocks no pointer: a web view under it steps aside (`web_frames.rs`).
+                                .child(super::web_frames::layer_probe())
                                 .rounded(px(8.))
                                 .bg(color("--background-surface-high"))
                                 .border_1()

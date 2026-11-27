@@ -15400,7 +15400,9 @@ impl Root {
                     .absolute()
                     .right(px(96.))
                     .bottom(px(74.))
-                    .child(card),
+                    .child(card)
+                    // A web view under the coachmark steps aside while it shows (`web_frames.rs`).
+                    .child(web_frames::layer_probe()),
             )
             .with_priority(3)
             .into_any_element(),

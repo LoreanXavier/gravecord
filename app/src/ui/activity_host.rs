@@ -659,9 +659,13 @@ impl Root {
         }
         // With the call view's stage out of sight the page is the picture-in-picture window.
         let pip = !stage_seen;
-        // On the stage it also steps aside for any menu, popout, tooltip or dialog of the app over it (`web_frames.rs`).
-        let visible = !self.overlay_open(pip)
-            && (pip || self.web_surface_shown(STAGE_ANCHOR, self.web_surfaces_covered()));
+        // On the stage it steps aside for any layer of the app drawn over it (`web_frames.rs`) and for the sign-in
+        // page, a web view of its own that no hitbox stands for.
+        let visible = if pip {
+            !self.overlay_open(true)
+        } else {
+            !self.oauth_open() && self.web_surface_shown(STAGE_ANCHOR)
+        };
         let stage = if pip {
             Some(pip_bounds(window))
         } else {
