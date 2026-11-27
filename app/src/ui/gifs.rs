@@ -129,6 +129,22 @@ pub(crate) fn preview_gif_url(src: &str) -> String {
         Some(index) => (&src[..index], &src[index..]),
         None => (src, ""),
     };
+    // A favourite saved from a chat GIFV names Discord's media proxy (`images-ext-N.discordapp.net/external/<sig>/
+    // https/media.tenor.com/...mp4`). The proxy's signature covers the address, so the preview is asked of the
+    // provider itself; the proxy's own query (its size) belongs to the proxy and is dropped.
+    if let Some((_, rest)) = base.split_once(".discordapp.net/external/")
+        && let Some((_, target)) = rest.split_once("/https/")
+        && (target.starts_with("media.tenor.com/")
+            || target.starts_with("c.tenor.com/")
+            || target.starts_with("media1.tenor.com/")
+            || target.contains(".giphy.com/media/"))
+    {
+        let direct = format!("https://{target}");
+        let preview = preview_gif_url(&direct);
+        if preview != direct {
+            return preview;
+        }
+    }
     if (base.contains("//media.tenor.com/")
         || base.contains("//c.tenor.com/")
         || base.contains("//media1.tenor.com/"))
@@ -153,6 +169,14 @@ pub(crate) fn preview_gif_url(src: &str) -> String {
         }
     }
     src.to_owned()
+}
+
+/// Whether a tile's picture address names an MP4 (a GIFV favourite whose source has no GIF preview, such as a
+/// Discord media proxy address). Its image is only the first frame, so the tile plays the clip over it.
+pub(crate) fn is_mp4_picture(url: &str) -> bool {
+    url.split(['?', '#'])
+        .next()
+        .is_some_and(|path| path.to_ascii_lowercase().ends_with(".mp4"))
 }
 
 fn runtime_gif_url(src: &str) -> String {
@@ -1056,6 +1080,15 @@ impl Root {
                         cx,
                     )
                 });
+                let shown = runtime_gif_url(&gif.picture);
+                let video = is_mp4_picture(&shown).then(|| {
+                    self.picker_inline_video(
+                        &gif.id,
+                        &shown,
+                        (TILE_WIDTH.round() as u32, height.round() as u32),
+                        cx,
+                    )
+                });
                 let chosen = gif.clone();
                 let starred = gif.clone();
                 let link = gif.url.clone();
@@ -1075,6 +1108,7 @@ impl Root {
                     .cursor_pointer()
                     .bg(color("--background-mod-subtle"))
                     .children(art)
+                    .children(video)
                     .child({
                         // `gifFavoriteButton_cT9zhv` (module 439401/47299): `--background-base-low`, 5 radius, 6
                         // padding round the 20 star; the star is `--icon-strong`, and `--yellow-300` when the GIF
@@ -1348,6 +1382,18 @@ mod tests {
     }
 
     #[test]
+    fn only_mp4_pictures_play_as_clips() {
+        assert!(is_mp4_picture(
+            "https://media.discordapp.net/external/abc/https/media.tenor.com/xyzAAAPo/dance.mp4?width=200"
+        ));
+        assert!(is_mp4_picture("https://cdn.example/clip.MP4#t=1"));
+        assert!(!is_mp4_picture(
+            "https://media.tenor.com/xyzAAAAM/dance.gif"
+        ));
+        assert!(!is_mp4_picture("https://cdn.example/a.webp?name=x.mp4"));
+    }
+
+    #[test]
     fn masonry_fills_the_shorter_column() {
         let gif = |width: f32, height: f32| Gif {
             id: String::new(),
@@ -1372,6 +1418,24 @@ mod tests {
         let list = gifs_of(&body);
         assert_eq!(list[0].picture, "a.webp");
         assert_eq!(list[0].url, "https://klipy.com/gifs/life-saturday");
+    }
+
+    #[test]
+    fn preview_gif_url_unwraps_discord_proxied_tenor_and_giphy_clips() {
+        assert_eq!(
+            preview_gif_url(
+                "https://images-ext-1.discordapp.net/external/NIrgXb6D/https/media.tenor.com/-Qe8uSRn7lUAAAPo/dance.mp4?width=400&height=300"
+            ),
+            "https://media.tenor.com/-Qe8uSRn7lUAAAAM/dance.gif"
+        );
+        assert_eq!(
+            preview_gif_url(
+                "https://images-ext-2.discordapp.net/external/abc/https/media1.giphy.com/media/v1.x/XYZ/giphy.mp4"
+            ),
+            "https://media1.giphy.com/media/v1.x/XYZ/200w.gif"
+        );
+        let other = "https://images-ext-1.discordapp.net/external/abc/https/example.com/clip.mp4";
+        assert_eq!(preview_gif_url(other), other);
     }
 
     #[test]
