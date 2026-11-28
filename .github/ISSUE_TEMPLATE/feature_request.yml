@@ -1,0 +1,31 @@
+name: Feature or plugin request
+description: Something the official client has that gravecord lacks, or a Vencord/Equicord plugin you want ported.
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of request
+      options:
+        - Missing feature from the official Discord client
+        - Vencord or Equicord plugin
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What you want
+      description: What it does and where it shows up. For a plugin, link its source folder in the Vencord or Equicord repository.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters to you
+      description: How you use it today, in the official client or with the plugin.
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots
+      description: How it looks in the official client or with the plugin.

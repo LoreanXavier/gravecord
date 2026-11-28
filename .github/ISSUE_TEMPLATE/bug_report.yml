@@ -1,0 +1,71 @@
+name: Bug report
+description: Something is broken, crashes, or looks or works differently from the official Discord client.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What went wrong, and where in the app.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a server channel
+        2. Click ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should happen instead. If the official Discord client does it differently, say how.
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots or video
+      description: Drag files here. A side-by-side with the official client helps a lot for anything visual.
+  - type: input
+    id: version
+    attributes:
+      label: gravecord version
+      description: Shown in the settings sidebar next to the version number, e.g. 0.3.0 (9cdf1e26).
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: dropdown
+    id: plugins
+    attributes:
+      label: Does it still happen with all plugins off?
+      description: Settings > Gravecord > "Enable plugins" turns them all off at once.
+      options:
+        - "Yes, it happens with all plugins off"
+        - "No, only with some plugins on (name them below)"
+        - "Didn't try"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        For a crash, attach `%LOCALAPPDATA%\gravecord\panic.log`.
+        For anything else, Settings > Report a Bug can keep a log file; reproduce the problem and attach it.
+        Logs never contain your token, but check them before posting.
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Plugins involved, your setup (multiple monitors, refresh rate, VPN), how often it happens.
