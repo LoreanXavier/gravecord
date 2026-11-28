@@ -880,6 +880,10 @@ impl Editor {
             "escape" => cx.emit(EditorEvent::Cancel),
             // A void goes as one unit (Slate deletes a void node whole).
             "backspace" => {
+                if control && buffer.selection().is_empty() {
+                    let at = atoms::snap(&voids, buffer.word_left(), Bias::Start);
+                    buffer.select_to(at);
+                }
                 if let Some(void) = buffer
                     .selection()
                     .is_empty()
